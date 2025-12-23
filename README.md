@@ -198,7 +198,76 @@ elisp/
 ├── emacs-mcp-triggers.el  # Keybindings, hooks
 ├── emacs-mcp-transient.el # Transient menus
 ├── emacs-mcp-workflows.el # Workflow system
-└── emacs-mcp-api.el       # Stable API for Claude
+├── emacs-mcp-api.el       # Stable API for Claude
+├── emacs-mcp-addons.el    # Addon system
+└── addons/                # Built-in and custom addons
+    ├── emacs-mcp-addon-template.el
+    ├── emacs-mcp-claude-code.el
+    ├── emacs-mcp-cider.el
+    └── emacs-mcp-org-ai.el
+```
+
+## Addon System
+
+The addon system provides a modular way to integrate emacs-mcp with other Emacs packages. Addons are **lazy-loaded** only when needed, keeping startup fast.
+
+### Built-in Addons
+
+| Addon | Integration | Description |
+|-------|-------------|-------------|
+| **claude-code** | [claude-code.el](https://github.com/karthink/claude-code) | Auto-inject MCP context into Claude Code CLI commands |
+| **cider** | [CIDER](https://github.com/clojure-emacs/cider) | Add Clojure namespace/project context to MCP |
+| **org-ai** | [org-ai](https://github.com/rksm/org-ai) | Inject MCP context into org-ai prompts, save conversations to memory |
+
+### Enabling Addons
+
+#### Manual Loading
+
+```elisp
+;; Load specific addons on-demand
+(emacs-mcp-addon-load 'claude-code)
+(emacs-mcp-addon-load 'cider)
+(emacs-mcp-addon-load 'org-ai)
+```
+
+#### Auto-loading
+
+Enable automatic loading when trigger packages are detected:
+
+```elisp
+;; In your init.el, after loading emacs-mcp
+(emacs-mcp-addons-auto-load)
+```
+
+This automatically loads addons when their target packages are loaded.
+
+### Creating Custom Addons
+
+1. Copy the template:
+   ```bash
+   cp elisp/addons/emacs-mcp-addon-template.el elisp/addons/emacs-mcp-my-addon.el
+   ```
+
+2. Edit the new file:
+   - Replace `template` with `my-addon` throughout
+   - Implement your integration functions
+   - Register with `emacs-mcp-addon-register`
+
+3. Load your addon:
+   ```elisp
+   (emacs-mcp-addon-load 'my-addon)
+   ```
+
+#### Custom Addon Directory
+
+```elisp
+(add-to-list 'emacs-mcp-addon-directories "~/my-emacs-addons")
+```
+
+### Listing Addons
+
+```elisp
+M-x emacs-mcp-addon-info
 ```
 
 ## Tested & Working
