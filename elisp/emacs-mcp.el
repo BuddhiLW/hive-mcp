@@ -1,12 +1,14 @@
 ;;; emacs-mcp.el --- Emacs integration for Claude MCP  -*- lexical-binding: t; -*-
 
-;; Copyright (C) 2024
+;; Copyright (C) 2025 Pedro G. Branquinho
 
-;; Author: BuddhiLW
+;; Author: Pedro G. Branquinho <pedrogbranquinho@gmail.com>
+;; Maintainer: Pedro G. Branquinho <pedrogbranquinho@gmail.com>
 ;; Version: 0.1.0
 ;; Package-Requires: ((emacs "28.1") (transient "0.4.0"))
-;; Keywords: tools, ai, mcp
+;; Keywords: tools, ai, convenience
 ;; URL: https://github.com/BuddhiLW/emacs-mcp
+;; SPDX-License-Identifier: MIT
 
 ;;; Commentary:
 ;;

@@ -1,9 +1,9 @@
 ;;; emacs-mcp-api.el --- Stable API for Claude MCP  -*- lexical-binding: t; -*-
 
-;; Copyright (C) 2024
-
-;; Author: BuddhiLW
-;; Keywords: tools, ai, mcp
+;; Copyright (C) 2025 Pedro G. Branquinho
+;; Author: Pedro G. Branquinho <pedrogbranquinho@gmail.com>
+;; SPDX-License-Identifier: MIT
+;; This file is part of emacs-mcp.
 
 ;;; Commentary:
 ;;

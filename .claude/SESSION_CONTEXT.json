@@ -1,0 +1,49 @@
+{
+  "date": "2025-12-23",
+  "focus_area": "emacs-mcp - MCP server for Emacs integration with Claude",
+  "branches_created": [],
+  "key_files": [
+    "src/emacs_mcp/server.clj",
+    "src/emacs_mcp/emacsclient.clj",
+    "src/emacs_mcp/synergy.clj",
+    "elisp/emacs-mcp.el",
+    "elisp/emacs-mcp-api.el",
+    "elisp/emacs-mcp-memory.el",
+    "elisp/emacs-mcp-context.el",
+    "elisp/emacs-mcp-workflows.el",
+    "elisp/emacs-mcp-triggers.el",
+    "elisp/emacs-mcp-transient.el",
+    "start-mcp.sh",
+    "deps.edn"
+  ],
+  "adrs_created": [],
+  "completed_tasks": [
+    "Tested emacs-mcp package through Clojure MCP (port 7910)",
+    "Verified all APIs: context, memory, workflows, notifications",
+    "Updated README with 'Tested & Working' section",
+    "Clarified Claude Code installation instructions in README",
+    "Created PROJECT_SUMMARY.md for LLM context"
+  ],
+  "in_progress_tasks": [],
+  "blocking_issues": [],
+  "next_actions": [
+    "Fix emacs-mcp-api-memory-add return serialization (wrong-type-argument symbolp)",
+    "Add more built-in workflows (test, format, etc.)",
+    "Consider adding conversation history persistence",
+    "Integration testing with actual Claude Code MCP setup"
+  ],
+  "decisions_made": [
+    "Use start-mcp.sh for Claude Code integration (runs clojure -X:mcp)",
+    "nREPL (port 7910) is for development only, not needed for production",
+    "Memory stored in ~/.emacs.d/emacs-mcp/projects/<sha1-of-project-root>/",
+    "All keybindings under C-c m prefix"
+  ],
+  "known_issues": [
+    "emacs-mcp-api-memory-add has return value serialization error but data still saves correctly"
+  ],
+  "repository": {
+    "url": "https://github.com/BuddhiLW/emacs-mcp",
+    "branch": "main",
+    "latest_commit": "697ab65"
+  }
+}
