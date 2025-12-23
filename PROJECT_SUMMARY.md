@@ -95,6 +95,35 @@ emacs-mcp/
 (recent_files {})
 ```
 
+### emacs-mcp.el Integration Tools (NEW!)
+
+These tools enable seamless use of emacs-mcp.el features without manual `eval_elisp`:
+
+```clojure
+;; Check if emacs-mcp.el is available
+(mcp_capabilities {})
+;; => {:available true, :version "0.1.0", :capabilities [...]}
+
+;; Get full context (buffer, project, git, memory)
+(mcp_get_context {})
+;; => {:buffer {...}, :project {...}, :git {...}, :memory {...}}
+
+;; Add to project memory
+(mcp_memory_add {:type "note" :content "Remember this" :tags ["important"]})
+(mcp_memory_add {:type "convention" :content "Use snake_case for filenames"})
+
+;; Query memory
+(mcp_memory_query {:type "note" :limit 10})
+(mcp_memory_query {:type "convention"})
+
+;; Workflows
+(mcp_list_workflows {})
+(mcp_run_workflow {:name "commit" :args {:message "Fix bug"}})
+
+;; Notifications
+(mcp_notify {:message "Task complete!" :type "info"})
+```
+
 ### Synergy Functions (synergy.clj)
 
 ```clojure

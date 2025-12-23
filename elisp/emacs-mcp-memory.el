@@ -100,11 +100,52 @@ Uses SHA1 hash of absolute path for filesystem-safe naming."
           (json-parse-buffer :object-type 'plist :array-type 'list)))
     '()))
 
+(defun emacs-mcp-memory--plist-to-alist (plist)
+  "Convert PLIST with keyword keys to alist with symbol keys.
+Recursively converts nested plists.
+Uses symbol keys (not strings) as required by `json-serialize'.
+Lists are converted to vectors for JSON array serialization."
+  (let (alist)
+    (while plist
+      (let* ((key (car plist))
+             (val (cadr plist))
+             ;; Convert :keyword to symbol (e.g., :id -> id)
+             (key-sym (if (keywordp key)
+                          (intern (substring (symbol-name key) 1))
+                        key))
+             (val-converted (cond
+                             ;; Nested plist (starts with keyword)
+                             ((and (listp val) (keywordp (car-safe val)))
+                              (emacs-mcp-memory--plist-to-alist val))
+                             ;; List of items -> convert to vector
+                             ((and (listp val) val)
+                              (apply #'vector
+                                     (mapcar (lambda (v)
+                                               (if (and (listp v) (keywordp (car-safe v)))
+                                                   (emacs-mcp-memory--plist-to-alist v)
+                                                 v))
+                                             val)))
+                             ;; Empty list or nil
+                             ((null val) [])
+                             ;; Scalar value
+                             (t val))))
+        (push (cons key-sym val-converted) alist))
+      (setq plist (cddr plist)))
+    (nreverse alist)))
+
+(defun emacs-mcp-memory--convert-for-json (data)
+  "Convert DATA (list of plists) to format suitable for json-serialize.
+Returns a vector of alists (json-serialize requires vectors for arrays)."
+  (apply #'vector (mapcar #'emacs-mcp-memory--plist-to-alist data)))
+
 (defun emacs-mcp-memory--write-json-file (path data)
-  "Write DATA as JSON to PATH."
+  "Write DATA as JSON to PATH.
+DATA is expected to be a list of plists."
   (make-directory (file-name-directory path) t)
   (with-temp-file path
-    (insert (json-serialize data :null-object :null :false-object :false))))
+    (insert (json-serialize (emacs-mcp-memory--convert-for-json data)
+                            :null-object :null
+                            :false-object :false))))
 
 ;;; Cache Management
 

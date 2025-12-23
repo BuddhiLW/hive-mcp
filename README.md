@@ -4,6 +4,8 @@ MCP (Model Context Protocol) server that allows Claude to interact with a runnin
 
 ## Features
 
+### Core Tools
+
 - **eval_elisp** - Execute arbitrary Emacs Lisp code
 - **emacs_status** - Check if Emacs server is running
 - **list_buffers** - List all open buffers
@@ -16,6 +18,20 @@ MCP (Model Context Protocol) server that allows Claude to interact with a runnin
 - **insert_text** - Insert text at cursor
 - **project_root** - Get current project root
 - **recent_files** - Get recently opened files
+
+### emacs-mcp.el Integration Tools (NEW!)
+
+These tools provide seamless integration with `emacs-mcp.el`, enabling Claude to use Emacs memory, context, and workflows without manual `eval_elisp` calls:
+
+- **mcp_capabilities** - Check emacs-mcp.el availability and features
+- **mcp_get_context** - Get full context (buffer, project, git, memory)
+- **mcp_memory_add** - Add notes, snippets, conventions, or decisions to project memory
+- **mcp_memory_query** - Query stored memory entries by type
+- **mcp_list_workflows** - List available user-defined workflows
+- **mcp_run_workflow** - Execute a workflow by name
+- **mcp_notify** - Show notification messages in Emacs
+
+> **Auto-detection**: These tools automatically check if `emacs-mcp.el` is loaded and provide helpful error messages if not
 
 ## Prerequisites
 

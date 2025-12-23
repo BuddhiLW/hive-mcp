@@ -1,6 +1,7 @@
 (ns emacs-mcp.tools
   "MCP tool definitions for Emacs interaction."
   (:require [emacs-mcp.emacsclient :as ec]
+            [clojure.data.json :as json]
             [taoensso.timbre :as log]))
 
 ;; Tool handlers
@@ -95,6 +96,166 @@
                 "Current file: " (or (ec/current-file) "none"))}
     {:type "text" :text "Emacs server is not running" :isError true}))
 
+;; ============================================================================
+;; emacs-mcp.el Integration Tools
+;; These tools require emacs-mcp.el to be loaded in Emacs
+;; ============================================================================
+
+(defn emacs-mcp-el-available?
+  "Check if emacs-mcp.el is loaded in Emacs."
+  []
+  (let [{:keys [success result]} (ec/eval-elisp "(featurep 'emacs-mcp-api)")]
+    (and success (= result "t"))))
+
+(defn handle-mcp-get-context
+  "Get full context from Emacs including buffer, project, git, and memory."
+  [_]
+  (log/info "mcp-get-context")
+  (if (emacs-mcp-el-available?)
+    (let [{:keys [success result error]} (ec/eval-elisp "(json-encode (emacs-mcp-api-get-context))")]
+      (if success
+        {:type "text" :text result}
+        {:type "text" :text (str "Error: " error) :isError true}))
+    {:type "text" :text "Error: emacs-mcp.el is not loaded. Run (require 'emacs-mcp) and (emacs-mcp-mode 1) in Emacs." :isError true}))
+
+(defn handle-mcp-memory-add
+  "Add an entry to project memory."
+  [{:keys [type content tags]}]
+  (log/info "mcp-memory-add:" type)
+  (if (emacs-mcp-el-available?)
+    (let [tags-str (if (seq tags) (str "'" (pr-str tags)) "nil")
+          elisp (format "(json-encode (emacs-mcp-api-memory-add %s %s %s))"
+                        (pr-str type)
+                        (pr-str content)
+                        tags-str)
+          {:keys [success result error]} (ec/eval-elisp elisp)]
+      (if success
+        {:type "text" :text result}
+        {:type "text" :text (str "Error: " error) :isError true}))
+    {:type "text" :text "Error: emacs-mcp.el is not loaded." :isError true}))
+
+(defn handle-mcp-memory-query
+  "Query project memory by type."
+  [{:keys [type tags limit]}]
+  (log/info "mcp-memory-query:" type)
+  (if (emacs-mcp-el-available?)
+    (let [tags-str (if (seq tags) (str "'" (pr-str tags)) "nil")
+          limit-val (or limit 20)
+          elisp (format "(json-encode (emacs-mcp-api-memory-query %s %s %d))"
+                        (pr-str type)
+                        tags-str
+                        limit-val)
+          {:keys [success result error]} (ec/eval-elisp elisp)]
+      (if success
+        {:type "text" :text result}
+        {:type "text" :text (str "Error: " error) :isError true}))
+    {:type "text" :text "Error: emacs-mcp.el is not loaded." :isError true}))
+
+(defn handle-mcp-run-workflow
+  "Run a user-defined workflow."
+  [{:keys [name args]}]
+  (log/info "mcp-run-workflow:" name)
+  (if (emacs-mcp-el-available?)
+    (let [elisp (if args
+                  (format "(json-encode (emacs-mcp-api-run-workflow %s '%s))"
+                          (pr-str name)
+                          (pr-str args))
+                  (format "(json-encode (emacs-mcp-api-run-workflow %s))"
+                          (pr-str name)))
+          {:keys [success result error]} (ec/eval-elisp elisp)]
+      (if success
+        {:type "text" :text result}
+        {:type "text" :text (str "Error: " error) :isError true}))
+    {:type "text" :text "Error: emacs-mcp.el is not loaded." :isError true}))
+
+(defn handle-mcp-notify
+  "Show notification to user in Emacs."
+  [{:keys [message type]}]
+  (log/info "mcp-notify:" message)
+  (let [type-str (or type "info")
+        elisp (format "(emacs-mcp-api-notify %s %s)"
+                      (pr-str message)
+                      (pr-str type-str))
+        {:keys [success error]} (ec/eval-elisp elisp)]
+    (if success
+      {:type "text" :text "Notification sent"}
+      {:type "text" :text (str "Error: " error) :isError true})))
+
+(defn handle-mcp-list-workflows
+  "List available workflows."
+  [_]
+  (log/info "mcp-list-workflows")
+  (if (emacs-mcp-el-available?)
+    (let [{:keys [success result error]} (ec/eval-elisp "(json-encode (emacs-mcp-api-list-workflows))")]
+      (if success
+        {:type "text" :text result}
+        {:type "text" :text (str "Error: " error) :isError true}))
+    {:type "text" :text "Error: emacs-mcp.el is not loaded." :isError true}))
+
+(defn handle-mcp-capabilities
+  "Check emacs-mcp.el availability and capabilities."
+  [_]
+  (log/info "mcp-capabilities")
+  (if (emacs-mcp-el-available?)
+    (let [{:keys [success result error]} (ec/eval-elisp "(json-encode (emacs-mcp-api-capabilities))")]
+      (if success
+        {:type "text" :text result}
+        {:type "text" :text (str "Error: " error) :isError true}))
+    {:type "text"
+     :text (json/write-str {:available false
+                            :message "emacs-mcp.el is not loaded. Run (require 'emacs-mcp) and (emacs-mcp-mode 1) in Emacs."})}))
+
+(defn handle-mcp-watch-buffer
+  "Get recent content from a buffer for monitoring (e.g., *Messages*)."
+  [{:keys [buffer_name lines]}]
+  (log/info "mcp-watch-buffer:" buffer_name)
+  (let [num-lines (or lines 50)
+        elisp (format "(with-current-buffer %s
+                         (save-excursion
+                           (goto-char (point-max))
+                           (forward-line (- %d))
+                           (buffer-substring-no-properties (point) (point-max))))"
+                      (pr-str buffer_name)
+                      num-lines)
+        {:keys [success result error]} (ec/eval-elisp elisp)]
+    (if success
+      {:type "text" :text result}
+      {:type "text" :text (str "Error: " error) :isError true})))
+
+(defn handle-mcp-list-special-buffers
+  "List special buffers useful for monitoring (*Messages*, *Warnings*, etc.)."
+  [_]
+  (log/info "mcp-list-special-buffers")
+  (let [elisp "(mapcar #'buffer-name
+                 (seq-filter
+                   (lambda (buf)
+                     (string-match-p \"^\\\\*\" (buffer-name buf)))
+                   (buffer-list)))"
+        {:keys [success result error]} (ec/eval-elisp elisp)]
+    (if success
+      {:type "text" :text result}
+      {:type "text" :text (str "Error: " error) :isError true})))
+
+(defn handle-mcp-buffer-info
+  "Get detailed info about a buffer including size, modified time, mode."
+  [{:keys [buffer_name]}]
+  (log/info "mcp-buffer-info:" buffer_name)
+  (let [elisp (format "(with-current-buffer %s
+                         (json-encode
+                           (list :name (buffer-name)
+                                 :size (buffer-size)
+                                 :lines (count-lines (point-min) (point-max))
+                                 :mode (symbol-name major-mode)
+                                 :modified (buffer-modified-p)
+                                 :file (buffer-file-name)
+                                 :point (point)
+                                 :point-max (point-max))))"
+                      (pr-str buffer_name))
+        {:keys [success result error]} (ec/eval-elisp elisp)]
+    (if success
+      {:type "text" :text result}
+      {:type "text" :text (str "Error: " error) :isError true})))
+
 ;; Tool definitions
 
 (def tools
@@ -174,7 +335,96 @@
    {:name "recent_files"
     :description "Get list of recently opened files from recentf."
     :inputSchema {:type "object" :properties {}}
-    :handler handle-recent-files}])
+    :handler handle-recent-files}
+
+   ;; emacs-mcp.el Integration Tools
+   {:name "mcp_capabilities"
+    :description "Check if emacs-mcp.el is loaded and get available capabilities. Use this first to verify the enhanced features are available."
+    :inputSchema {:type "object" :properties {}}
+    :handler handle-mcp-capabilities}
+
+   {:name "mcp_get_context"
+    :description "Get full context from Emacs including current buffer, region, project info, git status, and project memory. Requires emacs-mcp.el."
+    :inputSchema {:type "object" :properties {}}
+    :handler handle-mcp-get-context}
+
+   {:name "mcp_memory_add"
+    :description "Add an entry to project memory. Types: note, snippet, convention, decision. Requires emacs-mcp.el."
+    :inputSchema {:type "object"
+                  :properties {"type" {:type "string"
+                                       :enum ["note" "snippet" "convention" "decision"]
+                                       :description "Type of memory entry"}
+                               "content" {:type "string"
+                                          :description "Content of the memory entry"}
+                               "tags" {:type "array"
+                                       :items {:type "string"}
+                                       :description "Optional tags for categorization"}}
+                  :required ["type" "content"]}
+    :handler handle-mcp-memory-add}
+
+   {:name "mcp_memory_query"
+    :description "Query project memory by type. Returns stored notes, snippets, conventions, or decisions. Requires emacs-mcp.el."
+    :inputSchema {:type "object"
+                  :properties {"type" {:type "string"
+                                       :enum ["note" "snippet" "convention" "decision" "conversation"]
+                                       :description "Type of memory entries to query"}
+                               "tags" {:type "array"
+                                       :items {:type "string"}
+                                       :description "Optional tags to filter by"}
+                               "limit" {:type "integer"
+                                        :description "Maximum number of results (default: 20)"}}
+                  :required ["type"]}
+    :handler handle-mcp-memory-query}
+
+   {:name "mcp_list_workflows"
+    :description "List available user-defined workflows. Requires emacs-mcp.el."
+    :inputSchema {:type "object" :properties {}}
+    :handler handle-mcp-list-workflows}
+
+   {:name "mcp_run_workflow"
+    :description "Run a user-defined workflow by name. Workflows can automate multi-step tasks. Requires emacs-mcp.el."
+    :inputSchema {:type "object"
+                  :properties {"name" {:type "string"
+                                       :description "Name of the workflow to run"}
+                               "args" {:type "object"
+                                       :description "Optional arguments to pass to the workflow"}}
+                  :required ["name"]}
+    :handler handle-mcp-run-workflow}
+
+   {:name "mcp_notify"
+    :description "Show a notification message to the user in Emacs."
+    :inputSchema {:type "object"
+                  :properties {"message" {:type "string"
+                                          :description "Message to display"}
+                               "type" {:type "string"
+                                       :enum ["info" "warning" "error"]
+                                       :description "Type of notification (default: info)"}}
+                  :required ["message"]}
+    :handler handle-mcp-notify}
+
+   ;; Buffer Monitoring Tools
+   {:name "mcp_watch_buffer"
+    :description "Get recent content from a buffer for monitoring. Useful for watching *Messages*, *Warnings*, *Compile-Log*, etc. Returns the last N lines."
+    :inputSchema {:type "object"
+                  :properties {"buffer_name" {:type "string"
+                                              :description "Name of the buffer to watch (e.g., \"*Messages*\")"}
+                               "lines" {:type "integer"
+                                        :description "Number of lines to retrieve from end (default: 50)"}}
+                  :required ["buffer_name"]}
+    :handler handle-mcp-watch-buffer}
+
+   {:name "mcp_list_special_buffers"
+    :description "List all special buffers (those starting with *) useful for monitoring. Returns buffer names like *Messages*, *scratch*, *Warnings*, etc."
+    :inputSchema {:type "object" :properties {}}
+    :handler handle-mcp-list-special-buffers}
+
+   {:name "mcp_buffer_info"
+    :description "Get detailed info about a buffer including size, line count, major mode, and modification status."
+    :inputSchema {:type "object"
+                  :properties {"buffer_name" {:type "string"
+                                              :description "Name of the buffer to inspect"}}
+                  :required ["buffer_name"]}
+    :handler handle-mcp-buffer-info}])
 
 (defn get-tool-by-name
   "Find a tool definition by name."

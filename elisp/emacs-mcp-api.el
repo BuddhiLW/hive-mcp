@@ -68,20 +68,53 @@ BEFORE and AFTER default to 5 lines each."
 ;;; Memory API
 ;;; ============================================================================
 
+(defun emacs-mcp-api--plist-to-alist (plist)
+  "Convert PLIST to alist for JSON serialization.
+Keyword keys become symbols, lists become vectors."
+  (let (alist)
+    (while plist
+      (let* ((key (car plist))
+             (val (cadr plist))
+             (key-sym (if (keywordp key)
+                          (intern (substring (symbol-name key) 1))
+                        key))
+             (val-converted (cond
+                             ((and (listp val) (keywordp (car-safe val)))
+                              (emacs-mcp-api--plist-to-alist val))
+                             ((and (listp val) val)
+                              (apply #'vector
+                                     (mapcar (lambda (v)
+                                               (if (and (listp v) (keywordp (car-safe v)))
+                                                   (emacs-mcp-api--plist-to-alist v)
+                                                 v))
+                                             val)))
+                             ((null val) [])
+                             (t val))))
+        (push (cons key-sym val-converted) alist))
+      (setq plist (cddr plist)))
+    (nreverse alist)))
+
+(defun emacs-mcp-api--convert-entries (entries)
+  "Convert list of plist ENTRIES to vector of alists for JSON."
+  (apply #'vector (mapcar #'emacs-mcp-api--plist-to-alist entries)))
+
 (defun emacs-mcp-api-memory-query (type &optional tags limit)
   "Query project memory by TYPE with optional TAGS filter.
 TYPE is a string: \"note\", \"snippet\", \"convention\", \"decision\", \"conversation\".
 TAGS is a list of strings.
-LIMIT is max results (default 20)."
-  (emacs-mcp-memory-query (intern type) tags nil (or limit 20)))
+LIMIT is max results (default 20).
+Returns a vector of alists suitable for JSON encoding."
+  (let ((results (emacs-mcp-memory-query (intern type) tags nil (or limit 20))))
+    (emacs-mcp-api--convert-entries results)))
 
 (defun emacs-mcp-api-memory-add (type content &optional tags)
   "Add entry to project memory.
 TYPE is a string: \"note\", \"snippet\", \"convention\", \"decision\".
 CONTENT is the entry content (string or plist).
 TAGS is optional list of strings.
-Returns the created entry."
-  (emacs-mcp-memory-add (intern type) content tags))
+Returns the created entry as alist suitable for JSON encoding."
+  (let ((entry (emacs-mcp-memory-add (intern type) content tags)))
+    (emacs-mcp-api--plist-to-alist entry)))
 
 (defun emacs-mcp-api-memory-get (id)
   "Get memory entry by ID."
