@@ -3,7 +3,14 @@
    
    The 'marriage' between:
    - clojure-mcp (dev-tools₁): file editing, code analysis, REPL eval
-   - emacs-mcp (emacs-bridge₂): visual feedback, navigation, buffer management"
+   - emacs-mcp (emacs-bridge₂): visual feedback, navigation, buffer management
+   
+   With emacs-mcp.el loaded in Emacs, Claude can now access:
+   - Memory: notes, snippets, conventions, decisions
+   - Context: buffer, region, project, git
+   - Workflows: user-defined automations
+   
+   See: elisp/emacs-mcp-api.el for the full API"
   (:require [emacs-mcp.emacsclient :as ec]
             [clojure.string :as str]))
 
@@ -124,6 +131,85 @@
                   (pulse-momentary-highlight-region (region-beginning) (region-end)))))"
            (pr-str file-path)
            (pr-str fn-name))))
+
+;; ============================================================================
+;; NEW: emacs-mcp.el API Integration
+;; ============================================================================
+;; These functions use the new emacs-mcp.el package loaded in Emacs
+;; Requires: (require 'emacs-mcp) and (emacs-mcp-mode 1) in Emacs
+
+(defn get-full-context!
+  "Get complete context from Emacs including memory.
+   Returns buffer, region, project, git, and stored memory."
+  []
+  (ec/eval-elisp! "(emacs-mcp-api-get-context)"))
+
+(defn add-note!
+  "Add a note to project memory."
+  [content & {:keys [tags] :or {tags []}}]
+  (ec/eval-elisp!
+   (format "(emacs-mcp-api-memory-add \"note\" %s '%s)"
+           (pr-str content)
+           (pr-str tags))))
+
+(defn add-convention!
+  "Record a project convention."
+  [description & {:keys [example]}]
+  (ec/eval-elisp!
+   (format "(emacs-mcp-api-memory-add \"convention\" '(:description %s :example %s))"
+           (pr-str description)
+           (pr-str example))))
+
+(defn query-memory!
+  "Query project memory by type.
+   Type is one of: note, snippet, convention, decision, conversation"
+  [type & {:keys [limit] :or {limit 20}}]
+  (ec/eval-elisp!
+   (format "(emacs-mcp-api-memory-query %s nil %d)"
+           (pr-str type)
+           limit)))
+
+(defn log-conversation!
+  "Log conversation for context persistence."
+  [role content]
+  (ec/eval-elisp!
+   (format "(emacs-mcp-api-conversation-log %s %s)"
+           (pr-str role)
+           (pr-str content))))
+
+(defn run-workflow!
+  "Run a user-defined workflow."
+  [workflow-name & {:keys [args]}]
+  (if args
+    (ec/eval-elisp!
+     (format "(emacs-mcp-api-run-workflow %s '%s)"
+             (pr-str workflow-name)
+             (pr-str args)))
+    (ec/eval-elisp!
+     (format "(emacs-mcp-api-run-workflow %s)"
+             (pr-str workflow-name)))))
+
+(defn notify!
+  "Show notification to user."
+  [message & {:keys [type] :or {type "info"}}]
+  (ec/eval-elisp!
+   (format "(emacs-mcp-api-notify %s %s)"
+           (pr-str message)
+           (pr-str type))))
+
+(defn prompt-user!
+  "Prompt user for input."
+  [prompt & {:keys [default]}]
+  (ec/eval-elisp!
+   (format "(emacs-mcp-api-prompt %s %s)"
+           (pr-str prompt)
+           (if default (pr-str default) "nil"))))
+
+(defn confirm-user!
+  "Ask user for yes/no confirmation."
+  [prompt]
+  (ec/eval-elisp!
+   (format "(emacs-mcp-api-confirm %s)" (pr-str prompt))))
 
 ;; ============================================================================
 ;; 6. TEST INTEGRATION: Run tests, show results

@@ -98,7 +98,74 @@ clojure -X:mcp
                                    ┌─────────────┐
                                    │   Emacs     │
                                    │  (daemon)   │
+                                   │             │
+                                   │ emacs-mcp.el│ ← NEW!
                                    └─────────────┘
+```
+
+## emacs-mcp.el - Emacs Package
+
+The `elisp/` directory contains an Emacs package that enables **bidirectional** collaboration:
+
+- **Memory**: Persistent notes, snippets, conventions, decisions per-project
+- **Context**: Rich information about buffer, region, project, git
+- **Workflows**: User-defined multi-step automations
+- **Triggers**: Hooks and keybindings for automation
+
+### Installation
+
+```elisp
+;; Add to load-path
+(add-to-list 'load-path "/path/to/emacs-mcp/elisp")
+
+;; Load and enable
+(require 'emacs-mcp)
+(emacs-mcp-mode 1)
+```
+
+### Keybindings (C-c m prefix)
+
+| Key       | Command                    |
+|-----------|----------------------------|
+| `C-c m m` | Open transient menu        |
+| `C-c m n` | Add note to memory         |
+| `C-c m s` | Save region as snippet     |
+| `C-c m c` | Add project convention     |
+| `C-c m d` | Record architecture decision|
+| `C-c m l` | Browse project memory      |
+| `C-c m w` | Run workflow               |
+| `C-c m h` | Show conversation history  |
+| `C-c m x` | Show current context       |
+
+### API for Claude
+
+Claude can use these functions via `eval_elisp`:
+
+```clojure
+;; Get full context including memory
+(ec/eval-elisp "(emacs-mcp-api-get-context)")
+
+;; Add a note
+(ec/eval-elisp "(emacs-mcp-api-memory-add \"note\" \"Remember this\")")
+
+;; Query conventions
+(ec/eval-elisp "(emacs-mcp-api-memory-query \"convention\")")
+
+;; Run user workflow
+(ec/eval-elisp "(emacs-mcp-api-run-workflow \"test-and-commit\")")
+```
+
+### Package Structure
+
+```
+elisp/
+├── emacs-mcp.el           # Main entry, minor mode
+├── emacs-mcp-memory.el    # Persistent JSON storage
+├── emacs-mcp-context.el   # Context gathering
+├── emacs-mcp-triggers.el  # Keybindings, hooks
+├── emacs-mcp-transient.el # Transient menus
+├── emacs-mcp-workflows.el # Workflow system
+└── emacs-mcp-api.el       # Stable API for Claude
 ```
 
 ## Meta: MCP Servers Editing MCP Servers
