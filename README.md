@@ -33,7 +33,7 @@ MCP (Model Context Protocol) server that allows Claude to interact with a runnin
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/yourusername/emacs-mcp.git
+git clone https://github.com/BuddhiLW/emacs-mcp.git
 cd emacs-mcp
 ```
 
