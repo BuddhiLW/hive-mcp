@@ -9,12 +9,12 @@
         {:git/url "https://github.com/unravel-team/mcp-clojure-sdk.git"
          :git/sha "039cf220ac6bb3858f71e823016035e257a5380d"}
 
-        ;; nREPL client support  
+        ;; nREPL client support
         nrepl/bencode {:mvn/version "1.2.0"}
 
-        ;; Logging
+        ;; Logging - Timbre with SLF4J bridge
         com.taoensso/timbre {:mvn/version "6.8.0"}
-        org.slf4j/slf4j-nop {:mvn/version "2.0.16"}}
+        com.fzakaria/slf4j-timbre {:mvn/version "0.4.1"}}
 
  :aliases
  {:mcp
@@ -23,12 +23,18 @@
 
   :dev
   {:extra-paths ["dev" "test"]
-   :extra-deps {nrepl/nrepl {:mvn/version "1.3.1"}}}
+   :extra-deps {nrepl/nrepl {:mvn/version "1.3.1"}
+                cider/cider-nrepl {:mvn/version "0.58.0"}
+                refactor-nrepl/refactor-nrepl {:mvn/version "3.11.0"}}}
 
   :nrepl
   {:extra-paths ["dev" "test"]
-   :extra-deps {nrepl/nrepl {:mvn/version "1.3.1"}}
-   :main-opts ["-m" "nrepl.cmdline" "--port" "7910"]}
+   :extra-deps {nrepl/nrepl {:mvn/version "1.3.1"}
+                cider/cider-nrepl {:mvn/version "0.58.0"}
+                refactor-nrepl/refactor-nrepl {:mvn/version "3.11.0"}}
+   :main-opts ["-m" "nrepl.cmdline"
+               "--port" "7910"
+               "--middleware" "[cider.nrepl/cider-middleware,refactor-nrepl.middleware/wrap-refactor]"]}
 
   :test
   {:extra-paths ["test"]
