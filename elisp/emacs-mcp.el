@@ -66,6 +66,19 @@
   :type 'boolean
   :group 'emacs-mcp)
 
+(defcustom emacs-mcp-auto-enable nil
+  "Automatically enable `emacs-mcp-mode' when Emacs starts.
+Set this to t in your config to have emacs-mcp ready on startup."
+  :type 'boolean
+  :group 'emacs-mcp)
+
+(defcustom emacs-mcp-setup-addons t
+  "Set up addon system during initialization.
+When non-nil, loads addons from `emacs-mcp-addon-always-load'
+and enables auto-loading for feature-triggered addons."
+  :type 'boolean
+  :group 'emacs-mcp)
+
 ;;; Require submodules
 
 (require 'emacs-mcp-memory)
@@ -73,6 +86,10 @@
 (require 'emacs-mcp-triggers)
 (require 'emacs-mcp-workflows)
 (require 'emacs-mcp-api)
+(require 'emacs-mcp-addons)
+
+;; Forward declaration for byte-compiler
+(declare-function emacs-mcp-addons-setup "emacs-mcp-addons")
 
 ;; Optional: transient menus
 (when (require 'transient nil t)
@@ -103,6 +120,10 @@
 
     ;; Set up hooks
     (emacs-mcp-setup-hooks)
+
+    ;; Set up addons (always-load + auto-load triggers)
+    (when emacs-mcp-setup-addons
+      (emacs-mcp-addons-setup))
 
     (setq emacs-mcp--initialized t)
     (message "emacs-mcp initialized (C-c m for menu)")))
@@ -156,13 +177,13 @@ keybindings for AI-assisted development.
 ;;; Auto-load on init (optional)
 
 (defun emacs-mcp--maybe-auto-enable ()
-  "Maybe enable emacs-mcp-mode automatically."
-  (when (and (boundp 'emacs-mcp-auto-enable)
-             emacs-mcp-auto-enable)
+  "Maybe enable `emacs-mcp-mode' automatically.
+Controlled by `emacs-mcp-auto-enable'."
+  (when emacs-mcp-auto-enable
     (emacs-mcp-mode 1)))
 
-;; Uncomment to auto-enable:
-;; (add-hook 'after-init-hook #'emacs-mcp--maybe-auto-enable)
+;; Set up auto-enable hook (runs if emacs-mcp-auto-enable is t)
+(add-hook 'after-init-hook #'emacs-mcp--maybe-auto-enable)
 
 (provide 'emacs-mcp)
 ;;; emacs-mcp.el ends here

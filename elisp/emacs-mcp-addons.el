@@ -44,12 +44,21 @@
   :group 'emacs-mcp-addons)
 
 (defcustom emacs-mcp-addon-auto-load-list
-  '((claude-code-mcp . claude-code)
-    (cider-mcp . cider)
-    (org-ai-mcp . org-ai))
+  '((cider . cider)
+    (claude-code . claude-code)
+    (org-ai . org-ai)
+    (org-kanban . org-kanban))
   "Alist of (ADDON . TRIGGER-FEATURE).
-When TRIGGER-FEATURE is loaded, ADDON will be auto-loaded."
+When TRIGGER-FEATURE is loaded, ADDON will be auto-loaded.
+Addon names correspond to files: emacs-mcp-ADDON.el"
   :type '(alist :key-type symbol :value-type symbol)
+  :group 'emacs-mcp-addons)
+
+(defcustom emacs-mcp-addon-always-load nil
+  "List of addons to always load when `emacs-mcp-mode' is enabled.
+These load regardless of whether the trigger feature is present.
+Example: \\='(cider org-kanban package-lint)"
+  :type '(repeat symbol)
   :group 'emacs-mcp-addons)
 
 ;;;; Registry
@@ -144,6 +153,24 @@ Uses `emacs-mcp-addon-auto-load-list' to determine mappings."
         ;; Otherwise, set up deferred loading
         (with-eval-after-load trigger
           (emacs-mcp-addon-load addon))))))
+
+;;;###autoload
+(defun emacs-mcp-addons-load-always ()
+  "Load all addons in `emacs-mcp-addon-always-load'.
+Called during `emacs-mcp-initialize' to load user's preferred addons."
+  (interactive)
+  (dolist (addon emacs-mcp-addon-always-load)
+    (emacs-mcp-addon-load addon)))
+
+;;;###autoload
+(defun emacs-mcp-addons-setup ()
+  "Set up addon system: load always-load addons and enable auto-loading.
+This is the main entry point, called from `emacs-mcp-initialize'."
+  (interactive)
+  ;; First load always-load addons
+  (emacs-mcp-addons-load-always)
+  ;; Then set up deferred auto-loading for feature-triggered addons
+  (emacs-mcp-addons-auto-load))
 
 ;;;; Registration (for addon authors)
 
