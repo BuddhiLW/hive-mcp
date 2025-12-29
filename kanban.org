@@ -242,60 +242,67 @@ CLOSED: [2025-12-29]
 - restart-slave: Recover from failures
 
 ** Phase 2: MCP Integration
-*** TODO Create swarm.clj MCP tool namespace
+*** DONE Create swarm.clj MCP tool namespace
 :PROPERTIES:
 :EFFORT: M
 :PRIORITY: medium
 :DEPENDS: phase-1
 :END:
+CLOSED: [2025-12-29]
 - Define tool schemas
 - Wire to emacs-mcp elisp functions
 
-*** TODO Implement swarm_spawn MCP tool
+*** DONE Implement swarm_spawn MCP tool
 :PROPERTIES:
 :EFFORT: S
 :PRIORITY: medium
 :END:
+CLOSED: [2025-12-29]
 Parameters: name, cwd, initial_context
 Returns: slave_id, status
 
-*** TODO Implement swarm_dispatch MCP tool
+*** DONE Implement swarm_dispatch MCP tool
 :PROPERTIES:
 :EFFORT: S
 :PRIORITY: medium
 :END:
+CLOSED: [2025-12-29]
 Parameters: slave_id, prompt, timeout_ms
 Returns: task_id, dispatched_at
 
-*** TODO Implement swarm_status MCP tool
+*** DONE Implement swarm_status MCP tool
 :PROPERTIES:
 :EFFORT: S
 :PRIORITY: medium
 :END:
+CLOSED: [2025-12-29]
 Parameters: slave_id (optional, all if nil)
 Returns: [{slave_id, status, current_task, uptime}]
 
-*** TODO Implement swarm_collect MCP tool
+*** DONE Implement swarm_collect MCP tool
 :PROPERTIES:
 :EFFORT: M
 :PRIORITY: medium
 :END:
+CLOSED: [2025-12-29]
 Parameters: slave_id or task_id, timeout_ms
 Returns: response_text, completed_at, tokens_used
 
-*** TODO Implement swarm_broadcast MCP tool
+*** DONE Implement swarm_broadcast MCP tool
 :PROPERTIES:
 :EFFORT: S
 :PRIORITY: medium
 :END:
+CLOSED: [2025-12-29]
 Parameters: prompt, slave_filter (optional)
 Returns: [{slave_id, task_id}]
 
-*** TODO Implement swarm_kill MCP tool
+*** DONE Implement swarm_kill MCP tool
 :PROPERTIES:
 :EFFORT: S
 :PRIORITY: medium
 :END:
+CLOSED: [2025-12-29]
 Parameters: slave_id or "all"
 Returns: killed_count
 

@@ -442,6 +442,108 @@
     {:content [{:type "text"
                 :text "emacs-mcp-org-kanban addon not loaded."}]}))
 
+;; =============================================================================
+;; Swarm Orchestration Tools (requires emacs-mcp-swarm addon)
+;; =============================================================================
+
+(defn swarm-addon-available?
+  "Check if emacs-mcp-swarm addon is loaded."
+  []
+  (let [{:keys [success result]} (ec/eval-elisp "(featurep 'emacs-mcp-swarm)")]
+    (and success (= result "t"))))
+
+(defn handle-swarm-spawn
+  "Spawn a new Claude slave instance."
+  [{:keys [name presets cwd role]}]
+  (if (swarm-addon-available?)
+    (let [presets-str (when (seq presets)
+                        (format "'(%s)" (clojure.string/join " " (map #(format "\"%s\"" %) presets))))
+          elisp (format "(json-encode (emacs-mcp-swarm-api-spawn \"%s\" %s %s))"
+                        (v/escape-elisp-string (or name "slave"))
+                        (or presets-str "nil")
+                        (if cwd (format "\"%s\"" (v/escape-elisp-string cwd)) "nil"))
+          result (ec/eval-elisp elisp)]
+      {:content [{:type "text"
+                  :text (str result)}]})
+    {:content [{:type "text"
+                :text "emacs-mcp-swarm addon not loaded. Run (require 'emacs-mcp-swarm)"}]}))
+
+(defn handle-swarm-dispatch
+  "Dispatch a prompt to a slave."
+  [{:keys [slave_id prompt timeout_ms]}]
+  (if (swarm-addon-available?)
+    (let [elisp (format "(json-encode (emacs-mcp-swarm-api-dispatch \"%s\" \"%s\" %s))"
+                        (v/escape-elisp-string slave_id)
+                        (v/escape-elisp-string prompt)
+                        (or timeout_ms "nil"))
+          result (ec/eval-elisp elisp)]
+      {:content [{:type "text"
+                  :text (str result)}]})
+    {:content [{:type "text"
+                :text "emacs-mcp-swarm addon not loaded."}]}))
+
+(defn handle-swarm-status
+  "Get swarm status including all slaves and their states."
+  [{:keys [slave_id]}]
+  (if (swarm-addon-available?)
+    (let [elisp (if slave_id
+                  (format "(json-encode (emacs-mcp-swarm-status \"%s\"))" slave_id)
+                  "(json-encode (emacs-mcp-swarm-api-status))")
+          result (ec/eval-elisp elisp)]
+      {:content [{:type "text"
+                  :text (str result)}]})
+    {:content [{:type "text"
+                :text "emacs-mcp-swarm addon not loaded."}]}))
+
+(defn handle-swarm-collect
+  "Collect response from a task."
+  [{:keys [task_id timeout_ms]}]
+  (if (swarm-addon-available?)
+    (let [elisp (format "(json-encode (emacs-mcp-swarm-api-collect \"%s\" %s))"
+                        (v/escape-elisp-string task_id)
+                        (or timeout_ms "nil"))
+          result (ec/eval-elisp elisp)]
+      {:content [{:type "text"
+                  :text (str result)}]})
+    {:content [{:type "text"
+                :text "emacs-mcp-swarm addon not loaded."}]}))
+
+(defn handle-swarm-list-presets
+  "List available swarm presets."
+  [_]
+  (if (swarm-addon-available?)
+    (let [result (ec/eval-elisp "(json-encode (emacs-mcp-swarm-api-list-presets))")]
+      {:content [{:type "text"
+                  :text (str result)}]})
+    {:content [{:type "text"
+                :text "emacs-mcp-swarm addon not loaded."}]}))
+
+(defn handle-swarm-kill
+  "Kill a slave or all slaves."
+  [{:keys [slave_id]}]
+  (if (swarm-addon-available?)
+    (let [elisp (if (= slave_id "all")
+                  "(json-encode (emacs-mcp-swarm-api-kill-all))"
+                  (format "(json-encode (emacs-mcp-swarm-api-kill \"%s\"))"
+                          (v/escape-elisp-string slave_id)))
+          result (ec/eval-elisp elisp)]
+      {:content [{:type "text"
+                  :text (str result)}]})
+    {:content [{:type "text"
+                :text "emacs-mcp-swarm addon not loaded."}]}))
+
+(defn handle-swarm-broadcast
+  "Broadcast a prompt to all slaves."
+  [{:keys [prompt]}]
+  (if (swarm-addon-available?)
+    (let [elisp (format "(json-encode (emacs-mcp-swarm-broadcast \"%s\"))"
+                        (v/escape-elisp-string prompt))
+          result (ec/eval-elisp elisp)]
+      {:content [{:type "text"
+                  :text (str result)}]})
+    {:content [{:type "text"
+                :text "emacs-mcp-swarm addon not loaded."}]}))
+
 ;; Tool definitions
 
 (def tools
@@ -696,7 +798,74 @@
    {:name "mcp_kanban_sync"
     :description "Sync tasks between vibe-kanban cloud and standalone org-file backends."
     :inputSchema {:type "object" :properties {}}
-    :handler handle-mcp-kanban-sync}])
+    :handler handle-mcp-kanban-sync}
+
+   ;; Swarm Orchestration Tools (requires emacs-mcp-swarm addon)
+   {:name "swarm_spawn"
+    :description "Spawn a new Claude slave instance for parallel task execution. Slaves run in vterm buffers with optional presets (system prompts)."
+    :inputSchema {:type "object"
+                  :properties {"name" {:type "string"
+                                       :description "Name for the slave (used in buffer name)"}
+                               "presets" {:type "array"
+                                          :items {:type "string"}
+                                          :description "List of preset names to apply (e.g., [\"tdd\", \"clarity\"])"}
+                               "cwd" {:type "string"
+                                      :description "Working directory for the slave (optional)"}
+                               "role" {:type "string"
+                                       :description "Predefined role (tester, reviewer, documenter, etc.)"}}
+                  :required ["name"]}
+    :handler handle-swarm-spawn}
+
+   {:name "swarm_dispatch"
+    :description "Send a prompt to a slave Claude instance. Returns a task_id for tracking."
+    :inputSchema {:type "object"
+                  :properties {"slave_id" {:type "string"
+                                           :description "ID of the slave to send prompt to"}
+                               "prompt" {:type "string"
+                                         :description "The prompt/task to send to the slave"}
+                               "timeout_ms" {:type "integer"
+                                             :description "Optional timeout in milliseconds"}}
+                  :required ["slave_id" "prompt"]}
+    :handler handle-swarm-dispatch}
+
+   {:name "swarm_status"
+    :description "Get swarm status including all active slaves, their states, and task counts."
+    :inputSchema {:type "object"
+                  :properties {"slave_id" {:type "string"
+                                           :description "Optional: get status of specific slave only"}}
+                  :required []}
+    :handler handle-swarm-status}
+
+   {:name "swarm_collect"
+    :description "Collect the response from a dispatched task. Waits for completion up to timeout."
+    :inputSchema {:type "object"
+                  :properties {"task_id" {:type "string"
+                                          :description "ID of the task to collect results from"}
+                               "timeout_ms" {:type "integer"
+                                             :description "How long to wait for completion (default: 5000)"}}
+                  :required ["task_id"]}
+    :handler handle-swarm-collect}
+
+   {:name "swarm_list_presets"
+    :description "List all available swarm presets (system prompts for slave specialization)."
+    :inputSchema {:type "object" :properties {}}
+    :handler handle-swarm-list-presets}
+
+   {:name "swarm_kill"
+    :description "Kill a slave instance or all slaves."
+    :inputSchema {:type "object"
+                  :properties {"slave_id" {:type "string"
+                                           :description "ID of slave to kill, or \"all\" to kill all slaves"}}
+                  :required ["slave_id"]}
+    :handler handle-swarm-kill}
+
+   {:name "swarm_broadcast"
+    :description "Send the same prompt to all active slaves simultaneously."
+    :inputSchema {:type "object"
+                  :properties {"prompt" {:type "string"
+                                         :description "The prompt to broadcast to all slaves"}}
+                  :required ["prompt"]}
+    :handler handle-swarm-broadcast}])
 
 (defn get-tool-by-name
   "Find a tool definition by name."
