@@ -17,3 +17,6 @@ target/
 
 # Logs
 *.log
+
+# Compiled Elisp
+*.elc
