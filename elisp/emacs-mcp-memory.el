@@ -73,7 +73,7 @@ Uses SHA1 hash of absolute path for filesystem-safe naming."
 
 (defun emacs-mcp-memory--get-project-root ()
   "Get current project root, or nil if not in a project."
-  (when-let ((proj (project-current)))
+  (when-let* ((proj (project-current)))
     (project-root proj)))
 
 ;;; File Operations
@@ -134,8 +134,8 @@ Lists are converted to vectors for JSON array serialization."
     (nreverse alist)))
 
 (defun emacs-mcp-memory--convert-for-json (data)
-  "Convert DATA (list of plists) to format suitable for json-serialize.
-Returns a vector of alists (json-serialize requires vectors for arrays)."
+  "Convert DATA (list of plists) to format suitable for `json-serialize'.
+Returns a vector of alists (`json-serialize' requires vectors for arrays)."
   (apply #'vector (mapcar #'emacs-mcp-memory--plist-to-alist data)))
 
 (defun emacs-mcp-memory--write-json-file (path data)
@@ -211,6 +211,7 @@ PROJECT-ID defaults to current project or global."
 
 (defun emacs-mcp-memory-query (type &optional tags project-id limit)
   "Query memories by TYPE and optional TAGS.
+PROJECT-ID specifies the project (defaults to current).
 Returns list of matching entries, most recent first.
 LIMIT caps the number of results."
   (let* ((pid (or project-id (emacs-mcp-memory--project-id)))
@@ -231,7 +232,8 @@ LIMIT caps the number of results."
       results)))
 
 (defun emacs-mcp-memory-update (id updates &optional project-id)
-  "Update memory entry ID with UPDATES plist."
+  "Update memory entry ID with UPDATES plist.
+PROJECT-ID specifies the project (defaults to current)."
   (let* ((pid (or project-id (emacs-mcp-memory--project-id)))
          (found nil))
     (dolist (type '("note" "snippet" "convention" "decision" "conversation"))
@@ -255,7 +257,8 @@ LIMIT caps the number of results."
     found))
 
 (defun emacs-mcp-memory-delete (id &optional project-id)
-  "Delete memory entry by ID."
+  "Delete memory entry by ID.
+PROJECT-ID specifies the project (defaults to current)."
   (let* ((pid (or project-id (emacs-mcp-memory--project-id)))
          (deleted nil))
     (dolist (type '("note" "snippet" "convention" "decision" "conversation"))
@@ -272,11 +275,14 @@ LIMIT caps the number of results."
 ;;; Convenience Functions
 
 (defun emacs-mcp-memory-add-note (content &optional tags)
-  "Add a note to current project memory."
+  "Add a note with CONTENT to current project memory.
+TAGS is an optional list of tag strings."
   (emacs-mcp-memory-add 'note content tags))
 
 (defun emacs-mcp-memory-add-snippet (name code &optional language tags)
-  "Add a code snippet with NAME."
+  "Add a code snippet with NAME and CODE.
+LANGUAGE specifies the programming language.
+TAGS is an optional list of tag strings."
   (emacs-mcp-memory-add 'snippet
                         (list :name name
                               :code code
@@ -284,20 +290,23 @@ LIMIT caps the number of results."
                         tags))
 
 (defun emacs-mcp-memory-add-convention (description &optional example)
-  "Add a project convention."
+  "Add a project convention with DESCRIPTION.
+EXAMPLE provides an optional code example."
   (emacs-mcp-memory-add 'convention
                         (list :description description
                               :example example)))
 
 (defun emacs-mcp-memory-add-decision (title rationale &optional alternatives)
-  "Add an architecture decision record."
+  "Add an architecture decision record with TITLE and RATIONALE.
+ALTERNATIVES lists other options that were considered."
   (emacs-mcp-memory-add 'decision
                         (list :title title
                               :rationale rationale
                               :alternatives alternatives)))
 
 (defun emacs-mcp-memory-log-conversation (role content)
-  "Log a conversation entry.  ROLE is user or assistant."
+  "Log a conversation entry with ROLE and CONTENT.
+ROLE should be `user' or `assistant'."
   (emacs-mcp-memory-add 'conversation
                         (list :role (if (symbolp role) (symbol-name role) role)
                               :content content)))
@@ -331,7 +340,7 @@ Includes notes, conventions, recent decisions, relevant snippets."
   (let ((pid (or project-id (emacs-mcp-memory--project-id))))
     (dolist (type '("note" "snippet" "convention" "decision" "conversation"))
       (let ((key (emacs-mcp-memory--cache-key pid type)))
-        (when-let ((data (gethash key emacs-mcp-memory--cache)))
+        (when-let* ((data (gethash key emacs-mcp-memory--cache)))
           (emacs-mcp-memory--write-json-file
            (emacs-mcp-memory--file-path pid type)
            data))))))

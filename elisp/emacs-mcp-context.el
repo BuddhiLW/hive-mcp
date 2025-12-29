@@ -116,12 +116,12 @@ Called with single argument: the context plist being built.")
 
 (defun emacs-mcp-context-project-root ()
   "Return project root directory or nil."
-  (when-let ((proj (project-current)))
+  (when-let* ((proj (project-current)))
     (project-root proj)))
 
 (defun emacs-mcp-context-project ()
   "Return project context as plist."
-  (when-let ((root (emacs-mcp-context-project-root)))
+  (when-let* ((root (emacs-mcp-context-project-root)))
     (list
      :root root
      :name (file-name-nondirectory (directory-file-name root))
@@ -147,7 +147,7 @@ Called with single argument: the context plist being built.")
 
 (defun emacs-mcp-context-git ()
   "Return git context as plist, nil if not in git repo."
-  (when-let ((root (emacs-mcp-context-project-root)))
+  (when-let* ((root (emacs-mcp-context-project-root)))
     (let ((default-directory root))
       (when (file-directory-p (expand-file-name ".git" root))
         (list
@@ -241,7 +241,7 @@ Includes buffer, region, defun, project, git, and custom providers."
           :language (emacs-mcp-context-language))))
     ;; Add custom providers
     (dolist (provider emacs-mcp-context-providers)
-      (when-let ((data (funcall (cdr provider))))
+      (when-let* ((data (funcall (cdr provider))))
         (setq context (plist-put context (car provider) data))))
     ;; Run hooks
     (run-hook-with-args 'emacs-mcp-context-gather-hook context)

@@ -97,7 +97,7 @@ Each entry is TYPE -> function taking (step env) and returning env.")
 
 (defun emacs-mcp-workflow-run (name &optional args)
   "Execute workflow NAME with optional ARGS plist."
-  (if-let ((spec (gethash name emacs-mcp-workflow-registry)))
+  (if-let* ((spec (gethash name emacs-mcp-workflow-registry)))
       (progn
         (run-hook-with-args 'emacs-mcp-workflow-before-hook name args)
         (let ((result (emacs-mcp-workflow--execute spec args)))
@@ -159,7 +159,7 @@ Each entry is TYPE -> function taking (step env) and returning env.")
   "Run a single workflow STEP with ENV.  Return updated ENV."
   (let ((type (plist-get step :type)))
     ;; Check for custom handler first
-    (if-let ((handler (gethash type emacs-mcp-workflow-step-handlers)))
+    (if-let* ((handler (gethash type emacs-mcp-workflow-step-handlers)))
         (funcall handler step env)
       ;; Built-in step types
       (pcase type
@@ -183,48 +183,49 @@ Each entry is TYPE -> function taking (step env) and returning env.")
 ;;; Built-in Step Implementations
 
 (defun emacs-mcp-workflow--step-elisp (step env)
-  "Execute elisp code step."
+  "Execute elisp code from STEP with ENV bindings."
   (let* ((code (plist-get step :code))
          ;; Make env available to code
          (result (eval (read code) t)))
-    (if-let ((var (plist-get step :var)))
+    (if-let* ((var (plist-get step :var)))
         (plist-put env var result)
       env)))
 
 (defun emacs-mcp-workflow--step-shell (step env)
-  "Execute shell command step."
+  "Execute shell command from STEP with ENV variable substitution."
   (let* ((cmd-template (plist-get step :command))
          ;; Simple variable substitution ${var}
          (cmd (emacs-mcp-workflow--substitute-vars cmd-template env))
          (result (string-trim (shell-command-to-string cmd))))
-    (if-let ((var (plist-get step :var)))
+    (if-let* ((var (plist-get step :var)))
         (plist-put env var result)
       env)))
 
 (defun emacs-mcp-workflow--step-prompt (step env)
-  "Prompt user for input."
+  "Prompt user for input using message from STEP, store result in ENV."
   (let* ((message (plist-get step :message))
          (default (plist-get step :default))
          (result (read-string (concat message ": ") default)))
     (plist-put env (plist-get step :var) result)))
 
 (defun emacs-mcp-workflow--step-confirm (step env)
-  "Ask user for confirmation."
+  "Ask user for confirmation using message from STEP.
+Returns ENV if confirmed, otherwise signals error."
   (unless (yes-or-no-p (plist-get step :message))
     (error "User cancelled"))
   env)
 
 (defun emacs-mcp-workflow--step-condition (step env)
-  "Conditional step execution."
+  "Execute conditional branch from STEP based on test result in ENV."
   (let ((test-fn (plist-get step :test)))
     (if (funcall test-fn env)
-        (when-let ((then-step (plist-get step :then)))
+        (when-let* ((then-step (plist-get step :then)))
           (emacs-mcp-workflow--run-step then-step env))
-      (when-let ((else-step (plist-get step :else)))
+      (when-let* ((else-step (plist-get step :else)))
         (emacs-mcp-workflow--run-step else-step env)))))
 
 (defun emacs-mcp-workflow--step-memory-add (step env)
-  "Add entry to memory."
+  "Add memory entry from STEP, substituting variables from ENV."
   (let ((type (plist-get step :mem-type))
         (content (emacs-mcp-workflow--substitute-vars
                   (plist-get step :content) env))
@@ -233,7 +234,7 @@ Each entry is TYPE -> function taking (step env) and returning env.")
   env)
 
 (defun emacs-mcp-workflow--step-notify (step env)
-  "Show notification to user."
+  "Show notification from STEP message, substituting variables from ENV."
   (let ((message (emacs-mcp-workflow--substitute-vars
                   (plist-get step :message) env))
         (level (or (plist-get step :level) 'info)))

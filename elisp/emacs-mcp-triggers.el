@@ -178,7 +178,7 @@ Events: after-save, compilation-finish, diagnostics-error, custom."
       (dolist (conv (plist-get context :conventions))
         (let ((c (plist-get conv :content)))
           (insert (format "- %s\n" (plist-get c :description)))
-          (when-let ((ex (plist-get c :example)))
+          (when-let* ((ex (plist-get c :example)))
             (insert (format "  Example: %s\n" ex)))))
       (insert "\n")
 

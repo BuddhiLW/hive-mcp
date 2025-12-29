@@ -173,7 +173,7 @@ PROPS is a plist that may contain:
           (insert (format "  %s %s\n"
                           (if loaded "[loaded]" "[      ]")
                           addon))
-          (when-let ((desc (plist-get props :description)))
+          (when-let* ((desc (plist-get props :description)))
             (insert (format "           %s\n" desc)))))
       (insert "\n")
       (insert "Addon directories:\n")

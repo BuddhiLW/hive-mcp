@@ -200,7 +200,7 @@ SPEC is plist with :event, :condition, :action."
 ;;; ============================================================================
 
 (defun emacs-mcp-api-notify (message &optional type)
-  "Show notification to user.
+  "Show notification MESSAGE to user.
 TYPE is \"info\", \"warning\", or \"error\"."
   (pcase type
     ("error" (user-error "%s" message))
@@ -209,12 +209,13 @@ TYPE is \"info\", \"warning\", or \"error\"."
   t)
 
 (defun emacs-mcp-api-prompt (prompt &optional default)
-  "Prompt user for input.
+  "Show PROMPT and ask user for input.
+DEFAULT provides an optional initial value.
 Returns the user's response string."
   (read-string (concat prompt ": ") default))
 
 (defun emacs-mcp-api-confirm (prompt)
-  "Ask user for yes/no confirmation.
+  "Show PROMPT and ask user for yes/no confirmation.
 Returns t or nil."
   (yes-or-no-p prompt))
 
@@ -233,7 +234,8 @@ Returns the selected option."
   "Open file at PATH and optionally go to LINE."
   (find-file path)
   (when line
-    (goto-line line))
+    (goto-char (point-min))
+    (forward-line (1- line)))
   t)
 
 (defun emacs-mcp-api-save-buffer ()
@@ -261,7 +263,8 @@ Returns the selected option."
 
 (defun emacs-mcp-api-goto-line (line)
   "Go to LINE number."
-  (goto-line line)
+  (goto-char (point-min))
+  (forward-line (1- line))
   (list :line (line-number-at-pos) :column (current-column)))
 
 (defun emacs-mcp-api-goto-point (point)
@@ -271,11 +274,13 @@ Returns the selected option."
 
 (defun emacs-mcp-api-search-forward (string &optional bound)
   "Search forward for STRING.
+BOUND limits the search to that buffer position.
 Returns position if found, nil otherwise."
   (search-forward string bound t))
 
 (defun emacs-mcp-api-search-regexp (regexp &optional bound)
   "Search forward for REGEXP.
+BOUND limits the search to that buffer position.
 Returns position if found, nil otherwise."
   (re-search-forward regexp bound t))
 
@@ -286,7 +291,9 @@ Returns position if found, nil otherwise."
 (defun emacs-mcp-api-highlight-line (&optional line)
   "Highlight LINE (or current line) briefly."
   (save-excursion
-    (when line (goto-line line))
+    (when line
+      (goto-char (point-min))
+      (forward-line (1- line)))
     (when (fboundp 'pulse-momentary-highlight-one-line)
       (pulse-momentary-highlight-one-line (point))))
   t)

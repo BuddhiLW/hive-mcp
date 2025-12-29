@@ -138,19 +138,19 @@ keybindings for AI-assisted development.
 
 ;;; Convenience aliases for common operations
 
-(defalias 'mcp-note 'emacs-mcp-add-note-interactive
+(defalias 'emacs-mcp-note 'emacs-mcp-add-note-interactive
   "Add a note to project memory.")
 
-(defalias 'mcp-snippet 'emacs-mcp-add-snippet-interactive
+(defalias 'emacs-mcp-snippet 'emacs-mcp-add-snippet-interactive
   "Save region as a snippet.")
 
-(defalias 'mcp-context 'emacs-mcp-show-context
+(defalias 'emacs-mcp-context 'emacs-mcp-show-context
   "Show current context.")
 
-(defalias 'mcp-memory 'emacs-mcp-show-memory
+(defalias 'emacs-mcp-memory 'emacs-mcp-show-memory
   "Show project memory.")
 
-(defalias 'mcp-workflow 'emacs-mcp-workflow-run-interactive
+(defalias 'emacs-mcp-workflow 'emacs-mcp-workflow-run-interactive
   "Run a workflow.")
 
 ;;; Auto-load on init (optional)

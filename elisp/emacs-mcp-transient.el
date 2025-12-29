@@ -15,6 +15,9 @@
 
 (require 'transient)
 
+;; Forward declarations for byte-compiler
+(declare-function emacs-mcp-list-triggers "emacs-mcp-triggers")
+
 ;;; Extension Point
 
 (defvar emacs-mcp-transient-extra-groups nil
@@ -165,7 +168,7 @@ Each element should be a valid transient group vector.")
             (insert (format "---\n[%s]\n%s\n"
                             (plist-get note :created)
                             (plist-get note :content)))
-            (when-let ((tags (plist-get note :tags)))
+            (when-let* ((tags (plist-get note :tags)))
               (insert (format "Tags: %s\n" (string-join tags ", ")))))
         (insert "(no notes)"))
       (goto-char (point-min)))
