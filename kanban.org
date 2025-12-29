@@ -1,0 +1,234 @@
+#+TITLE: emacs-mcp Kanban
+#+STARTUP: overview
+#+TODO: TODO IN-PROGRESS IN-REVIEW | DONE CANCELLED
+
+* emacs-mcp
+:PROPERTIES:
+:ID: b70720e8-3a52-41ba-a115-964b81369bb5
+:END:
+
+** TODO Implement bidirectional sync between vibe-kanban and org-kanban
+** TODO Create projectile addon for emacs-mcp
+** TODO Create magit addon for emacs-mcp
+
+* Swarm Orchestration (Claude Fleet Control)
+:PROPERTIES:
+:ID: swarm-epic-2025
+:EPIC: swarm
+:DESCRIPTION: Enable Master Claude to spawn and control slave Claude instances for parallel task execution
+:END:
+
+** Phase 1: Core Infrastructure
+*** DONE Design swarm protocol and message format
+CLOSED: [2025-12-29]
+:PROPERTIES:
+:EFFORT: M
+:PRIORITY: high
+:END:
+Define JSON schema for master↔slave communication:
+- Task dispatch format (prompt, context, constraints)
+- Response format (result, status, errors)
+- Heartbeat/status polling
+
+See: [[file:docs/swarm-protocol.md][docs/swarm-protocol.md]]
+
+*** TODO Create emacs-mcp-swarm.el addon skeleton
+:PROPERTIES:
+:EFFORT: S
+:PRIORITY: high
+:DEPENDS: swarm-protocol
+:END:
+- Register with addon system (:init, :shutdown)
+- Define customization variables
+- Create keymap (C-c s prefix)
+
+*** TODO Implement slave session spawning (vterm)
+:PROPERTIES:
+:EFFORT: M
+:PRIORITY: high
+:END:
+- spawn-slave: Create vterm buffer with `claude` process
+- track-slave: Register in emacs-mcp-swarm--sessions alist
+- configure-slave: Set working directory, context
+
+*** TODO Implement prompt dispatch to slave
+:PROPERTIES:
+:EFFORT: M
+:PRIORITY: high
+:END:
+- send-prompt: Use vterm-send-string
+- Handle multi-line prompts (heredoc or temp file)
+- Add task ID tracking
+
+*** TODO Implement response collection
+:PROPERTIES:
+:EFFORT: L
+:PRIORITY: high
+:END:
+- Monitor buffer for completion markers
+- Parse response from buffer content
+- Handle timeouts and errors
+
+*** TODO Implement slave lifecycle management
+:PROPERTIES:
+:EFFORT: M
+:PRIORITY: high
+:END:
+- kill-slave: Terminate specific session
+- kill-all-slaves: Cleanup on shutdown
+- restart-slave: Recover from failures
+
+** Phase 2: MCP Integration
+*** TODO Create swarm.clj MCP tool namespace
+:PROPERTIES:
+:EFFORT: M
+:PRIORITY: medium
+:DEPENDS: phase-1
+:END:
+- Define tool schemas
+- Wire to emacs-mcp elisp functions
+
+*** TODO Implement swarm_spawn MCP tool
+:PROPERTIES:
+:EFFORT: S
+:PRIORITY: medium
+:END:
+Parameters: name, cwd, initial_context
+Returns: slave_id, status
+
+*** TODO Implement swarm_dispatch MCP tool
+:PROPERTIES:
+:EFFORT: S
+:PRIORITY: medium
+:END:
+Parameters: slave_id, prompt, timeout_ms
+Returns: task_id, dispatched_at
+
+*** TODO Implement swarm_status MCP tool
+:PROPERTIES:
+:EFFORT: S
+:PRIORITY: medium
+:END:
+Parameters: slave_id (optional, all if nil)
+Returns: [{slave_id, status, current_task, uptime}]
+
+*** TODO Implement swarm_collect MCP tool
+:PROPERTIES:
+:EFFORT: M
+:PRIORITY: medium
+:END:
+Parameters: slave_id or task_id, timeout_ms
+Returns: response_text, completed_at, tokens_used
+
+*** TODO Implement swarm_broadcast MCP tool
+:PROPERTIES:
+:EFFORT: S
+:PRIORITY: medium
+:END:
+Parameters: prompt, slave_filter (optional)
+Returns: [{slave_id, task_id}]
+
+*** TODO Implement swarm_kill MCP tool
+:PROPERTIES:
+:EFFORT: S
+:PRIORITY: medium
+:END:
+Parameters: slave_id or "all"
+Returns: killed_count
+
+** Phase 3: Smart Orchestration
+*** TODO Implement task queue with priorities
+:PROPERTIES:
+:EFFORT: M
+:PRIORITY: low
+:DEPENDS: phase-2
+:END:
+- FIFO queue per slave
+- Global queue with load balancing
+- Priority levels (critical, high, normal, low)
+
+*** TODO Implement result aggregation
+:PROPERTIES:
+:EFFORT: M
+:PRIORITY: low
+:END:
+- Collect results from multiple slaves
+- Merge/combine strategies
+- Conflict resolution
+
+*** TODO Implement context sharing between slaves
+:PROPERTIES:
+:EFFORT: L
+:PRIORITY: low
+:END:
+- Shared memory via emacs-mcp-memory
+- File-based context passing
+- Git worktree isolation per slave
+
+*** TODO Add recursion safeguards
+:PROPERTIES:
+:EFFORT: S
+:PRIORITY: medium
+:END:
+- Max depth limit (default: 2)
+- Detection of recursive spawn attempts
+- Rate limiting
+
+*** TODO Implement slave specialization
+:PROPERTIES:
+:EFFORT: M
+:PRIORITY: low
+:END:
+- Role-based slaves (tester, reviewer, documenter)
+- Custom system prompts per role
+- Tool restrictions per role
+
+*** TODO Create swarm transient menu
+:PROPERTIES:
+:EFFORT: S
+:PRIORITY: low
+:END:
+- Visual overview of active slaves
+- Quick spawn/kill actions
+- Status dashboard
+
+** Phase 4: Documentation & Testing
+*** TODO Write swarm-development.md guide
+:PROPERTIES:
+:EFFORT: M
+:PRIORITY: medium
+:END:
+- Architecture overview
+- Usage examples
+- Best practices for task decomposition
+
+*** TODO Write swarm-api.md reference
+:PROPERTIES:
+:EFFORT: S
+:PRIORITY: medium
+:END:
+- All MCP tools documented
+- Elisp API documented
+- JSON schemas
+
+*** TODO Create example workflows
+:PROPERTIES:
+:EFFORT: M
+:PRIORITY: low
+:END:
+- Parallel test runner
+- Multi-file refactoring
+- Code review swarm
+
+** DONE Add org-kanban addon with dual backends
+** DONE Implement graceful degradation for eval failures
+** DONE Add telemetry for eval operations
+** DONE Add boundary validation for eval inputs
+** DONE Create EvaluatorFactory with mode selection
+** DONE Implement EmacsCiderEvaluator
+** DONE Implement DirectNreplEvaluator
+** DONE Define ReplEvaluator protocol (DIP)
+** DONE Merge feat/addon-system to staging
+** DONE Test addon loading in Emacs
+** DONE Update README with addon system documentation
+** DONE Create org-ai-mcp addon stub

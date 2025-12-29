@@ -1,55 +1,67 @@
 {
-  "date": "2025-12-23",
-  "focus_area": "emacs-mcp org-kanban addon and v0.2.0 release",
-  "branches_created": ["feat/org-kanban-addon"],
+  "date": "2025-12-29",
+  "focus_area": "emacs-mcp Doom Emacs configuration and kanban migration",
+  "branches_created": [],
+  "tags_created": ["v0.3.0"],
   "merged_prs": [
     {
-      "number": 1,
-      "title": "feat: Add lazy-loaded addon system for integrations",
-      "merged_at": "2025-12-23T23:38:00Z"
+      "number": 7,
+      "title": "feat: Add async nREPL startup and CIDER middleware",
+      "merged_at": "2025-12-29"
     },
     {
-      "number": 2,
-      "title": "feat: Add org-kanban addon with dual backend architecture",
-      "merged_at": "2025-12-23T23:41:41Z"
+      "number": 8,
+      "title": "feat: Add standardized addon lifecycle system",
+      "merged_at": "2025-12-29"
+    },
+    {
+      "number": 9,
+      "title": "chore: Organize documentation into docs/ folder",
+      "merged_at": "2025-12-29"
     }
   ],
   "key_files": [
+    "elisp/emacs-mcp-addons.el",
+    "elisp/addons/emacs-mcp-cider.el",
     "elisp/addons/emacs-mcp-org-kanban.el",
-    "src/emacs_mcp/tools.clj",
-    "src/emacs_mcp/validation.clj",
-    "ADDONS.org",
-    "README.md"
+    "kanban.org",
+    "~/.doom.d/Emacs.org"
   ],
   "completed_tasks": [
-    "Added 8 kanban MCP tools to tools.clj",
-    "Fixed standalone backend to work without project ID",
-    "Synced 12 vibe-kanban tasks to local org file",
-    "Created comprehensive ADDONS.org documentation (364 lines)",
-    "Simplified README addon section with feature matrix table",
-    "Merged PR #1 (addon-system) to main",
-    "Merged PR #2 (org-kanban) to main",
-    "Created v0.2.0 release with comprehensive notes",
-    "Saved convention: always enable all addons"
+    "Updated Emacs.org with emacs-mcp config using expandable $DOTFILES path",
+    "Unified duplicate emacs-mcp configurations in Emacs.org",
+    "Tangled Emacs.org to generate config.el",
+    "Migrated 15 vibe-kanban tasks to local kanban.org (3 TODO, 12 DONE)"
   ],
-  "in_progress_tasks": [],
-  "blocking_issues": [],
+  "in_progress_tasks": [
+    "Clean up old feature branches (local and remote)",
+    "Test org-kanban addon in real workflow"
+  ],
+  "blocking_issues": [
+    "emacs-mcp kanban MCP tools timing out (need Emacs reload)"
+  ],
   "next_actions": [
-    "Test org-kanban in real workflow",
-    "Consider adding magit/projectile addons",
-    "Clean up local feature branches"
+    "Reload Emacs with doom/reload to apply new config",
+    "Test org-kanban integration after reload",
+    "Clean up merged feature branches",
+    "Consider MELPA submission"
   ],
   "decisions_made": [
-    "Standalone backend uses first org heading as default project when nil",
-    "ADDONS.org for detailed docs, README has summary table with links",
-    "Convention: Always enable all addons via emacs-mcp-addons-auto-load",
-    "escape-elisp-string utility added to validation.clj"
+    "Use local DOTFILES path for emacs-mcp instead of GitHub package",
+    "emacs-mcp-root variable with (getenv DOTFILES) for portability",
+    "Removed package! recipe, using direct load-path instead"
   ],
   "vibe_kanban_project_id": "b70720e8-3a52-41ba-a115-964b81369bb5",
   "git_state": {
     "current_branch": "main",
-    "clean_working_tree": true,
+    "clean_working_tree": false,
+    "uncommitted_files": [".claude/SESSION_CONTEXT.json", "elisp/emacs-mcp-addons.el", "kanban.org"],
     "all_prs_merged": true
   },
-  "release": "v0.2.0"
+  "release": "v0.3.0",
+  "dotfiles_changes": {
+    "file": "~/.doom.d/Emacs.org",
+    "section": "Clojure > emacs-mcp",
+    "change": "Switched from package! to local load-path with $DOTFILES"
+  }
 }

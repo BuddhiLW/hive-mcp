@@ -311,6 +311,10 @@ If PROJECT-ID is nil, uses the first project (Default Project)."
 (defmacro emacs-mcp-kanban--with-org-file (&rest body)
   "Execute BODY with the kanban org file as current buffer."
   `(let ((file emacs-mcp-kanban-org-file))
+     ;; Ensure org-id is properly initialized
+     (require 'org-id)
+     (unless org-id-locations
+       (setq org-id-locations (make-hash-table :test 'equal)))
      (unless (file-exists-p file)
        (emacs-mcp-kanban--init-org-file file))
      (with-current-buffer (find-file-noselect file)
