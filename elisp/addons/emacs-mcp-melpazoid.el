@@ -76,6 +76,17 @@ If nil, will attempt to find it in common locations."
   :type 'integer
   :group 'emacs-mcp-melpazoid)
 
+(defcustom emacs-mcp-melpazoid-fast-mode nil
+  "When non-nil, run melpazoid without full Docker rebuild.
+Fast mode options:
+- `local': Run melpazoid.py directly with local Python/Emacs (fastest)
+- `cached': Use Docker but skip image rebuild if it exists
+- nil: Always rebuild Docker image (slowest, most thorough)"
+  :type '(choice (const :tag "Full Docker rebuild" nil)
+                 (const :tag "Local Python (no Docker)" local)
+                 (const :tag "Cached Docker image" cached))
+  :group 'emacs-mcp-melpazoid)
+
 ;;;; Internal Variables:
 
 ;; Forward declarations for byte-compiler (defined at runtime by transient)
@@ -113,6 +124,39 @@ If nil, will attempt to find it in common locations."
 (defun emacs-mcp-melpazoid--docker-available-p ()
   "Check if Docker is available and running."
   (zerop (call-process "docker" nil nil nil "info")))
+
+(defun emacs-mcp-melpazoid--docker-image-exists-p ()
+  "Check if melpazoid Docker image already exists."
+  (let ((output (shell-command-to-string "docker images -q melpazoid:latest 2>/dev/null")))
+    (not (string-empty-p (string-trim output)))))
+
+(defun emacs-mcp-melpazoid--build-command (melpazoid-path project-dir recipe-str)
+  "Build the melpazoid command based on `emacs-mcp-melpazoid-fast-mode'.
+MELPAZOID-PATH is the path to melpazoid repo.
+PROJECT-DIR is the project to check.
+RECIPE-STR is the MELPA recipe string."
+  (let ((base-env (if (string-empty-p recipe-str)
+                      (format "LOCAL_REPO=%s" (shell-quote-argument project-dir))
+                    (format "RECIPE='%s' LOCAL_REPO=%s"
+                            recipe-str (shell-quote-argument project-dir)))))
+    (pcase emacs-mcp-melpazoid-fast-mode
+      ('local
+       ;; Run melpazoid.py directly - fastest, no Docker
+       (format "cd %s && %s python3 melpazoid/melpazoid.py"
+               (shell-quote-argument melpazoid-path) base-env))
+      ('cached
+       ;; Use Docker but skip rebuild if image exists
+       (if (emacs-mcp-melpazoid--docker-image-exists-p)
+           (format "cd %s && %s docker run --rm -v %s:/pkg melpazoid:latest python3 melpazoid/melpazoid.py"
+                   (shell-quote-argument melpazoid-path)
+                   base-env
+                   (shell-quote-argument project-dir))
+         ;; Fall back to full build if no image
+         (format "cd %s && %s make" (shell-quote-argument melpazoid-path) base-env)))
+      (_
+       ;; Default: full Docker rebuild
+       (format "cd %s && %s make"
+               (shell-quote-argument melpazoid-path) base-env)))))
 
 (defun emacs-mcp-melpazoid--find-recipe (project-dir)
   "Find MELPA recipe file in PROJECT-DIR."
@@ -177,7 +221,9 @@ If RECIPE is nil, attempts to auto-detect from recipes/ directory."
                               (or (locate-dominating-file default-directory ".git")
                                   default-directory))
          nil))
-  (unless (emacs-mcp-melpazoid--docker-available-p)
+  ;; Docker only required for non-local modes
+  (unless (or (eq emacs-mcp-melpazoid-fast-mode 'local)
+              (emacs-mcp-melpazoid--docker-available-p))
     (error "Docker is not available. Please start Docker first"))
   (let* ((melpazoid-path (emacs-mcp-melpazoid--find-path))
          (project-dir (expand-file-name project-dir))
@@ -187,26 +233,26 @@ If RECIPE is nil, attempts to auto-detect from recipes/ directory."
                          (emacs-mcp-melpazoid--read-recipe recipe-file)
                          (read-string "MELPA recipe (or empty to skip): ")))
          (buf (get-buffer-create emacs-mcp-melpazoid--buffer-name))
-         (cmd (if (string-empty-p recipe-str)
-                  (format "cd %s && LOCAL_REPO=%s make"
-                          (shell-quote-argument melpazoid-path)
-                          (shell-quote-argument project-dir))
-                (format "cd %s && RECIPE='%s' LOCAL_REPO=%s make"
-                        (shell-quote-argument melpazoid-path)
-                        recipe-str
-                        (shell-quote-argument project-dir)))))
+         (cmd (emacs-mcp-melpazoid--build-command melpazoid-path project-dir recipe-str))
+         (mode-label (pcase emacs-mcp-melpazoid-fast-mode
+                       ('local "LOCAL (no Docker)")
+                       ('cached "CACHED Docker")
+                       (_ "FULL Docker rebuild"))))
     ;; Prepare buffer
     (with-current-buffer buf
       (let ((inhibit-read-only t))
         (erase-buffer)
         (insert "=" (make-string 60 ?=) "\n")
         (insert " Melpazoid Check\n")
+        (insert (format " Mode: %s\n" mode-label))
         (insert (format " Project: %s\n" project-dir))
-        (when recipe-str
+        (when (and recipe-str (not (string-empty-p recipe-str)))
           (insert (format " Recipe: %s\n" recipe-str)))
         (insert (format " Started: %s\n" (format-time-string "%F %T")))
         (insert "=" (make-string 60 ?=) "\n\n")
-        (insert "Running melpazoid (this may take a few minutes)...\n\n")))
+        (insert (if (eq emacs-mcp-melpazoid-fast-mode 'local)
+                    "Running melpazoid locally...\n\n"
+                  "Running melpazoid (this may take a few minutes)...\n\n"))))
     (display-buffer buf)
     ;; Kill any existing process
     (when (and emacs-mcp-melpazoid--process
@@ -306,6 +352,28 @@ If RECIPE is nil, attempts to auto-detect from recipes/ directory."
                (or (plist-get status :last-warnings) 0)))
     status))
 
+;;;###autoload
+(defun emacs-mcp-melpazoid-cycle-fast-mode ()
+  "Cycle through fast mode options: nil -> local -> cached -> nil."
+  (interactive)
+  (setq emacs-mcp-melpazoid-fast-mode
+        (pcase emacs-mcp-melpazoid-fast-mode
+          ('nil 'local)
+          ('local 'cached)
+          ('cached nil)))
+  (message "Melpazoid fast-mode: %s"
+           (pcase emacs-mcp-melpazoid-fast-mode
+             ('local "LOCAL (no Docker - fastest)")
+             ('cached "CACHED (skip Docker rebuild)")
+             (_ "FULL (Docker rebuild - thorough)"))))
+
+;;;###autoload
+(defun emacs-mcp-melpazoid-run-fast ()
+  "Run melpazoid in local mode (fastest, no Docker)."
+  (interactive)
+  (let ((emacs-mcp-melpazoid-fast-mode 'local))
+    (emacs-mcp-melpazoid-run-current-project)))
+
 ;;;; Transient Menu:
 
 ;;;###autoload
@@ -320,12 +388,15 @@ If RECIPE is nil, attempts to auto-detect from recipes/ directory."
             ["Melpazoid - MELPA Submission Testing"
              ["Run"
               ("r" "Run on project" emacs-mcp-melpazoid-run-current-project)
+              ("f" "Run FAST (local)" emacs-mcp-melpazoid-run-fast)
               ("R" "Run on directory" emacs-mcp-melpazoid-run)
               ("s" "Stop" emacs-mcp-melpazoid-stop)]
              ["Results"
               ("v" "View results" emacs-mcp-melpazoid-show-results)
               ("S" "Save to memory" emacs-mcp-melpazoid-save-results)
-              ("?" "Status" emacs-mcp-melpazoid-status)]]))
+              ("?" "Status" emacs-mcp-melpazoid-status)]
+             ["Settings"
+              ("m" "Cycle fast-mode" emacs-mcp-melpazoid-cycle-fast-mode)]]))
         (emacs-mcp-melpazoid--transient-menu))
     (message "Transient package not available. Use M-x emacs-mcp-melpazoid-run-current-project")))
 
