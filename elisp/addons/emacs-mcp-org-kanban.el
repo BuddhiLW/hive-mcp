@@ -43,6 +43,9 @@
 (require 'org)
 (require 'json)
 
+;; Forward declarations for byte-compiler
+(defvar org-id-locations)
+
 ;; Soft dependencies
 (declare-function emacs-mcp-api-get-context "emacs-mcp-api")
 (declare-function org-kanban/initialize "org-kanban")
@@ -158,11 +161,11 @@ Set this to your project UUID for automatic project selection."
 (cl-defmethod emacs-mcp-kanban--update-task ((_backend (eql vibe)) task-id &rest props)
   "Update task in vibe-kanban."
   (let ((params `((task_id . ,task-id))))
-    (when-let ((title (plist-get props :title)))
+    (when-let* ((title (plist-get props :title)))
       (push `(title . ,title) params))
-    (when-let ((desc (plist-get props :description)))
+    (when-let* ((desc (plist-get props :description)))
       (push `(description . ,desc) params))
-    (when-let ((status (plist-get props :status)))
+    (when-let* ((status (plist-get props :status)))
       (push `(status . ,status) params))
     (emacs-mcp-kanban--mcp-call "update_task" params)))
 
@@ -181,6 +184,34 @@ This uses emacsclient to communicate with the MCP server."
     ;; This is a placeholder - actual implementation depends on MCP bridge
     (message "MCP call: %s" cmd)
     nil))
+
+;;; ============================================================================
+;;; Standalone Backend Helpers (Macros must be defined before use)
+;;; ============================================================================
+
+(defun emacs-mcp-kanban--init-org-file (file)
+  "Initialize a new kanban org FILE."
+  (with-temp-file file
+    (insert "#+TITLE: emacs-mcp Kanban\n")
+    (insert "#+STARTUP: overview\n")
+    (insert "#+TODO: TODO IN-PROGRESS IN-REVIEW | DONE CANCELLED\n\n")
+    (insert "* Default Project\n")
+    (insert ":PROPERTIES:\n")
+    (insert (format ":ID: %s\n" (org-id-uuid)))
+    (insert (format ":CREATED: %s\n" (format-time-string "%Y-%m-%d")))
+    (insert ":END:\n")))
+
+(defmacro emacs-mcp-kanban--with-org-file (&rest body)
+  "Execute BODY with the kanban org file as current buffer."
+  `(let ((file emacs-mcp-kanban-org-file))
+     ;; Ensure org-id is properly initialized
+     (require 'org-id)
+     (unless org-id-locations
+       (setq org-id-locations (make-hash-table :test 'equal)))
+     (unless (file-exists-p file)
+       (emacs-mcp-kanban--init-org-file file))
+     (with-current-buffer (find-file-noselect file)
+       ,@body)))
 
 ;;; ============================================================================
 ;;; Standalone Backend (Org File Adapter)
@@ -316,7 +347,7 @@ Optional DESCRIPTION and STATUS (defaults to todo)."
    (let ((ids '()))
      (org-map-entries
       (lambda ()
-        (when-let ((vibe-id (org-entry-get nil "VIBE_ID")))
+        (when-let* ((vibe-id (org-entry-get nil "VIBE_ID")))
           (push vibe-id ids)))
       "LEVEL=2")
      ids)))
@@ -343,11 +374,11 @@ Returns t if task was found and updated, nil otherwise."
      (when marker
        (with-current-buffer (marker-buffer marker)
          (goto-char marker)
-         (when-let ((title (plist-get props :title)))
+         (when-let* ((title (plist-get props :title)))
            (org-edit-headline title))
-         (when-let ((desc (plist-get props :description)))
+         (when-let* ((desc (plist-get props :description)))
            (org-entry-put nil "DESCRIPTION" desc))
-         (when-let ((status (plist-get props :status)))
+         (when-let* ((status (plist-get props :status)))
            (let ((org-status (emacs-mcp-kanban--vibe-to-org-status status)))
              (org-todo org-status)))
          (org-entry-put nil "UPDATED" (format-time-string "%Y-%m-%d %H:%M"))
@@ -366,34 +397,6 @@ Returns t if task was found and updated, nil otherwise."
          (org-cut-subtree)
          (save-buffer)
          t)))))
-
-;;; ============================================================================
-;;; Standalone Backend Helpers
-;;; ============================================================================
-
-(defmacro emacs-mcp-kanban--with-org-file (&rest body)
-  "Execute BODY with the kanban org file as current buffer."
-  `(let ((file emacs-mcp-kanban-org-file))
-     ;; Ensure org-id is properly initialized
-     (require 'org-id)
-     (unless org-id-locations
-       (setq org-id-locations (make-hash-table :test 'equal)))
-     (unless (file-exists-p file)
-       (emacs-mcp-kanban--init-org-file file))
-     (with-current-buffer (find-file-noselect file)
-       ,@body)))
-
-(defun emacs-mcp-kanban--init-org-file (file)
-  "Initialize a new kanban org FILE."
-  (with-temp-file file
-    (insert "#+TITLE: emacs-mcp Kanban\n")
-    (insert "#+STARTUP: overview\n")
-    (insert "#+TODO: TODO IN-PROGRESS IN-REVIEW | DONE CANCELLED\n\n")
-    (insert "* Default Project\n")
-    (insert ":PROPERTIES:\n")
-    (insert (format ":ID: %s\n" (org-id-uuid)))
-    (insert (format ":CREATED: %s\n" (format-time-string "%Y-%m-%d")))
-    (insert ":END:\n")))
 
 (defun emacs-mcp-kanban--org-to-vibe-status (org-status)
   "Convert ORG-STATUS to vibe-kanban status."
@@ -856,7 +859,9 @@ For standalone backend, PROJECT-ID can be nil."
       (when marker
         (switch-to-buffer (marker-buffer marker))
         (goto-char marker)
-        (org-show-entry)))))
+        (if (fboundp 'org-fold-show-entry)
+            (org-fold-show-entry)
+          (with-no-warnings (org-show-entry)))))))
 
 (defun emacs-mcp-kanban-board-move-right ()
   "Move task at point to next status column."
@@ -869,7 +874,8 @@ For standalone backend, PROJECT-ID can be nil."
   (emacs-mcp-kanban-board--move-task -1))
 
 (defun emacs-mcp-kanban-board--move-task (direction)
-  "Move task at point in DIRECTION (+1 or -1)."
+  "Move task at point in DIRECTION (+1 or -1).
+Uses the addon's unified API for auto-sync and agent tracking."
   (when-let* ((id (get-text-property (point) 'task-id))
               (current-col (get-text-property (point) 'column-name)))
     (let* ((cols '("TODO" "IN-PROGRESS" "IN-REVIEW" "DONE"))
@@ -877,28 +883,23 @@ For standalone backend, PROJECT-ID can be nil."
            (new-idx (+ current-idx direction))
            (new-col (and (>= new-idx 0) (< new-idx 4) (nth new-idx cols))))
       (when new-col
-        (let ((marker (org-id-find id 'marker)))
-          (when marker
-            (with-current-buffer (marker-buffer marker)
-              (goto-char marker)
-              (org-todo new-col)
-              (save-buffer))))
+        ;; Use addon API - handles auto-sync and agent tracking
+        (let ((vibe-status (emacs-mcp-kanban--org-to-vibe-status new-col)))
+          (emacs-mcp-kanban-move-task id vibe-status))
         (emacs-mcp-kanban-board-refresh)
         (message "Moved task to %s" new-col)))))
 
 (defun emacs-mcp-kanban-board-move-task ()
-  "Move task at point to a new status (interactive)."
+  "Move task at point to a new status (interactive).
+Uses the addon's unified API for auto-sync and agent tracking."
   (interactive)
   (when-let* ((id (get-text-property (point) 'task-id)))
     (let* ((new-status (completing-read "Move to: "
                                         '("TODO" "IN-PROGRESS" "IN-REVIEW" "DONE")
                                         nil t))
-           (marker (org-id-find id 'marker)))
-      (when marker
-        (with-current-buffer (marker-buffer marker)
-          (goto-char marker)
-          (org-todo new-status)
-          (save-buffer)))
+           (vibe-status (emacs-mcp-kanban--org-to-vibe-status new-status)))
+      ;; Use addon API - handles auto-sync and agent tracking
+      (emacs-mcp-kanban-move-task id vibe-status)
       (emacs-mcp-kanban-board-refresh)
       (message "Moved task to %s" new-status))))
 
@@ -911,35 +912,30 @@ For standalone backend, PROJECT-ID can be nil."
     (message "Created task: %s" title)))
 
 (defun emacs-mcp-kanban-board-delete-task ()
-  "Delete task at point."
+  "Delete task at point.
+Uses the addon's unified API for auto-sync and agent tracking."
   (interactive)
   (when-let* ((id (get-text-property (point) 'task-id))
               (task (get-text-property (point) 'task-data)))
     (when (yes-or-no-p (format "Delete task '%s'? " (cdr (assoc 'title task))))
-      (let ((marker (org-id-find id 'marker)))
-        (when marker
-          (with-current-buffer (marker-buffer marker)
-            (goto-char marker)
-            (org-cut-subtree)
-            (save-buffer))))
+      ;; Use addon API - handles deletion in current backend
+      (emacs-mcp-kanban-delete-task id)
       (emacs-mcp-kanban-board-refresh)
       (message "Task deleted"))))
 
 (defun emacs-mcp-kanban-board-edit-task ()
-  "Edit task title at point."
+  "Edit task title at point.
+Uses the addon's unified API for auto-sync and agent tracking."
   (interactive)
   (when-let* ((id (get-text-property (point) 'task-id))
               (task (get-text-property (point) 'task-data)))
     (let* ((old-title (cdr (assoc 'title task)))
-           (new-title (read-string "New title: " old-title))
-           (marker (org-id-find id 'marker)))
-      (when marker
-        (with-current-buffer (marker-buffer marker)
-          (goto-char marker)
-          (org-edit-headline new-title)
-          (save-buffer)))
-      (emacs-mcp-kanban-board-refresh)
-      (message "Task updated"))))
+           (new-title (read-string "New title: " old-title)))
+      (unless (string= old-title new-title)
+        ;; Use addon API - handles auto-sync and agent tracking
+        (emacs-mcp-kanban-update-task id :title new-title)
+        (emacs-mcp-kanban-board-refresh)
+        (message "Task updated")))))
 
 (defun emacs-mcp-kanban-board-refresh ()
   "Refresh the kanban board."
@@ -961,7 +957,7 @@ For standalone backend, PROJECT-ID can be nil."
 ;;;###autoload
 (defun emacs-mcp-kanban-view (&optional format)
   "View kanban board using native Clojure renderer.
-FORMAT can be 'terminal (ASCII art) or 'emacs (org-mode).
+FORMAT can be `terminal' (ASCII art) or `emacs' (org-mode).
 With prefix arg, prompts for format."
   (interactive
    (list (if current-prefix-arg
@@ -975,7 +971,7 @@ With prefix arg, prompts for format."
     (if (and (fboundp 'cider-connected-p) (cider-connected-p))
         ;; Use CIDER if available
         (let ((result (cider-nrepl-sync-request:eval code)))
-          (when-let ((value (nrepl-dict-get result "value")))
+          (when-let* ((value (nrepl-dict-get result "value")))
             (let ((buf (get-buffer-create "*Kanban Board*")))
               (with-current-buffer buf
                 (let ((inhibit-read-only t))
@@ -990,8 +986,9 @@ With prefix arg, prompts for format."
       ;; Fallback: display static board
       (emacs-mcp-kanban-view--static file fmt))))
 
-(defun emacs-mcp-kanban-view--static (file format)
-  "Display static kanban board from FILE in FORMAT.
+(defun emacs-mcp-kanban-view--static (file _format)
+  "Display static kanban board from FILE.
+FORMAT argument is unused in fallback mode.
 Used when CIDER is not connected."
   (message "CIDER not connected. Showing org file directly.")
   (find-file file))
@@ -1020,10 +1017,10 @@ Used when CIDER is not connected."
             (insert (format "** %s\n" (alist-get 'title task)))
             (insert ":PROPERTIES:\n")
             (insert (format ":ID: %s\n" (alist-get 'id task)))
-            (when-let ((agent (alist-get 'agent task)))
+            (when-let* ((agent (alist-get 'agent task)))
               (insert (format ":AGENT: %s\n" agent)))
             (insert ":END:\n")
-            (when-let ((desc (alist-get 'description task)))
+            (when-let* ((desc (alist-get 'description task)))
               (insert desc "\n"))
             (insert "\n"))))
       (goto-char (point-min)))
@@ -1093,8 +1090,8 @@ Returns current tasks grouped by status."
                      (lambda (status)
                        (cons status
                              (length (cl-remove-if-not
-                                     (lambda (t)
-                                       (equal (alist-get 'status t) status))
+                                     (lambda (tsk)
+                                       (equal (alist-get 'status tsk) status))
                                      tasks))))
                      (mapcar #'cdr emacs-mcp-kanban-status-map)))
       (tasks . ,tasks))))
@@ -1104,9 +1101,9 @@ Returns current tasks grouped by status."
   (let* ((agent (emacs-mcp-kanban--current-agent))
          (tasks (emacs-mcp-kanban-list-tasks)))
     (cl-remove-if-not
-     (lambda (t)
-       (or (equal (alist-get 'agent t) agent)
-           (equal (alist-get 'last_agent t) agent)))
+     (lambda (tsk)
+       (or (equal (alist-get 'agent tsk) agent)
+           (equal (alist-get 'last_agent tsk) agent)))
      tasks)))
 
 (defun emacs-mcp-kanban-api-roadmap ()
@@ -1114,8 +1111,8 @@ Returns current tasks grouped by status."
   (let* ((tasks (emacs-mcp-kanban-list-tasks))
          (total (length tasks))
          (done (length (cl-remove-if-not
-                       (lambda (t)
-                         (member (alist-get 'status t) '("done" "cancelled")))
+                       (lambda (tsk)
+                         (member (alist-get 'status tsk) '("done" "cancelled")))
                        tasks))))
     `((total . ,total)
       (completed . ,done)
@@ -1123,13 +1120,13 @@ Returns current tasks grouped by status."
                        (round (* 100 (/ (float done) total)))
                      0))
       (in_progress . ,(cl-remove-if-not
-                       (lambda (t)
-                         (equal (alist-get 'status t) "inprogress"))
+                       (lambda (tsk)
+                         (equal (alist-get 'status tsk) "inprogress"))
                        tasks))
       (next_up . ,(seq-take
                    (cl-remove-if-not
-                    (lambda (t)
-                      (equal (alist-get 'status t) "todo"))
+                    (lambda (tsk)
+                      (equal (alist-get 'status tsk) "todo"))
                     tasks)
                    5)))))
 

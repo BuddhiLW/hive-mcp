@@ -18,8 +18,8 @@
 ;; - Auto-logging of conversations to project memory
 ;;
 ;; Usage:
-;;   (require 'claude-code-mcp)
-;;   (claude-code-mcp-mode 1)
+;;   (require 'emacs-mcp-claude-code)
+;;   (emacs-mcp-claude-code-mode 1)
 ;;
 ;; This adds emacs-mcp integration to claude-code.el without modifying
 ;; the original package.
@@ -40,24 +40,24 @@
 
 ;;;; Customization
 
-(defgroup claude-code-mcp nil
+(defgroup emacs-mcp-claude-code nil
   "Integration between claude-code.el and emacs-mcp."
   :group 'claude-code
-  :prefix "claude-code-mcp-")
+  :prefix "emacs-mcp-claude-code-")
 
-(defcustom claude-code-mcp-auto-context nil
+(defcustom emacs-mcp-claude-code-auto-context nil
   "When non-nil, automatically include MCP context in commands.
 Context includes buffer info, project, git status, and relevant memory."
   :type 'boolean
-  :group 'claude-code-mcp)
+  :group 'emacs-mcp-claude-code)
 
-(defcustom claude-code-mcp-log-conversations nil
+(defcustom emacs-mcp-claude-code-log-conversations nil
   "When non-nil, log conversations to emacs-mcp memory.
 This enables persistent conversation history per project."
   :type 'boolean
-  :group 'claude-code-mcp)
+  :group 'emacs-mcp-claude-code)
 
-(defcustom claude-code-mcp-context-format 'compact
+(defcustom emacs-mcp-claude-code-context-format 'compact
   "Format for context injection.
 - `compact': Single line summary
 - `full': Complete context JSON
@@ -65,34 +65,34 @@ This enables persistent conversation history per project."
   :type '(choice (const :tag "Compact summary" compact)
                  (const :tag "Full JSON context" full)
                  (const :tag "Smart selection" smart))
-  :group 'claude-code-mcp)
+  :group 'emacs-mcp-claude-code)
 
-(defcustom claude-code-mcp-notify-on-complete t
+(defcustom emacs-mcp-claude-code-notify-on-complete t
   "When non-nil, use emacs-mcp notifications when Claude completes."
   :type 'boolean
-  :group 'claude-code-mcp)
+  :group 'emacs-mcp-claude-code)
 
 ;;;; Internal State
 
-(defvar claude-code-mcp--available nil
+(defvar emacs-mcp-claude-code--available nil
   "Cached check for whether emacs-mcp-api is available.")
 
 ;;;; Utility Functions
 
-(defun claude-code-mcp--available-p ()
+(defun emacs-mcp-claude-code--available-p ()
   "Check if emacs-mcp-api is available."
-  (or claude-code-mcp--available
-      (setq claude-code-mcp--available
+  (or emacs-mcp-claude-code--available
+      (setq emacs-mcp-claude-code--available
             (featurep 'emacs-mcp-api))))
 
-(defun claude-code-mcp--ensure-available ()
+(defun emacs-mcp-claude-code--ensure-available ()
   "Ensure emacs-mcp is available, error if not."
-  (unless (claude-code-mcp--available-p)
+  (unless (emacs-mcp-claude-code--available-p)
     (if (require 'emacs-mcp-api nil t)
-        (setq claude-code-mcp--available t)
+        (setq emacs-mcp-claude-code--available t)
       (error "emacs-mcp-api not available. Load emacs-mcp first"))))
 
-(defun claude-code-mcp--format-context-compact (ctx)
+(defun emacs-mcp-claude-code--format-context-compact (ctx)
   "Format CTX as compact one-line summary."
   (let ((buffer (plist-get ctx :buffer))
         (project (plist-get ctx :project))
@@ -102,7 +102,7 @@ This enables persistent conversation history per project."
             (or (plist-get project :name) "no-project")
             (if (plist-get git :dirty) " (modified)" ""))))
 
-(defun claude-code-mcp--format-context-smart (ctx)
+(defun emacs-mcp-claude-code--format-context-smart (ctx)
   "Format CTX with only relevant sections."
   (let ((parts '())
         (buffer (plist-get ctx :buffer))
@@ -137,23 +137,23 @@ This enables persistent conversation history per project."
           (push (format "Recent notes: %d" (length notes)) parts))))
     (string-join (nreverse parts) "\n")))
 
-(defun claude-code-mcp--get-context-string ()
-  "Get context string based on `claude-code-mcp-context-format'."
-  (when (claude-code-mcp--available-p)
+(defun emacs-mcp-claude-code--get-context-string ()
+  "Get context string based on `emacs-mcp-claude-code-context-format'."
+  (when (emacs-mcp-claude-code--available-p)
     (let ((ctx (emacs-mcp-api-get-context)))
-      (pcase claude-code-mcp-context-format
-        ('compact (claude-code-mcp--format-context-compact ctx))
+      (pcase emacs-mcp-claude-code-context-format
+        ('compact (emacs-mcp-claude-code--format-context-compact ctx))
         ('full (json-encode ctx))
-        ('smart (claude-code-mcp--format-context-smart ctx))))))
+        ('smart (emacs-mcp-claude-code--format-context-smart ctx))))))
 
 ;;;; Integration Commands
 
 ;;;###autoload
-(defun claude-code-mcp-send-with-context ()
+(defun emacs-mcp-claude-code-send-with-context ()
   "Read command and send to Claude with emacs-mcp context."
   (interactive)
-  (claude-code-mcp--ensure-available)
-  (let* ((ctx-string (claude-code-mcp--get-context-string))
+  (emacs-mcp-claude-code--ensure-available)
+  (let* ((ctx-string (emacs-mcp-claude-code--get-context-string))
          (cmd (read-string "Claude command: " nil 'claude-code-command-history))
          (full-cmd (if ctx-string
                        (format "%s\n\nContext:\n%s" cmd ctx-string)
@@ -161,10 +161,10 @@ This enables persistent conversation history per project."
     (claude-code--do-send-command full-cmd)))
 
 ;;;###autoload
-(defun claude-code-mcp-save-to-memory ()
+(defun emacs-mcp-claude-code-save-to-memory ()
   "Save selected text or prompt to project memory."
   (interactive)
-  (claude-code-mcp--ensure-available)
+  (emacs-mcp-claude-code--ensure-available)
   (let* ((text (if (use-region-p)
                    (buffer-substring-no-properties (region-beginning) (region-end))
                  (read-string "Note content: ")))
@@ -174,10 +174,10 @@ This enables persistent conversation history per project."
     (message "Saved to project memory as %s" type)))
 
 ;;;###autoload
-(defun claude-code-mcp-query-memory ()
+(defun emacs-mcp-claude-code-query-memory ()
   "Query project memory and display results."
   (interactive)
-  (claude-code-mcp--ensure-available)
+  (emacs-mcp-claude-code--ensure-available)
   (let* ((type (completing-read "Query type: "
                                 '("note" "snippet" "convention" "decision" "conversation")
                                 nil t "note"))
@@ -202,10 +202,10 @@ This enables persistent conversation history per project."
     (display-buffer buf)))
 
 ;;;###autoload
-(defun claude-code-mcp-run-workflow ()
+(defun emacs-mcp-claude-code-run-workflow ()
   "Select and run an emacs-mcp workflow."
   (interactive)
-  (claude-code-mcp--ensure-available)
+  (emacs-mcp-claude-code--ensure-available)
   (let* ((workflows (emacs-mcp-api-list-workflows))
          (names (mapcar (lambda (w) (alist-get 'name w)) workflows))
          (selected (completing-read "Run workflow: " names nil t)))
@@ -213,10 +213,10 @@ This enables persistent conversation history per project."
     (message "Workflow '%s' executed" selected)))
 
 ;;;###autoload
-(defun claude-code-mcp-show-capabilities ()
+(defun emacs-mcp-claude-code-show-capabilities ()
   "Show emacs-mcp capabilities and status."
   (interactive)
-  (if (claude-code-mcp--available-p)
+  (if (emacs-mcp-claude-code--available-p)
       (let ((caps (emacs-mcp-api-capabilities)))
         (message "emacs-mcp v%s: %s"
                  (plist-get caps :version)
@@ -224,12 +224,12 @@ This enables persistent conversation history per project."
     (message "emacs-mcp is not loaded")))
 
 ;;;###autoload
-(defun claude-code-mcp-get-context ()
+(defun emacs-mcp-claude-code-get-context ()
   "Get and display current emacs-mcp context."
   (interactive)
-  (claude-code-mcp--ensure-available)
+  (emacs-mcp-claude-code--ensure-available)
   (let* ((ctx (emacs-mcp-api-get-context))
-         (formatted (claude-code-mcp--format-context-smart ctx))
+         (formatted (emacs-mcp-claude-code--format-context-smart ctx))
          (buf (get-buffer-create "*MCP Context*")))
     (with-current-buffer buf
       (erase-buffer)
@@ -243,90 +243,90 @@ This enables persistent conversation history per project."
 
 ;;;; Transient Menu
 
-;;;###autoload (autoload 'claude-code-mcp-transient "claude-code-mcp" nil t)
-(transient-define-prefix claude-code-mcp-transient ()
+;;;###autoload (autoload 'emacs-mcp-claude-code-transient "emacs-mcp-claude-code" nil t)
+(transient-define-prefix emacs-mcp-claude-code-transient ()
   "MCP integration menu for Claude Code."
   ["emacs-mcp Integration"
    ["Context & Memory"
-    ("c" "Show context" claude-code-mcp-get-context)
-    ("s" "Send with context" claude-code-mcp-send-with-context)
-    ("m" "Save to memory" claude-code-mcp-save-to-memory)
-    ("q" "Query memory" claude-code-mcp-query-memory)]
+    ("c" "Show context" emacs-mcp-claude-code-get-context)
+    ("s" "Send with context" emacs-mcp-claude-code-send-with-context)
+    ("m" "Save to memory" emacs-mcp-claude-code-save-to-memory)
+    ("q" "Query memory" emacs-mcp-claude-code-query-memory)]
    ["Workflows & Status"
-    ("w" "Run workflow" claude-code-mcp-run-workflow)
-    ("?" "Show capabilities" claude-code-mcp-show-capabilities)]
+    ("w" "Run workflow" emacs-mcp-claude-code-run-workflow)
+    ("?" "Show capabilities" emacs-mcp-claude-code-show-capabilities)]
    ["Settings"
-    ("C" "Toggle auto-context" claude-code-mcp-toggle-auto-context)
-    ("L" "Toggle conversation logging" claude-code-mcp-toggle-logging)]])
+    ("C" "Toggle auto-context" emacs-mcp-claude-code-toggle-auto-context)
+    ("L" "Toggle conversation logging" emacs-mcp-claude-code-toggle-logging)]])
 
 ;;;; Toggle Commands
 
-(defun claude-code-mcp-toggle-auto-context ()
+(defun emacs-mcp-claude-code-toggle-auto-context ()
   "Toggle automatic context injection."
   (interactive)
-  (setq claude-code-mcp-auto-context (not claude-code-mcp-auto-context))
-  (message "Auto-context %s" (if claude-code-mcp-auto-context "enabled" "disabled")))
+  (setq emacs-mcp-claude-code-auto-context (not emacs-mcp-claude-code-auto-context))
+  (message "Auto-context %s" (if emacs-mcp-claude-code-auto-context "enabled" "disabled")))
 
-(defun claude-code-mcp-toggle-logging ()
+(defun emacs-mcp-claude-code-toggle-logging ()
   "Toggle conversation logging."
   (interactive)
-  (setq claude-code-mcp-log-conversations (not claude-code-mcp-log-conversations))
-  (message "Conversation logging %s" (if claude-code-mcp-log-conversations "enabled" "disabled")))
+  (setq emacs-mcp-claude-code-log-conversations (not emacs-mcp-claude-code-log-conversations))
+  (message "Conversation logging %s" (if emacs-mcp-claude-code-log-conversations "enabled" "disabled")))
 
 ;;;; Hooks and Advice
 
-(defun claude-code-mcp--maybe-add-context (cmd)
+(defun emacs-mcp-claude-code--maybe-add-context (cmd)
   "Maybe add context to CMD if auto-context is enabled."
-  (if (and claude-code-mcp-auto-context
-           (claude-code-mcp--available-p))
-      (let ((ctx (claude-code-mcp--get-context-string)))
+  (if (and emacs-mcp-claude-code-auto-context
+           (emacs-mcp-claude-code--available-p))
+      (let ((ctx (emacs-mcp-claude-code--get-context-string)))
         (if ctx
             (format "%s\n\n[Context: %s]" cmd ctx)
           cmd))
     cmd))
 
-(defun claude-code-mcp--log-command (cmd)
+(defun emacs-mcp-claude-code--log-command (cmd)
   "Log CMD to conversation memory if logging is enabled."
-  (when (and claude-code-mcp-log-conversations
-             (claude-code-mcp--available-p))
+  (when (and emacs-mcp-claude-code-log-conversations
+             (emacs-mcp-claude-code--available-p))
     (ignore-errors
       (emacs-mcp-api-conversation-log "user" cmd))))
 
-(defun claude-code-mcp--notification-function (title message)
+(defun emacs-mcp-claude-code--notification-function (title message)
   "Use emacs-mcp for notifications if available.
 TITLE and MESSAGE are passed to the notification."
-  (if (and claude-code-mcp-notify-on-complete
-           (claude-code-mcp--available-p))
+  (if (and emacs-mcp-claude-code-notify-on-complete
+           (emacs-mcp-claude-code--available-p))
       (emacs-mcp-api-notify (format "%s: %s" title message) "info")
     ;; Fall back to default
     (claude-code-default-notification title message)))
 
 ;;;; Advice Functions
 
-(defun claude-code-mcp--advise-send-command (orig-fun cmd)
+(defun emacs-mcp-claude-code--advise-send-command (orig-fun cmd)
   "Advice for `claude-code--do-send-command' to add context and logging.
 ORIG-FUN is the original function, CMD is the command."
-  (let ((enhanced-cmd (claude-code-mcp--maybe-add-context cmd)))
-    (claude-code-mcp--log-command cmd)
+  (let ((enhanced-cmd (emacs-mcp-claude-code--maybe-add-context cmd)))
+    (emacs-mcp-claude-code--log-command cmd)
     (funcall orig-fun enhanced-cmd)))
 
 ;;;; Keymap Extensions
 
-(defvar claude-code-mcp-command-map
+(defvar emacs-mcp-claude-code-command-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "c") 'claude-code-mcp-get-context)
-    (define-key map (kbd "s") 'claude-code-mcp-send-with-context)
-    (define-key map (kbd "m") 'claude-code-mcp-save-to-memory)
-    (define-key map (kbd "q") 'claude-code-mcp-query-memory)
-    (define-key map (kbd "w") 'claude-code-mcp-run-workflow)
-    (define-key map (kbd "M") 'claude-code-mcp-transient)
+    (define-key map (kbd "c") #'emacs-mcp-claude-code-get-context)
+    (define-key map (kbd "s") #'emacs-mcp-claude-code-send-with-context)
+    (define-key map (kbd "m") #'emacs-mcp-claude-code-save-to-memory)
+    (define-key map (kbd "q") #'emacs-mcp-claude-code-query-memory)
+    (define-key map (kbd "w") #'emacs-mcp-claude-code-run-workflow)
+    (define-key map (kbd "M") #'emacs-mcp-claude-code-transient)
     map)
-  "Keymap for claude-code-mcp commands.")
+  "Keymap for emacs-mcp-claude-code commands.")
 
 ;;;; Minor Mode
 
 ;;;###autoload
-(define-minor-mode claude-code-mcp-mode
+(define-minor-mode emacs-mcp-claude-code-mode
   "Minor mode for emacs-mcp integration with claude-code.el.
 
 When enabled, provides:
@@ -339,31 +339,31 @@ Key bindings under `C-c c m' prefix (customizable)."
   :init-value nil
   :lighter " MCP"
   :global t
-  :group 'claude-code-mcp
-  (if claude-code-mcp-mode
+  :group 'emacs-mcp-claude-code
+  (if emacs-mcp-claude-code-mode
       (progn
         ;; Add advice for context injection
         (advice-add 'claude-code--do-send-command :around
-                    #'claude-code-mcp--advise-send-command)
+                    #'emacs-mcp-claude-code--advise-send-command)
         ;; Try to load emacs-mcp-api
         (require 'emacs-mcp-api nil t)
         ;; Extend claude-code command map
-        (define-key claude-code-command-map (kbd "M") 'claude-code-mcp-transient)
-        (message "claude-code-mcp enabled"))
+        (define-key claude-code-command-map (kbd "M") #'emacs-mcp-claude-code-transient)
+        (message "emacs-mcp-claude-code enabled"))
     ;; Remove advice
     (advice-remove 'claude-code--do-send-command
-                   #'claude-code-mcp--advise-send-command)
-    (message "claude-code-mcp disabled")))
+                   #'emacs-mcp-claude-code--advise-send-command)
+    (message "emacs-mcp-claude-code disabled")))
 
 ;;;; Addon Registration
 
-(with-eval-after-load 'emacs-mcp-addons
-  (emacs-mcp-addon-register
-   'claude-code
-   :version "0.1.0"
-   :description "Integration with claude-code.el (Claude Code CLI)"
-   :requires '(claude-code emacs-mcp-api)
-   :provides '(claude-code-mcp-mode claude-code-mcp-transient)))
+(eval-after-load 'emacs-mcp-addons
+  '(emacs-mcp-addon-register
+    'claude-code
+    :version "0.1.0"
+    :description "Integration with claude-code.el (Claude Code CLI)"
+    :requires '(claude-code emacs-mcp-api)
+    :provides '(emacs-mcp-claude-code-mode emacs-mcp-claude-code-transient)))
 
 (provide 'emacs-mcp-claude-code)
 ;;; emacs-mcp-claude-code.el ends here

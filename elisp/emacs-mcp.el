@@ -150,7 +150,8 @@ keybindings for AI-assisted development.
   :global t
   :lighter " MCP"
   :keymap (let ((map (make-sparse-keymap)))
-            (define-key map emacs-mcp-keymap-prefix emacs-mcp-command-map)
+            (when emacs-mcp-keymap-prefix
+              (define-key map emacs-mcp-keymap-prefix emacs-mcp-command-map))
             map)
   (if emacs-mcp-mode
       (when emacs-mcp-auto-initialize

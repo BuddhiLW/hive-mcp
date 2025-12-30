@@ -168,7 +168,7 @@ This enables persistent conversation history per project."
   (when (emacs-mcp-org-ai--available-p)
     (let ((ctx (emacs-mcp-api-get-context)))
       (pcase emacs-mcp-org-ai-context-format
-        ('compact (claude-code-mcp--format-context-compact ctx))
+        ('compact (emacs-mcp-claude-code--format-context-compact ctx))
         ('full (format "```json\n%s\n```" (json-encode ctx)))
         ('smart (emacs-mcp-org-ai--format-context-smart ctx))))))
 
