@@ -7,6 +7,7 @@
             [emacs-mcp.org-clj.writer :as org-writer]
             [emacs-mcp.org-clj.query :as org-query]
             [emacs-mcp.org-clj.transform :as org-transform]
+            [emacs-mcp.org-clj.render :as org-render]
             [clojure.data.json :as json]
             [taoensso.timbre :as log]))
 
@@ -656,6 +657,24 @@
                   :text (str "Error moving task: " (.getMessage e))}]
        :isError true})))
 
+(defn handle-org-kanban-render
+  "Render a visual kanban board from an org file."
+  [{:keys [file_path format column_width max_cards]}]
+  (try
+    (let [renderer (case (or format "terminal")
+                     "terminal" (org-render/terminal-renderer
+                                 {:column-width (or column_width 28)
+                                  :max-cards (or max_cards 10)})
+                     "emacs" (org-render/emacs-renderer)
+                     (throw (ex-info (str "Unknown format: " format) {:format format})))
+          output (org-render/render-file renderer file_path)]
+      {:content [{:type "text"
+                  :text output}]})
+    (catch Exception e
+      {:content [{:type "text"
+                  :text (str "Error rendering kanban: " (.getMessage e))}]
+       :isError true})))
+
 ;; Tool definitions
 
 (def tools
@@ -1029,7 +1048,22 @@
                                "new_status" {:type "string"
                                              :description "New TODO status (e.g., TODO, IN-PROGRESS, DONE)"}}
                   :required ["file_path" "task_id" "new_status"]}
-    :handler handle-org-kanban-native-move}])
+    :handler handle-org-kanban-native-move}
+
+   {:name "org_kanban_render"
+    :description "Render a visual kanban board from an org file. Supports terminal ASCII art or Emacs org-mode format."
+    :inputSchema {:type "object"
+                  :properties {"file_path" {:type "string"
+                                            :description "Absolute path to the kanban org file"}
+                               "format" {:type "string"
+                                         :enum ["terminal" "emacs"]
+                                         :description "Output format: 'terminal' for ASCII art, 'emacs' for org-mode (default: terminal)"}
+                               "column_width" {:type "integer"
+                                               :description "Width of each column in terminal mode (default: 28)"}
+                               "max_cards" {:type "integer"
+                                            :description "Maximum cards per column in terminal mode (default: 10)"}}
+                  :required ["file_path"]}
+    :handler handle-org-kanban-render}])
 
 (defn get-tool-by-name
   "Find a tool definition by name."
