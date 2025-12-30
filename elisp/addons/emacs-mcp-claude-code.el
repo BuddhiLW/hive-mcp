@@ -38,7 +38,7 @@
 (declare-function emacs-mcp-api-conversation-log "emacs-mcp-api")
 (declare-function emacs-mcp-api-capabilities "emacs-mcp-api")
 
-;;;; Customization
+;;;; Customization:
 
 (defgroup emacs-mcp-claude-code nil
   "Integration between claude-code.el and emacs-mcp."
@@ -72,12 +72,12 @@ This enables persistent conversation history per project."
   :type 'boolean
   :group 'emacs-mcp-claude-code)
 
-;;;; Internal State
+;;;; Internal State:
 
 (defvar emacs-mcp-claude-code--available nil
   "Cached check for whether emacs-mcp-api is available.")
 
-;;;; Utility Functions
+;;;; Utility Functions:
 
 (defun emacs-mcp-claude-code--available-p ()
   "Check if emacs-mcp-api is available."
@@ -90,7 +90,7 @@ This enables persistent conversation history per project."
   (unless (emacs-mcp-claude-code--available-p)
     (if (require 'emacs-mcp-api nil t)
         (setq emacs-mcp-claude-code--available t)
-      (error "emacs-mcp-api not available. Load emacs-mcp first"))))
+      (error "Emacs-mcp-api not available.  Load emacs-mcp first"))))
 
 (defun emacs-mcp-claude-code--format-context-compact (ctx)
   "Format CTX as compact one-line summary."
@@ -146,7 +146,7 @@ This enables persistent conversation history per project."
         ('full (json-encode ctx))
         ('smart (emacs-mcp-claude-code--format-context-smart ctx))))))
 
-;;;; Integration Commands
+;;;; Integration Commands:
 
 ;;;###autoload
 (defun emacs-mcp-claude-code-send-with-context ()
@@ -218,10 +218,10 @@ This enables persistent conversation history per project."
   (interactive)
   (if (emacs-mcp-claude-code--available-p)
       (let ((caps (emacs-mcp-api-capabilities)))
-        (message "emacs-mcp v%s: %s"
+        (message "Emacs-mcp v%s: %s"
                  (plist-get caps :version)
                  (mapconcat #'symbol-name (plist-get caps :capabilities) ", ")))
-    (message "emacs-mcp is not loaded")))
+    (message "Emacs-mcp is not loaded")))
 
 ;;;###autoload
 (defun emacs-mcp-claude-code-get-context ()
@@ -241,7 +241,7 @@ This enables persistent conversation history per project."
       (when (fboundp 'json-mode) (json-mode)))
     (display-buffer buf)))
 
-;;;; Transient Menu
+;;;; Transient Menu:
 
 ;;;###autoload (autoload 'emacs-mcp-claude-code-transient "emacs-mcp-claude-code" nil t)
 (transient-define-prefix emacs-mcp-claude-code-transient ()
@@ -259,7 +259,7 @@ This enables persistent conversation history per project."
     ("C" "Toggle auto-context" emacs-mcp-claude-code-toggle-auto-context)
     ("L" "Toggle conversation logging" emacs-mcp-claude-code-toggle-logging)]])
 
-;;;; Toggle Commands
+;;;; Toggle Commands:
 
 (defun emacs-mcp-claude-code-toggle-auto-context ()
   "Toggle automatic context injection."
@@ -273,7 +273,7 @@ This enables persistent conversation history per project."
   (setq emacs-mcp-claude-code-log-conversations (not emacs-mcp-claude-code-log-conversations))
   (message "Conversation logging %s" (if emacs-mcp-claude-code-log-conversations "enabled" "disabled")))
 
-;;;; Hooks and Advice
+;;;; Hooks and Advice:
 
 (defun emacs-mcp-claude-code--maybe-add-context (cmd)
   "Maybe add context to CMD if auto-context is enabled."
@@ -301,7 +301,7 @@ TITLE and MESSAGE are passed to the notification."
     ;; Fall back to default
     (claude-code-default-notification title message)))
 
-;;;; Advice Functions
+;;;; Advice Functions:
 
 (defun emacs-mcp-claude-code--advise-send-command (orig-fun cmd)
   "Advice for `claude-code--do-send-command' to add context and logging.
@@ -310,7 +310,7 @@ ORIG-FUN is the original function, CMD is the command."
     (emacs-mcp-claude-code--log-command cmd)
     (funcall orig-fun enhanced-cmd)))
 
-;;;; Keymap Extensions
+;;;; Keymap Extensions:
 
 (defvar emacs-mcp-claude-code-command-map
   (let ((map (make-sparse-keymap)))
@@ -323,7 +323,7 @@ ORIG-FUN is the original function, CMD is the command."
     map)
   "Keymap for emacs-mcp-claude-code commands.")
 
-;;;; Minor Mode
+;;;; Minor Mode:
 
 ;;;###autoload
 (define-minor-mode emacs-mcp-claude-code-mode
@@ -349,13 +349,13 @@ Key bindings under `C-c c m' prefix (customizable)."
         (require 'emacs-mcp-api nil t)
         ;; Extend claude-code command map
         (define-key claude-code-command-map (kbd "M") #'emacs-mcp-claude-code-transient)
-        (message "emacs-mcp-claude-code enabled"))
+        (message "Emacs-mcp-claude-code enabled"))
     ;; Remove advice
     (advice-remove 'claude-code--do-send-command
                    #'emacs-mcp-claude-code--advise-send-command)
-    (message "emacs-mcp-claude-code disabled")))
+    (message "Emacs-mcp-claude-code disabled")))
 
-;;;; Addon Registration
+;;;; Addon Registration:
 
 (eval-after-load 'emacs-mcp-addons
   '(emacs-mcp-addon-register

@@ -36,7 +36,7 @@
 
 (require 'emacs-mcp-api)
 
-;;;; Customization
+;;;; Customization:
 
 (defgroup emacs-mcp-vibe-kanban nil
   "Vibe Kanban integration for emacs-mcp."
@@ -71,7 +71,7 @@ If nil, uses current project root or `default-directory'."
   :type '(choice (const nil) directory)
   :group 'emacs-mcp-vibe-kanban)
 
-;;;; Internal Variables
+;;;; Internal Variables:
 
 (defvar emacs-mcp-vibe-kanban--process nil
   "Process object for the vibe-kanban server.")
@@ -79,7 +79,7 @@ If nil, uses current project root or `default-directory'."
 (defvar emacs-mcp-vibe-kanban--buffer-name "*vibe-kanban*"
   "Buffer name for vibe-kanban output.")
 
-;;;; Helper Functions
+;;;; Helper Functions:
 
 (defun emacs-mcp-vibe-kanban--project-dir ()
   "Get the project directory for vibe-kanban."
@@ -94,7 +94,7 @@ If nil, uses current project root or `default-directory'."
   (and emacs-mcp-vibe-kanban--process
        (process-live-p emacs-mcp-vibe-kanban--process)))
 
-;;;; Server Control
+;;;; Server Control:
 
 (defun emacs-mcp-vibe-kanban--start-async ()
   "Start vibe-kanban server asynchronously.
@@ -123,7 +123,7 @@ Returns the process object."
     (setq emacs-mcp-vibe-kanban--process nil)
     (message "emacs-mcp-vibe-kanban: Server stopped")))
 
-;;;; Interactive Commands
+;;;; Interactive Commands:
 
 ;;;###autoload
 (defun emacs-mcp-vibe-kanban-start ()
@@ -164,7 +164,7 @@ Returns the process object."
       (display-buffer buf)
     (message "emacs-mcp-vibe-kanban: No output buffer")))
 
-;;;; Addon Lifecycle Functions
+;;;; Addon Lifecycle Functions:
 
 (defun emacs-mcp-vibe-kanban--addon-init ()
   "Synchronous init for vibe-kanban addon."
@@ -183,7 +183,7 @@ Returns the process object for lifecycle tracking."
   (emacs-mcp-vibe-kanban--stop)
   (message "emacs-mcp-vibe-kanban: shutdown complete"))
 
-;;;; Transient Menu
+;;;; Transient Menu:
 
 ;;;###autoload (autoload 'emacs-mcp-vibe-kanban-transient "emacs-mcp-vibe-kanban" nil t)
 (transient-define-prefix emacs-mcp-vibe-kanban-transient ()
@@ -197,7 +197,7 @@ Returns the process object for lifecycle tracking."
    ["View"
     ("b" "Show buffer" emacs-mcp-vibe-kanban-show-buffer)]])
 
-;;;; Addon Registration
+;;;; Addon Registration:
 
 (with-eval-after-load 'emacs-mcp-addons
   (emacs-mcp-addon-register

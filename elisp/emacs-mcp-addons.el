@@ -29,7 +29,7 @@
 
 (require 'cl-lib)
 
-;;;; Customization
+;;;; Customization:
 
 (defgroup emacs-mcp-addons nil
   "Addon system for emacs-mcp."
@@ -63,7 +63,7 @@ Example: \\='(cider org-kanban package-lint)"
   :type '(repeat symbol)
   :group 'emacs-mcp-addons)
 
-;;;; Registry
+;;;; Registry:
 
 (defvar emacs-mcp-addon--registry (make-hash-table :test 'eq)
   "Hash table of registered addons.
@@ -81,7 +81,7 @@ Keys are addon symbols, values are process objects.")
   "Hash table tracking timers started by addons.
 Keys are addon symbols, values are lists of timer objects.")
 
-;;;; Core Functions
+;;;; Core Functions:
 
 (defun emacs-mcp-addon--find-file (addon)
   "Find the file for ADDON in addon directories."
@@ -106,7 +106,7 @@ Keys are addon symbols, values are lists of timer objects.")
       (when-let* ((timers (gethash addon emacs-mcp-addon--timers)))
         (cl-some #'timerp timers))))
 
-;;;; Lifecycle Management
+;;;; Lifecycle Management:
 
 (defun emacs-mcp-addon--run-init (addon)
   "Run the :init function for ADDON if defined."
@@ -115,9 +115,9 @@ Keys are addon symbols, values are lists of timer objects.")
     (condition-case err
         (progn
           (funcall init-fn)
-          (message "emacs-mcp addon %s: init completed" addon))
+          (message "Emacs-mcp addon %s: init completed" addon))
       (error
-       (message "emacs-mcp addon %s: init failed: %s" addon (error-message-string err))))))
+       (message "Emacs-mcp addon %s: init failed: %s" addon (error-message-string err))))))
 
 (defun emacs-mcp-addon--run-async-init (addon)
   "Run the :async-init function for ADDON if defined.
@@ -129,9 +129,9 @@ The async-init function should return a process object or nil."
           ;; Track returned process if any
           (when (processp result)
             (puthash addon result emacs-mcp-addon--processes))
-          (message "emacs-mcp addon %s: async-init started" addon))
+          (message "Emacs-mcp addon %s: async-init started" addon))
       (error
-       (message "emacs-mcp addon %s: async-init failed: %s" addon (error-message-string err))))))
+       (message "Emacs-mcp addon %s: async-init failed: %s" addon (error-message-string err))))))
 
 (defun emacs-mcp-addon--run-shutdown (addon)
   "Run the :shutdown function for ADDON if defined."
@@ -140,9 +140,9 @@ The async-init function should return a process object or nil."
     (condition-case err
         (progn
           (funcall shutdown-fn)
-          (message "emacs-mcp addon %s: shutdown completed" addon))
+          (message "Emacs-mcp addon %s: shutdown completed" addon))
       (error
-       (message "emacs-mcp addon %s: shutdown failed: %s" addon (error-message-string err))))))
+       (message "Emacs-mcp addon %s: shutdown failed: %s" addon (error-message-string err))))))
 
 (defun emacs-mcp-addon--cleanup (addon)
   "Clean up processes and timers for ADDON."
@@ -172,7 +172,7 @@ The async-init function should return a process object or nil."
   (when-let* ((timers (gethash addon emacs-mcp-addon--timers)))
     (puthash addon (delq timer timers) emacs-mcp-addon--timers)))
 
-;;;; Load/Unload
+;;;; Load/Unload:
 
 ;;;###autoload
 (defun emacs-mcp-addon-load (addon)
@@ -250,7 +250,7 @@ Returns t if loaded successfully, nil otherwise."
              emacs-mcp-addon--registry)
     loaded))
 
-;;;; Auto-loading
+;;;; Auto-loading:
 
 (defun emacs-mcp-addon--after-load-hook (feature)
   "Hook function to auto-load addons when FEATURE is loaded."
@@ -294,7 +294,7 @@ This is the main entry point, called from `emacs-mcp-initialize'."
   ;; Then set up deferred auto-loading for feature-triggered addons
   (emacs-mcp-addons-auto-load))
 
-;;;; Registration (for addon authors)
+;;;; Registration (for addon authors):
 
 (defun emacs-mcp-addon-register (addon &rest props)
   "Register ADDON with PROPS.
@@ -328,7 +328,7 @@ Example:
    :shutdown #\\='my-addon-stop-server)"
   (puthash addon props emacs-mcp-addon--registry))
 
-;;;; Info command
+;;;; Info command:
 
 ;;;###autoload
 (defun emacs-mcp-addon-info ()

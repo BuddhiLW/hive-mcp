@@ -44,7 +44,7 @@
 (declare-function cider-connected-p "cider-connection")
 (declare-function cider-repl-buffers "cider-connection")
 
-;;;; Customization
+;;;; Customization:
 
 (defgroup emacs-mcp-cider nil
   "Integration between CIDER and emacs-mcp."
@@ -95,7 +95,7 @@ If nil, uses the current project root or `default-directory'."
   :type 'integer
   :group 'emacs-mcp-cider)
 
-;;;; Internal
+;;;; Internal:
 
 (defvar emacs-mcp-cider--last-eval nil
   "Last evaluated expression and result for potential saving.")
@@ -109,7 +109,7 @@ If nil, uses the current project root or `default-directory'."
 (defvar emacs-mcp-cider--connect-attempts 0
   "Number of connection attempts made.")
 
-;;;; Async nREPL Start & Auto-Connect
+;;;; Async nREPL Start & Auto-Connect:
 
 (defun emacs-mcp-cider--project-dir ()
   "Get the project directory for nREPL."
@@ -221,7 +221,7 @@ Use this when nREPL is started externally."
     (setq emacs-mcp-cider--nrepl-process nil)
     (message "emacs-mcp-cider: nREPL server stopped")))
 
-;;;; Context Functions
+;;;; Context Functions:
 
 (defun emacs-mcp-cider--get-clojure-context ()
   "Get Clojure-specific context for MCP."
@@ -235,7 +235,7 @@ Use this when nREPL is started externally."
                 :repl-type (when (boundp 'cider-repl-type)
                              cider-repl-type)))))
 
-;;;; Memory Integration
+;;;; Memory Integration:
 
 ;;;###autoload
 (defun emacs-mcp-cider-save-last-result ()
@@ -295,7 +295,7 @@ Use this when nREPL is started externally."
       (goto-char (point-min)))
     (display-buffer buf)))
 
-;;;; Eval with Context
+;;;; Eval with Context:
 
 ;;;###autoload
 (defun emacs-mcp-cider-eval-with-context ()
@@ -314,10 +314,10 @@ Use this when nREPL is started externally."
                   :context ctx))
       (cider-interactive-eval expr))))
 
-;;;; Advice for auto-logging
+;;;; Advice for auto-logging:
 
 (defun emacs-mcp-cider--after-eval-advice (orig-fun &rest args)
-  "Advice to capture eval results for potential saving."
+  "Advice around ORIG-FUN with ARGS to capture eval results for saving."
   (let ((result (apply orig-fun args)))
     (when (and emacs-mcp-cider-auto-log-results
                result
@@ -328,7 +328,7 @@ Use this when nREPL is started externally."
                   :ns (when (fboundp 'cider-current-ns) (cider-current-ns)))))
     result))
 
-;;;; Transient Menu
+;;;; Transient Menu:
 
 ;;;###autoload (autoload 'emacs-mcp-cider-transient "emacs-mcp-cider" nil t)
 (transient-define-prefix emacs-mcp-cider-transient ()
@@ -353,7 +353,7 @@ Use this when nREPL is started externally."
   (setq emacs-mcp-cider-auto-log-results (not emacs-mcp-cider-auto-log-results))
   (message "Auto-log %s" (if emacs-mcp-cider-auto-log-results "enabled" "disabled")))
 
-;;;; MCP Tool API Functions
+;;;; MCP Tool API Functions:
 ;; These functions are called by the emacs-mcp Clojure server as MCP tools
 
 ;;;###autoload
@@ -388,7 +388,7 @@ Shows output in REPL buffer for collaborative debugging."
         :repl-type (when (and (featurep 'cider) (boundp 'cider-repl-type))
                      cider-repl-type)))
 
-;;;; Addon Lifecycle Functions
+;;;; Addon Lifecycle Functions:
 
 (defun emacs-mcp-cider--addon-init ()
   "Synchronous init for cider addon.
@@ -421,7 +421,7 @@ Stops nREPL server and cleans up timers."
     (setq emacs-mcp-cider--nrepl-process nil))
   (message "emacs-mcp-cider: shutdown complete"))
 
-;;;; Minor Mode
+;;;; Minor Mode:
 
 ;;;###autoload
 (define-minor-mode emacs-mcp-cider-mode
@@ -442,7 +442,7 @@ Set `emacs-mcp-cider-auto-start-nrepl' to t and load the addon."
       (message "emacs-mcp-cider mode enabled")
     (message "emacs-mcp-cider mode disabled")))
 
-;;;; Addon Registration
+;;;; Addon Registration:
 
 (with-eval-after-load 'emacs-mcp-addons
   (emacs-mcp-addon-register

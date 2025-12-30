@@ -47,7 +47,7 @@
 (declare-function emacs-mcp-addon-register "emacs-mcp-addons")
 (declare-function transient-define-prefix "transient")
 
-;;;; Customization
+;;;; Customization:
 
 (defgroup emacs-mcp-melpazoid nil
   "Melpazoid integration for emacs-mcp."
@@ -76,7 +76,7 @@ If nil, will attempt to find it in common locations."
   :type 'integer
   :group 'emacs-mcp-melpazoid)
 
-;;;; Internal Variables
+;;;; Internal Variables:
 
 ;; Forward declarations for byte-compiler (defined at runtime by transient)
 (defvar emacs-mcp-melpazoid--transient-menu)
@@ -98,7 +98,7 @@ If nil, will attempt to find it in common locations."
     "~/.local/share/melpazoid")
   "Common paths to search for melpazoid.")
 
-;;;; Utility Functions
+;;;; Utility Functions:
 
 (defun emacs-mcp-melpazoid--find-path ()
   "Find melpazoid installation path."
@@ -166,7 +166,7 @@ If nil, will attempt to find it in common locations."
           (if (plist-get results :success) "PASS" "FAIL")
           (mapconcat #'identity (plist-get results :sections) ", ")))
 
-;;;; Core Functions
+;;;; Core Functions:
 
 ;;;###autoload
 (defun emacs-mcp-melpazoid-run (project-dir &optional recipe)
@@ -289,7 +289,7 @@ If RECIPE is nil, attempts to auto-detect from recipes/ directory."
   (interactive)
   (let ((status (list :running (and emacs-mcp-melpazoid--process
                                     (process-live-p emacs-mcp-melpazoid--process))
-                      :has-results (not (null emacs-mcp-melpazoid--last-results))
+                      :has-results (and emacs-mcp-melpazoid--last-results t)
                       :last-success (when emacs-mcp-melpazoid--last-results
                                       (plist-get emacs-mcp-melpazoid--last-results :success))
                       :last-errors (when emacs-mcp-melpazoid--last-results
@@ -306,7 +306,7 @@ If RECIPE is nil, attempts to auto-detect from recipes/ directory."
                (or (plist-get status :last-warnings) 0)))
     status))
 
-;;;; Transient Menu
+;;;; Transient Menu:
 
 ;;;###autoload
 (defun emacs-mcp-melpazoid-transient ()
@@ -329,7 +329,7 @@ If RECIPE is nil, attempts to auto-detect from recipes/ directory."
         (emacs-mcp-melpazoid--transient-menu))
     (message "Transient package not available. Use M-x emacs-mcp-melpazoid-run-current-project")))
 
-;;;; Minor Mode
+;;;; Minor Mode:
 
 ;;;###autoload
 (define-minor-mode emacs-mcp-melpazoid-mode
@@ -347,11 +347,11 @@ Provides Docker-based MELPA submission testing with:
   (if emacs-mcp-melpazoid-mode
       (progn
         (require 'emacs-mcp-api nil t)
-        (message "emacs-mcp-melpazoid enabled"))
+        (message "Emacs-mcp-melpazoid enabled"))
     (emacs-mcp-melpazoid-stop)
-    (message "emacs-mcp-melpazoid disabled")))
+    (message "Emacs-mcp-melpazoid disabled")))
 
-;;;; Addon Registration
+;;;; Addon Registration:
 
 (with-eval-after-load 'emacs-mcp-addons
   (emacs-mcp-addon-register

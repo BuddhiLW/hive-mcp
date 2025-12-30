@@ -41,7 +41,7 @@
 (declare-function org-ai-switch-chat-model "org-ai")
 (declare-function org-ai-stream-text "org-ai")
 
-;;;; Customization
+;;;; Customization:
 
 (defgroup emacs-mcp-org-ai nil
   "Integration between org-ai and emacs-mcp."
@@ -76,7 +76,7 @@ This enables persistent conversation history per project."
   :type 'boolean
   :group 'emacs-mcp-org-ai)
 
-;;;; Internal State
+;;;; Internal State:
 
 (defvar emacs-mcp-org-ai--available nil
   "Cached check for whether emacs-mcp-api is available.")
@@ -84,7 +84,7 @@ This enables persistent conversation history per project."
 (defvar emacs-mcp-org-ai--last-conversation nil
   "Last org-ai conversation for potential saving.")
 
-;;;; Utility Functions
+;;;; Utility Functions:
 
 (defun emacs-mcp-org-ai--available-p ()
   "Check if emacs-mcp-api is available."
@@ -97,7 +97,7 @@ This enables persistent conversation history per project."
   (unless (emacs-mcp-org-ai--available-p)
     (if (require 'emacs-mcp-api nil t)
         (setq emacs-mcp-org-ai--available t)
-      (error "emacs-mcp-api not available. Load emacs-mcp first"))))
+      (error "Emacs-mcp-api not available.  Load emacs-mcp first"))))
 
 (defun emacs-mcp-org-ai--format-context-compact (ctx)
   "Format CTX as compact one-line summary."
@@ -172,7 +172,7 @@ This enables persistent conversation history per project."
         ('full (format "```json\n%s\n```" (json-encode ctx)))
         ('smart (emacs-mcp-org-ai--format-context-smart ctx))))))
 
-;;;; Integration Commands
+;;;; Integration Commands:
 
 ;;;###autoload
 (defun emacs-mcp-org-ai-insert-context ()
@@ -306,7 +306,7 @@ This enables persistent conversation history per project."
       (goto-char (point-min)))
     (display-buffer buf)))
 
-;;;; Transient Menu
+;;;; Transient Menu:
 
 ;;;###autoload (autoload 'emacs-mcp-org-ai-transient "emacs-mcp-org-ai" nil t)
 (transient-define-prefix emacs-mcp-org-ai-transient ()
@@ -327,7 +327,7 @@ This enables persistent conversation history per project."
     ("L" "Toggle logging" emacs-mcp-org-ai-toggle-logging)
     ("M" "Toggle memory inclusion" emacs-mcp-org-ai-toggle-memory)]])
 
-;;;; Toggle Commands
+;;;; Toggle Commands:
 
 (defun emacs-mcp-org-ai-toggle-auto-context ()
   "Toggle automatic context injection."
@@ -349,7 +349,7 @@ This enables persistent conversation history per project."
   (message "Memory inclusion %s"
            (if emacs-mcp-org-ai-include-memory "enabled" "disabled")))
 
-;;;; Hooks and Advice
+;;;; Hooks and Advice:
 
 (defun emacs-mcp-org-ai--maybe-add-context (text)
   "Maybe add context to TEXT if auto-context is enabled."
@@ -370,7 +370,7 @@ This enables persistent conversation history per project."
         (setq emacs-mcp-org-ai--last-conversation content)
         (emacs-mcp-api-conversation-log "org-ai" content)))))
 
-;;;; Keymap for org-ai blocks
+;;;; Keymap for org-ai blocks:
 
 (defvar emacs-mcp-org-ai-block-map
   (let ((map (make-sparse-keymap)))
@@ -383,7 +383,7 @@ This enables persistent conversation history per project."
     map)
   "Keymap for org-ai blocks with MCP integration.")
 
-;;;; Minor Mode
+;;;; Minor Mode:
 
 ;;;###autoload
 (define-minor-mode emacs-mcp-org-ai-mode
@@ -395,11 +395,11 @@ When enabled, provides:
 - Conversation history
 - Workflow access
 
-Key bindings in org-ai blocks:
-  C-c C-c m - Insert context
-  C-c C-c s - Save conversation
-  C-c C-c q - Query memory
-  C-c C-c M - Open transient menu"
+Key bindings in org-ai blocks (see `emacs-mcp-org-ai-block-map'):
+  \\[emacs-mcp-org-ai-insert-context] - Insert context
+  \\[emacs-mcp-org-ai-save-conversation] - Save conversation
+  \\[emacs-mcp-org-ai-query-memory] - Query memory
+  \\[emacs-mcp-org-ai-transient] - Open transient menu"
   :init-value nil
   :lighter " MCP-AI"
   :global t
@@ -411,10 +411,10 @@ Key bindings in org-ai blocks:
         ;; Add keybindings to org-ai-mode if available
         (when (boundp 'org-ai-mode-map)
           (set-keymap-parent org-ai-mode-map emacs-mcp-org-ai-block-map))
-        (message "emacs-mcp-org-ai enabled"))
-    (message "emacs-mcp-org-ai disabled")))
+        (message "Emacs-mcp-org-ai enabled"))
+    (message "Emacs-mcp-org-ai disabled")))
 
-;;;; Addon Registration
+;;;; Addon Registration:
 
 (with-eval-after-load 'emacs-mcp-addons
   (emacs-mcp-addon-register

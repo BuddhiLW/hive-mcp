@@ -50,9 +50,7 @@
 (declare-function emacs-mcp-api-get-context "emacs-mcp-api")
 (declare-function org-kanban/initialize "org-kanban")
 
-;;; ============================================================================
-;;; Customization
-;;; ============================================================================
+;;;; Customization:
 
 (defgroup emacs-mcp-kanban nil
   "Kanban integration for emacs-mcp with dual backends."
@@ -106,9 +104,7 @@ Set this to your project UUID for automatic project selection."
   :type 'boolean
   :group 'emacs-mcp-kanban)
 
-;;; ============================================================================
-;;; Backend Protocol (DDD Port)
-;;; ============================================================================
+;;;; Backend Protocol:
 
 (cl-defgeneric emacs-mcp-kanban--list-projects (backend)
   "List all projects from BACKEND.")
@@ -123,14 +119,12 @@ Set this to your project UUID for automatic project selection."
   "Create task in BACKEND for PROJECT-ID with TITLE and optional DESCRIPTION.")
 
 (cl-defgeneric emacs-mcp-kanban--update-task (backend task-id &rest props)
-  "Update task in BACKEND. PROPS is a plist of :title :description :status.")
+  "Update TASK-ID in BACKEND.  PROPS is a plist of :title :description :status.")
 
 (cl-defgeneric emacs-mcp-kanban--delete-task (backend task-id)
-  "Delete task from BACKEND by TASK-ID.")
+  "Delete TASK-ID from BACKEND.")
 
-;;; ============================================================================
-;;; Vibe-Kanban Backend (MCP Adapter)
-;;; ============================================================================
+;;;; Vibe-Kanban Backend:
 
 (defvar emacs-mcp-kanban--vibe-cache nil
   "Cache for vibe-kanban data.")
@@ -140,18 +134,18 @@ Set this to your project UUID for automatic project selection."
   (emacs-mcp-kanban--mcp-call "list_projects" nil))
 
 (cl-defmethod emacs-mcp-kanban--list-tasks ((_backend (eql vibe)) project-id &optional status)
-  "List tasks from vibe-kanban for PROJECT-ID."
+  "List tasks from vibe-kanban for PROJECT-ID, optionally filtered by STATUS."
   (let ((params `((project_id . ,project-id))))
     (when status
       (push `(status . ,status) params))
     (emacs-mcp-kanban--mcp-call "list_tasks" params)))
 
 (cl-defmethod emacs-mcp-kanban--get-task ((_backend (eql vibe)) task-id)
-  "Get task from vibe-kanban by TASK-ID."
+  "Get TASK-ID from vibe-kanban."
   (emacs-mcp-kanban--mcp-call "get_task" `((task_id . ,task-id))))
 
 (cl-defmethod emacs-mcp-kanban--create-task ((_backend (eql vibe)) project-id title &optional description)
-  "Create task in vibe-kanban."
+  "Create task with TITLE in PROJECT-ID, optionally with DESCRIPTION."
   (let ((params `((project_id . ,project-id)
                   (title . ,title))))
     (when description
@@ -159,7 +153,7 @@ Set this to your project UUID for automatic project selection."
     (emacs-mcp-kanban--mcp-call "create_task" params)))
 
 (cl-defmethod emacs-mcp-kanban--update-task ((_backend (eql vibe)) task-id &rest props)
-  "Update task in vibe-kanban."
+  "Update TASK-ID in vibe-kanban with PROPS."
   (let ((params `((task_id . ,task-id))))
     (when-let* ((title (plist-get props :title)))
       (push `(title . ,title) params))
@@ -170,7 +164,7 @@ Set this to your project UUID for automatic project selection."
     (emacs-mcp-kanban--mcp-call "update_task" params)))
 
 (cl-defmethod emacs-mcp-kanban--delete-task ((_backend (eql vibe)) task-id)
-  "Delete task from vibe-kanban."
+  "Delete TASK-ID from vibe-kanban."
   (emacs-mcp-kanban--mcp-call "delete_task" `((task_id . ,task-id))))
 
 (defun emacs-mcp-kanban--mcp-call (tool params)
@@ -185,9 +179,7 @@ This uses emacsclient to communicate with the MCP server."
     (message "MCP call: %s" cmd)
     nil))
 
-;;; ============================================================================
-;;; Standalone Backend Helpers (Macros must be defined before use)
-;;; ============================================================================
+;;;; Standalone Backend Helpers:
 
 (defun emacs-mcp-kanban--init-org-file (file)
   "Initialize a new kanban org FILE."
@@ -198,7 +190,7 @@ This uses emacsclient to communicate with the MCP server."
     (insert "* Default Project\n")
     (insert ":PROPERTIES:\n")
     (insert (format ":ID: %s\n" (org-id-uuid)))
-    (insert (format ":CREATED: %s\n" (format-time-string "%Y-%m-%d")))
+    (insert (format ":CREATED: %s\n" (format-time-string "%F")))
     (insert ":END:\n")))
 
 (defmacro emacs-mcp-kanban--with-org-file (&rest body)
@@ -213,9 +205,7 @@ This uses emacsclient to communicate with the MCP server."
      (with-current-buffer (find-file-noselect file)
        ,@body)))
 
-;;; ============================================================================
-;;; Standalone Backend (Org File Adapter)
-;;; ============================================================================
+;;;; Standalone Backend:
 
 (defvar emacs-mcp-kanban--standalone-buffer nil
   "Buffer visiting the standalone kanban org file.")
@@ -232,7 +222,7 @@ Each top-level heading is a project."
     "LEVEL=1")))
 
 (cl-defmethod emacs-mcp-kanban--list-tasks ((_backend (eql standalone)) project-id &optional status)
-  "List tasks from standalone org file for PROJECT-ID.
+  "List tasks from standalone org file for PROJECT-ID, filtered by STATUS.
 If PROJECT-ID is nil, lists all tasks from all projects."
   (emacs-mcp-kanban--with-org-file
    (let ((tasks '()))
@@ -259,7 +249,7 @@ If PROJECT-ID is nil, lists all tasks from all projects."
      (nreverse tasks))))
 
 (cl-defmethod emacs-mcp-kanban--get-task ((_backend (eql standalone)) task-id)
-  "Get task from standalone org file by TASK-ID."
+  "Get TASK-ID from standalone org file."
   (emacs-mcp-kanban--with-org-file
    (let ((marker (org-id-find task-id 'marker)))
      (when marker
@@ -277,7 +267,7 @@ If PROJECT-ID is nil, lists all tasks from all projects."
              (updated . ,(org-entry-get nil "UPDATED")))))))))
 
 (cl-defmethod emacs-mcp-kanban--create-task ((_backend (eql standalone)) project-id title &optional description)
-  "Create task in standalone org file.
+  "Create task with TITLE in PROJECT-ID, optionally with DESCRIPTION.
 If PROJECT-ID is nil, uses the first project (Default Project)."
   (emacs-mcp-kanban--with-org-file
    ;; Find project - if nil, use the first heading as default
@@ -296,7 +286,7 @@ If PROJECT-ID is nil, uses the first project (Default Project)."
          (org-end-of-subtree t)
          (insert "\n** TODO " title "\n")
          (org-entry-put nil "ID" (org-id-uuid))
-         (org-entry-put nil "CREATED" (format-time-string "%Y-%m-%d %H:%M"))
+         (org-entry-put nil "CREATED" (format-time-string "%F %R"))
          (when description
            (org-entry-put nil "DESCRIPTION" description))
          (when emacs-mcp-kanban-track-agents
@@ -319,7 +309,7 @@ Optional DESCRIPTION and STATUS (defaults to todo)."
          (insert "\n** " org-status " " title "\n")
          (org-entry-put nil "ID" (org-id-uuid))
          (org-entry-put nil "VIBE_ID" vibe-id)
-         (org-entry-put nil "CREATED" (format-time-string "%Y-%m-%d %H:%M"))
+         (org-entry-put nil "CREATED" (format-time-string "%F %R"))
          (when description
            (org-entry-put nil "DESCRIPTION" description))
          (save-buffer)
@@ -353,7 +343,7 @@ Optional DESCRIPTION and STATUS (defaults to todo)."
      ids)))
 
 (defun emacs-mcp-kanban-backfill-vibe-id (title vibe-id)
-  "Add VIBE_ID to existing task matched by TITLE.
+  "Add VIBE-ID to existing task matched by TITLE.
 Returns t if task was found and updated, nil otherwise."
   (emacs-mcp-kanban--with-org-file
    (let ((found nil))
@@ -368,7 +358,7 @@ Returns t if task was found and updated, nil otherwise."
      found)))
 
 (cl-defmethod emacs-mcp-kanban--update-task ((_backend (eql standalone)) task-id &rest props)
-  "Update task in standalone org file."
+  "Update TASK-ID in standalone org file with PROPS."
   (emacs-mcp-kanban--with-org-file
    (let ((marker (org-id-find task-id 'marker)))
      (when marker
@@ -381,14 +371,14 @@ Returns t if task was found and updated, nil otherwise."
          (when-let* ((status (plist-get props :status)))
            (let ((org-status (emacs-mcp-kanban--vibe-to-org-status status)))
              (org-todo org-status)))
-         (org-entry-put nil "UPDATED" (format-time-string "%Y-%m-%d %H:%M"))
+         (org-entry-put nil "UPDATED" (format-time-string "%F %R"))
          (when emacs-mcp-kanban-track-agents
            (org-entry-put nil "LAST_AGENT" (emacs-mcp-kanban--current-agent)))
          (save-buffer)
          t)))))
 
 (cl-defmethod emacs-mcp-kanban--delete-task ((_backend (eql standalone)) task-id)
-  "Delete task from standalone org file."
+  "Delete TASK-ID from standalone org file."
   (emacs-mcp-kanban--with-org-file
    (let ((marker (org-id-find task-id 'marker)))
      (when marker
@@ -417,9 +407,7 @@ Returns t if task was found and updated, nil otherwise."
   "Get current session identifier."
   (format-time-string "%Y%m%d-%H%M%S"))
 
-;;; ============================================================================
-;;; Unified API (Application Layer)
-;;; ============================================================================
+;;;; Unified API:
 
 (defun emacs-mcp-kanban-list-projects ()
   "List all projects from current backend."
@@ -470,9 +458,7 @@ For standalone backend, PROJECT-ID can be nil."
   "Move task TASK-ID to NEW-STATUS."
   (emacs-mcp-kanban-update-task task-id :status new-status))
 
-;;; ============================================================================
-;;; Dual Backend Sync
-;;; ============================================================================
+;;;; Dual Backend Sync:
 
 (defun emacs-mcp-kanban-enable-dual-backend ()
   "Enable dual backend mode with auto-sync."
@@ -501,13 +487,11 @@ For standalone backend, PROJECT-ID can be nil."
      (alist-get 'description task))))
 
 (defun emacs-mcp-kanban--sync-update-to-other-backend (task-id &rest props)
-  "Sync task update to the non-active backend."
+  "Sync TASK-ID update with PROPS to the non-active backend."
   (let ((other-backend (if (eq emacs-mcp-kanban-backend 'vibe) 'standalone 'vibe)))
     (apply #'emacs-mcp-kanban--update-task other-backend task-id props)))
 
-;;; ============================================================================
-;;; Interactive Kanban Board (calfw-style)
-;;; ============================================================================
+;;;; Interactive Kanban Board:
 
 (defvar emacs-mcp-kanban-board-mode-map
   (let ((map (make-sparse-keymap)))
@@ -950,9 +934,7 @@ Uses the addon's unified API for auto-sync and agent tracking."
   (interactive)
   (message "Kanban: n/p=nav tasks, h/l=nav cols, RET=open, >/<= move, c=create, d=delete, g=refresh, q=quit"))
 
-;;; ============================================================================
-;;; Legacy View Commands (simple text output)
-;;; ============================================================================
+;;;; Legacy View Commands:
 
 ;;;###autoload
 (defun emacs-mcp-kanban-view (&optional format)
@@ -1075,9 +1057,7 @@ Used when CIDER is not connected."
     (message "Set default project: %s (%s)"
              selection emacs-mcp-kanban-default-project)))
 
-;;; ============================================================================
-;;; Agent API (for MCP tools)
-;;; ============================================================================
+;;;; Agent API:
 
 (defun emacs-mcp-kanban-api-status ()
   "Get kanban status for API consumption.
@@ -1130,9 +1110,7 @@ Returns current tasks grouped by status."
                     tasks)
                    5)))))
 
-;;; ============================================================================
-;;; Transient Menu
-;;; ============================================================================
+;;;; Transient Menu:
 
 ;;;###autoload (autoload 'emacs-mcp-kanban-transient "emacs-mcp-org-kanban" nil t)
 (transient-define-prefix emacs-mcp-kanban-transient ()
@@ -1151,9 +1129,7 @@ Returns current tasks grouped by status."
     ("s" "Sync backends" emacs-mcp-kanban-sync-all)
     ("d" "Toggle dual mode" emacs-mcp-kanban-enable-dual-backend)]])
 
-;;; ============================================================================
-;;; Minor Mode
-;;; ============================================================================
+;;;; Minor Mode:
 
 (defvar emacs-mcp-kanban-mode-map
   (let ((map (make-sparse-keymap)))
@@ -1172,20 +1148,17 @@ Provides:
 - org-kanban UI integration
 - Session continuity
 
-Key bindings:
-  C-c k - Open kanban transient menu"
+\\{emacs-mcp-kanban-mode-map}"
   :init-value nil
   :lighter " Kanban"
   :keymap emacs-mcp-kanban-mode-map
   :global t
   :group 'emacs-mcp-kanban
   (if emacs-mcp-kanban-mode
-      (message "emacs-mcp-kanban enabled (backend: %s)" emacs-mcp-kanban-backend)
-    (message "emacs-mcp-kanban disabled")))
+      (message "Emacs-mcp-kanban enabled (backend: %s)" emacs-mcp-kanban-backend)
+    (message "Emacs-mcp-kanban disabled")))
 
-;;; ============================================================================
-;;; Addon Registration
-;;; ============================================================================
+;;;; Addon Registration:
 
 (with-eval-after-load 'emacs-mcp-addons
   (emacs-mcp-addon-register

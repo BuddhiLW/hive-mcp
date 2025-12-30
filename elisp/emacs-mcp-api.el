@@ -27,9 +27,7 @@
 (declare-function emacs-mcp-register-trigger "emacs-mcp-triggers")
 (declare-function emacs-mcp-list-triggers "emacs-mcp-triggers")
 
-;;; ============================================================================
-;;; Context API
-;;; ============================================================================
+;;;; Context API:
 
 (defun emacs-mcp-api-get-context ()
   "Return full context as JSON-compatible plist.
@@ -64,9 +62,7 @@ Includes buffer, region, defun, project, git, and memory."
 BEFORE and AFTER default to 5 lines each."
   (emacs-mcp-context-surrounding-lines before after))
 
-;;; ============================================================================
-;;; Memory API
-;;; ============================================================================
+;;;; Memory API:
 
 (defun emacs-mcp-api--plist-to-alist (plist)
   "Convert PLIST to alist for JSON serialization.
@@ -133,9 +129,7 @@ Returns the created entry as alist suitable for JSON encoding."
   "Return full project context including all memory."
   (emacs-mcp-memory-get-project-context))
 
-;;; ============================================================================
-;;; Conversation API
-;;; ============================================================================
+;;;; Conversation API:
 
 (defun emacs-mcp-api-conversation-log (role content)
   "Log conversation entry.
@@ -154,9 +148,7 @@ LIMIT defaults to 20 entries."
     (emacs-mcp-memory--set-data pid "conversation" '())
     t))
 
-;;; ============================================================================
-;;; Workflow API
-;;; ============================================================================
+;;;; Workflow API:
 
 (defun emacs-mcp-api-list-workflows ()
   "Return list of registered workflows."
@@ -178,9 +170,7 @@ SPEC is plist with :description, :steps, :params."
       (emacs-mcp-workflow-register name spec)
     (error "Workflows not available")))
 
-;;; ============================================================================
-;;; Trigger API
-;;; ============================================================================
+;;;; Trigger API:
 
 (defun emacs-mcp-api-register-trigger (name spec)
   "Register a trigger for automation.
@@ -196,9 +186,7 @@ SPEC is plist with :event, :condition, :action."
       (emacs-mcp-list-triggers)
     '()))
 
-;;; ============================================================================
-;;; Interaction API
-;;; ============================================================================
+;;;; Interaction API:
 
 (defun emacs-mcp-api-notify (message &optional type)
   "Show notification MESSAGE to user.
@@ -227,9 +215,7 @@ OPTIONS is a list of strings.
 Returns the selected option."
   (completing-read (concat prompt ": ") options nil t))
 
-;;; ============================================================================
-;;; Buffer/File Operations API
-;;; ============================================================================
+;;;; Buffer and File Operations API:
 
 (defun emacs-mcp-api-open-file (path &optional line)
   "Open file at PATH and optionally go to LINE."
@@ -258,9 +244,7 @@ Returns the selected option."
   (kill-buffer name)
   t)
 
-;;; ============================================================================
-;;; Navigation API
-;;; ============================================================================
+;;;; Navigation API:
 
 (defun emacs-mcp-api-goto-line (line)
   "Go to LINE number."
@@ -285,9 +269,7 @@ BOUND limits the search to that buffer position.
 Returns position if found, nil otherwise."
   (re-search-forward regexp bound t))
 
-;;; ============================================================================
-;;; Visual Feedback API
-;;; ============================================================================
+;;;; Visual Feedback API:
 
 (defun emacs-mcp-api-highlight-line (&optional line)
   "Highlight LINE (or current line) briefly."
@@ -317,9 +299,7 @@ Returns position if found, nil otherwise."
     (display-buffer buf)
     name))
 
-;;; ============================================================================
-;;; Version Info
-;;; ============================================================================
+;;;; Version Info:
 
 (defconst emacs-mcp-api-version "0.1.0"
   "Version of the emacs-mcp API.")

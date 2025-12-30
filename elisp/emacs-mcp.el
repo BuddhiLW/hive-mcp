@@ -126,7 +126,7 @@ and enables auto-loading for feature-triggered addons."
       (emacs-mcp-addons-setup))
 
     (setq emacs-mcp--initialized t)
-    (message "emacs-mcp initialized (C-c m for menu)")))
+    (message "Emacs-mcp initialized (C-c m for menu)")))
 
 (defun emacs-mcp-reset ()
   "Reset emacs-mcp state (for debugging)."
@@ -135,7 +135,7 @@ and enables auto-loading for feature-triggered addons."
   (clrhash emacs-mcp-memory--cache)
   (clrhash emacs-mcp-workflow-registry)
   (clrhash emacs-mcp-trigger-registry)
-  (message "emacs-mcp reset"))
+  (message "Emacs-mcp reset"))
 
 ;;; Minor Mode
 
@@ -156,7 +156,7 @@ keybindings for AI-assisted development.
   (if emacs-mcp-mode
       (when emacs-mcp-auto-initialize
         (emacs-mcp-initialize))
-    (message "emacs-mcp mode disabled")))
+    (message "Emacs-mcp mode disabled")))
 
 ;;; Convenience aliases for common operations
 

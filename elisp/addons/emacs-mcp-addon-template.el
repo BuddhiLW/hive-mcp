@@ -31,7 +31,7 @@
 ;; Soft dependency - don't error if target package isn't installed
 (declare-function target-package-function "target-package")
 
-;;;; Customization
+;;;; Customization:
 
 (defgroup emacs-mcp-template nil
   "Integration between emacs-mcp and target-package."
@@ -43,7 +43,7 @@
   :type 'boolean
   :group 'emacs-mcp-template)
 
-;;;; Internal
+;;;; Internal:
 
 (defvar emacs-mcp-template--initialized nil
   "Whether the addon has been initialized.")
@@ -54,7 +54,7 @@
     (require 'emacs-mcp-api nil t))
   (featurep 'emacs-mcp-api))
 
-;;;; Public API
+;;;; Public API:
 
 ;;;###autoload
 (defun emacs-mcp-template-get-context ()
@@ -81,7 +81,7 @@
   (when (emacs-mcp-template--ensure-api)
     (emacs-mcp-api-memory-query type nil (or limit 10))))
 
-;;;; Integration hooks (customize these for your target package)
+;;;; Integration hooks (customize these for your target package):
 
 ;; Example: Advice to add context to a target function
 ;; (defun emacs-mcp-template--add-context-advice (orig-fun &rest args)
@@ -101,7 +101,7 @@
 ;;      "note"
 ;;      '("auto-logged"))))
 
-;;;; Minor mode (optional)
+;;;; Minor mode (optional):
 
 ;;;###autoload
 (define-minor-mode emacs-mcp-template-mode
@@ -120,7 +120,7 @@
     ;; (advice-remove 'target-function #'emacs-mcp-template--add-context-advice)
     (message "emacs-mcp-template disabled")))
 
-;;;; Transient menu (optional, requires transient.el)
+;;;; Transient menu (optional, requires transient.el):
 
 ;; (transient-define-prefix emacs-mcp-template-transient ()
 ;;   "MCP integration menu for target-package."
@@ -131,7 +131,7 @@
 ;;    ["Query"
 ;;     ("q" "Query memory" emacs-mcp-template-query-memory)]])
 
-;;;; Addon Lifecycle Functions (NEW - recommended approach)
+;;;; Addon Lifecycle Functions (NEW - recommended approach):
 
 ;; These functions are called automatically by the addon system:
 
@@ -157,7 +157,7 @@ Use for cleanup (stopping servers, saving state)."
   ;; Example: stop server, save state
   (message "emacs-mcp-template: shutdown complete"))
 
-;;;; Registration
+;;;; Registration:
 
 ;; Register this addon with emacs-mcp
 (with-eval-after-load 'emacs-mcp-addons

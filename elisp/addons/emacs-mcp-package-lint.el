@@ -39,7 +39,7 @@
 (declare-function transient-define-prefix "transient")
 (declare-function emacs-mcp-addon-register "emacs-mcp-addons")
 
-;;;; Customization
+;;;; Customization:
 
 (defgroup emacs-mcp-package-lint nil
   "MELPA submission tools for emacs-mcp."
@@ -61,7 +61,7 @@
   :type '(repeat string)
   :group 'emacs-mcp-package-lint)
 
-;;;; Internal Variables
+;;;; Internal Variables:
 
 (defvar emacs-mcp-package-lint--last-results nil
   "Last lint results for reference.")
@@ -69,12 +69,12 @@
 (defvar emacs-mcp-package-lint--buffer-name "*MCP Package Lint*"
   "Buffer name for lint output.")
 
-;;;; Utility Functions
+;;;; Utility Functions:
 
 (defun emacs-mcp-package-lint--ensure-package-lint ()
   "Ensure package-lint is available."
   (unless (require 'package-lint nil t)
-    (error "package-lint not installed. Install with: M-x package-install RET package-lint RET")))
+    (error "Package-lint not installed.  Install with: M-x package-install RET package-lint RET")))
 
 (defun emacs-mcp-package-lint--find-elisp-files (directory)
   "Find all elisp files in DIRECTORY, excluding unwanted patterns."
@@ -111,7 +111,7 @@
       "\n")
      "\n")))
 
-;;;; Package-Lint Functions
+;;;; Package-Lint Functions:
 
 ;;;###autoload
 (defun emacs-mcp-package-lint-check-file (file)
@@ -139,11 +139,11 @@
                 :results results
                 :type 'package-lint))
     (if results
-        (message "package-lint: %d issue(s) found" (length results))
-      (message "package-lint: OK"))
+        (message "Package-lint: %d issue(s) found" (length results))
+      (message "Package-lint: OK"))
     results))
 
-;;;; Byte-Compile Functions
+;;;; Byte-Compile Functions:
 
 ;;;###autoload
 (defun emacs-mcp-package-lint-byte-compile-file (file)
@@ -167,8 +167,8 @@
     (setq emacs-mcp-package-lint--last-results
           (list :file file :results warnings :type 'byte-compile))
     (if (string-empty-p (string-trim warnings))
-        (message "byte-compile: OK")
-      (message "byte-compile warnings:\n%s" warnings))
+        (message "Byte-compile: OK")
+      (message "Byte-compile warnings:\n%s" warnings))
     warnings))
 
 ;;;###autoload
@@ -179,7 +179,7 @@
       (emacs-mcp-package-lint-byte-compile-file buffer-file-name)
     (error "Buffer is not visiting a file")))
 
-;;;; Checkdoc Functions
+;;;; Checkdoc Functions:
 
 ;;;###autoload
 (defun emacs-mcp-package-lint-checkdoc-file (file)
@@ -201,8 +201,8 @@
     (setq emacs-mcp-package-lint--last-results
           (list :file file :results issues :type 'checkdoc))
     (if (or (null issues) (string-empty-p (string-trim issues)))
-        (message "checkdoc: OK")
-      (message "checkdoc issues:\n%s" issues))
+        (message "Checkdoc: OK")
+      (message "Checkdoc issues:\n%s" issues))
     issues))
 
 ;;;###autoload
@@ -213,7 +213,7 @@
       (emacs-mcp-package-lint-checkdoc-file buffer-file-name)
     (checkdoc-current-buffer t)))
 
-;;;; Full MELPA Compliance Check
+;;;; Full MELPA Compliance Check:
 
 ;;;###autoload
 (defun emacs-mcp-package-lint-check-all (directory)
@@ -314,7 +314,7 @@ Runs package-lint, byte-compile, and checkdoc on each file."
                   default-directory)))
     (emacs-mcp-package-lint-check-all root)))
 
-;;;; Save Results to Memory
+;;;; Save Results to Memory:
 
 ;;;###autoload
 (defun emacs-mcp-package-lint-save-results ()
@@ -336,7 +336,7 @@ Runs package-lint, byte-compile, and checkdoc on each file."
         (message "Saved lint results to memory"))
     (message "No lint results to save")))
 
-;;;; MCP Tool API Functions
+;;;; MCP Tool API Functions:
 
 ;;;###autoload
 (defun emacs-mcp-package-lint-run (file-or-dir)
@@ -349,13 +349,13 @@ Runs package-lint, byte-compile, and checkdoc on each file."
 ;;;###autoload
 (defun emacs-mcp-package-lint-status ()
   "Return last lint status as JSON-compatible plist."
-  (list :has-results (not (null emacs-mcp-package-lint--last-results))
+  (list :has-results (and emacs-mcp-package-lint--last-results t)
         :last-type (when emacs-mcp-package-lint--last-results
                      (plist-get emacs-mcp-package-lint--last-results :type))
         :last-file (when emacs-mcp-package-lint--last-results
                      (plist-get emacs-mcp-package-lint--last-results :file))))
 
-;;;; Transient Menu
+;;;; Transient Menu:
 
 ;;;###autoload (autoload 'emacs-mcp-package-lint-transient "emacs-mcp-package-lint" nil t)
 (transient-define-prefix emacs-mcp-package-lint-transient ()
@@ -371,7 +371,7 @@ Runs package-lint, byte-compile, and checkdoc on each file."
    ["Memory"
     ("s" "Save results to memory" emacs-mcp-package-lint-save-results)]])
 
-;;;; Minor Mode
+;;;; Minor Mode:
 
 ;;;###autoload
 (define-minor-mode emacs-mcp-package-lint-mode
@@ -389,10 +389,10 @@ Provides:
   (if emacs-mcp-package-lint-mode
       (progn
         (require 'emacs-mcp-api nil t)
-        (message "emacs-mcp-package-lint enabled"))
-    (message "emacs-mcp-package-lint disabled")))
+        (message "Emacs-mcp-package-lint enabled"))
+    (message "Emacs-mcp-package-lint disabled")))
 
-;;;; Addon Registration
+;;;; Addon Registration:
 
 (with-eval-after-load 'emacs-mcp-addons
   (emacs-mcp-addon-register

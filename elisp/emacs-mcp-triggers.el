@@ -30,7 +30,7 @@
   "Prefix key for emacs-mcp commands.
 Set this in your init file before enabling `emacs-mcp-mode'.
 Example: (setq emacs-mcp-keymap-prefix (kbd \"C-c m\"))
-Note: C-c <letter> is reserved for user bindings."
+Note: Control-c <letter> is reserved for user bindings per Emacs conventions."
   :type '(choice (const :tag "None" nil) key-sequence)
   :group 'emacs-mcp-triggers)
 

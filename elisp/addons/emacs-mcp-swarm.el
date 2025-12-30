@@ -75,9 +75,7 @@
 (declare-function eat-exec "eat")
 (declare-function eat-term-send-string "eat")
 
-;;; ============================================================================
-;;; Customization
-;;; ============================================================================
+;;;; Customization:
 
 (defgroup emacs-mcp-swarm nil
   "Claude swarm orchestration."
@@ -136,9 +134,7 @@ Directories are scanned recursively for .md files only."
   :type 'string
   :group 'emacs-mcp-swarm)
 
-;;; ============================================================================
-;;; Internal State
-;;; ============================================================================
+;;;; Internal State:
 
 (defvar emacs-mcp-swarm--slaves (make-hash-table :test 'equal)
   "Hash table of slave-id -> slave plist.")
@@ -158,9 +154,7 @@ Directories are scanned recursively for .md files only."
 (defvar emacs-mcp-swarm--current-depth 0
   "Current recursion depth (set via environment).")
 
-;;; ============================================================================
-;;; Preset Management
-;;; ============================================================================
+;;;; Preset Management:
 
 (defun emacs-mcp-swarm--scan-presets-dir (dir)
   "Recursively scan DIR for .md files, return alist of (name . path)."
@@ -224,9 +218,7 @@ Returns hash-table of name -> content."
   (add-to-list 'emacs-mcp-swarm-custom-presets-dirs dir)
   (emacs-mcp-swarm-reload-presets))
 
-;;; ============================================================================
-;;; Slave Management
-;;; ============================================================================
+;;;; Slave Management:
 
 (defun emacs-mcp-swarm--generate-slave-id (name)
   "Generate unique slave ID for NAME."
@@ -282,9 +274,9 @@ Returns the slave-id."
     ;; Require terminal emulator
     (pcase emacs-mcp-swarm-terminal
       ('vterm (unless (require 'vterm nil t)
-                (error "vterm is required but not available")))
+                (error "Vterm is required but not available")))
       ('eat (unless (require 'eat nil t)
-              (error "eat is required but not available"))))
+              (error "Eat is required but not available"))))
 
     ;; Create terminal buffer
     (setq buffer (generate-new-buffer buffer-name))
@@ -342,8 +334,8 @@ Returns the slave-id."
                    :task-queue '()
                    :tasks-completed 0
                    :tasks-failed 0
-                   :spawned-at (format-time-string "%Y-%m-%dT%H:%M:%SZ")
-                   :last-activity (format-time-string "%Y-%m-%dT%H:%M:%SZ"))
+                   :spawned-at (format-time-string "%FT%TZ")
+                   :last-activity (format-time-string "%FT%TZ"))
              emacs-mcp-swarm--slaves)
 
     ;; Schedule status check
@@ -400,9 +392,7 @@ Returns the slave-id."
              emacs-mcp-swarm--slaves)
     (message "Killed %d slaves" count)))
 
-;;; ============================================================================
-;;; Task Dispatch & Collection
-;;; ============================================================================
+;;;; Task Dispatch and Collection:
 
 (cl-defun emacs-mcp-swarm-dispatch (slave-id prompt &key timeout priority context)
   "Dispatch PROMPT to SLAVE-ID.
@@ -435,7 +425,7 @@ Returns task-id."
                    :priority (or priority 'normal)
                    :timeout (or timeout emacs-mcp-swarm-default-timeout)
                    :context context
-                   :dispatched-at (format-time-string "%Y-%m-%dT%H:%M:%SZ")
+                   :dispatched-at (format-time-string "%FT%TZ")
                    :completed-at nil
                    :result nil
                    :error nil)
@@ -444,7 +434,7 @@ Returns task-id."
     ;; Update slave state
     (plist-put slave :status 'working)
     (plist-put slave :current-task task-id)
-    (plist-put slave :last-activity (format-time-string "%Y-%m-%dT%H:%M:%SZ"))
+    (plist-put slave :last-activity (format-time-string "%FT%TZ"))
     (plist-put slave :task-start-point
                (with-current-buffer buffer (point-max)))
 
@@ -461,7 +451,7 @@ Returns task-id."
                (eat-term-send-string eat-terminal prompt)
                ;; Use carriage return for eat terminals
                (eat-term-send-string eat-terminal "\r"))
-           (error "eat-terminal not available in buffer %s" (buffer-name buffer))))))
+           (error "Eat-terminal not available in buffer %s" (buffer-name buffer))))))
 
     (when (called-interactively-p 'any)
       (message "Dispatched task %s to %s" task-id slave-id))
@@ -525,7 +515,7 @@ Returns the task plist with :result populated."
         (progn
           (plist-put task :status 'completed)
           (plist-put task :result result)
-          (plist-put task :completed-at (format-time-string "%Y-%m-%dT%H:%M:%SZ"))
+          (plist-put task :completed-at (format-time-string "%FT%TZ"))
           ;; Update slave stats
           (plist-put slave :status 'idle)
           (plist-put slave :current-task nil)
@@ -564,9 +554,7 @@ Returns list of task-ids."
         (setq matches nil)))
     matches))
 
-;;; ============================================================================
-;;; Status & Monitoring
-;;; ============================================================================
+;;;; Status and Monitoring:
 
 (defun emacs-mcp-swarm-status (&optional slave-id)
   "Get swarm status.
@@ -613,9 +601,7 @@ Otherwise return aggregate status."
         (switch-to-buffer buffer)
       (message "Slave buffer is dead: %s" slave-id))))
 
-;;; ============================================================================
-;;; API for MCP Tools
-;;; ============================================================================
+;;;; API for MCP Tools:
 
 (defun emacs-mcp-swarm-api-spawn (name presets &optional cwd)
   "API: Spawn slave NAME with PRESETS in CWD."
@@ -630,7 +616,7 @@ Otherwise return aggregate status."
   (emacs-mcp-swarm-status))
 
 (defun emacs-mcp-swarm-api-collect (task-id &optional timeout-ms)
-  "API: Collect result for TASK-ID."
+  "API: Collect result for TASK-ID with optional TIMEOUT-MS."
   (let ((task (emacs-mcp-swarm-collect task-id timeout-ms)))
     `(:task-id ,(plist-get task :task-id)
       :status ,(symbol-name (plist-get task :status))
@@ -652,9 +638,7 @@ Otherwise return aggregate status."
     (emacs-mcp-swarm-kill-all)
     `(:killed-count ,count)))
 
-;;; ============================================================================
-;;; Transient Menu
-;;; ============================================================================
+;;;; Transient Menu:
 
 (require 'transient nil t)
 
@@ -677,9 +661,7 @@ Otherwise return aggregate status."
       ("r" "Reload presets" emacs-mcp-swarm-reload-presets)
       ("a" "Add presets dir" emacs-mcp-swarm-add-custom-presets-dir)]]))
 
-;;; ============================================================================
-;;; Minor Mode
-;;; ============================================================================
+;;;; Minor Mode:
 
 (defvar emacs-mcp-swarm-mode-map
   (let ((map (make-sparse-keymap)))
@@ -692,8 +674,7 @@ Otherwise return aggregate status."
 (define-minor-mode emacs-mcp-swarm-mode
   "Minor mode for Claude swarm orchestration.
 
-Key bindings:
-  C-c s - Open swarm transient menu"
+\\{emacs-mcp-swarm-mode-map}"
   :init-value nil
   :lighter " Swarm"
   :keymap emacs-mcp-swarm-mode-map
@@ -706,15 +687,13 @@ Key bindings:
                       (format-time-string "%Y%m%d")
                       (random 65535)))
         (emacs-mcp-swarm-reload-presets)
-        (message "emacs-mcp-swarm enabled (session: %s, %d presets)"
+        (message "Emacs-mcp-swarm enabled (session: %s, %d presets)"
                  emacs-mcp-swarm--session-id
                  (hash-table-count emacs-mcp-swarm--presets-cache)))
     (emacs-mcp-swarm-kill-all)
-    (message "emacs-mcp-swarm disabled")))
+    (message "Emacs-mcp-swarm disabled")))
 
-;;; ============================================================================
-;;; Addon Lifecycle (for emacs-mcp-addons integration)
-;;; ============================================================================
+;;;; Addon Lifecycle:
 
 (defun emacs-mcp-swarm--addon-init ()
   "Initialize swarm addon."
