@@ -9,6 +9,7 @@
             [emacs-mcp.org-clj.transform :as org-transform]
             [emacs-mcp.org-clj.render :as org-render]
             [emacs-mcp.prompt-capture :as prompt-capture]
+            [emacs-mcp.chroma :as chroma]
             [clojure.data.json :as json]
             [taoensso.timbre :as log]))
 
@@ -148,7 +149,8 @@
     {:type "text" :text "Error: emacs-mcp.el is not loaded. Run (require 'emacs-mcp) and (emacs-mcp-mode 1) in Emacs." :isError true}))
 
 (defn handle-mcp-memory-add
-  "Add an entry to project memory."
+  "Add an entry to project memory.
+   After successful elisp memory add, auto-indexes in Chroma if configured."
   [{:keys [type content tags]}]
   (log/info "mcp-memory-add:" type)
   (if (emacs-mcp-el-available?)
@@ -159,7 +161,22 @@
                         tags-str)
           {:keys [success result error]} (ec/eval-elisp elisp)]
       (if success
-        {:type "text" :text result}
+        (do
+          ;; Try to auto-index in Chroma if configured
+          (when (chroma/embedding-configured?)
+            (try
+              (let [parsed-result (json/read-str result :key-fn keyword)
+                    entry-id (:id parsed-result)]
+                (when entry-id
+                  (chroma/index-memory-entry! {:id entry-id
+                                               :content content
+                                               :type type
+                                               :tags tags})
+                  (log/info "Auto-indexed memory entry in Chroma:" entry-id)))
+              (catch Exception e
+                (log/warn "Failed to auto-index memory entry in Chroma:"
+                          (ex-message e)))))
+          {:type "text" :text result})
         {:type "text" :text (str "Error: " error) :isError true}))
     {:type "text" :text "Error: emacs-mcp.el is not loaded." :isError true}))
 
@@ -212,6 +229,44 @@
         {:type "text" :text result}
         {:type "text" :text (str "Error: " error) :isError true}))
     {:type "text" :text "Error: emacs-mcp.el is not loaded." :isError true}))
+
+(defn handle-mcp-memory-search-semantic
+  "Search project memory using semantic similarity (vector search).
+   Requires Chroma to be configured with an embedding provider."
+  [{:keys [query limit type]}]
+  (log/info "mcp-memory-search-semantic:" query)
+  (let [status (chroma/status)]
+    (if-not (:configured? status)
+      {:type "text"
+       :text (json/write-str
+              {:error "Chroma semantic search not configured"
+               :message "To enable semantic search, configure Chroma with an embedding provider. See emacs-mcp.chroma namespace."
+               :status status})
+       :isError true}
+      (try
+        (let [results (chroma/search-similar query
+                                             :limit (or limit 10)
+                                             :type type)
+              ;; Format results for user-friendly output
+              formatted (mapv (fn [{:keys [id document metadata distance]}]
+                                {:id id
+                                 :type (get metadata :type)
+                                 :tags (when-let [t (get metadata :tags)]
+                                         (when (not= t "")
+                                           (clojure.string/split t #",")))
+                                 :distance distance
+                                 :preview (when document
+                                            (subs document 0 (min 200 (count document))))})
+                              results)]
+          {:type "text"
+           :text (json/write-str {:results formatted
+                                  :count (count formatted)
+                                  :query query})})
+        (catch Exception e
+          {:type "text"
+           :text (json/write-str {:error (str "Semantic search failed: " (.getMessage e))
+                                  :status status})
+           :isError true})))))
 
 (defn handle-mcp-run-workflow
   "Run a user-defined workflow."
@@ -1270,6 +1325,20 @@
                                      :description "ID of the memory entry to retrieve"}}
                   :required ["id"]}
     :handler handle-mcp-memory-get-full}
+
+   ;; Semantic Memory Search (requires Chroma integration)
+   {:name "mcp_memory_search_semantic"
+    :description "Search project memory using semantic similarity (vector search). Finds conceptually related entries even without exact keyword matches. Requires Chroma to be configured with an embedding provider."
+    :inputSchema {:type "object"
+                  :properties {"query" {:type "string"
+                                        :description "Natural language query to search for semantically similar memory entries"}
+                               "limit" {:type "integer"
+                                        :description "Maximum number of results to return (default: 10)"}
+                               "type" {:type "string"
+                                       :enum ["note" "snippet" "convention" "decision"]
+                                       :description "Optional filter by memory type"}}
+                  :required ["query"]}
+    :handler handle-mcp-memory-search-semantic}
 
    {:name "mcp_list_workflows"
     :description "List available user-defined workflows. Requires emacs-mcp.el."
