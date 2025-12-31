@@ -207,20 +207,23 @@ AGENT-ID optionally links this session to a swarm agent."
 
 ;;;###autoload
 (defun emacs-mcp-cider-list-sessions ()
-  "List all active CIDER sessions."
+  "List all active CIDER sessions.
+Returns a vector (for JSON array encoding) of session plists."
   (interactive)
   (let ((sessions '()))
     (maphash (lambda (name props)
-               (push (list :name name
-                           :port (plist-get props :port)
-                           :status (plist-get props :status)
-                           :agent-id (plist-get props :agent-id)
-                           :cider-buffer (plist-get props :cider-buffer))
-                     sessions))
+               (let ((status (plist-get props :status)))
+                 (push (list :name name
+                             :port (plist-get props :port)
+                             :status (if (symbolp status) (symbol-name status) status)
+                             :agent-id (plist-get props :agent-id)
+                             :cider-buffer (plist-get props :cider-buffer))
+                       sessions)))
              emacs-mcp-cider--sessions)
-    (if (called-interactively-p 'any)
-        (message "Sessions: %s" (json-encode sessions))
-      sessions)))
+    (let ((result (vconcat sessions)))  ; Vector for json-encode → [] not null
+      (if (called-interactively-p 'any)
+          (message "Sessions: %s" (json-encode result))
+        result))))
 
 ;;;###autoload
 (defun emacs-mcp-cider-get-session (name)
@@ -297,14 +300,16 @@ AGENT-ID optionally links this session to a swarm agent."
 
 (defun emacs-mcp-cider--start-nrepl-async ()
   "Start nREPL server asynchronously in background.
-Does not block Emacs startup."
+Does not block Emacs startup.  Uses the port from `emacs-mcp-cider-nrepl-port'."
   (let* ((default-directory (emacs-mcp-cider--project-dir))
          (port (number-to-string emacs-mcp-cider-nrepl-port))
          (buf-name "*nREPL-server*"))
-    (message "emacs-mcp-cider: Starting nREPL on port %s..." port)
+    (message "emacs-mcp-cider: Starting nREPL on port %s in %s..." port default-directory)
     (setq emacs-mcp-cider--nrepl-process
           (start-process "nrepl-server" buf-name
-                         "clojure" "-M:nrepl"))))
+                         "clojure" "-M:dev" "-m" "nrepl.cmdline"
+                         "--port" port
+                         "--middleware" "[cider.nrepl/cider-middleware,refactor-nrepl.middleware/wrap-refactor]"))))
 
 (defun emacs-mcp-cider--try-connect ()
   "Try to connect CIDER to nREPL.  Returns t if successful."
