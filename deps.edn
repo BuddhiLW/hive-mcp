@@ -17,7 +17,12 @@
         com.fzakaria/slf4j-timbre {:mvn/version "0.4.1"}
 
         ;; Schema validation for org-clj
-        metosin/malli {:mvn/version "0.16.4"}}
+        metosin/malli {:mvn/version "0.16.4"}
+
+        ;; Chroma vector database client for semantic memory search
+        ;; Using local fork with v2 API support (pending upstream PR)
+        io.github.levand/clojure-chroma-client
+        {:local/root "clojure-chroma-client"}}
 
  :aliases
  {:mcp

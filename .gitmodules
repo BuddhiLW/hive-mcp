@@ -1,0 +1,3 @@
+[submodule "clojure-chroma-client"]
+	path = clojure-chroma-client
+	url = https://github.com/BuddhiLW/clojure-chroma-client.git
