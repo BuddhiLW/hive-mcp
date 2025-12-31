@@ -13,11 +13,9 @@
 
 ;;; Configuration
 
-(defonce ^:dynamic *overarch-path*
-  "Configurable path to overarch CLI or JAR.
-   Set via (set-overarch-path! \"/path/to/overarch\")
-   or bind dynamically."
-  (atom nil))
+;; Configurable path to overarch CLI or JAR.
+;; Set via (set-overarch-path! "/path/to/overarch")
+(defonce *overarch-path* (atom nil))
 
 (defn set-overarch-path!
   "Set the overarch executable/JAR path.
