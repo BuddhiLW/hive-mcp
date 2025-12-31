@@ -935,11 +935,11 @@
                         (v/escape-elisp-string (or name "slave"))
                         (or presets-str "nil")
                         (if cwd (format "\"%s\"" (v/escape-elisp-string cwd)) "nil"))
-          result (ec/eval-elisp elisp)]
-      {:content [{:type "text"
-                  :text (str result)}]})
-    {:content [{:type "text"
-                :text "emacs-mcp-swarm addon not loaded. Run (require 'emacs-mcp-swarm)"}]}))
+          {:keys [success result error]} (ec/eval-elisp elisp)]
+      (if success
+        {:type "text" :text result}
+        {:type "text" :text (str "Error: " error) :isError true}))
+    {:type "text" :text "emacs-mcp-swarm addon not loaded. Run (require 'emacs-mcp-swarm)" :isError true}))
 
 (defn handle-swarm-dispatch
   "Dispatch a prompt to a slave."
@@ -949,11 +949,11 @@
                         (v/escape-elisp-string slave_id)
                         (v/escape-elisp-string prompt)
                         (or timeout_ms "nil"))
-          result (ec/eval-elisp elisp)]
-      {:content [{:type "text"
-                  :text (str result)}]})
-    {:content [{:type "text"
-                :text "emacs-mcp-swarm addon not loaded."}]}))
+          {:keys [success result error]} (ec/eval-elisp elisp)]
+      (if success
+        {:type "text" :text result}
+        {:type "text" :text (str "Error: " error) :isError true}))
+    {:type "text" :text "emacs-mcp-swarm addon not loaded." :isError true}))
 
 (defn handle-swarm-status
   "Get swarm status including all slaves and their states."
@@ -964,10 +964,9 @@
                   "(json-encode (emacs-mcp-swarm-api-status))")
           {:keys [success result error]} (ec/eval-elisp elisp)]
       (if success
-        {:content [{:type "text" :text result}]}
-        {:content [{:type "text" :text (format "Error: %s" error)}]}))
-    {:content [{:type "text"
-                :text "emacs-mcp-swarm addon not loaded."}]}))
+        {:type "text" :text result}
+        {:type "text" :text (str "Error: " error) :isError true}))
+    {:type "text" :text "emacs-mcp-swarm addon not loaded." :isError true}))
 
 (defn handle-swarm-collect
   "Collect response from a task."
@@ -976,21 +975,21 @@
     (let [elisp (format "(json-encode (emacs-mcp-swarm-api-collect \"%s\" %s))"
                         (v/escape-elisp-string task_id)
                         (or timeout_ms "nil"))
-          result (ec/eval-elisp elisp)]
-      {:content [{:type "text"
-                  :text (str result)}]})
-    {:content [{:type "text"
-                :text "emacs-mcp-swarm addon not loaded."}]}))
+          {:keys [success result error]} (ec/eval-elisp elisp)]
+      (if success
+        {:type "text" :text result}
+        {:type "text" :text (str "Error: " error) :isError true}))
+    {:type "text" :text "emacs-mcp-swarm addon not loaded." :isError true}))
 
 (defn handle-swarm-list-presets
   "List available swarm presets."
   [_]
   (if (swarm-addon-available?)
-    (let [result (ec/eval-elisp "(json-encode (emacs-mcp-swarm-api-list-presets))")]
-      {:content [{:type "text"
-                  :text (str result)}]})
-    {:content [{:type "text"
-                :text "emacs-mcp-swarm addon not loaded."}]}))
+    (let [{:keys [success result error]} (ec/eval-elisp "(json-encode (emacs-mcp-swarm-api-list-presets))")]
+      (if success
+        {:type "text" :text result}
+        {:type "text" :text (str "Error: " error) :isError true}))
+    {:type "text" :text "emacs-mcp-swarm addon not loaded." :isError true}))
 
 (defn handle-swarm-kill
   "Kill a slave or all slaves."
@@ -1000,11 +999,11 @@
                   "(json-encode (emacs-mcp-swarm-api-kill-all))"
                   (format "(json-encode (emacs-mcp-swarm-api-kill \"%s\"))"
                           (v/escape-elisp-string slave_id)))
-          result (ec/eval-elisp elisp)]
-      {:content [{:type "text"
-                  :text (str result)}]})
-    {:content [{:type "text"
-                :text "emacs-mcp-swarm addon not loaded."}]}))
+          {:keys [success result error]} (ec/eval-elisp elisp)]
+      (if success
+        {:type "text" :text result}
+        {:type "text" :text (str "Error: " error) :isError true}))
+    {:type "text" :text "emacs-mcp-swarm addon not loaded." :isError true}))
 
 (defn handle-swarm-broadcast
   "Broadcast a prompt to all slaves."
@@ -1012,11 +1011,11 @@
   (if (swarm-addon-available?)
     (let [elisp (format "(json-encode (emacs-mcp-swarm-broadcast \"%s\"))"
                         (v/escape-elisp-string prompt))
-          result (ec/eval-elisp elisp)]
-      {:content [{:type "text"
-                  :text (str result)}]})
-    {:content [{:type "text"
-                :text "emacs-mcp-swarm addon not loaded."}]}))
+          {:keys [success result error]} (ec/eval-elisp elisp)]
+      (if success
+        {:type "text" :text result}
+        {:type "text" :text (str "Error: " error) :isError true}))
+    {:type "text" :text "emacs-mcp-swarm addon not loaded." :isError true}))
 
 ;; ============================================================
 ;; org-clj Native Org-Mode Tools
