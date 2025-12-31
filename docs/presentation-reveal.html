@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>emacs-mcp</title>
+<meta name="author" content="Pedro G. Branquinho"/>
+<meta name="description" content=""/>
+<meta name="keywords" content=""/>
+<style type="text/css">
+.underline { text-decoration: underline; }
+</style>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js/dist/reveal.css"/>
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js/dist/theme/blood.css" id="theme"/>
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@4.2.0/plugin/highlight/monokai.css"/></head>
+<body>
+<div class="reveal">
+<div class="slides">
+<section id="sec-title-slide"><h1 class="title">emacs-mcp</h1><p class="subtitle">Claude + Emacs Integration</p>
+<h2 class="author">Pedro G. Branquinho</h2>
+</section>
+
+<section>
+<section id="slide-org1d3259c">
+<h2 id="org1d3259c">emacs-mcp</h2>
+<div class="outline-text-2" id="text-org1d3259c">
+</div>
+</section>
+<section id="slide-orgb76aa95">
+<h3 id="orgb76aa95">What is it?</h3>
+<ul>
+<li class="fragment appear">MCP Server for Emacs integration</li>
+<li class="fragment appear">Bidirectional: Claude ↔ Emacs</li>
+<li class="fragment appear">Project memory persistence</li>
+<li class="fragment appear">Automated workflows</li>
+
+</ul>
+</section>
+<section id="slide-org3e4a636">
+<h3 id="org3e4a636">Architecture</h3>
+<ul>
+<li class="fragment appear"><b>Clojure MCP Server</b> — STDIO communication</li>
+<li class="fragment appear"><b>Elisp Package</b> — emacs-mcp.el</li>
+<li class="fragment appear"><b>org-clj Library</b> — Native org-mode parser</li>
+
+</ul>
+</section>
+</section>
+<section>
+<section id="slide-orge51e7de">
+<h2 id="orge51e7de">Core Features</h2>
+<div class="outline-text-2" id="text-orge51e7de">
+</div>
+</section>
+<section id="slide-orge7f16d8">
+<h3 id="orge7f16d8">Project Memory</h3>
+<div class="outline-text-3" id="text-orge7f16d8">
+</div>
+</section>
+<section id="slide-org49562c8">
+<h4 id="org49562c8">Memory Types</h4>
+<ul>
+<li class="fragment appear">📝 <b>note</b> — General observations</li>
+<li class="fragment appear">💻 <b>snippet</b> — Code fragments</li>
+<li class="fragment appear">📋 <b>convention</b> — Project rules</li>
+<li class="fragment appear">🏗️ <b>decision</b> — Architecture choices</li>
+
+</ul>
+</section>
+<section id="slide-orgb33582f">
+<h4 id="orgb33582f">Usage</h4>
+<div class="org-src-container">
+
+<pre   ><code class="elisp" >;; Add to memory
+(emacs-mcp-api-memory-add
+ "convention"
+ "Use kebab-case for functions"
+ '("elisp" "style"))
+</code></pre>
+</div>
+</section>
+<section id="slide-orgc5007c9">
+<h3 id="orgc5007c9">Context Gathering</h3>
+<div class="outline-text-3" id="text-orgc5007c9">
+</div>
+</section>
+<section id="slide-orgb018f6e">
+<h4 id="orgb018f6e">What Claude Sees</h4>
+<ul>
+<li class="fragment appear">Current buffer info</li>
+<li class="fragment appear">Project root detection</li>
+<li class="fragment appear">Git repository status</li>
+<li class="fragment appear">Recent files list</li>
+<li class="fragment appear">Project memory entries</li>
+
+</ul>
+</section>
+<section id="slide-org13e7c6a">
+<h3 id="org13e7c6a">Workflows</h3>
+<div class="outline-text-3" id="text-org13e7c6a">
+</div>
+</section>
+<section id="slide-org50efc24">
+<h4 id="org50efc24">Automated Multi-Step Tasks</h4>
+<div class="org-src-container">
+
+<pre   ><code class="elisp" >(emacs-mcp-workflow-register
+ "test-and-commit"
+ '((:type shell :command "make test")
+   (:type confirm :message "Tests passed?")
+   (:type shell :command "git add -A")
+   (:type prompt :text "Commit message:")
+   (:type shell :command "git commit -m ${input}")))
+</code></pre>
+</div>
+</section>
+</section>
+<section>
+<section id="slide-org8c48a2d">
+<h2 id="org8c48a2d">Addons System</h2>
+<div class="outline-text-2" id="text-org8c48a2d">
+</div>
+</section>
+<section id="slide-org883a2dc">
+<h3 id="org883a2dc">Modular Architecture</h3>
+<ul>
+<li class="fragment appear">Lazy-loaded addons</li>
+<li class="fragment appear">Lifecycle hooks (init, async-init, shutdown)</li>
+<li class="fragment appear">Auto-discovery from <code>addons/</code> directory</li>
+
+</ul>
+</section>
+<section id="slide-org18b8d77">
+<h3 id="org18b8d77">Available Addons</h3>
+<table border="2" cellspacing="0" cellpadding="6" rules="groups" frame="hsides">
+
+
+<colgroup>
+<col  class="org-left" />
+
+<col  class="org-left" />
+</colgroup>
+<thead>
+<tr>
+<th scope="col" class="org-left">Addon</th>
+<th scope="col" class="org-left">Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="org-left">cider</td>
+<td class="org-left">Clojure REPL</td>
+</tr>
+
+<tr>
+<td class="org-left">org-kanban</td>
+<td class="org-left">Task management</td>
+</tr>
+
+<tr>
+<td class="org-left">swarm</td>
+<td class="org-left">Multi-agent</td>
+</tr>
+
+<tr>
+<td class="org-left">melpazoid</td>
+<td class="org-left">MELPA testing</td>
+</tr>
+
+<tr>
+<td class="org-left">presentation</td>
+<td class="org-left">Slides</td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="slide-org1858ded" data-background="#1a1a2e">
+<h3 id="org1858ded">CIDER Integration</h3>
+</section>
+<section id="slide-org158d0f8">
+<h4 id="org158d0f8">Features</h4>
+<ul>
+<li class="fragment appear">Auto-start nREPL server</li>
+<li class="fragment appear">Silent and explicit eval modes</li>
+<li class="fragment appear">Namespace awareness</li>
+<li class="fragment appear">Project-specific configuration</li>
+
+</ul>
+</section>
+<section id="slide-org42a97bd" data-background="#16213e">
+<h3 id="org42a97bd">Org-Kanban</h3>
+</section>
+<section id="slide-org1e2cd57">
+<h4 id="org1e2cd57">Interactive Board</h4>
+<table border="2" cellspacing="0" cellpadding="6" rules="groups" frame="hsides">
+
+
+<colgroup>
+<col  class="org-left" />
+
+<col  class="org-left" />
+</colgroup>
+<thead>
+<tr>
+<th scope="col" class="org-left">Key</th>
+<th scope="col" class="org-left">Action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="org-left">n/j</td>
+<td class="org-left">Next task</td>
+</tr>
+
+<tr>
+<td class="org-left">h/l</td>
+<td class="org-left">Navigate columns</td>
+</tr>
+
+<tr>
+<td class="org-left">m</td>
+<td class="org-left">Move task</td>
+</tr>
+
+<tr>
+<td class="org-left">c</td>
+<td class="org-left">Create task</td>
+</tr>
+
+<tr>
+<td class="org-left">g</td>
+<td class="org-left">Refresh</td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="slide-org1187c9a" data-background="#0f3460">
+<h3 id="org1187c9a">Swarm Orchestration</h3>
+</section>
+<section id="slide-org6aebca4">
+<h4 id="org6aebca4">Multi-Agent Coordination</h4>
+<div class="org-src-container">
+
+<pre   ><code class="elisp" >;; Spawn specialized agents
+(emacs-mcp-swarm-spawn "tester" :presets '("tdd"))
+(emacs-mcp-swarm-spawn "reviewer" :role 'reviewer)
+
+;; Broadcast to all
+(emacs-mcp-swarm-broadcast "Report status")
+</code></pre>
+</div>
+</section>
+</section>
+<section>
+<section id="slide-org40326f5">
+<h2 id="org40326f5">org-clj Library</h2>
+<div class="outline-text-2" id="text-org40326f5">
+</div>
+</section>
+<section id="slide-org08cac8d">
+<h3 id="org08cac8d">Native Clojure Parser</h3>
+<div class="outline-text-3" id="text-org08cac8d">
+</div>
+</section>
+<section id="slide-org9e44a91">
+<h4 id="org9e44a91">Why Native?</h4>
+<ul>
+<li class="fragment appear">No elisp dependency needed</li>
+<li class="fragment appear">Immutable data structures</li>
+<li class="fragment appear">Schema validation with Malli</li>
+<li class="fragment appear">Easy to test (46+ assertions)</li>
+
+</ul>
+</section>
+<section id="slide-org20694e3">
+<h3 id="org20694e3">Usage</h3>
+<div class="outline-text-3" id="text-org20694e3">
+</div>
+</section>
+<section id="slide-org74d4e01">
+<h4 id="org74d4e01">Parse → Query → Transform</h4>
+<div class="org-src-container">
+
+<pre   ><code class="clojure" >(require '[emacs-mcp.org-clj.parser :as p])
+(require '[emacs-mcp.org-clj.query :as q])
+
+(def doc (p/parse-document (slurp "tasks.org")))
+
+;; Find TODOs
+(q/find-by-status doc "TODO")
+
+;; Statistics
+(q/task-stats doc)
+;; =&gt; {:total 10 :todo 3 :done 7}
+</code></pre>
+</div>
+</section>
+<section id="slide-org905d572">
+<h3 id="org905d572">Kanban Rendering</h3>
+<div class="outline-text-3" id="text-org905d572">
+</div>
+</section>
+<section id="slide-orgb2b24c9">
+<h4 id="orgb2b24c9">Extensible via Protocol</h4>
+<div class="org-src-container">
+
+<pre   ><code class="clojure" >(defprotocol KanbanRenderer
+  (render-board [this data])
+  (render-column [this name tasks])
+  (render-card [this task]))
+
+;; Terminal, Emacs, HTML renderers
+</code></pre>
+</div>
+</section>
+</section>
+<section>
+<section id="slide-org509b582">
+<h2 id="org509b582">Getting Started</h2>
+<div class="outline-text-2" id="text-org509b582">
+</div>
+</section>
+<section id="slide-org3a03a41">
+<h3 id="org3a03a41">Installation</h3>
+<div class="outline-text-3" id="text-org3a03a41">
+</div>
+</section>
+<section id="slide-org46d645d">
+<h4 id="org46d645d">Clone &amp; Configure</h4>
+<div class="org-src-container">
+
+<pre   ><code class="bash" >git clone https://github.com/BuddhiLW/emacs-mcp.git
+</code></pre>
+</div>
+
+<div class="org-src-container">
+
+<pre   ><code class="elisp" >(add-to-list 'load-path "path/to/emacs-mcp/elisp")
+(require 'emacs-mcp)
+(require 'emacs-mcp-addons)
+</code></pre>
+</div>
+</section>
+<section id="slide-orgfa8ac5b">
+<h3 id="orgfa8ac5b">Keybindings</h3>
+<div class="outline-text-3" id="text-orgfa8ac5b">
+</div>
+</section>
+<section id="slide-org27887c8">
+<h4 id="org27887c8">Default: <code>C-c m</code></h4>
+<table border="2" cellspacing="0" cellpadding="6" rules="groups" frame="hsides">
+
+
+<colgroup>
+<col  class="org-left" />
+
+<col  class="org-left" />
+</colgroup>
+<thead>
+<tr>
+<th scope="col" class="org-left">Key</th>
+<th scope="col" class="org-left">Command</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="org-left">C-c m m</td>
+<td class="org-left">Menu</td>
+</tr>
+
+<tr>
+<td class="org-left">C-c m n</td>
+<td class="org-left">Add note</td>
+</tr>
+
+<tr>
+<td class="org-left">C-c m k</td>
+<td class="org-left">Kanban</td>
+</tr>
+
+<tr>
+<td class="org-left">C-c m w</td>
+<td class="org-left">Workflow</td>
+</tr>
+</tbody>
+</table>
+</section>
+</section>
+<section>
+<section id="slide-orgfe2d5fa">
+<h2 id="orgfe2d5fa">Live Workflow Demo</h2>
+<div class="outline-text-2" id="text-orgfe2d5fa">
+</div>
+</section>
+<section id="slide-orgaa76218">
+<h3 id="orgaa76218">This Presentation Was Built Live</h3>
+<ul>
+<li class="fragment appear">User: &ldquo;Create presentation addon&rdquo;</li>
+<li class="fragment appear">Claude: Creates <code>emacs-mcp-presentation.el</code></li>
+<li class="fragment appear">User: &ldquo;Update my email&rdquo;</li>
+<li class="fragment appear">Claude: Edits file → exports → opens browser</li>
+<li class="fragment appear">Instant feedback loop!</li>
+
+</ul>
+</section>
+<section id="slide-org582aa7c">
+<h3 id="org582aa7c">The Interaction Flow</h3>
+<ol>
+<li class="fragment appear"><b>User Request</b> → Natural language prompt</li>
+<li class="fragment appear"><b>Claude Processing</b> → Selects appropriate MCP tools</li>
+<li class="fragment appear"><b>Tool Execution</b> → <code>read_file</code>, <code>file_edit</code>, <code>eval_elisp</code></li>
+<li class="fragment appear"><b>Emacs Actions</b> → Buffer ops, export, browse-url</li>
+<li class="fragment appear"><b>Result</b> → Browser shows updated presentation</li>
+
+</ol>
+</section>
+<section id="slide-org451a417">
+<h3 id="org451a417">Capabilities Used</h3>
+<table border="2" cellspacing="0" cellpadding="6" rules="groups" frame="hsides">
+
+
+<colgroup>
+<col  class="org-left" />
+
+<col  class="org-left" />
+</colgroup>
+<thead>
+<tr>
+<th scope="col" class="org-left">Tool</th>
+<th scope="col" class="org-left">Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="org-left"><code>mcp__clojure-mcp-emacs__file_edit</code></td>
+<td class="org-left">Edit org files</td>
+</tr>
+
+<tr>
+<td class="org-left"><code>mcp__emacs-mcp__eval_elisp</code></td>
+<td class="org-left">Export &amp; preview</td>
+</tr>
+
+<tr>
+<td class="org-left"><code>mcp__emacs-mcp__mcp_memory_add</code></td>
+<td class="org-left">Save conventions</td>
+</tr>
+
+<tr>
+<td class="org-left"><code>mcp__dynamic-kanban__add_feature</code></td>
+<td class="org-left">Track tasks</td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="slide-org527e315">
+<h3 id="org527e315">Why This Matters</h3>
+<ul>
+<li class="fragment appear"><b>Zero context switching</b> — Stay in Emacs</li>
+<li class="fragment appear"><b>Persistent memory</b> — Claude remembers conventions</li>
+<li class="fragment appear"><b>Composable tools</b> — Build complex workflows</li>
+<li class="fragment appear"><b>Immediate feedback</b> — See results instantly</li>
+
+</ul>
+</section>
+</section>
+<section>
+<section id="slide-org3920cd5">
+<h2 id="org3920cd5">Questions?</h2>
+<div class="outline-text-2" id="text-org3920cd5">
+</div>
+</section>
+<section id="slide-org377deac">
+<h3 id="org377deac">Links</h3>
+<ul>
+<li class="fragment appear">🔗 GitHub: <a href="https://github.com/BuddhiLW">github.com/BuddhiLW</a></li>
+<li class="fragment appear">💼 LinkedIn: <a href="https://www.linkedin.com/in/pedro-g-branquinho/">pedro-g-branquinho</a></li>
+<li class="fragment appear">📧 Email: pedrogbranquinho@gmail.com</li>
+<li class="fragment appear">📄 MIT License</li>
+
+</ul>
+</section>
+<section id="slide-orgab93c71" data-background="#e94560">
+<h3 id="orgab93c71">Thank You!</h3>
+</section>
+</section>
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/reveal.js/dist/reveal.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/reveal.js/plugin/highlight/highlight.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/reveal.js/plugin/notes/notes.js"></script>
+
+
+<script>
+// Full list of configuration options available here:
+// https://github.com/hakimel/reveal.js#configuration
+Reveal.initialize({
+plugins: [RevealHighlight, RevealNotes]
+});
+
+</script>
+</body>
+</html>

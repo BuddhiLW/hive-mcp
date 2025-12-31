@@ -1,0 +1,397 @@
+% Created 2025-12-31 Wed 14:29
+% Intended LaTeX compiler: xelatex
+\documentclass[bigger]{beamer}
+\usepackage{graphicx}
+\usepackage{longtable}
+\usepackage{wrapfig}
+\usepackage{rotating}
+\usepackage[normalem]{ulem}
+\usepackage{capt-of}
+\usepackage{hyperref}
+\usepackage{pifont}
+\usepackage{verbatim}
+\makeatletter
+\def\verbatim@font{\scriptsize\ttfamily}
+\makeatother
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta}
+\usetikzlibrary{positioning}
+\usepackage{tcolorbox}
+\tcbuselibrary{skins}
+\usepackage{minted}
+\usemintedstyle{monokai}
+\newenvironment{modern-quote}{\begin{quote}}{\end{quote}}
+\tcolorboxenvironment{modern-quote}{blanker,before skip=6pt,after skip=6pt, borderline west={3mm}{0pt}{black!40!white}}
+\hypersetup{colorlinks, allcolors=., urlcolor=blue!70!white}
+\usetheme{default}
+\usecolortheme{magpie}
+\author{Pedro Branquinho}
+\date{\today}
+\title{emacs-mcp: Claude + Emacs Integration}
+\author[Branquinho]{\textbf{Pedro Gomes Branquinho \\ \text{\scriptsize{pedrogbranquinho@gmail.com}}}}
+\date[]{\textbf{\scriptsize{Model Context Protocol for Emacs}}}
+\useoutertheme[height=30pt]{sidebar}
+\setbeamertemplate{frametitle}[sidebar theme]
+\setbeamertemplate{itemize item}{\ding{166}}
+\setbeamercolor{item projected}{bg=magenta!90!black,fg=white}
+\setbeamertemplate{enumerate item}[circle]
+\setbeamerfont{block title}{size={\centering}}
+\setbeamercolor{block title}{bg=black!30!white,fg=white}
+\hypersetup{
+ pdfauthor={Pedro Branquinho},
+ pdftitle={emacs-mcp: Claude + Emacs Integration},
+ pdfkeywords={},
+ pdfsubject={},
+ pdfcreator={Emacs 31.0.50 (Org mode 9.7.39)}, 
+ pdflang={English}}
+\begin{document}
+
+\maketitle
+\begin{frame}{Outline}
+\tableofcontents
+\end{frame}
+
+\section{Introduction}
+\label{sec:org9b8ac7a}
+\subsection{What is emacs-mcp?}
+\label{sec:org7788295}
+\begin{frame}[label={sec:org1ec7df9}]{The Bridge Between Claude and Emacs}
+\begin{columns}
+\begin{column}{0.48\columnwidth}
+\begin{block}<1->{Architecture}
+\begin{itemize}[<+->]
+\item \alert{MCP Server}: Clojure-based
+\item \alert{Elisp Package}: emacs-mcp.el
+\item \alert{Bidirectional}: Claude ↔ Emacs
+\end{itemize}
+\end{block}
+\end{column}
+\begin{column}{0.48\columnwidth}
+\begin{block}<2->{Benefits}
+\begin{itemize}[<+->]
+\item Project memory persistence
+\item Full Emacs context for Claude
+\item Automated workflows
+\item Multi-agent orchestration
+\end{itemize}
+\end{block}
+\end{column}
+\end{columns}
+\end{frame}
+\begin{frame}[label={sec:orgb73b762}]{Model Context Protocol (MCP)}
+\begin{modern-quote}
+MCP is an open protocol that standardizes how applications provide context to LLMs.
+\end{modern-quote}
+\begin{raggedleft}
+\textbf{--- Anthropic}
+\par\end{raggedleft}
+
+\pause
+\begin{block}{Key Concepts}
+\begin{itemize}[<+->]
+\item \alert{Tools}: Functions Claude can call
+\item \alert{Resources}: Data Claude can read
+\item \alert{Context}: Information about the environment
+\end{itemize}
+\end{block}
+\end{frame}
+\subsection{Core Features}
+\label{sec:org453f392}
+\begin{frame}[label={sec:org48c8b45},fragile]{Project Memory System}
+ \begin{columns}
+\begin{column}{0.55\columnwidth}
+\begin{block}{Persistent Storage}
+\begin{verbatim}
+;; Add to project memory
+(emacs-mcp-api-memory-add
+ "convention"
+ "Use kebab-case for functions"
+ '("elisp" "style"))
+
+;; Query memory
+(emacs-mcp-api-memory-query
+ "convention"
+ '("elisp")
+ 10)
+\end{verbatim}
+\end{block}
+\end{column}
+\begin{column}{0.42\columnwidth}
+\begin{block}{Memory Types}
+\begin{itemize}[<+->]
+\item \texttt{note} — General notes
+\item \texttt{snippet} — Code fragments
+\item \texttt{convention} — Project rules
+\item \texttt{decision} — Architecture choices
+\end{itemize}
+\end{block}
+\end{column}
+\end{columns}
+\end{frame}
+\begin{frame}[label={sec:org2af2426},fragile]{Context Gathering}
+ \begin{block}{What Claude Sees}
+\begin{verbatim}
+(emacs-mcp-api-get-context)
+;; Returns:
+;; - Current buffer info
+;; - Project root
+;; - Git status
+;; - Recent files
+;; - Project memory
+\end{verbatim}
+
+\pause
+\end{block}
+\begin{block}{Automatic Integration}
+\begin{itemize}[<+->]
+\item Works with \texttt{projectile} / \texttt{project.el}
+\item Git repository awareness
+\item Buffer and region context
+\end{itemize}
+\end{block}
+\end{frame}
+\section{Addons System}
+\label{sec:org400cb15}
+\subsection{Modular Architecture}
+\label{sec:org94ff09b}
+\begin{frame}[label={sec:orga5a8094},fragile]{Addon Lifecycle}
+ \begin{columns}
+\begin{column}{0.55\columnwidth}
+\begin{block}{Registration}
+\begin{verbatim}
+(emacs-mcp-addon-register
+ 'my-addon
+ :version "1.0.0"
+ :description "My addon"
+ :init #'my-init
+ :async-init #'my-async-init
+ :shutdown #'my-cleanup)
+\end{verbatim}
+\end{block}
+\end{column}
+\begin{column}{0.42\columnwidth}
+\begin{block}{Lifecycle Hooks}
+\begin{itemize}[<+->]
+\item \texttt{:init} — Sync setup
+\item \texttt{:async-init} — Background
+\item \texttt{:shutdown} — Cleanup
+\end{itemize}
+\end{block}
+\end{column}
+\end{columns}
+\end{frame}
+\begin{frame}[label={sec:org8c773e9},fragile]{Available Addons}
+ \begin{center}
+\begin{tabular}{ll}
+Addon & Purpose\\
+\hline
+\texttt{cider} & Clojure REPL integration\\
+\texttt{org-kanban} & Task management\\
+\texttt{swarm} & Multi-agent orchestration\\
+\texttt{melpazoid} & MELPA submission testing\\
+\texttt{presentation} & Slide creation\\
+\end{tabular}
+\end{center}
+\end{frame}
+\subsection{CIDER Integration}
+\label{sec:org18dee1c}
+\begin{frame}[label={sec:orgb57ab46},fragile]{Clojure Development}
+ \begin{columns}
+\begin{column}{0.48\columnwidth}
+\begin{block}<1->{Features}
+\begin{itemize}[<+->]
+\item Auto-start nREPL
+\item Silent/explicit eval modes
+\item Namespace awareness
+\item Error handling
+\end{itemize}
+\end{block}
+\end{column}
+\begin{column}{0.48\columnwidth}
+\begin{block}<2->{Configuration}
+\begin{verbatim}
+(setq emacs-mcp-cider-auto-start-nrepl t)
+(setq emacs-mcp-cider-auto-connect t)
+(setq emacs-mcp-cider-nrepl-port 7888)
+\end{verbatim}
+\end{block}
+\end{column}
+\end{columns}
+\end{frame}
+\subsection{Org-Kanban Integration}
+\label{sec:org4d0333b}
+\begin{frame}[label={sec:org62446f7},fragile]{Interactive Task Board}
+ \begin{columns}
+\begin{column}{0.45\columnwidth}
+\begin{block}{Keybindings}
+\begin{center}
+\begin{tabular}{ll}
+Key & Action\\
+\hline
+\texttt{n/j} & Next task\\
+\texttt{p/k} & Previous\\
+\texttt{h/l} & Columns\\
+\texttt{m} & Move task\\
+\texttt{c} & Create\\
+\end{tabular}
+\end{center}
+\end{block}
+\end{column}
+\begin{column}{0.52\columnwidth}
+\begin{block}{Dual Backend}
+\begin{itemize}[<+->]
+\item \alert{Standalone}: Local \texttt{.org} file
+\item \alert{Vibe}: Cloud sync
+\item Auto-sync between both
+\item Agent task tracking
+\end{itemize}
+\end{block}
+\end{column}
+\end{columns}
+\end{frame}
+\subsection{Swarm Orchestration}
+\label{sec:org7ead9e3}
+\begin{frame}[label={sec:orgb710abe},fragile]{Multi-Agent Coordination}
+ \begin{columns}
+\begin{column}{0.55\columnwidth}
+\begin{block}{Spawn Agents}
+\begin{verbatim}
+;; Create specialized agents
+(emacs-mcp-swarm-spawn
+ "tester"
+ :presets '("tdd" "clarity"))
+
+;; Broadcast to all
+(emacs-mcp-swarm-broadcast
+ "Run tests and report")
+\end{verbatim}
+\end{block}
+\end{column}
+\begin{column}{0.42\columnwidth}
+\begin{block}{Use Cases}
+\begin{itemize}[<+->]
+\item Parallel code review
+\item Test execution
+\item Documentation generation
+\item Refactoring tasks
+\end{itemize}
+\end{block}
+\end{column}
+\end{columns}
+\end{frame}
+\section{Native org-clj Library}
+\label{sec:orgfc8bfb9}
+\subsection{Clojure Org-Mode Parser}
+\label{sec:org3276837}
+\begin{frame}[label={sec:orgbab5500}]{Pure Clojure Implementation}
+\begin{columns}
+\begin{column}{0.48\columnwidth}
+\begin{block}<1->{Why Native?}
+\begin{itemize}[<+->]
+\item No elisp dependency
+\item Immutable data structures
+\item Schema validation (Malli)
+\item Easy testing
+\end{itemize}
+\end{block}
+\end{column}
+\begin{column}{0.48\columnwidth}
+\begin{block}<2->{Capabilities}
+\begin{itemize}[<+->]
+\item Parse org → EDN
+\item Write EDN → org
+\item Query headlines
+\item Transform documents
+\end{itemize}
+\end{block}
+\end{column}
+\end{columns}
+\end{frame}
+\begin{frame}[label={sec:orgca5bd7a},fragile]{Usage Example}
+ \begin{block}{Parse and Query}
+\begin{verbatim}
+(require '[emacs-mcp.org-clj.parser :as p])
+(require '[emacs-mcp.org-clj.query :as q])
+
+(def doc (p/parse-document (slurp "tasks.org")))
+
+;; Find all TODOs
+(q/find-by-status doc "TODO")
+
+;; Get statistics
+(q/task-stats doc)
+;; => {:total 10 :todo 3 :done 7}
+\end{verbatim}
+\end{block}
+\end{frame}
+\begin{frame}[label={sec:orgd019464},fragile]{Kanban Board Rendering}
+ \begin{block}{Terminal Output}
+\begin{verbatim}
+(require '[emacs-mcp.org-clj.render :as r])
+
+(println (r/render-to-terminal "kanban.org"))
+\end{verbatim}
+
+\pause
+\end{block}
+\begin{block}{OCP Design}
+\begin{itemize}[<+->]
+\item \texttt{KanbanRenderer} protocol
+\item Extend without modification
+\item Terminal, Emacs, HTML renderers
+\end{itemize}
+\end{block}
+\end{frame}
+\section{Getting Started}
+\label{sec:orgc7970fa}
+\subsection{Installation}
+\label{sec:orgd3b8198}
+\begin{frame}[label={sec:org2bd95ab},fragile]{Setup Steps}
+ \begin{block}{1. Clone Repository}
+\begin{verbatim}
+git clone https://github.com/BuddhiLW/emacs-mcp.git
+\end{verbatim}
+\end{block}
+\begin{block}{2. Configure Emacs}
+\begin{verbatim}
+;; Add to load-path
+(add-to-list 'load-path "path/to/emacs-mcp/elisp")
+(add-to-list 'load-path "path/to/emacs-mcp/elisp/addons")
+
+;; Load main package
+(require 'emacs-mcp)
+(require 'emacs-mcp-addons)
+
+;; Enable addons
+(setq emacs-mcp-addon-always-load '(cider org-kanban))
+\end{verbatim}
+\end{block}
+\end{frame}
+\begin{frame}[label={sec:org26c1e43},fragile]{Keybindings}
+ \begin{block}{Default Prefix: \texttt{C-c m}}
+\begin{center}
+\begin{tabular}{ll}
+Key & Command\\
+\hline
+\texttt{C-c m m} & Transient menu\\
+\texttt{C-c m n} & Add note\\
+\texttt{C-c m s} & Save snippet\\
+\texttt{C-c m c} & Add convention\\
+\texttt{C-c m k} & Open kanban\\
+\texttt{C-c m w} & Run workflow\\
+\end{tabular}
+\end{center}
+\end{block}
+\end{frame}
+\begin{frame}[label={sec:orged9fad4},standout]{}
+\begin{block}{}
+\begin{modern-quote}
+\color{magenta} \huge\textbf{Questions?} \\
+\rule{\linewidth}{0.5mm}
+$\backslash$\[1em]
+\normalsize
+GitHub: \texttt{github.com/BuddhiLW/emacs-mcp}
+\end{modern-quote}
+\end{block}
+\end{frame}
+\end{document}

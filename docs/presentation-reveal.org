@@ -1,0 +1,225 @@
+:REVEAL_PROPERTIES:
+#+REVEAL_ROOT: https://cdn.jsdelivr.net/npm/reveal.js
+#+REVEAL_REVEAL_JS_VERSION: 4
+#+REVEAL_THEME: blood
+#+REVEAL_PLUGINS: (highlight notes)
+#+REVEAL_HIGHLIGHT_CSS: https://cdn.jsdelivr.net/npm/reveal.js@4.2.0/plugin/highlight/monokai.css
+#+OPTIONS: reveal_global_footer:t
+#+OPTIONS: timestamp:nil toc:2 num:nil
+:END:
+
+#+title: emacs-mcp
+#+subtitle: Claude + Emacs Integration
+#+AUTHOR: Pedro G. Branquinho
+#+OPTIONS: toc:nil
+
+* emacs-mcp
+** What is it?
+#+ATTR_REVEAL: :frag (appear)
+- MCP Server for Emacs integration
+- Bidirectional: Claude ↔ Emacs
+- Project memory persistence
+- Automated workflows
+
+** Architecture
+#+ATTR_REVEAL: :frag (appear)
+- *Clojure MCP Server* — STDIO communication
+- *Elisp Package* — emacs-mcp.el
+- *org-clj Library* — Native org-mode parser
+
+* Core Features
+** Project Memory
+*** Memory Types
+#+ATTR_REVEAL: :frag (appear)
+- 📝 *note* — General observations
+- 💻 *snippet* — Code fragments
+- 📋 *convention* — Project rules
+- 🏗️ *decision* — Architecture choices
+
+*** Usage
+#+begin_src elisp
+;; Add to memory
+(emacs-mcp-api-memory-add
+ "convention"
+ "Use kebab-case for functions"
+ '("elisp" "style"))
+#+end_src
+
+** Context Gathering
+*** What Claude Sees
+#+ATTR_REVEAL: :frag (appear)
+- Current buffer info
+- Project root detection
+- Git repository status
+- Recent files list
+- Project memory entries
+
+** Workflows
+*** Automated Multi-Step Tasks
+#+begin_src elisp
+(emacs-mcp-workflow-register
+ "test-and-commit"
+ '((:type shell :command "make test")
+   (:type confirm :message "Tests passed?")
+   (:type shell :command "git add -A")
+   (:type prompt :text "Commit message:")
+   (:type shell :command "git commit -m ${input}")))
+#+end_src
+
+* Addons System
+** Modular Architecture
+#+ATTR_REVEAL: :frag (appear)
+- Lazy-loaded addons
+- Lifecycle hooks (init, async-init, shutdown)
+- Auto-discovery from =addons/= directory
+
+** Available Addons
+| Addon | Purpose |
+|-------+---------|
+| cider | Clojure REPL |
+| org-kanban | Task management |
+| swarm | Multi-agent |
+| melpazoid | MELPA testing |
+| presentation | Slides |
+
+** CIDER Integration
+:PROPERTIES:
+:reveal_background: #1a1a2e
+:END:
+*** Features
+#+ATTR_REVEAL: :frag (appear)
+- Auto-start nREPL server
+- Silent and explicit eval modes
+- Namespace awareness
+- Project-specific configuration
+
+** Org-Kanban
+:PROPERTIES:
+:reveal_background: #16213e
+:END:
+*** Interactive Board
+| Key | Action |
+|-----+--------|
+| n/j | Next task |
+| h/l | Navigate columns |
+| m | Move task |
+| c | Create task |
+| g | Refresh |
+
+** Swarm Orchestration
+:PROPERTIES:
+:reveal_background: #0f3460
+:END:
+*** Multi-Agent Coordination
+#+begin_src elisp
+;; Spawn specialized agents
+(emacs-mcp-swarm-spawn "tester" :presets '("tdd"))
+(emacs-mcp-swarm-spawn "reviewer" :role 'reviewer)
+
+;; Broadcast to all
+(emacs-mcp-swarm-broadcast "Report status")
+#+end_src
+
+* org-clj Library
+** Native Clojure Parser
+*** Why Native?
+#+ATTR_REVEAL: :frag (appear)
+- No elisp dependency needed
+- Immutable data structures
+- Schema validation with Malli
+- Easy to test (46+ assertions)
+
+** Usage
+*** Parse → Query → Transform
+#+begin_src clojure
+(require '[emacs-mcp.org-clj.parser :as p])
+(require '[emacs-mcp.org-clj.query :as q])
+
+(def doc (p/parse-document (slurp "tasks.org")))
+
+;; Find TODOs
+(q/find-by-status doc "TODO")
+
+;; Statistics
+(q/task-stats doc)
+;; => {:total 10 :todo 3 :done 7}
+#+end_src
+
+** Kanban Rendering
+*** Extensible via Protocol
+#+begin_src clojure
+(defprotocol KanbanRenderer
+  (render-board [this data])
+  (render-column [this name tasks])
+  (render-card [this task]))
+
+;; Terminal, Emacs, HTML renderers
+#+end_src
+
+* Getting Started
+** Installation
+*** Clone & Configure
+#+begin_src bash
+git clone https://github.com/BuddhiLW/emacs-mcp.git
+#+end_src
+
+#+begin_src elisp
+(add-to-list 'load-path "path/to/emacs-mcp/elisp")
+(require 'emacs-mcp)
+(require 'emacs-mcp-addons)
+#+end_src
+
+** Keybindings
+*** Default: =C-c m=
+| Key | Command |
+|-----+---------|
+| C-c m m | Menu |
+| C-c m n | Add note |
+| C-c m k | Kanban |
+| C-c m w | Workflow |
+
+* Live Workflow Demo
+** This Presentation Was Built Live
+#+ATTR_REVEAL: :frag (appear)
+- User: "Create presentation addon"
+- Claude: Creates =emacs-mcp-presentation.el=
+- User: "Update my email"
+- Claude: Edits file → exports → opens browser
+- Instant feedback loop!
+
+** The Interaction Flow
+#+ATTR_REVEAL: :frag (appear)
+1. *User Request* → Natural language prompt
+2. *Claude Processing* → Selects appropriate MCP tools
+3. *Tool Execution* → =read_file=, =file_edit=, =eval_elisp=
+4. *Emacs Actions* → Buffer ops, export, browse-url
+5. *Result* → Browser shows updated presentation
+
+** Capabilities Used
+| Tool | Purpose |
+|------|---------|
+| =mcp__clojure-mcp-emacs__file_edit= | Edit org files |
+| =mcp__emacs-mcp__eval_elisp= | Export & preview |
+| =mcp__emacs-mcp__mcp_memory_add= | Save conventions |
+| =mcp__dynamic-kanban__add_feature= | Track tasks |
+
+** Why This Matters
+#+ATTR_REVEAL: :frag (appear)
+- *Zero context switching* — Stay in Emacs
+- *Persistent memory* — Claude remembers conventions
+- *Composable tools* — Build complex workflows
+- *Immediate feedback* — See results instantly
+
+* Questions?
+** Links
+#+ATTR_REVEAL: :frag (appear)
+- 🔗 GitHub: [[https://github.com/BuddhiLW][github.com/BuddhiLW]]
+- 💼 LinkedIn: [[https://www.linkedin.com/in/pedro-g-branquinho/][pedro-g-branquinho]]
+- 📧 Email: pedrogbranquinho@gmail.com
+- 📄 MIT License
+
+** Thank You!
+:PROPERTIES:
+:reveal_background: #e94560
+:reveal_background_transition: zoom
+:END:

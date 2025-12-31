@@ -1,0 +1,367 @@
+#+STARTUP: latexpreview
+#+STARTUP: imagepreview
+
+#+LATEX_COMPILER: xelatex
+
+#+title: emacs-mcp: Claude + Emacs Integration
+#+EMAIL: pedrogbranquinho@gmail.com
+#+BEAMER_HEADER: \author[Branquinho]{\textbf{Pedro Gomes Branquinho \\ \text{\scriptsize{pedrogbranquinho@gmail.com}}}}
+#+BEAMER_HEADER: \date[]{\textbf{\scriptsize{Model Context Protocol for Emacs}}}
+
+#+BEAMER_FRAME_LEVEL: 3
+#+LATEX_CLASS: beamer
+#+BEAMER_COLOR_THEME: magpie
+#+LATEX_CLASS_OPTIONS: [bigger]
+#+BEAMER_HEADER: \useoutertheme[height=30pt]{sidebar}
+#+BEAMER_HEADER: \setbeamertemplate{frametitle}[sidebar theme]
+#+BEAMER_HEADER: \setbeamertemplate{itemize item}{\ding{166}}
+#+BEAMER_HEADER: \setbeamercolor{item projected}{bg=magenta!90!black,fg=white}
+#+BEAMER_HEADER: \setbeamertemplate{enumerate item}[circle]
+#+BEAMER_HEADER: \setbeamerfont{block title}{size={\centering}}
+#+BEAMER_HEADER: \setbeamercolor{block title}{bg=black!30!white,fg=white}
+#+COLUMNS: %45ITEM %10BEAMER_ENV(Env) %10BEAMER_ACT(Act) %4BEAMER_COL(Col)
+
+#+LANGUAGE: en
+#+OPTIONS: H:3 num:t toc:t \n:nil @:t ::t |:t ^:t -:t f:t *:t <:t
+#+OPTIONS: TeX:t LaTeX:t skip:nil d:nil todo:t pri:nil tags:not-in-toc
+
+#+latex_header: \usepackage{pifont}
+#+LATEX_HEADER: \usepackage{verbatim}
+#+LATEX_HEADER: \makeatletter
+#+LATEX_HEADER: \def\verbatim@font{\scriptsize\ttfamily}
+#+LATEX_HEADER: \makeatother
+
+#+LATEX_HEADER: \usepackage{tikz}
+#+LATEX_HEADER: \usetikzlibrary{arrows.meta}
+#+LATEX_HEADER: \usetikzlibrary{positioning}
+
+#+LATEX_HEADER: \usepackage{tcolorbox}
+#+LATEX_HEADER: \tcbuselibrary{skins}
+
+#+LATEX_HEADER: \usepackage{minted}
+#+LATEX_HEADER: \usemintedstyle{monokai}
+
+#+LATEX_HEADER: \newenvironment{modern-quote}{\begin{quote}}{\end{quote}}
+#+LATEX_HEADER: \tcolorboxenvironment{modern-quote}{blanker,before skip=6pt,after skip=6pt, borderline west={3mm}{0pt}{black!40!white}}
+
+#+LATEX_HEADER: \hypersetup{colorlinks, allcolors=., urlcolor=blue!70!white}
+
+* Introduction
+** What is emacs-mcp?
+*** The Bridge Between Claude and Emacs
+**** Architecture
+:PROPERTIES:
+:BEAMER_COL: 0.48
+:BEAMER_ACT: <1->
+:BEAMER_ENV: block
+:END:
+#+ATTR_BEAMER: :overlay <+->
+- *MCP Server*: Clojure-based
+- *Elisp Package*: emacs-mcp.el
+- *Bidirectional*: Claude ↔ Emacs
+
+**** Benefits
+:PROPERTIES:
+:BEAMER_COL: 0.48
+:BEAMER_ACT: <2->
+:BEAMER_ENV: block
+:END:
+#+ATTR_BEAMER: :overlay <+->
+- Project memory persistence
+- Full Emacs context for Claude
+- Automated workflows
+- Multi-agent orchestration
+
+*** Model Context Protocol (MCP)
+\begin{modern-quote}
+MCP is an open protocol that standardizes how applications provide context to LLMs.
+\end{modern-quote}
+#+LaTeX: \begin{raggedleft}
+\textbf{--- Anthropic}
+#+LaTeX: \par\end{raggedleft}
+
+\pause
+
+**** Key Concepts
+#+ATTR_BEAMER: :overlay <+->
+- *Tools*: Functions Claude can call
+- *Resources*: Data Claude can read
+- *Context*: Information about the environment
+
+** Core Features
+*** Project Memory System
+**** Persistent Storage
+:PROPERTIES:
+:BEAMER_COL: 0.55
+:BEAMER_ENV: block
+:END:
+#+begin_src elisp :eval no
+;; Add to project memory
+(emacs-mcp-api-memory-add
+ "convention"
+ "Use kebab-case for functions"
+ '("elisp" "style"))
+
+;; Query memory
+(emacs-mcp-api-memory-query
+ "convention"
+ '("elisp")
+ 10)
+#+end_src
+
+**** Memory Types
+:PROPERTIES:
+:BEAMER_COL: 0.42
+:BEAMER_ENV: block
+:END:
+#+ATTR_BEAMER: :overlay <+->
+- =note= — General notes
+- =snippet= — Code fragments
+- =convention= — Project rules
+- =decision= — Architecture choices
+
+*** Context Gathering
+**** What Claude Sees
+#+begin_src elisp :eval no
+(emacs-mcp-api-get-context)
+;; Returns:
+;; - Current buffer info
+;; - Project root
+;; - Git status
+;; - Recent files
+;; - Project memory
+#+end_src
+
+\pause
+
+**** Automatic Integration
+#+ATTR_BEAMER: :overlay <+->
+- Works with =projectile= / =project.el=
+- Git repository awareness
+- Buffer and region context
+
+* Addons System
+** Modular Architecture
+*** Addon Lifecycle
+**** Registration
+:PROPERTIES:
+:BEAMER_COL: 0.55
+:BEAMER_ENV: block
+:END:
+#+begin_src elisp :eval no
+(emacs-mcp-addon-register
+ 'my-addon
+ :version "1.0.0"
+ :description "My addon"
+ :init #'my-init
+ :async-init #'my-async-init
+ :shutdown #'my-cleanup)
+#+end_src
+
+**** Lifecycle Hooks
+:PROPERTIES:
+:BEAMER_COL: 0.42
+:BEAMER_ENV: block
+:END:
+#+ATTR_BEAMER: :overlay <+->
+- =:init= — Sync setup
+- =:async-init= — Background
+- =:shutdown= — Cleanup
+
+*** Available Addons
+| Addon | Purpose |
+|-------+---------|
+| =cider= | Clojure REPL integration |
+| =org-kanban= | Task management |
+| =swarm= | Multi-agent orchestration |
+| =melpazoid= | MELPA submission testing |
+| =presentation= | Slide creation |
+
+** CIDER Integration
+*** Clojure Development
+**** Features
+:PROPERTIES:
+:BEAMER_COL: 0.48
+:BEAMER_ACT: <1->
+:BEAMER_ENV: block
+:END:
+#+ATTR_BEAMER: :overlay <+->
+- Auto-start nREPL
+- Silent/explicit eval modes
+- Namespace awareness
+- Error handling
+
+**** Configuration
+:PROPERTIES:
+:BEAMER_COL: 0.48
+:BEAMER_ACT: <2->
+:BEAMER_ENV: block
+:END:
+#+begin_src elisp :eval no
+(setq emacs-mcp-cider-auto-start-nrepl t)
+(setq emacs-mcp-cider-auto-connect t)
+(setq emacs-mcp-cider-nrepl-port 7888)
+#+end_src
+
+** Org-Kanban Integration
+*** Interactive Task Board
+**** Keybindings
+:PROPERTIES:
+:BEAMER_COL: 0.45
+:BEAMER_ENV: block
+:END:
+| Key | Action |
+|-----+--------|
+| =n/j= | Next task |
+| =p/k= | Previous |
+| =h/l= | Columns |
+| =m= | Move task |
+| =c= | Create |
+
+**** Dual Backend
+:PROPERTIES:
+:BEAMER_COL: 0.52
+:BEAMER_ENV: block
+:END:
+#+ATTR_BEAMER: :overlay <+->
+- *Standalone*: Local =.org= file
+- *Vibe*: Cloud sync
+- Auto-sync between both
+- Agent task tracking
+
+** Swarm Orchestration
+*** Multi-Agent Coordination
+**** Spawn Agents
+:PROPERTIES:
+:BEAMER_COL: 0.55
+:BEAMER_ENV: block
+:END:
+#+begin_src elisp :eval no
+;; Create specialized agents
+(emacs-mcp-swarm-spawn
+ "tester"
+ :presets '("tdd" "clarity"))
+
+;; Broadcast to all
+(emacs-mcp-swarm-broadcast
+ "Run tests and report")
+#+end_src
+
+**** Use Cases
+:PROPERTIES:
+:BEAMER_COL: 0.42
+:BEAMER_ENV: block
+:END:
+#+ATTR_BEAMER: :overlay <+->
+- Parallel code review
+- Test execution
+- Documentation generation
+- Refactoring tasks
+
+* Native org-clj Library
+** Clojure Org-Mode Parser
+*** Pure Clojure Implementation
+**** Why Native?
+:PROPERTIES:
+:BEAMER_COL: 0.48
+:BEAMER_ACT: <1->
+:BEAMER_ENV: block
+:END:
+#+ATTR_BEAMER: :overlay <+->
+- No elisp dependency
+- Immutable data structures
+- Schema validation (Malli)
+- Easy testing
+
+**** Capabilities
+:PROPERTIES:
+:BEAMER_COL: 0.48
+:BEAMER_ACT: <2->
+:BEAMER_ENV: block
+:END:
+#+ATTR_BEAMER: :overlay <+->
+- Parse org → EDN
+- Write EDN → org
+- Query headlines
+- Transform documents
+
+*** Usage Example
+**** Parse and Query
+#+begin_src clojure :eval no
+(require '[emacs-mcp.org-clj.parser :as p])
+(require '[emacs-mcp.org-clj.query :as q])
+
+(def doc (p/parse-document (slurp "tasks.org")))
+
+;; Find all TODOs
+(q/find-by-status doc "TODO")
+
+;; Get statistics
+(q/task-stats doc)
+;; => {:total 10 :todo 3 :done 7}
+#+end_src
+
+*** Kanban Board Rendering
+**** Terminal Output
+#+begin_src clojure :eval no
+(require '[emacs-mcp.org-clj.render :as r])
+
+(println (r/render-to-terminal "kanban.org"))
+#+end_src
+
+\pause
+
+**** OCP Design
+#+ATTR_BEAMER: :overlay <+->
+- =KanbanRenderer= protocol
+- Extend without modification
+- Terminal, Emacs, HTML renderers
+
+* Getting Started
+** Installation
+*** Setup Steps
+**** 1. Clone Repository
+#+begin_src bash :eval no
+git clone https://github.com/BuddhiLW/emacs-mcp.git
+#+end_src
+
+**** 2. Configure Emacs
+#+begin_src elisp :eval no
+;; Add to load-path
+(add-to-list 'load-path "path/to/emacs-mcp/elisp")
+(add-to-list 'load-path "path/to/emacs-mcp/elisp/addons")
+
+;; Load main package
+(require 'emacs-mcp)
+(require 'emacs-mcp-addons)
+
+;; Enable addons
+(setq emacs-mcp-addon-always-load '(cider org-kanban))
+#+end_src
+
+*** Keybindings
+**** Default Prefix: =C-c m=
+| Key | Command |
+|-----+---------|
+| =C-c m m= | Transient menu |
+| =C-c m n= | Add note |
+| =C-c m s= | Save snippet |
+| =C-c m c= | Add convention |
+| =C-c m k= | Open kanban |
+| =C-c m w= | Run workflow |
+
+* 
+:PROPERTIES:
+:BEAMER_opt: standout
+:BEAMER_ENV: fullframe
+:END:
+**** 
+\begin{modern-quote}
+\color{magenta} \huge\textbf{Questions?} \\
+\rule{\linewidth}{0.5mm}
+\\[1em]
+\normalsize
+GitHub: \texttt{github.com/BuddhiLW} \\
+LinkedIn: \texttt{linkedin.com/in/pedro-g-branquinho} \\
+Email: \texttt{pedrogbranquinho@gmail.com}
+\end{modern-quote}
