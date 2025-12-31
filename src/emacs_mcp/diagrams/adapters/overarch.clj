@@ -15,7 +15,10 @@
 
 ;; Configurable path to overarch CLI or JAR.
 ;; Set via (set-overarch-path! "/path/to/overarch")
-(defonce *overarch-path* (atom nil))
+(def ^:private overarch-path-atom
+  "Configurable path to overarch CLI or JAR.
+   Set via (set-overarch-path! \"/path/to/overarch\")"
+  (atom nil))
 
 (defn set-overarch-path!
   "Set the overarch executable/JAR path.
@@ -23,20 +26,28 @@
      (set-overarch-path! \"/home/linuxbrew/.linuxbrew/bin/overarch\")
      (set-overarch-path! \"/path/to/overarch.jar\")"
   [path]
-  (reset! *overarch-path* path))
+  (reset! overarch-path-atom path))
 
 (defn get-overarch-path
   "Get the configured overarch path, or nil if not set."
   []
-  @*overarch-path*)
+  @overarch-path-atom)
 
 ;;; Overarch EDN Generation
 
+(defn- ensure-namespaced-keyword
+  "Ensure a keyword has a namespace. Adds 'diagram' if missing."
+  [kw]
+  (if (namespace kw)
+    kw
+    (keyword "diagram" (name kw))))
+
 (defn- element->overarch
-  "Convert internal element to Overarch EDN format."
+  "Convert internal element to Overarch EDN format.
+   Ensures :id is a namespaced keyword."
   [{:keys [el id name desc tech external? subtype] :as elem}]
   (cond-> {:el (or el :system)
-           :id id
+           :id (ensure-namespaced-keyword id)
            :name name}
     desc (assoc :desc desc)
     tech (assoc :tech tech)
@@ -44,27 +55,44 @@
     subtype (assoc :subtype subtype)))
 
 (defn- relation->overarch
-  "Convert internal relation to Overarch EDN format."
-  [{:keys [from to name desc tech] :as rel}]
-  (cond-> {:el :rel
-           :from from
-           :to to}
-    name (assoc :name name)
-    desc (assoc :desc desc)
-    tech (assoc :tech tech)))
+  "Convert internal relation to Overarch EDN format.
+   Generates :id from from/to if not provided. Ensures all IDs are namespaced."
+  [{:keys [id from to name desc tech] :as rel}]
+  (let [ns-from (ensure-namespaced-keyword from)
+        ns-to (ensure-namespaced-keyword to)
+        rel-id (ensure-namespaced-keyword
+                (or id (keyword (str (clojure.core/name from) "-to-" (clojure.core/name to)))))]
+    (cond-> {:el :rel
+             :id rel-id
+             :from ns-from
+             :to ns-to}
+      name (assoc :name name)
+      desc (assoc :desc desc)
+      tech (assoc :tech tech))))
 
 (defn- spec->overarch-model
-  "Convert diagram spec to Overarch model EDN."
+  "Convert diagram spec to Overarch model EDN.
+   Returns a set of elements and relations (not a vector)."
   [{:keys [type title elements relations options]}]
-  (let [model-elements (mapv element->overarch elements)
-        model-relations (mapv relation->overarch relations)]
+  (let [model-elements (map element->overarch elements)
+        model-relations (map relation->overarch relations)]
     {:title title
-     :elements (into model-elements model-relations)}))
+     :elements (set (concat model-elements model-relations))}))
 
 (defn- spec->overarch-views
-  "Generate Overarch view definition based on diagram type."
-  [{:keys [type title elements] :as spec}]
-  (let [element-ids (mapv :id elements)
+  "Generate Overarch view definition based on diagram type.
+   Uses :ct with refs to all elements and relations.
+   Ensures all refs use namespaced keywords."
+  [{:keys [type title elements relations] :as spec}]
+  (let [element-refs (mapv (fn [{:keys [id]}]
+                             {:ref (ensure-namespaced-keyword id)})
+                           elements)
+        relation-refs (mapv (fn [{:keys [id from to]}]
+                              {:ref (ensure-namespaced-keyword
+                                     (or id (keyword (str (clojure.core/name from)
+                                                          "-to-"
+                                                          (clojure.core/name to)))))})
+                            relations)
         view-type (case type
                     :c4-context :context-view
                     :c4-container :container-view
@@ -74,10 +102,10 @@
                     :deployment :deployment-view
                     :concept-map :concept-view
                     :context-view)]
-    [{:el view-type
-      :id (keyword (str (name type) "-view"))
-      :title (or title "Diagram")
-      :ct (mapv (fn [id] {:ref id}) element-ids)}]))
+    #{{:el view-type
+       :id (keyword "diagram" (str (clojure.core/name type) "-view"))
+       :title (or title "Diagram")
+       :ct (into element-refs relation-refs)}}))
 
 ;;; File Operations
 
