@@ -10,4 +10,7 @@
         :task (shell "clojure -M:nrepl")}
 
   mcp {:doc "Start MCP server"
-       :task (shell "clojure -X:mcp")}}}
+       :task (shell "clojure -X:mcp")}
+
+  diagram-deps {:doc "Check/install diagram dependencies (plantuml, graphviz, overarch)"
+                :task (exec 'diagram-deps/-main)}}}
