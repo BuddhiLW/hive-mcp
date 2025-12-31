@@ -13,6 +13,30 @@
             [clojure.data.json :as json]
             [taoensso.timbre :as log]))
 
+;; =============================================================================
+;; MCP Response Format Helpers
+;; =============================================================================
+;; All MCP tool handlers MUST return responses in this format:
+;;   Success: {:type "text" :text "result string"}
+;;   Error:   {:type "text" :text "error message" :isError true}
+;;
+;; DO NOT use: {:content [{:type "text" :text ...}]} - this causes timeouts!
+
+(defn mcp-success
+  "Create a successful MCP response. Text can be string or will be pr-str'd."
+  [text]
+  {:type "text" :text (if (string? text) text (pr-str text))})
+
+(defn mcp-error
+  "Create an error MCP response."
+  [message]
+  {:type "text" :text message :isError true})
+
+(defn mcp-json
+  "Create a successful MCP response with JSON-encoded data."
+  [data]
+  {:type "text" :text (json/write-str data)})
+
 ;; Tool handlers
 
 (defn handle-eval-elisp
@@ -454,8 +478,8 @@
                       (if agent_id (pr-str agent_id) "nil"))
         {:keys [success result error]} (ec/eval-elisp elisp)]
     (if success
-      {:content [{:type "text" :text result}]}
-      {:content [{:type "text" :text (format "Error: %s" error)}]})))
+      (mcp-success result)
+      (mcp-error (format "Error: %s" error)))))
 
 (defn handle-cider-list-sessions
   "List all active CIDER sessions with their status and ports."
@@ -468,8 +492,8 @@
                    (json-encode (list))))"
         {:keys [success result error]} (ec/eval-elisp elisp)]
     (if success
-      {:content [{:type "text" :text result}]}
-      {:content [{:type "text" :text (format "Error: %s" error)}]})))
+      (mcp-success result)
+      (mcp-error (format "Error: %s" error)))))
 
 (defn handle-cider-eval-session
   "Evaluate Clojure code in a specific named CIDER session."
@@ -484,8 +508,8 @@
                       (pr-str code))
         {:keys [success result error]} (ec/eval-elisp elisp)]
     (if success
-      {:content [{:type "text" :text result}]}
-      {:content [{:type "text" :text (format "Error: %s" error)}]})))
+      (mcp-success result)
+      (mcp-error (format "Error: %s" error)))))
 
 (defn handle-cider-kill-session
   "Kill a specific named CIDER session."
@@ -499,8 +523,8 @@
                       (pr-str session_name))
         {:keys [success result error]} (ec/eval-elisp elisp)]
     (if success
-      {:content [{:type "text" :text (format "Session '%s' killed" session_name)}]}
-      {:content [{:type "text" :text (format "Error: %s" error)}]})))
+      (mcp-success (format "Session '%s' killed" session_name))
+      (mcp-error (format "Error: %s" error)))))
 
 (defn handle-cider-kill-all-sessions
   "Kill all CIDER sessions."
@@ -513,8 +537,8 @@
                    (error \"emacs-mcp-cider not loaded\")))"
         {:keys [success result error]} (ec/eval-elisp elisp)]
     (if success
-      {:content [{:type "text" :text "All CIDER sessions killed"}]}
-      {:content [{:type "text" :text (format "Error: %s" error)}]})))
+      (mcp-success "All CIDER sessions killed")
+      (mcp-error (format "Error: %s" error)))))
 
 ;; ============================================================
 ;; Magit Integration Tools (requires emacs-mcp-magit addon)
@@ -826,10 +850,8 @@
   [_]
   (if (kanban-addon-available?)
     (let [result (ec/eval-elisp "(json-encode (emacs-mcp-kanban-api-status))")]
-      {:content [{:type "text"
-                  :text (str result)}]})
-    {:content [{:type "text"
-                :text "emacs-mcp-org-kanban addon not loaded. Run (emacs-mcp-addon-load 'org-kanban)"}]}))
+      (mcp-success (str result)))
+    (mcp-error "emacs-mcp-org-kanban addon not loaded. Run (emacs-mcp-addon-load 'org-kanban)")))
 
 (defn handle-mcp-kanban-list-tasks
   "List kanban tasks, optionally filtered by status."
@@ -839,10 +861,8 @@
                   (format "(json-encode (emacs-mcp-kanban-list-tasks nil \"%s\"))" status)
                   "(json-encode (emacs-mcp-kanban-list-tasks))")
           result (ec/eval-elisp elisp)]
-      {:content [{:type "text"
-                  :text (str result)}]})
-    {:content [{:type "text"
-                :text "emacs-mcp-org-kanban addon not loaded."}]}))
+      (mcp-success (str result)))
+    (mcp-error "emacs-mcp-org-kanban addon not loaded.")))
 
 (defn handle-mcp-kanban-create-task
   "Create a new kanban task."
@@ -855,10 +875,8 @@
                   (format "(json-encode (emacs-mcp-kanban-create-task \"%s\"))"
                           (v/escape-elisp-string title)))
           result (ec/eval-elisp elisp)]
-      {:content [{:type "text"
-                  :text (str "Created task: " result)}]})
-    {:content [{:type "text"
-                :text "emacs-mcp-org-kanban addon not loaded."}]}))
+      (mcp-success (str "Created task: " result)))
+    (mcp-error "emacs-mcp-org-kanban addon not loaded.")))
 
 (defn handle-mcp-kanban-update-task
   "Update a kanban task's status or title."
@@ -869,10 +887,8 @@
                   title (str (format ":title \"%s\" " (v/escape-elisp-string title))))
           elisp (format "(emacs-mcp-kanban-update-task \"%s\" %s)" task_id props)
           result (ec/eval-elisp elisp)]
-      {:content [{:type "text"
-                  :text (str "Updated task: " result)}]})
-    {:content [{:type "text"
-                :text "emacs-mcp-org-kanban addon not loaded."}]}))
+      (mcp-success (str "Updated task: " result)))
+    (mcp-error "emacs-mcp-org-kanban addon not loaded.")))
 
 (defn handle-mcp-kanban-move-task
   "Move a task to a new status column."
@@ -880,40 +896,32 @@
   (if (kanban-addon-available?)
     (let [elisp (format "(emacs-mcp-kanban-move-task \"%s\" \"%s\")" task_id new_status)
           result (ec/eval-elisp elisp)]
-      {:content [{:type "text"
-                  :text (str "Moved task to " new_status)}]})
-    {:content [{:type "text"
-                :text "emacs-mcp-org-kanban addon not loaded."}]}))
+      (mcp-success (str "Moved task to " new_status)))
+    (mcp-error "emacs-mcp-org-kanban addon not loaded.")))
 
 (defn handle-mcp-kanban-roadmap
   "Get roadmap view with milestones and progress."
   [_]
   (if (kanban-addon-available?)
     (let [result (ec/eval-elisp "(json-encode (emacs-mcp-kanban-api-roadmap))")]
-      {:content [{:type "text"
-                  :text (str result)}]})
-    {:content [{:type "text"
-                :text "emacs-mcp-org-kanban addon not loaded."}]}))
+      (mcp-success (str result)))
+    (mcp-error "emacs-mcp-org-kanban addon not loaded.")))
 
 (defn handle-mcp-kanban-my-tasks
   "Get tasks assigned to or modified by the current agent."
   [_]
   (if (kanban-addon-available?)
     (let [result (ec/eval-elisp "(json-encode (emacs-mcp-kanban-api-my-tasks))")]
-      {:content [{:type "text"
-                  :text (str result)}]})
-    {:content [{:type "text"
-                :text "emacs-mcp-org-kanban addon not loaded."}]}))
+      (mcp-success (str result)))
+    (mcp-error "emacs-mcp-org-kanban addon not loaded.")))
 
 (defn handle-mcp-kanban-sync
   "Sync tasks between vibe-kanban and standalone backends."
   [_]
   (if (kanban-addon-available?)
     (let [result (ec/eval-elisp "(emacs-mcp-kanban-sync-all)")]
-      {:content [{:type "text"
-                  :text (str "Sync complete: " result)}]})
-    {:content [{:type "text"
-                :text "emacs-mcp-org-kanban addon not loaded."}]}))
+      (mcp-success (str "Sync complete: " result)))
+    (mcp-error "emacs-mcp-org-kanban addon not loaded.")))
 
 ;; =============================================================================
 ;; Swarm Orchestration Tools (requires emacs-mcp-swarm addon)
@@ -1028,12 +1036,9 @@
     (let [content (slurp file_path)
           doc (org-parser/parse-document content)
           json-str (json/write-str doc)]
-      {:content [{:type "text"
-                  :text json-str}]})
+      (mcp-success json-str))
     (catch Exception e
-      {:content [{:type "text"
-                  :text (str "Error parsing org file: " (.getMessage e))}]
-       :isError true})))
+      (mcp-error (str "Error parsing org file: " (.getMessage e))))))
 
 (defn handle-org-clj-write
   "Write an org document structure back to a file."
@@ -1044,12 +1049,9 @@
                 document)
           org-text (org-writer/write-document doc)]
       (spit file_path org-text)
-      {:content [{:type "text"
-                  :text (str "Successfully wrote " (count org-text) " characters to " file_path)}]})
+      (mcp-success (str "Successfully wrote " (count org-text) " characters to " file_path)))
     (catch Exception e
-      {:content [{:type "text"
-                  :text (str "Error writing org file: " (.getMessage e))}]
-       :isError true})))
+      (mcp-error (str "Error writing org file: " (.getMessage e))))))
 
 (defn handle-org-clj-query
   "Query headlines in a parsed org document."
@@ -1069,12 +1071,9 @@
                                     {:query_type query_type})))
           ;; Filter out nils
           results (filterv some? results)]
-      {:content [{:type "text"
-                  :text (json/write-str results)}]})
+      (mcp-json results))
     (catch Exception e
-      {:content [{:type "text"
-                  :text (str "Error querying org file: " (.getMessage e))}]
-       :isError true})))
+      (mcp-error (str "Error querying org file: " (.getMessage e))))))
 
 (defn handle-org-kanban-native-status
   "Get kanban status using native Clojure parser (no elisp dependency)."
@@ -1092,12 +1091,9 @@
                               :done (mapv #(select-keys % [:title :properties]) done)}
                   :file file_path
                   :backend "org-clj-native"}]
-      {:content [{:type "text"
-                  :text (json/write-str result)}]})
+      {:type "text" :text (json/write-str result)})
     (catch Exception e
-      {:content [{:type "text"
-                  :text (str "Error getting kanban status: " (.getMessage e))}]
-       :isError true})))
+      {:type "text" :text (str "Error getting kanban status: " (.getMessage e)) :isError true})))
 
 (defn handle-org-kanban-native-move
   "Move a task to a new status using native Clojure parser."
@@ -1111,19 +1107,14 @@
         (let [updated-doc (org-transform/set-status doc task_id new_status)
               org-text (org-writer/write-document updated-doc)]
           (spit file_path org-text)
-          {:content [{:type "text"
-                      :text (json/write-str {:success true
-                                             :task_id task_id
-                                             :old_status (:keyword task)
-                                             :new_status new_status})}]})
-        {:content [{:type "text"
-                    :text (json/write-str {:success false
-                                           :error (str "Task not found: " task_id)})}]
-         :isError true}))
+          (mcp-json {:success true
+                     :task_id task_id
+                     :old_status (:keyword task)
+                     :new_status new_status}))
+        (mcp-error (json/write-str {:success false
+                                    :error (str "Task not found: " task_id)}))))
     (catch Exception e
-      {:content [{:type "text"
-                  :text (str "Error moving task: " (.getMessage e))}]
-       :isError true})))
+      (mcp-error (str "Error moving task: " (.getMessage e))))))
 
 (defn handle-org-kanban-render
   "Render a visual kanban board from an org file."
@@ -1136,12 +1127,9 @@
                      "emacs" (org-render/emacs-renderer)
                      (throw (ex-info (str "Unknown format: " format) {:format format})))
           output (org-render/render-file renderer file_path)]
-      {:content [{:type "text"
-                  :text output}]})
+      (mcp-success output))
     (catch Exception e
-      {:content [{:type "text"
-                  :text (str "Error rendering kanban: " (.getMessage e))}]
-       :isError true})))
+      (mcp-error (str "Error rendering kanban: " (.getMessage e))))))
 
 ;;; Prompt Capture Tools
 

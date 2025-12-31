@@ -458,46 +458,65 @@
   "MCP tool handler for /capture command."
   [{:keys [prompt accomplishes well_structured improvements
            category tags quality source model context]}]
-  (capture-prompt {:prompt prompt
-                   :accomplishes accomplishes
-                   :well-structured well_structured
-                   :improvements improvements
-                   :category (when category (keyword category))
-                   :tags (or tags [])
-                   :quality (if quality (keyword quality) :untested)
-                   :source (or source "user")
-                   :model model
-                   :context context}))
+  (try
+    (let [result (capture-prompt {:prompt prompt
+                                  :accomplishes accomplishes
+                                  :well-structured well_structured
+                                  :improvements improvements
+                                  :category (when category (keyword category))
+                                  :tags (or tags [])
+                                  :quality (if quality (keyword quality) :untested)
+                                  :source (or source "user")
+                                  :model model
+                                  :context context})]
+      {:type "text" :text (pr-str result)})
+    (catch Exception e
+      {:type "text" :text (str "Error capturing prompt: " (.getMessage e)) :isError true})))
 
 (defn handle-prompt-list
   "MCP tool handler for listing prompts."
   [{:keys [category quality limit]}]
-  (list-prompts {:category (when category (keyword category))
-                 :quality (when quality (keyword quality))
-                 :limit (or limit 20)}))
+  (try
+    (let [result (list-prompts {:category (when category (keyword category))
+                                :quality (when quality (keyword quality))
+                                :limit (or limit 20)})]
+      {:type "text" :text (pr-str result)})
+    (catch Exception e
+      {:type "text" :text (str "Error listing prompts: " (.getMessage e)) :isError true})))
 
 (defn handle-prompt-search
   "MCP tool handler for searching prompts."
   [{:keys [query limit]}]
-  (search-prompts query {:limit (or limit 20)}))
+  (try
+    (let [result (search-prompts query {:limit (or limit 20)})]
+      {:type "text" :text (pr-str result)})
+    (catch Exception e
+      {:type "text" :text (str "Error searching prompts: " (.getMessage e)) :isError true})))
 
 (defn handle-prompt-analyze
   "MCP tool handler for analyzing a prompt without saving."
   [{:keys [prompt]}]
-  (let [quality (assess-prompt-quality prompt)
-        improvements (suggest-improvements prompt)
-        category (infer-category prompt)]
-    {:analysis {:category category
-                :quality-score (:score quality)
-                :assessment (:assessment quality)
-                :structure {:has-context (:has-context? quality)
-                            :has-specific-task (:has-specific-task? quality)
-                            :has-constraints (:has-constraints? quality)
-                            :has-output-spec (:has-output-spec? quality)}
-                :suggested-improvements improvements
-                :suggested-tags (get category-tags category [])}}))
+  (try
+    (let [quality (assess-prompt-quality prompt)
+          improvements (suggest-improvements prompt)
+          category (infer-category prompt)
+          result {:analysis {:category category
+                             :quality-score (:score quality)
+                             :assessment (:assessment quality)
+                             :structure {:has-context (:has-context? quality)
+                                         :has-specific-task (:has-specific-task? quality)
+                                         :has-constraints (:has-constraints? quality)
+                                         :has-output-spec (:has-output-spec? quality)}
+                             :suggested-improvements improvements
+                             :suggested-tags (get category-tags category [])}}]
+      {:type "text" :text (pr-str result)})
+    (catch Exception e
+      {:type "text" :text (str "Error analyzing prompt: " (.getMessage e)) :isError true})))
 
 (defn handle-prompt-stats
   "MCP tool handler for prompt statistics."
   [_]
-  (get-statistics))
+  (try
+    {:type "text" :text (pr-str (get-statistics))}
+    (catch Exception e
+      {:type "text" :text (str "Error getting stats: " (.getMessage e)) :isError true})))
