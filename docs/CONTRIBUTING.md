@@ -77,6 +77,35 @@ Use conventional commits:
 3. Test thoroughly
 4. Submit PR with clear description
 
+## Releasing
+
+This is a fast-moving project. Create a new release after each PR merge to main.
+
+### Version Format: `v0.X.Y`
+
+| Change Type | Version Update | Example |
+|-------------|----------------|---------|
+| **Milestone** (significant feature set) | Bump X | v0.3.0 → v0.4.0 |
+| **Feature or fix** | Bump Y | v0.3.0 → v0.3.1 |
+
+### Release Process
+
+1. Merge PR to `main`
+2. Create release with changelog:
+   ```bash
+   gh release create v0.X.Y --target main \
+     --title "v0.X.Y - Brief description" \
+     --notes "## What's New\n\n- Feature 1\n- Fix 1"
+   ```
+3. Include link to full changelog:
+   ```
+   https://github.com/BuddhiLW/emacs-mcp/compare/v0.X.Z...v0.X.Y
+   ```
+
+### Current Version
+
+See [Releases](https://github.com/BuddhiLW/emacs-mcp/releases) for the latest version.
+
 ## License
 
 By contributing, you agree that your contributions will be licensed under the MIT License.
