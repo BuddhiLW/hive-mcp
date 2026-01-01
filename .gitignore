@@ -20,3 +20,12 @@ target/
 
 # Compiled Elisp
 *.elc
+
+# Test output
+test-output/
+
+# Local config
+.clojure-mcp/
+
+# Generated diagrams
+overarch/
