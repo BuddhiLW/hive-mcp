@@ -6,32 +6,129 @@ MCP (Model Context Protocol) server that allows Claude to interact with a runnin
 
 ### Core Tools
 
-- **eval_elisp** - Execute arbitrary Emacs Lisp code
-- **emacs_status** - Check if Emacs server is running
-- **list_buffers** - List all open buffers
-- **get_buffer_content** - Read content from a buffer
-- **current_buffer** - Get current buffer name and file
-- **switch_to_buffer** - Switch to a specific buffer
-- **find_file** - Open a file in Emacs
-- **save_buffer** - Save the current buffer
-- **goto_line** - Move cursor to a line number
-- **insert_text** - Insert text at cursor
-- **project_root** - Get current project root
-- **recent_files** - Get recently opened files
+| Tool | Description |
+|------|-------------|
+| `eval_elisp` | Execute arbitrary Emacs Lisp code |
+| `emacs_status` | Check if Emacs server is running |
+| `list_buffers` | List all open buffers |
+| `get_buffer_content` | Read content from a buffer |
+| `current_buffer` | Get current buffer name and file |
+| `switch_to_buffer` | Switch to a specific buffer |
+| `find_file` | Open a file in Emacs |
+| `save_buffer` | Save the current buffer |
+| `goto_line` | Move cursor to a line number |
+| `insert_text` | Insert text at cursor |
+| `project_root` | Get current project root |
+| `recent_files` | Get recently opened files |
 
-### emacs-mcp.el Integration Tools (NEW!)
+### Memory & Context Tools
 
-These tools provide seamless integration with `emacs-mcp.el`, enabling Claude to use Emacs memory, context, and workflows without manual `eval_elisp` calls:
+| Tool | Description |
+|------|-------------|
+| `mcp_capabilities` | Check emacs-mcp.el availability and features |
+| `mcp_get_context` | Get full context (buffer, project, git, memory) |
+| `mcp_memory_add` | Add notes, snippets, conventions, or decisions |
+| `mcp_memory_query` | Query stored memory entries by type |
+| `mcp_memory_query_metadata` | Efficient metadata-only queries (10x fewer tokens) |
+| `mcp_memory_get_full` | Get full content of a memory entry by ID |
+| `mcp_memory_search_semantic` | **NEW!** Vector similarity search via Chroma |
 
-- **mcp_capabilities** - Check emacs-mcp.el availability and features
-- **mcp_get_context** - Get full context (buffer, project, git, memory)
-- **mcp_memory_add** - Add notes, snippets, conventions, or decisions to project memory
-- **mcp_memory_query** - Query stored memory entries by type
-- **mcp_list_workflows** - List available user-defined workflows
-- **mcp_run_workflow** - Execute a workflow by name
-- **mcp_notify** - Show notification messages in Emacs
+### Workflow & Notification Tools
 
-> **Auto-detection**: These tools automatically check if `emacs-mcp.el` is loaded and provide helpful error messages if not
+| Tool | Description |
+|------|-------------|
+| `mcp_list_workflows` | List available user-defined workflows |
+| `mcp_run_workflow` | Execute a workflow by name |
+| `mcp_notify` | Show notification messages in Emacs |
+| `mcp_list_special_buffers` | List special buffers (*Messages*, etc.) |
+| `mcp_watch_buffer` | Monitor buffer content (logs, warnings) |
+
+### Kanban Tools
+
+| Tool | Description |
+|------|-------------|
+| `mcp_kanban_status` | Get kanban board status and progress |
+| `mcp_kanban_list_tasks` | List tasks with optional status filter |
+| `mcp_kanban_create_task` | Create a new task |
+| `mcp_kanban_update_task` | Update task title/status |
+| `mcp_kanban_move_task` | Move task to new status column |
+| `mcp_kanban_my_tasks` | Get tasks assigned to current agent |
+| `mcp_kanban_roadmap` | View roadmap with milestones |
+| `mcp_kanban_sync` | Sync between vibe-kanban and org-kanban |
+
+### CIDER Tools (Clojure Development)
+
+| Tool | Description |
+|------|-------------|
+| `cider_status` | Get CIDER connection status |
+| `cider_eval_silent` | Fast silent evaluation |
+| `cider_eval_explicit` | Interactive evaluation with REPL output |
+| `cider_list_sessions` | List all active CIDER sessions |
+| `cider_spawn_session` | Create isolated nREPL session for parallel agents |
+| `cider_eval_session` | Evaluate in specific named session |
+| `cider_kill_session` | Kill a named session |
+| `cider_kill_all_sessions` | Clean up all sessions |
+
+### Swarm Tools (Multi-Agent)
+
+| Tool | Description |
+|------|-------------|
+| `swarm_spawn` | Spawn a new Claude slave instance |
+| `swarm_dispatch` | Send prompt to a slave |
+| `swarm_collect` | Collect response from a task |
+| `swarm_broadcast` | Send same prompt to all slaves |
+| `swarm_status` | Get swarm status and task counts |
+| `swarm_kill` | Kill slave instance(s) |
+| `swarm_list_presets` | List available specialization presets |
+
+### Git Tools (via Magit)
+
+| Tool | Description |
+|------|-------------|
+| `magit_status` | Full repo status with staged/unstaged/untracked |
+| `magit_branches` | Branch info (current, upstream, local, remote) |
+| `magit_log` | Recent commits |
+| `magit_diff` | Show staged/unstaged/all diffs |
+| `magit_stage` | Stage files or all changes |
+| `magit_commit` | Create commit with message |
+| `magit_push` | Push to remote |
+| `magit_pull` | Pull from upstream |
+| `magit_fetch` | Fetch from remotes |
+| `magit_feature_branches` | List feature/fix/feat branches |
+
+### Project Tools (via Projectile)
+
+| Tool | Description |
+|------|-------------|
+| `projectile_info` | Project name, type, root, file count |
+| `projectile_files` | List files with optional glob filter |
+| `projectile_find_file` | Find file by name |
+| `projectile_search` | Search project with ripgrep |
+| `projectile_recent` | Recently visited project files |
+| `projectile_list_projects` | List all known projects |
+
+### Prompt Capture Tools (RAG Knowledge Base)
+
+| Tool | Description |
+|------|-------------|
+| `prompt_capture` | Capture well-structured prompts with analysis |
+| `prompt_analyze` | Analyze prompt structure without saving |
+| `prompt_search` | Search captured prompts by keyword |
+| `prompt_list` | List prompts with filters |
+| `prompt_stats` | Statistics about captured prompts |
+
+### Org-Mode Tools
+
+| Tool | Description |
+|------|-------------|
+| `org_clj_parse` | Parse org file to JSON structure |
+| `org_clj_query` | Query headlines by ID, status, etc. |
+| `org_clj_write` | Write org structure back to file |
+| `org_kanban_native_status` | Get kanban status from org file |
+| `org_kanban_native_move` | Move task to new status |
+| `org_kanban_render` | Render visual kanban board |
+
+> **Auto-detection**: Tools automatically check if required packages are loaded and provide helpful error messages if not
 
 ## Prerequisites
 
@@ -202,12 +299,19 @@ elisp/
 ├── emacs-mcp-addons.el    # Addon system with lifecycle hooks
 └── addons/                # Built-in and custom addons
     ├── emacs-mcp-addon-template.el  # Template for new addons
+    ├── emacs-mcp-chroma.el          # Semantic search via Chroma + Ollama
     ├── emacs-mcp-cider.el           # CIDER + async nREPL
-    ├── emacs-mcp-vibe-kanban.el     # Task management server
-    ├── emacs-mcp-package-lint.el    # MELPA tools
-    ├── emacs-mcp-claude-code.el
-    ├── emacs-mcp-org-ai.el
-    └── emacs-mcp-org-kanban.el
+    ├── emacs-mcp-claude-code.el     # Claude Code CLI integration
+    ├── emacs-mcp-docs.el            # Documentation generation
+    ├── emacs-mcp-magit.el           # Git via Magit with shell fallback
+    ├── emacs-mcp-melpazoid.el       # MELPA submission tools
+    ├── emacs-mcp-org-ai.el          # org-ai conversation context
+    ├── emacs-mcp-org-kanban.el      # Org-mode kanban boards
+    ├── emacs-mcp-package-lint.el    # MELPA compliance tools
+    ├── emacs-mcp-presentation.el    # Presentation mode
+    ├── emacs-mcp-projectile.el      # Project management via Projectile
+    ├── emacs-mcp-swarm.el           # Multi-agent orchestration
+    └── emacs-mcp-vibe-kanban.el     # Cloud task management server
 ```
 
 ## Addon System
@@ -216,11 +320,19 @@ Modular integrations with other Emacs packages. Addons are **lazy-loaded** when 
 
 | Addon | Integration | Features |
 |-------|-------------|----------|
-| cider | [CIDER](https://github.com/clojure-emacs/cider) | Async nREPL startup, auto-connect, memory integration |
-| vibe-kanban | [vibe-kanban](https://github.com/your/vibe-kanban) | Task management server (npx subprocess) |
+| chroma | [Chroma](https://www.trychroma.com/) + [Ollama](https://ollama.com/) | Semantic memory search, vector embeddings, docker-compose management |
+| cider | [CIDER](https://github.com/clojure-emacs/cider) | Async nREPL startup, auto-connect, isolated sessions for parallel agents |
 | claude-code | [claude-code.el](https://github.com/karthink/claude-code) | Context injection for Claude CLI |
+| docs | Built-in | Documentation generation utilities |
+| magit | [Magit](https://magit.vc/) | Git status, staging, commits, push/pull, branch management (shell fallback) |
+| melpazoid | [melpazoid](https://github.com/riscy/melpazoid) | MELPA recipe testing and submission |
 | org-ai | [org-ai](https://github.com/rksm/org-ai) | AI conversation context |
-| package-lint | package-lint | MELPA compliance tools |
+| org-kanban | org-mode | Native Clojure org-mode parser for kanban boards |
+| package-lint | [package-lint](https://github.com/purcell/package-lint) | MELPA compliance checking |
+| presentation | Built-in | Presentation mode for demos |
+| projectile | [Projectile](https://github.com/bbatsov/projectile) | Project info, file listing, search with ripgrep |
+| swarm | vterm/eat | Multi-agent orchestration with presets, parallel Claude instances |
+| vibe-kanban | [vibe-kanban](https://vibekanban.dev/) | Cloud task management server (npx subprocess) |
 
 **Quick start:**
 ```elisp
@@ -271,6 +383,75 @@ All features verified through the Clojure MCP → Emacs integration:
 ;; Show results in Emacs
 (syn/show-in-buffer! "*Results*" "# Analysis\n..." "markdown-mode")
 ```
+
+## Semantic Memory Search
+
+Enable vector similarity search across your project memory using **Chroma** (vector database) and **Ollama** (local embeddings).
+
+### Prerequisites
+
+1. **Docker** and **docker-compose** (for Chroma)
+2. **Ollama** with embedding model:
+   ```bash
+   # Install Ollama
+   curl -fsSL https://ollama.com/install.sh | sh
+   
+   # Pull embedding model (768 dimensions)
+   ollama pull nomic-embed-text
+   ```
+
+### Quick Start
+
+```bash
+# Start Chroma container
+cd /path/to/emacs-mcp
+docker compose up -d
+
+# Verify health
+curl http://localhost:8000/api/v2/heartbeat
+```
+
+### Configuration
+
+Environment variables (set in shell, Emacs, or systemd):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CHROMA_HOST` | `localhost` | Chroma server host |
+| `CHROMA_PORT` | `8000` | Chroma server port |
+| `OLLAMA_HOST` | `http://localhost:11434` | Ollama API URL |
+
+**Emacs configuration** (in `init.el` or `config.el`):
+
+```elisp
+;; Set before loading emacs-mcp
+(setenv "CHROMA_HOST" "localhost")
+(setenv "CHROMA_PORT" "8000")
+(setenv "OLLAMA_HOST" "http://localhost:11434")
+
+;; Load chroma addon
+(require 'emacs-mcp-chroma nil t)
+(when (featurep 'emacs-mcp-chroma)
+  (emacs-mcp-chroma-mode 1))
+```
+
+### Usage
+
+Once configured, use the `mcp_memory_search_semantic` tool:
+
+```clojure
+;; Search for conceptually similar entries
+(mcp_memory_search_semantic {:query "authentication flow" :limit 5})
+
+;; Filter by type
+(mcp_memory_search_semantic {:query "error handling" :type "convention"})
+```
+
+The semantic search finds conceptually related entries even without exact keyword matches - "auth flow" will find entries about "login", "session management", etc.
+
+### Fallback Behavior
+
+If Chroma is unavailable, the system automatically falls back to local text-based search, ensuring memory queries always work.
 
 ## Meta: MCP Servers Editing MCP Servers
 

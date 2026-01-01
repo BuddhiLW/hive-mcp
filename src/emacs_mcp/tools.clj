@@ -1,6 +1,7 @@
 (ns emacs-mcp.tools
   "MCP tool definitions for Emacs interaction."
   (:require [emacs-mcp.emacsclient :as ec]
+            [emacs-mcp.elisp :as el]
             [emacs-mcp.telemetry :as telemetry]
             [emacs-mcp.validation :as v]
             [emacs-mcp.org-clj.parser :as org-parser]
@@ -405,11 +406,7 @@
   "Get CIDER connection status."
   [_]
   (log/info "cider-status")
-  (let [elisp "(progn
-                (require 'emacs-mcp-cider nil t)
-                (if (fboundp 'emacs-mcp-cider-status)
-                    (json-encode (emacs-mcp-cider-status))
-                  (json-encode (list :connected nil :error \"emacs-mcp-cider not loaded\"))))"
+  (let [elisp (el/require-and-call-json 'emacs-mcp-cider 'emacs-mcp-cider-status)
         {:keys [success result error]} (ec/eval-elisp elisp)]
     (if success
       {:type "text" :text result}
@@ -422,12 +419,7 @@
     (v/validate-cider-eval-request params)
     (let [{:keys [code]} params]
       (telemetry/with-eval-telemetry :cider-silent code nil
-        (let [elisp (format "(progn
-                              (require 'emacs-mcp-cider nil t)
-                              (if (fboundp 'emacs-mcp-cider-eval-silent)
-                                  (emacs-mcp-cider-eval-silent %s)
-                                (error \"emacs-mcp-cider not loaded\")))"
-                            (pr-str code))
+        (let [elisp (el/require-and-call-text 'emacs-mcp-cider 'emacs-mcp-cider-eval-silent code)
               {:keys [success result error]} (ec/eval-elisp elisp)]
           (if success
             {:type "text" :text result}
@@ -444,12 +436,7 @@
     (v/validate-cider-eval-request params)
     (let [{:keys [code]} params]
       (telemetry/with-eval-telemetry :cider-explicit code nil
-        (let [elisp (format "(progn
-                              (require 'emacs-mcp-cider nil t)
-                              (if (fboundp 'emacs-mcp-cider-eval-explicit)
-                                  (emacs-mcp-cider-eval-explicit %s)
-                                (error \"emacs-mcp-cider not loaded\")))"
-                            (pr-str code))
+        (let [elisp (el/require-and-call-text 'emacs-mcp-cider 'emacs-mcp-cider-eval-explicit code)
               {:keys [success result error]} (ec/eval-elisp elisp)]
           (if success
             {:type "text" :text result}
@@ -468,14 +455,8 @@
    Useful for parallel agent work where each agent needs isolated REPL."
   [{:keys [name project_dir agent_id]}]
   (log/info "cider-spawn-session" {:name name :agent_id agent_id})
-  (let [elisp (format "(progn
-                         (require 'emacs-mcp-cider nil t)
-                         (if (fboundp 'emacs-mcp-cider-spawn-session)
-                             (json-encode (emacs-mcp-cider-spawn-session %s %s %s))
-                           (error \"emacs-mcp-cider not loaded\")))"
-                      (pr-str name)
-                      (if project_dir (pr-str project_dir) "nil")
-                      (if agent_id (pr-str agent_id) "nil"))
+  (let [elisp (el/require-and-call-json 'emacs-mcp-cider 'emacs-mcp-cider-spawn-session
+                                        name project_dir agent_id)
         {:keys [success result error]} (ec/eval-elisp elisp)]
     (if success
       (mcp-success result)
@@ -485,11 +466,7 @@
   "List all active CIDER sessions with their status and ports."
   [_]
   (log/info "cider-list-sessions")
-  (let [elisp "(progn
-                 (require 'emacs-mcp-cider nil t)
-                 (if (fboundp 'emacs-mcp-cider-list-sessions)
-                     (json-encode (emacs-mcp-cider-list-sessions))
-                   (json-encode (list))))"
+  (let [elisp (el/require-and-call-json 'emacs-mcp-cider 'emacs-mcp-cider-list-sessions)
         {:keys [success result error]} (ec/eval-elisp elisp)]
     (if success
       (mcp-success result)
@@ -499,13 +476,8 @@
   "Evaluate Clojure code in a specific named CIDER session."
   [{:keys [session_name code]}]
   (log/info "cider-eval-session" {:session session_name :code-length (count code)})
-  (let [elisp (format "(progn
-                         (require 'emacs-mcp-cider nil t)
-                         (if (fboundp 'emacs-mcp-cider-eval-in-session)
-                             (emacs-mcp-cider-eval-in-session %s %s)
-                           (error \"emacs-mcp-cider not loaded\")))"
-                      (pr-str session_name)
-                      (pr-str code))
+  (let [elisp (el/require-and-call-text 'emacs-mcp-cider 'emacs-mcp-cider-eval-in-session
+                                        session_name code)
         {:keys [success result error]} (ec/eval-elisp elisp)]
     (if success
       (mcp-success result)
@@ -515,13 +487,8 @@
   "Kill a specific named CIDER session."
   [{:keys [session_name]}]
   (log/info "cider-kill-session" {:session session_name})
-  (let [elisp (format "(progn
-                         (require 'emacs-mcp-cider nil t)
-                         (if (fboundp 'emacs-mcp-cider-kill-session)
-                             (progn (emacs-mcp-cider-kill-session %s) \"killed\")
-                           (error \"emacs-mcp-cider not loaded\")))"
-                      (pr-str session_name))
-        {:keys [success result error]} (ec/eval-elisp elisp)]
+  (let [elisp (el/require-and-call 'emacs-mcp-cider 'emacs-mcp-cider-kill-session session_name)
+        {:keys [success error]} (ec/eval-elisp elisp)]
     (if success
       (mcp-success (format "Session '%s' killed" session_name))
       (mcp-error (format "Error: %s" error)))))
@@ -530,12 +497,8 @@
   "Kill all CIDER sessions."
   [_]
   (log/info "cider-kill-all-sessions")
-  (let [elisp "(progn
-                 (require 'emacs-mcp-cider nil t)
-                 (if (fboundp 'emacs-mcp-cider-kill-all-sessions)
-                     (progn (emacs-mcp-cider-kill-all-sessions) \"all sessions killed\")
-                   (error \"emacs-mcp-cider not loaded\")))"
-        {:keys [success result error]} (ec/eval-elisp elisp)]
+  (let [elisp (el/require-and-call 'emacs-mcp-cider 'emacs-mcp-cider-kill-all-sessions)
+        {:keys [success error]} (ec/eval-elisp elisp)]
     (if success
       (mcp-success "All CIDER sessions killed")
       (mcp-error (format "Error: %s" error)))))
@@ -557,12 +520,7 @@
   "Get comprehensive git repository status via magit addon."
   [_]
   (log/info "magit-status")
-  (let [elisp "(progn
-                 (require 'emacs-mcp-magit nil t)
-                 (if (fboundp 'emacs-mcp-magit-api-status)
-                     (let ((status (emacs-mcp-magit-api-status)))
-                       (json-encode status))
-                   (json-encode (list :error \"emacs-mcp-magit not loaded\"))))"
+  (let [elisp (el/require-and-call-json 'emacs-mcp-magit 'emacs-mcp-magit-api-status)
         {:keys [success result error]} (ec/eval-elisp elisp)]
     (if success
       {:type "text" :text result}
@@ -572,12 +530,7 @@
   "Get branch information including current, upstream, local and remote branches."
   [_]
   (log/info "magit-branches")
-  (let [elisp "(progn
-                 (require 'emacs-mcp-magit nil t)
-                 (if (fboundp 'emacs-mcp-magit-api-branches)
-                     (let ((branches (emacs-mcp-magit-api-branches)))
-                       (json-encode branches))
-                   (json-encode (list :error \"emacs-mcp-magit not loaded\"))))"
+  (let [elisp (el/require-and-call-json 'emacs-mcp-magit 'emacs-mcp-magit-api-branches)
         {:keys [success result error]} (ec/eval-elisp elisp)]
     (if success
       {:type "text" :text result}
@@ -588,13 +541,7 @@
   [{:keys [count]}]
   (log/info "magit-log" {:count count})
   (let [n (or count 10)
-        elisp (format "(progn
-                         (require 'emacs-mcp-magit nil t)
-                         (if (fboundp 'emacs-mcp-magit-api-log)
-                             (let ((commits (emacs-mcp-magit-api-log %d)))
-                               (json-encode commits))
-                           (json-encode (list :error \"emacs-mcp-magit not loaded\"))))"
-                      n)
+        elisp (el/require-and-call-json 'emacs-mcp-magit 'emacs-mcp-magit-api-log n)
         {:keys [success result error]} (ec/eval-elisp elisp)]
     (if success
       {:type "text" :text result}
@@ -605,16 +552,11 @@
   [{:keys [target]}]
   (log/info "magit-diff" {:target target})
   (let [target-sym (case target
-                     "staged" "'staged"
-                     "unstaged" "'unstaged"
-                     "all" "'all"
-                     "'staged")
-        elisp (format "(progn
-                         (require 'emacs-mcp-magit nil t)
-                         (if (fboundp 'emacs-mcp-magit-api-diff)
-                             (emacs-mcp-magit-api-diff %s)
-                           \"emacs-mcp-magit not loaded\"))"
-                      target-sym)
+                     "staged" 'staged
+                     "unstaged" 'unstaged
+                     "all" 'all
+                     'staged)
+        elisp (el/require-and-call-text 'emacs-mcp-magit 'emacs-mcp-magit-api-diff target-sym)
         {:keys [success result error]} (ec/eval-elisp elisp)]
     (if success
       {:type "text" :text result}
@@ -624,35 +566,25 @@
   "Stage files for commit. Use 'all' to stage all modified files."
   [{:keys [files]}]
   (log/info "magit-stage" {:files files})
-  (let [elisp (if (= files "all")
-                "(progn
-                   (require 'emacs-mcp-magit nil t)
-                   (if (fboundp 'emacs-mcp-magit-api-stage)
-                       (progn (emacs-mcp-magit-api-stage 'all) \"Staged all files\")
-                     \"emacs-mcp-magit not loaded\"))"
-                (format "(progn
-                           (require 'emacs-mcp-magit nil t)
-                           (if (fboundp 'emacs-mcp-magit-api-stage)
-                               (progn (emacs-mcp-magit-api-stage %s) \"Staged files\")
-                             \"emacs-mcp-magit not loaded\"))"
-                        (pr-str files)))
+  (let [file-arg (if (= files "all") 'all files)
+        elisp (el/require-and-call 'emacs-mcp-magit 'emacs-mcp-magit-api-stage file-arg)
         {:keys [success result error]} (ec/eval-elisp elisp)]
     (if success
-      {:type "text" :text result}
+      {:type "text" :text (or result "Staged files")}
       {:type "text" :text (str "Error: " error) :isError true})))
 
 (defn handle-magit-commit
   "Create a commit with the given message."
   [{:keys [message all]}]
   (log/info "magit-commit" {:message-len (count message) :all all})
-  (let [options-str (if all "'(:all t)" "nil")
-        elisp (format "(progn
-                         (require 'emacs-mcp-magit nil t)
-                         (if (fboundp 'emacs-mcp-magit-api-commit)
-                             (emacs-mcp-magit-api-commit %s %s)
-                           \"emacs-mcp-magit not loaded\"))"
-                      (pr-str message)
-                      options-str)
+  (let [options (if all "'(:all t)" "nil")
+        elisp (el/format-elisp
+               "(progn
+                  (require 'emacs-mcp-magit nil t)
+                  (if (fboundp 'emacs-mcp-magit-api-commit)
+                      (emacs-mcp-magit-api-commit %s %s)
+                    \"emacs-mcp-magit not loaded\"))"
+               (pr-str message) options)
         {:keys [success result error]} (ec/eval-elisp elisp)]
     (if success
       {:type "text" :text result}
@@ -662,13 +594,14 @@
   "Push to remote. Optionally set upstream tracking."
   [{:keys [set_upstream]}]
   (log/info "magit-push" {:set_upstream set_upstream})
-  (let [options-str (if set_upstream "'(:set-upstream t)" "nil")
-        elisp (format "(progn
-                         (require 'emacs-mcp-magit nil t)
-                         (if (fboundp 'emacs-mcp-magit-api-push)
-                             (emacs-mcp-magit-api-push %s)
-                           \"emacs-mcp-magit not loaded\"))"
-                      options-str)
+  (let [options (if set_upstream "'(:set-upstream t)" "nil")
+        elisp (el/format-elisp
+               "(progn
+                  (require 'emacs-mcp-magit nil t)
+                  (if (fboundp 'emacs-mcp-magit-api-push)
+                      (emacs-mcp-magit-api-push %s)
+                    \"emacs-mcp-magit not loaded\"))"
+               options)
         {:keys [success result error]} (ec/eval-elisp elisp)]
     (if success
       {:type "text" :text result}
@@ -678,11 +611,7 @@
   "Pull from upstream."
   [_]
   (log/info "magit-pull")
-  (let [elisp "(progn
-                 (require 'emacs-mcp-magit nil t)
-                 (if (fboundp 'emacs-mcp-magit-api-pull)
-                     (emacs-mcp-magit-api-pull)
-                   \"emacs-mcp-magit not loaded\"))"
+  (let [elisp (el/require-and-call-text 'emacs-mcp-magit 'emacs-mcp-magit-api-pull)
         {:keys [success result error]} (ec/eval-elisp elisp)]
     (if success
       {:type "text" :text result}
@@ -693,17 +622,8 @@
   [{:keys [remote]}]
   (log/info "magit-fetch" {:remote remote})
   (let [elisp (if remote
-                (format "(progn
-                           (require 'emacs-mcp-magit nil t)
-                           (if (fboundp 'emacs-mcp-magit-api-fetch)
-                               (emacs-mcp-magit-api-fetch %s)
-                             \"emacs-mcp-magit not loaded\"))"
-                        (pr-str remote))
-                "(progn
-                   (require 'emacs-mcp-magit nil t)
-                   (if (fboundp 'emacs-mcp-magit-api-fetch)
-                       (emacs-mcp-magit-api-fetch)
-                     \"emacs-mcp-magit not loaded\"))")
+                (el/require-and-call-text 'emacs-mcp-magit 'emacs-mcp-magit-api-fetch remote)
+                (el/require-and-call-text 'emacs-mcp-magit 'emacs-mcp-magit-api-fetch))
         {:keys [success result error]} (ec/eval-elisp elisp)]
     (if success
       {:type "text" :text result}
@@ -713,19 +633,21 @@
   "Get list of feature/fix/feat branches (for /ship and /ship-pr skills)."
   [_]
   (log/info "magit-feature-branches")
-  (let [elisp "(progn
-                 (require 'emacs-mcp-magit nil t)
-                 (if (fboundp 'emacs-mcp-magit-api-branches)
-                     (let* ((branches (emacs-mcp-magit-api-branches))
-                            (local (plist-get branches :local))
-                            (feature-branches 
-                              (seq-filter 
-                                (lambda (b) 
-                                  (string-match-p \"^\\\\(feature\\\\|fix\\\\|feat\\\\)/\" b))
-                                local)))
-                       (json-encode (list :current (plist-get branches :current)
-                                          :feature_branches feature-branches)))
-                   (json-encode (list :error \"emacs-mcp-magit not loaded\"))))"
+  ;; Complex elisp with client-side filtering - use format-elisp
+  (let [elisp (el/format-elisp
+               "(progn
+                  (require 'emacs-mcp-magit nil t)
+                  (if (fboundp 'emacs-mcp-magit-api-branches)
+                      (let* ((branches (emacs-mcp-magit-api-branches))
+                             (local (plist-get branches :local))
+                             (feature-branches 
+                               (seq-filter 
+                                 (lambda (b) 
+                                   (string-match-p \"^\\\\(feature\\\\|fix\\\\|feat\\\\)/\" b))
+                                 local)))
+                        (json-encode (list :current (plist-get branches :current)
+                                           :feature_branches feature-branches)))
+                    (json-encode (list :error \"emacs-mcp-magit not loaded\"))))")
         {:keys [success result error]} (ec/eval-elisp elisp)]
     (if success
       {:type "text" :text result}
@@ -743,14 +665,7 @@
   "Get current project info including name, root, type, and file count."
   [_]
   (log/info "projectile-info")
-  (let [elisp "(progn
-                 (require 'emacs-mcp-projectile nil t)
-                 (if (fboundp 'emacs-mcp-projectile-api-project-info)
-                     (let ((info (emacs-mcp-projectile-api-project-info)))
-                       (if info
-                           (json-encode info)
-                         (json-encode (list :error \"Not in a projectile project\"))))
-                   (json-encode (list :error \"emacs-mcp-projectile not loaded\"))))"
+  (let [elisp (el/require-and-call-json 'emacs-mcp-projectile 'emacs-mcp-projectile-api-project-info)
         {:keys [success result error]} (ec/eval-elisp elisp)]
     (if success
       {:type "text" :text result}
@@ -761,17 +676,8 @@
   [{:keys [pattern]}]
   (log/info "projectile-files" {:pattern pattern})
   (let [elisp (if pattern
-                (format "(progn
-                           (require 'emacs-mcp-projectile nil t)
-                           (if (fboundp 'emacs-mcp-projectile-api-project-files)
-                               (json-encode (emacs-mcp-projectile-api-project-files %s))
-                             (json-encode (list :error \"emacs-mcp-projectile not loaded\"))))"
-                        (pr-str pattern))
-                "(progn
-                   (require 'emacs-mcp-projectile nil t)
-                   (if (fboundp 'emacs-mcp-projectile-api-project-files)
-                       (json-encode (emacs-mcp-projectile-api-project-files))
-                     (json-encode (list :error \"emacs-mcp-projectile not loaded\"))))")
+                (el/require-and-call-json 'emacs-mcp-projectile 'emacs-mcp-projectile-api-project-files pattern)
+                (el/require-and-call-json 'emacs-mcp-projectile 'emacs-mcp-projectile-api-project-files))
         {:keys [success result error]} (ec/eval-elisp elisp)]
     (if success
       {:type "text" :text result}
@@ -781,12 +687,7 @@
   "Find files matching a filename in current project."
   [{:keys [filename]}]
   (log/info "projectile-find-file" {:filename filename})
-  (let [elisp (format "(progn
-                         (require 'emacs-mcp-projectile nil t)
-                         (if (fboundp 'emacs-mcp-projectile-api-find-file)
-                             (json-encode (emacs-mcp-projectile-api-find-file %s))
-                           (json-encode (list :error \"emacs-mcp-projectile not loaded\"))))"
-                      (pr-str filename))
+  (let [elisp (el/require-and-call-json 'emacs-mcp-projectile 'emacs-mcp-projectile-api-find-file filename)
         {:keys [success result error]} (ec/eval-elisp elisp)]
     (if success
       {:type "text" :text result}
@@ -796,12 +697,7 @@
   "Search project for a pattern using ripgrep or grep."
   [{:keys [pattern]}]
   (log/info "projectile-search" {:pattern pattern})
-  (let [elisp (format "(progn
-                         (require 'emacs-mcp-projectile nil t)
-                         (if (fboundp 'emacs-mcp-projectile-api-search)
-                             (json-encode (emacs-mcp-projectile-api-search %s))
-                           (json-encode (list :error \"emacs-mcp-projectile not loaded\"))))"
-                      (pr-str pattern))
+  (let [elisp (el/require-and-call-json 'emacs-mcp-projectile 'emacs-mcp-projectile-api-search pattern)
         {:keys [success result error]} (ec/eval-elisp elisp)]
     (if success
       {:type "text" :text result}
@@ -811,11 +707,7 @@
   "Get recently visited files in current project."
   [_]
   (log/info "projectile-recent")
-  (let [elisp "(progn
-                 (require 'emacs-mcp-projectile nil t)
-                 (if (fboundp 'emacs-mcp-projectile-api-recent-files)
-                     (json-encode (emacs-mcp-projectile-api-recent-files))
-                   (json-encode (list :error \"emacs-mcp-projectile not loaded\"))))"
+  (let [elisp (el/require-and-call-json 'emacs-mcp-projectile 'emacs-mcp-projectile-api-recent-files)
         {:keys [success result error]} (ec/eval-elisp elisp)]
     (if success
       {:type "text" :text result}
@@ -825,11 +717,7 @@
   "List all known projectile projects."
   [_]
   (log/info "projectile-list-projects")
-  (let [elisp "(progn
-                 (require 'emacs-mcp-projectile nil t)
-                 (if (fboundp 'emacs-mcp-projectile-api-list-projects)
-                     (json-encode (emacs-mcp-projectile-api-list-projects))
-                   (json-encode (list :error \"emacs-mcp-projectile not loaded\"))))"
+  (let [elisp (el/require-and-call-json 'emacs-mcp-projectile 'emacs-mcp-projectile-api-list-projects)
         {:keys [success result error]} (ec/eval-elisp elisp)]
     (if success
       {:type "text" :text result}

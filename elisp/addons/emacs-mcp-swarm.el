@@ -109,7 +109,7 @@ Directories are scanned recursively for .md files only."
                  (const :tag "eat (experimental)" eat))
   :group 'emacs-mcp-swarm)
 
-(defcustom emacs-mcp-swarm-max-slaves 5
+(defcustom emacs-mcp-swarm-max-slaves 30
   "Maximum number of concurrent slave instances."
   :type 'integer
   :group 'emacs-mcp-swarm)
@@ -509,19 +509,31 @@ Returns task-id."
                (with-current-buffer buffer (point-max)))
 
     ;; Send prompt to slave (terminal-agnostic)
-    (with-current-buffer buffer
-      (goto-char (point-max))
-      (pcase emacs-mcp-swarm-terminal
-        ('vterm
-         (vterm-send-string prompt)
-         (vterm-send-return))
-        ('eat
-         (if (and (boundp 'eat-terminal) eat-terminal)
-             (progn
-               (eat-term-send-string eat-terminal prompt)
-               ;; Use carriage return for eat terminals
-               (eat-term-send-string eat-terminal "\r"))
-           (error "Eat-terminal not available in buffer %s" (buffer-name buffer))))))
+    ;; Use run-at-time to ensure vterm has fully initialized and is ready for input
+    (let ((target-buffer buffer)
+          (term-type emacs-mcp-swarm-terminal)
+          (prompt-text prompt))
+      (run-at-time 0.1 nil
+                   (lambda ()
+                     (when (buffer-live-p target-buffer)
+                       (with-current-buffer target-buffer
+                         (goto-char (point-max))
+                         (pcase term-type
+                           ('vterm
+                            (vterm-send-string prompt-text)
+                            ;; Small delay before sending return to ensure string is processed
+                            (run-at-time 0.05 nil
+                                         (lambda ()
+                                           (when (buffer-live-p target-buffer)
+                                             (with-current-buffer target-buffer
+                                               (vterm-send-return))))))
+                           ('eat
+                            (if (and (boundp 'eat-terminal) eat-terminal)
+                                (progn
+                                  (eat-term-send-string eat-terminal prompt-text)
+                                  ;; Use carriage return for eat terminals
+                                  (eat-term-send-string eat-terminal "\r"))
+                              (error "Eat-terminal not available in buffer %s" (buffer-name target-buffer))))))))))
 
     (when (called-interactively-p 'any)
       (message "Dispatched task %s to %s" task-id slave-id))
