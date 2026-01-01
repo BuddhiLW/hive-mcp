@@ -2,6 +2,7 @@
   "MCP server for Emacs interaction via emacsclient."
   (:require [io.modelcontext.clojure-sdk.stdio-server :as io-server]
             [emacs-mcp.tools :as tools]
+            [emacs-mcp.docs :as docs]
             [emacs-mcp.chroma :as chroma]
             [emacs-mcp.embeddings.ollama :as ollama]
             [taoensso.timbre :as log])
@@ -30,7 +31,7 @@
 (def emacs-server-spec
   {:name "emacs-mcp"
    :version "0.1.0"
-   :tools (mapv make-tool tools/tools)})
+   :tools (mapv make-tool (concat tools/tools docs/docs-tools))})
 
 (defn init-embedding-provider!
   "Initialize the embedding provider for semantic memory search.

@@ -136,6 +136,24 @@ Beyond this depth, spawn attempts are blocked to prevent runaway recursion."
   :type 'integer
   :group 'emacs-mcp-swarm)
 
+(defcustom emacs-mcp-swarm-send-verify t
+  "If non-nil, verify that prompts were sent to the terminal.
+When enabled, dispatch will check the buffer for the prompt text
+and retry if not found."
+  :type 'boolean
+  :group 'emacs-mcp-swarm)
+
+(defcustom emacs-mcp-swarm-send-retries 3
+  "Number of retry attempts for sending prompts."
+  :type 'integer
+  :group 'emacs-mcp-swarm)
+
+(defcustom emacs-mcp-swarm-send-delay 0.2
+  "Base delay in seconds between send and return.
+This delay increases with each retry (exponential backoff)."
+  :type 'float
+  :group 'emacs-mcp-swarm)
+
 (defcustom emacs-mcp-swarm-prompt-marker "❯"
   "Marker indicating Claude is ready for input."
   :type 'string
@@ -303,12 +321,13 @@ Wait before spawning more slaves to prevent spawn storms."
 Kill some slaves with `emacs-mcp-swarm-kill' before spawning more."
            emacs-mcp-swarm-max-slaves)))
 
-(cl-defun emacs-mcp-swarm-spawn (name &key presets cwd role)
+(cl-defun emacs-mcp-swarm-spawn (name &key presets cwd role terminal)
   "Spawn a new Claude slave with NAME.
 
 PRESETS is a list of preset names to apply (e.g., '(\"tdd\" \"clarity\")).
 CWD is the working directory (defaults to current project root).
 ROLE is a predefined role that maps to presets.
+TERMINAL overrides `emacs-mcp-swarm-terminal' for this spawn ('vterm or 'eat).
 
 Returns the slave-id."
   (interactive
@@ -329,10 +348,11 @@ Returns the slave-id."
          (buffer-name (format "%s%s*" emacs-mcp-swarm-buffer-prefix name))
          (work-dir (or cwd (emacs-mcp-swarm--project-root) default-directory))
          (system-prompt (emacs-mcp-swarm--build-system-prompt presets))
+         (term-backend (or terminal emacs-mcp-swarm-terminal))
          buffer process)
 
     ;; Require terminal emulator
-    (pcase emacs-mcp-swarm-terminal
+    (pcase term-backend
       ('vterm (unless (require 'vterm nil t)
                 (error "Vterm is required but not available")))
       ('eat (unless (require 'eat nil t)
@@ -359,15 +379,16 @@ Returns the slave-id."
                                 (shell-quote-argument work-dir)
                                 emacs-mcp-swarm-claude-command))))
 
-      (pcase emacs-mcp-swarm-terminal
+      (pcase term-backend
         ('vterm
          (with-current-buffer buffer
            (vterm-mode)
            (run-at-time 0.5 nil
                         (lambda ()
-                          (with-current-buffer buffer
-                            (vterm-send-string claude-cmd)
-                            (vterm-send-return))))))
+                          (when (buffer-live-p buffer)
+                            (with-current-buffer buffer
+                              (vterm-send-string claude-cmd)
+                              (vterm-send-return)))))))
         ('eat
          ;; Use eat-exec to start shell in our buffer
          (with-current-buffer buffer
@@ -375,11 +396,12 @@ Returns the slave-id."
            (eat-exec buffer "swarm-shell" "/bin/bash" nil '("-l")))
          (run-at-time 0.5 nil
                       (lambda ()
-                        (with-current-buffer buffer
-                          (when (and (boundp 'eat-terminal) eat-terminal)
-                            (eat-term-send-string eat-terminal claude-cmd)
-                            ;; Use carriage return for eat terminals
-                            (eat-term-send-string eat-terminal "\r"))))))))
+                        (when (buffer-live-p buffer)
+                          (with-current-buffer buffer
+                            (when (and (boundp 'eat-terminal) eat-terminal)
+                              (eat-term-send-string eat-terminal claude-cmd)
+                              ;; Use carriage return for eat terminals
+                              (eat-term-send-string eat-terminal "\r")))))))))
 
     ;; Store slave state with ancestry info
     (let ((parent-id (or (getenv "CLAUDE_SWARM_SLAVE_ID") "master"))
@@ -391,6 +413,7 @@ Returns the slave-id."
                      :presets presets
                      :status 'starting
                      :buffer buffer
+                     :terminal term-backend
                      :cwd work-dir
                      :depth spawn-depth
                      :parent-id parent-id
@@ -431,6 +454,9 @@ Returns the slave-id."
     ("researcher" '("researcher"))
     ("fixer" '("fixer" "tdd"))
     ("clarity-dev" '("clarity" "solid" "ddd" "tdd"))
+    ("coordinator" '("task-coordinator"))
+    ("ling" '("ling" "minimal"))
+    ("worker" '("ling"))
     (_ (list role))))
 
 (defun emacs-mcp-swarm--project-root ()
@@ -461,6 +487,66 @@ Returns the slave-id."
                (cl-incf count))
              emacs-mcp-swarm--slaves)
     (message "Killed %d slaves" count)))
+
+;;;; Terminal Send Functions:
+
+(defun emacs-mcp-swarm--buffer-contains-p (buffer text)
+  "Check if BUFFER contains TEXT (uses first 40 chars as signature)."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (save-excursion
+        (goto-char (point-min))
+        (let ((sig (substring text 0 (min 40 (length text)))))
+          (search-forward sig nil t))))))
+
+(defun emacs-mcp-swarm--send-to-terminal (buffer text term-type)
+  "Send TEXT to terminal BUFFER using TERM-TYPE backend.
+Returns the point-max before sending for verification."
+  (let ((start-point (with-current-buffer buffer (point-max))))
+    (with-current-buffer buffer
+      (goto-char (point-max))
+      (pcase term-type
+        ('vterm
+         (vterm-send-string text)
+         (vterm-send-return))
+        ('eat
+         (if (and (boundp 'eat-terminal) eat-terminal)
+             (progn
+               (eat-term-send-string eat-terminal text)
+               (eat-term-send-string eat-terminal "\r"))
+           (error "Eat-terminal not available in buffer %s" (buffer-name buffer))))))
+    start-point))
+
+(defun emacs-mcp-swarm--send-with-retry (buffer text term-type &optional attempt)
+  "Send TEXT to BUFFER with retry logic.
+TERM-TYPE is 'vterm or 'eat.  ATTEMPT is current attempt number.
+Returns t on success, signals error on failure after all retries."
+  (let* ((attempt (or attempt 1))
+         (delay (* emacs-mcp-swarm-send-delay attempt))  ; exponential backoff
+         (max-retries emacs-mcp-swarm-send-retries))
+    
+    (unless (buffer-live-p buffer)
+      (error "Buffer is dead, cannot send"))
+    
+    ;; Send the text
+    (emacs-mcp-swarm--send-to-terminal buffer text term-type)
+    
+    ;; If verification is disabled, assume success
+    (unless emacs-mcp-swarm-send-verify
+      (cl-return-from emacs-mcp-swarm--send-with-retry t))
+    
+    ;; Wait for the text to appear
+    (run-at-time delay nil
+                 (lambda ()
+                   (if (emacs-mcp-swarm--buffer-contains-p buffer text)
+                       (message "[swarm] Send verified (attempt %d)" attempt)
+                     (if (< attempt max-retries)
+                         (progn
+                           (message "[swarm] Send not verified, retrying (%d/%d)..."
+                                    attempt max-retries)
+                           (emacs-mcp-swarm--send-with-retry buffer text term-type (1+ attempt)))
+                       (message "[swarm] WARNING: Send failed after %d attempts" max-retries)))))
+    t))
 
 ;;;; Task Dispatch and Collection:
 
@@ -508,32 +594,20 @@ Returns task-id."
     (plist-put slave :task-start-point
                (with-current-buffer buffer (point-max)))
 
-    ;; Send prompt to slave (terminal-agnostic)
-    ;; Use run-at-time to ensure vterm has fully initialized and is ready for input
+    ;; Send prompt to slave with verification and retry
     (let ((target-buffer buffer)
-          (term-type emacs-mcp-swarm-terminal)
+          (term-type (or (plist-get slave :terminal) emacs-mcp-swarm-terminal))
           (prompt-text prompt))
+      ;; Small initial delay to ensure terminal is ready
       (run-at-time 0.1 nil
                    (lambda ()
                      (when (buffer-live-p target-buffer)
-                       (with-current-buffer target-buffer
-                         (goto-char (point-max))
-                         (pcase term-type
-                           ('vterm
-                            (vterm-send-string prompt-text)
-                            ;; Small delay before sending return to ensure string is processed
-                            (run-at-time 0.05 nil
-                                         (lambda ()
-                                           (when (buffer-live-p target-buffer)
-                                             (with-current-buffer target-buffer
-                                               (vterm-send-return))))))
-                           ('eat
-                            (if (and (boundp 'eat-terminal) eat-terminal)
-                                (progn
-                                  (eat-term-send-string eat-terminal prompt-text)
-                                  ;; Use carriage return for eat terminals
-                                  (eat-term-send-string eat-terminal "\r"))
-                              (error "Eat-terminal not available in buffer %s" (buffer-name target-buffer))))))))))
+                       (condition-case err
+                           (emacs-mcp-swarm--send-with-retry
+                            target-buffer prompt-text term-type)
+                         (error
+                          (message "[swarm] Dispatch error for %s: %s"
+                                   task-id (error-message-string err))))))))
 
     (when (called-interactively-p 'any)
       (message "Dispatched task %s to %s" task-id slave-id))
@@ -693,9 +767,10 @@ Otherwise return aggregate status."
 
 ;;;; API for MCP Tools:
 
-(defun emacs-mcp-swarm-api-spawn (name presets &optional cwd)
-  "API: Spawn slave NAME with PRESETS in CWD."
-  (emacs-mcp-swarm-spawn name :presets presets :cwd cwd))
+(defun emacs-mcp-swarm-api-spawn (name presets &optional cwd terminal)
+  "API: Spawn slave NAME with PRESETS in CWD using TERMINAL backend."
+  (emacs-mcp-swarm-spawn name :presets presets :cwd cwd 
+                         :terminal (when terminal (intern terminal))))
 
 (defun emacs-mcp-swarm-api-dispatch (slave-id prompt &optional timeout-ms)
   "API: Dispatch PROMPT to SLAVE-ID with TIMEOUT-MS."

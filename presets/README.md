@@ -17,6 +17,8 @@ Presets are markdown files that configure slave Claude instances with specialize
 | `researcher` | Codebase researcher | Understanding code |
 | `fixer` | Bug fixing specialist | Debugging |
 | `minimal` | No special constraints | General tasks |
+| `task-coordinator` | Breaks complex tasks into parallel subtasks | Orchestrating parallel work |
+| `ling` | Focused worker agent for single tasks | Leaf node execution |
 
 ## Predefined Roles
 
@@ -31,6 +33,9 @@ Roles combine multiple presets:
 | `researcher` | researcher |
 | `fixer` | fixer, tdd |
 | `clarity-dev` | clarity, solid, ddd, tdd |
+| `coordinator` | task-coordinator |
+| `ling` | ling, minimal |
+| `worker` | ling |
 
 ## Using Presets
 

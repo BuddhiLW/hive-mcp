@@ -43,6 +43,22 @@
   :type 'boolean
   :group 'emacs-mcp-memory)
 
+;;; Duration/Lifespan Support
+
+(defconst emacs-mcp-memory-durations '(session short-term long-term permanent)
+  "Valid duration categories, ordered shortest to longest.")
+
+(defcustom emacs-mcp-memory-duration-days
+  '((session . 0) (short-term . 7) (long-term . 90) (permanent . nil))
+  "Days before expiration per duration. nil = never expires."
+  :type '(alist :key-type symbol :value-type (choice integer (const nil)))
+  :group 'emacs-mcp-memory)
+
+(defcustom emacs-mcp-memory-default-duration 'long-term
+  "Default duration for new entries."
+  :type 'symbol
+  :group 'emacs-mcp-memory)
+
 ;;; Internal Variables
 
 (defvar emacs-mcp-memory--cache (make-hash-table :test 'equal)
@@ -75,6 +91,106 @@ Uses SHA1 hash of absolute path for filesystem-safe naming."
   "Get current project root, or nil if not in a project."
   (when-let* ((proj (project-current)))
     (project-root proj)))
+
+;;; Duration Functions
+
+(defun emacs-mcp-memory--calculate-expires (duration)
+  "Calculate expiration timestamp for DURATION.
+Returns ISO 8601 timestamp or nil for permanent entries."
+  (let ((days (alist-get duration emacs-mcp-memory-duration-days)))
+    (cond
+     ((null days) nil)  ; permanent - never expires
+     ((= days 0) (emacs-mcp-memory--timestamp))  ; session - expires immediately
+     (t (format-time-string "%FT%T%z"
+                            (time-add (current-time)
+                                      (days-to-time days)))))))
+
+(defun emacs-mcp-memory--get-entry-duration (entry)
+  "Get the duration of ENTRY, defaulting to `long-term' for legacy entries."
+  (let ((dur (plist-get entry :duration)))
+    (if dur
+        (if (stringp dur) (intern dur) dur)
+      'long-term)))
+
+(defun emacs-mcp-memory--entry-expired-p (entry)
+  "Return non-nil if ENTRY has expired."
+  (when-let* ((expires (plist-get entry :expires)))
+    (let ((expires-time (date-to-time expires)))
+      (time-less-p expires-time (current-time)))))
+
+(defun emacs-mcp-memory-set-duration (id duration &optional project-id)
+  "Update entry ID to DURATION and recalculate expires.
+DURATION must be one of `emacs-mcp-memory-durations'.
+PROJECT-ID specifies the project (defaults to current).
+Returns t if successful, nil otherwise."
+  (unless (memq duration emacs-mcp-memory-durations)
+    (error "Invalid duration: %s. Must be one of %s"
+           duration emacs-mcp-memory-durations))
+  (emacs-mcp-memory-update id
+                           (list :duration (symbol-name duration)
+                                 :expires (emacs-mcp-memory--calculate-expires duration))
+                           project-id))
+
+(defun emacs-mcp-memory-promote (id &optional project-id)
+  "Promote entry ID to next longer duration in the hierarchy.
+Returns new duration symbol, or nil if already permanent or not found."
+  (when-let* ((entry (emacs-mcp-memory-get id project-id)))
+    (let* ((current (emacs-mcp-memory--get-entry-duration entry))
+           (pos (seq-position emacs-mcp-memory-durations current))
+           (next-pos (when pos (1+ pos))))
+      (when (and next-pos (< next-pos (length emacs-mcp-memory-durations)))
+        (let ((new-duration (nth next-pos emacs-mcp-memory-durations)))
+          (emacs-mcp-memory-set-duration id new-duration project-id)
+          new-duration)))))
+
+(defun emacs-mcp-memory-demote (id &optional project-id)
+  "Demote entry ID to next shorter duration in the hierarchy.
+Returns new duration symbol, or nil if already session or not found."
+  (when-let* ((entry (emacs-mcp-memory-get id project-id)))
+    (let* ((current (emacs-mcp-memory--get-entry-duration entry))
+           (pos (seq-position emacs-mcp-memory-durations current))
+           (prev-pos (when (and pos (> pos 0)) (1- pos))))
+      (when prev-pos
+        (let ((new-duration (nth prev-pos emacs-mcp-memory-durations)))
+          (emacs-mcp-memory-set-duration id new-duration project-id)
+          new-duration)))))
+
+(defun emacs-mcp-memory-cleanup-expired (&optional project-id)
+  "Delete all expired entries from PROJECT-ID.
+Returns the count of deleted entries."
+  (let* ((pid (or project-id (emacs-mcp-memory--project-id)))
+         (count 0))
+    (dolist (type '("note" "snippet" "convention" "decision" "conversation"))
+      (let* ((data (emacs-mcp-memory--get-data pid type))
+             (new-data (seq-remove
+                        (lambda (entry)
+                          (when (emacs-mcp-memory--entry-expired-p entry)
+                            (setq count (1+ count))
+                            t))
+                        data)))
+        (when (< (length new-data) (length data))
+          (emacs-mcp-memory--set-data pid type new-data))))
+    count))
+
+(defun emacs-mcp-memory-query-expiring (days &optional project-id)
+  "Return entries expiring within DAYS from PROJECT-ID.
+Does not include already-expired or permanent entries."
+  (let* ((pid (or project-id (emacs-mcp-memory--project-id)))
+         (threshold (time-add (current-time) (days-to-time days)))
+         (results '()))
+    (dolist (type '("note" "snippet" "convention" "decision" "conversation"))
+      (dolist (entry (emacs-mcp-memory--get-data pid type))
+        (when-let* ((expires (plist-get entry :expires)))
+          (let ((expires-time (date-to-time expires)))
+            ;; Include if: not yet expired AND expires within threshold
+            (when (and (time-less-p (current-time) expires-time)
+                       (time-less-p expires-time threshold))
+              (push entry results))))))
+    ;; Sort by expiration date (soonest first)
+    (sort results
+          (lambda (a b)
+            (time-less-p (date-to-time (plist-get a :expires))
+                         (date-to-time (plist-get b :expires)))))))
 
 ;;; File Operations
 
@@ -175,18 +291,23 @@ Uses UTF-8 encoding to avoid interactive coding system prompts."
 
 ;;; CRUD Operations
 
-(defun emacs-mcp-memory-add (type content &optional tags project-id)
+(defun emacs-mcp-memory-add (type content &optional tags project-id duration)
   "Add a memory entry of TYPE with CONTENT.
 TYPE is one of: note, snippet, convention, decision, conversation.
 CONTENT is a string or plist.
 TAGS is optional list of strings.
-PROJECT-ID defaults to current project or global."
+PROJECT-ID defaults to current project or global.
+DURATION is optional lifespan (symbol from `emacs-mcp-memory-durations').
+Defaults to `emacs-mcp-memory-default-duration'."
   (let* ((pid (or project-id (emacs-mcp-memory--project-id)))
          (type-str (if (symbolp type) (symbol-name type) type))
+         (dur (or duration emacs-mcp-memory-default-duration))
          (entry (list :id (emacs-mcp-memory--generate-id)
                       :type type-str
                       :content content
                       :tags (or tags '())
+                      :duration (symbol-name dur)
+                      :expires (emacs-mcp-memory--calculate-expires dur)
                       :created (emacs-mcp-memory--timestamp)
                       :updated (emacs-mcp-memory--timestamp)))
          (data (emacs-mcp-memory--get-data pid type-str)))
@@ -211,11 +332,13 @@ PROJECT-ID defaults to current project or global."
             (throw 'found entry))))
       nil)))
 
-(defun emacs-mcp-memory-query (type &optional tags project-id limit)
+(defun emacs-mcp-memory-query (type &optional tags project-id limit duration)
   "Query memories by TYPE and optional TAGS.
 PROJECT-ID specifies the project (defaults to current).
 Returns list of matching entries, most recent first.
-LIMIT caps the number of results."
+LIMIT caps the number of results.
+DURATION filters by lifespan category (symbol from `emacs-mcp-memory-durations').
+Entries without :duration are treated as `long-term' for backwards compatibility."
   (let* ((pid (or project-id (emacs-mcp-memory--project-id)))
          (type-str (if (symbolp type) (symbol-name type) type))
          (data (emacs-mcp-memory--get-data pid type-str))
@@ -228,6 +351,15 @@ LIMIT caps the number of results."
                (let ((entry-tags (plist-get entry :tags)))
                  (seq-every-p (lambda (tag) (member tag entry-tags)) tags)))
              results)))
+    ;; Filter by duration if provided
+    (when duration
+      (let ((dur-str (symbol-name duration)))
+        (setq results
+              (seq-filter
+               (lambda (entry)
+                 (let ((entry-dur (or (plist-get entry :duration) "long-term")))
+                   (string= entry-dur dur-str)))
+               results))))
     ;; Apply limit
     (if (and limit (> (length results) limit))
         (seq-take results limit)

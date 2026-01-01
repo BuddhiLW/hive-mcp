@@ -1,76 +1,58 @@
 {
-  "date": "2025-12-31",
-  "focus_area": "Chroma v2 API fix and semantic search activation",
-  "branches_created": ["feat/swarm-recursion-safeguards", "feat/chroma-auto-init"],
-  "branches_shipped": ["fix/mcp-async-handler", "fix/mcp-response-format", "feat/swarm-recursion-safeguards", "feat/chroma-auto-init", "fix/cider-heartbeat-timeout"],
+  "date": "2026-01-01",
+  "focus_area": "Memory system enhancements based on PDF best practices",
+  "branches_created": [],
+  "branches_shipped": [],
   "open_prs": [],
-  "merged_prs": [
-    "#28 - fix(mcp): Add async handler fix via submodule + stderr logging",
-    "#29 - fix(mcp): Standardize MCP tool response format to prevent timeouts",
-    "#30 - feat(swarm): Add recursion safeguards with max depth 3",
-    "#31 - feat(chroma): Auto-initialize Ollama embedding provider at server startup",
-    "#32 - fix(cider): Replace sync eval with heartbeat polling to overcome 10s limit"
-  ],
-  "upstream_prs_created": [
-    "clojure-lsp/jsonrpc4clj#2 - feat: Use p/future for async handler execution"
-  ],
+  "merged_prs": [],
   "key_files": [
-    "clojure-chroma-client/src/clojure_chroma_client/api.clj",
-    "clojure-chroma-client/src/clojure_chroma_client/config.clj",
-    "src/emacs_mcp/server.clj",
-    "start-mcp.sh",
-    "elisp/addons/emacs-mcp-chroma.el",
-    "elisp/addons/emacs-mcp-swarm.el"
+    "elisp/emacs-mcp-memory.el",
+    "elisp/emacs-mcp-api.el",
+    "src/emacs_mcp/tools.clj",
+    ".claude/MEMORY_ENHANCEMENTS.md"
   ],
   "completed_tasks": [
-    "Fixed clojure-chroma-client to use Chroma v2 API (merged feature/v2-api-support to main)",
-    "Updated submodule to v2 API commit (ae40924d7c4cdecbb387fa559f1eee6d7f9aa3c1)",
-    "Added environment variable configuration for CHROMA_HOST, CHROMA_PORT, OLLAMA_HOST",
-    "Updated start-mcp.sh with default environment variables",
-    "Enhanced init-embedding-provider! to configure Chroma from env vars",
-    "Verified semantic search works end-to-end via MCP tool",
-    "Added emacs-mcp configuration to Emacs.org and tangled to config.el",
-    "All PRs merged to main (#28, #29, #30, #31, #32)"
+    "Implemented memory duration/lifespan support (session, short-term, long-term, permanent)",
+    "Created TDD tests for elisp duration generation (42 tests, 107 assertions)",
+    "Created TDD tests for MCP duration tools (11 tests, 129 assertions)",
+    "Created memory-integrated /wrap and /catchup skills",
+    "Analyzed memory-systems.pdf for best practices",
+    "Created detailed implementation plan for 6 memory enhancements"
   ],
   "in_progress_tasks": [],
   "blocking_issues": [],
   "next_actions": [
-    "Monitor upstream PR clojure-lsp/jsonrpc4clj#2 for async handler fix",
-    "Consider adding more memory entries to test semantic search quality",
-    "Test semantic search with real project memories"
+    "Implement duplicate detection (HIGH priority)",
+    "Implement audit log for helpfulness tracking (HIGH priority)",
+    "Implement fact versioning with history (MEDIUM priority)",
+    "Implement AST-aware code chunking (MEDIUM priority)",
+    "Implement knowledge graph relations (LOW priority)",
+    "Enhance semantic search with filters (LOW priority)"
   ],
   "decisions_made": [
-    "Chroma v2 API: Use /api/v2/tenants/{tenant}/databases/{database}/ path format",
-    "Environment config: CHROMA_HOST (default: localhost), CHROMA_PORT (default: 8000), OLLAMA_HOST (default: http://localhost:11434)",
-    "Merged v2 API branch to main in clojure-chroma-client fork",
-    "Emacs config: Set env vars before loading emacs-mcp for MCP server to pick up",
-    "Max spawn depth: 3 (master → child → grandchild → great-grandchild)",
-    "Rate limit: 10 spawns per 60 seconds"
+    "Duration hierarchy: session(0d) → short-term(7d) → long-term(90d) → permanent",
+    "Memory enhancement priorities based on PDF analysis: deduplication > audit > versioning > chunking > graph > search",
+    "Implementation approach: TDD with elisp + MCP tool pairs"
   ],
-  "swarm_safeguards": {
-    "max_depth": 3,
-    "depth_labels": ["master", "child", "grandchild", "great-grandchild"],
-    "rate_limit_window": 60,
-    "rate_limit_max_spawns": 10,
-    "ancestry_tracking": true
-  },
-  "chroma_config": {
-    "api_version": "v2",
-    "submodule_commit": "ae40924d7c4cdecbb387fa559f1eee6d7f9aa3c1",
-    "embedding_model": "nomic-embed-text",
-    "dimension": 768,
-    "collection": "emacs-mcp-memory",
-    "docker_compose": "docker-compose.yml",
-    "check_script": "scripts/chroma-check.bb"
-  },
+  "commits_this_session": [
+    "613b442 feat(memory): Add duration/lifespan support with promote/demote",
+    "69a5359 feat(memory): Add TDD tests and memory-integrated skills"
+  ],
   "vibe_kanban_project_id": "b70720e8-3a52-41ba-a115-964b81369bb5",
   "git_state": {
-    "current_branch": "main",
-    "all_prs_merged": true,
+    "current_branch": "staging",
+    "ahead_of_origin": 2,
     "feature_branches": []
   },
-  "conventions_added": [
-    "Use magit MCP addon preferentially for git operations",
-    "main branch is write-protected - always use feature branches + PRs"
-  ]
+  "memory_enhancements": {
+    "plan_file": ".claude/MEMORY_ENHANCEMENTS.md",
+    "tasks": [
+      {"id": 1, "title": "Duplicate Detection", "priority": "high", "status": "todo"},
+      {"id": 2, "title": "Audit Log", "priority": "high", "status": "todo"},
+      {"id": 3, "title": "Fact Versioning", "priority": "medium", "status": "todo"},
+      {"id": 4, "title": "AST-aware Chunking", "priority": "medium", "status": "todo"},
+      {"id": 5, "title": "Knowledge Graph", "priority": "low", "status": "todo"},
+      {"id": 6, "title": "Semantic Search+", "priority": "low", "status": "todo"}
+    ]
+  }
 }

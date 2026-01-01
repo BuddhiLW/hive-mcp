@@ -104,13 +104,15 @@ Returns a vector of alists suitable for JSON encoding."
   (let ((results (emacs-mcp-memory-query (intern type) tags nil (or limit 20))))
     (emacs-mcp-api--convert-entries results)))
 
-(defun emacs-mcp-api-memory-add (type content &optional tags)
+(defun emacs-mcp-api-memory-add (type content &optional tags duration)
   "Add entry to project memory.
 TYPE is a string: \"note\", \"snippet\", \"convention\", \"decision\".
 CONTENT is the entry content (string or plist).
 TAGS is optional list of strings.
+DURATION is optional string: \"session\", \"short-term\", \"long-term\", \"permanent\".
 Returns the created entry as alist suitable for JSON encoding."
-  (let ((entry (emacs-mcp-memory-add (intern type) content tags)))
+  (let ((entry (emacs-mcp-memory-add (intern type) content tags nil
+                                     (when duration (intern duration)))))
     (emacs-mcp-api--plist-to-alist entry)))
 
 (defun emacs-mcp-api-memory-get (id)
@@ -174,6 +176,32 @@ Use this after `emacs-mcp-api-memory-query-metadata' to fetch full content."
 (defun emacs-mcp-api-memory-get-project-context ()
   "Return full project context including all memory."
   (emacs-mcp-memory-get-project-context))
+
+;;;; Memory Duration API:
+
+(defun emacs-mcp-api-memory-set-duration (id duration)
+  "Set DURATION (string) for entry ID. Returns updated entry as alist."
+  (emacs-mcp-memory-set-duration id (intern duration))
+  (emacs-mcp-api--plist-to-alist (emacs-mcp-memory-get id)))
+
+(defun emacs-mcp-api-memory-promote (id)
+  "Promote entry ID to longer duration. Returns updated entry."
+  (emacs-mcp-memory-promote id)
+  (emacs-mcp-api--plist-to-alist (emacs-mcp-memory-get id)))
+
+(defun emacs-mcp-api-memory-demote (id)
+  "Demote entry ID to shorter duration. Returns updated entry."
+  (emacs-mcp-memory-demote id)
+  (emacs-mcp-api--plist-to-alist (emacs-mcp-memory-get id)))
+
+(defun emacs-mcp-api-memory-cleanup-expired ()
+  "Remove expired entries. Returns count deleted."
+  (emacs-mcp-memory-cleanup-expired))
+
+(defun emacs-mcp-api-memory-expiring-soon (days)
+  "Return entries expiring within DAYS as vector of alists."
+  (let ((results (emacs-mcp-memory-query-expiring days)))
+    (emacs-mcp-api--convert-entries results)))
 
 ;;;; Conversation API:
 
@@ -361,6 +389,7 @@ Returns position if found, nil otherwise."
    :capabilities '("context" "memory" "conversation" "workflows" "triggers"
                    "interaction" "navigation" "visual-feedback")
    :memory-types '("note" "snippet" "convention" "decision" "conversation")
+   :memory-durations '("session" "short-term" "long-term" "permanent")
    :workflow-step-types '("elisp" "shell" "prompt" "confirm" "condition"
                           "memory-add" "notify")))
 

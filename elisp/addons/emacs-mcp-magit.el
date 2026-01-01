@@ -36,8 +36,6 @@
 (declare-function magit-get-upstream-branch "magit-git")
 (declare-function magit-list-local-branch-names "magit-git")
 (declare-function magit-list-remote-branch-names "magit-git")
-(declare-function magit-stage-file "magit-apply")
-(declare-function magit-unstage-file "magit-apply")
 (declare-function magit-stage-modified "magit-apply")
 (declare-function magit-unstage-all "magit-apply")
 (declare-function magit-refresh "magit-mode")
@@ -78,7 +76,9 @@
 (defun emacs-mcp-magit--magit-available-p ()
   "Return non-nil if Magit is available and preferred."
   (and emacs-mcp-magit-prefer-magit
-       (featurep 'magit)))
+       (featurep 'magit)
+       ;; Verify key functions are actually bound
+       (fboundp 'magit-toplevel)))
 
 (defun emacs-mcp-magit--repo-root ()
   "Return the git repository root directory."
@@ -196,10 +196,12 @@
 (defun emacs-mcp-magit--stage-file (file)
   "Stage FILE for commit."
   (emacs-mcp-magit--ensure-repo)
-  (if (emacs-mcp-magit--magit-available-p)
-      (magit-stage-file file)
-    (emacs-mcp-magit--shell-command
-     (format "git add %s 2>&1" (shell-quote-argument file)))))
+  ;; Use git directly - magit-stage-files is interactive
+  (let ((result (emacs-mcp-magit--shell-command
+                 (format "git add %s 2>&1" (shell-quote-argument file)))))
+    (when (emacs-mcp-magit--magit-available-p)
+      (magit-refresh))
+    result))
 
 (defun emacs-mcp-magit--stage-all ()
   "Stage all modified files."
@@ -211,10 +213,12 @@
 (defun emacs-mcp-magit--unstage-file (file)
   "Unstage FILE."
   (emacs-mcp-magit--ensure-repo)
-  (if (emacs-mcp-magit--magit-available-p)
-      (magit-unstage-file file)
-    (emacs-mcp-magit--shell-command
-     (format "git reset HEAD %s 2>&1" (shell-quote-argument file)))))
+  ;; Use git directly - magit-unstage-files is interactive
+  (let ((result (emacs-mcp-magit--shell-command
+                 (format "git reset HEAD %s 2>&1" (shell-quote-argument file)))))
+    (when (emacs-mcp-magit--magit-available-p)
+      (magit-refresh))
+    result))
 
 (defun emacs-mcp-magit--unstage-all ()
   "Unstage all staged files."
@@ -512,7 +516,11 @@ OPTIONS may contain :set-upstream to set tracking."
 (defun emacs-mcp-magit--addon-init ()
   "Initialize magit addon."
   (require 'emacs-mcp-api nil t)
-  (require 'magit nil t)
+  (when (require 'magit nil t)
+    ;; Require submodules containing functions we use
+    (require 'magit-git nil t)    ; magit-toplevel, magit-get-current-branch, etc.
+    (require 'magit-apply nil t)  ; magit-stage-modified, magit-unstage-all
+    (require 'magit-mode nil t))  ; magit-refresh
   (message "emacs-mcp-magit: initialized%s"
            (if (featurep 'magit) " (with Magit)" " (shell fallback)")))
 

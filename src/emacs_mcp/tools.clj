@@ -176,14 +176,16 @@
 (defn handle-mcp-memory-add
   "Add an entry to project memory.
    After successful elisp memory add, auto-indexes in Chroma if configured."
-  [{:keys [type content tags]}]
+  [{:keys [type content tags duration]}]
   (log/info "mcp-memory-add:" type)
   (if (emacs-mcp-el-available?)
     (let [tags-str (if (seq tags) (str "'" (pr-str tags)) "nil")
-          elisp (format "(json-encode (emacs-mcp-api-memory-add %s %s %s))"
+          duration-str (if duration (pr-str duration) "nil")
+          elisp (format "(json-encode (emacs-mcp-api-memory-add %s %s %s %s))"
                         (pr-str type)
                         (pr-str content)
-                        tags-str)
+                        tags-str
+                        duration-str)
           {:keys [success result error]} (ec/eval-elisp elisp)]
       (if success
         (do
@@ -207,15 +209,17 @@
 
 (defn handle-mcp-memory-query
   "Query project memory by type."
-  [{:keys [type tags limit]}]
+  [{:keys [type tags limit duration]}]
   (log/info "mcp-memory-query:" type)
   (if (emacs-mcp-el-available?)
     (let [tags-str (if (seq tags) (str "'" (pr-str tags)) "nil")
           limit-val (or limit 20)
-          elisp (format "(json-encode (emacs-mcp-api-memory-query %s %s %d))"
+          duration-str (if duration (pr-str duration) "nil")
+          elisp (format "(json-encode (emacs-mcp-api-memory-query %s %s %d %s))"
                         (pr-str type)
                         tags-str
-                        limit-val)
+                        limit-val
+                        duration-str)
           {:keys [success result error]} (ec/eval-elisp elisp)]
       (if success
         {:type "text" :text result}
@@ -292,6 +296,68 @@
            :text (json/write-str {:error (str "Semantic search failed: " (.getMessage e))
                                   :status status})
            :isError true})))))
+
+(defn handle-mcp-memory-set-duration
+  "Set duration category for a memory entry."
+  [{:keys [id duration]}]
+  (log/info "mcp-memory-set-duration:" id duration)
+  (if (emacs-mcp-el-available?)
+    (let [elisp (el/require-and-call-json "emacs-mcp-api" "emacs-mcp-api-memory-set-duration"
+                                          id duration)
+          {:keys [success result error]} (ec/eval-elisp elisp)]
+      (if success
+        {:type "text" :text result}
+        {:type "text" :text (str "Error: " error) :isError true}))
+    {:type "text" :text "Error: emacs-mcp.el is not loaded." :isError true}))
+
+(defn handle-mcp-memory-promote
+  "Promote memory entry to longer duration."
+  [{:keys [id]}]
+  (log/info "mcp-memory-promote:" id)
+  (if (emacs-mcp-el-available?)
+    (let [elisp (el/require-and-call-json "emacs-mcp-api" "emacs-mcp-api-memory-promote" id)
+          {:keys [success result error]} (ec/eval-elisp elisp)]
+      (if success
+        {:type "text" :text result}
+        {:type "text" :text (str "Error: " error) :isError true}))
+    {:type "text" :text "Error: emacs-mcp.el is not loaded." :isError true}))
+
+(defn handle-mcp-memory-demote
+  "Demote memory entry to shorter duration."
+  [{:keys [id]}]
+  (log/info "mcp-memory-demote:" id)
+  (if (emacs-mcp-el-available?)
+    (let [elisp (el/require-and-call-json "emacs-mcp-api" "emacs-mcp-api-memory-demote" id)
+          {:keys [success result error]} (ec/eval-elisp elisp)]
+      (if success
+        {:type "text" :text result}
+        {:type "text" :text (str "Error: " error) :isError true}))
+    {:type "text" :text "Error: emacs-mcp.el is not loaded." :isError true}))
+
+(defn handle-mcp-memory-cleanup-expired
+  "Remove all expired memory entries."
+  [_]
+  (log/info "mcp-memory-cleanup-expired")
+  (if (emacs-mcp-el-available?)
+    (let [elisp (el/require-and-call-json "emacs-mcp-api" "emacs-mcp-api-memory-cleanup-expired")
+          {:keys [success result error]} (ec/eval-elisp elisp)]
+      (if success
+        {:type "text" :text result}
+        {:type "text" :text (str "Error: " error) :isError true}))
+    {:type "text" :text "Error: emacs-mcp.el is not loaded." :isError true}))
+
+(defn handle-mcp-memory-expiring-soon
+  "List memory entries expiring within N days."
+  [{:keys [days]}]
+  (log/info "mcp-memory-expiring-soon:" (or days 7))
+  (if (emacs-mcp-el-available?)
+    (let [days-val (or days 7)
+          elisp (el/require-and-call-json "emacs-mcp-api" "emacs-mcp-api-memory-expiring-soon" days-val)
+          {:keys [success result error]} (ec/eval-elisp elisp)]
+      (if success
+        {:type "text" :text result}
+        {:type "text" :text (str "Error: " error) :isError true}))
+    {:type "text" :text "Error: emacs-mcp.el is not loaded." :isError true}))
 
 (defn handle-mcp-run-workflow
   "Run a user-defined workflow."
@@ -823,14 +889,15 @@
 
 (defn handle-swarm-spawn
   "Spawn a new Claude slave instance."
-  [{:keys [name presets cwd role]}]
+  [{:keys [name presets cwd role terminal]}]
   (if (swarm-addon-available?)
     (let [presets-str (when (seq presets)
                         (format "'(%s)" (clojure.string/join " " (map #(format "\"%s\"" %) presets))))
-          elisp (format "(json-encode (emacs-mcp-swarm-api-spawn \"%s\" %s %s))"
+          elisp (format "(json-encode (emacs-mcp-swarm-api-spawn \"%s\" %s %s %s))"
                         (v/escape-elisp-string (or name "slave"))
                         (or presets-str "nil")
-                        (if cwd (format "\"%s\"" (v/escape-elisp-string cwd)) "nil"))
+                        (if cwd (format "\"%s\"" (v/escape-elisp-string cwd)) "nil")
+                        (if terminal (format "\"%s\"" terminal) "nil"))
           {:keys [success result error]} (ec/eval-elisp elisp)]
       (if success
         {:type "text" :text result}
@@ -1161,7 +1228,10 @@
                                           :description "Content of the memory entry"}
                                "tags" {:type "array"
                                        :items {:type "string"}
-                                       :description "Optional tags for categorization"}}
+                                       :description "Optional tags for categorization"}
+                               "duration" {:type "string"
+                                           :enum ["session" "short-term" "long-term" "permanent"]
+                                           :description "Duration category: session=current only, short-term=7 days, long-term=90 days, permanent=never expires"}}
                   :required ["type" "content"]}
     :handler handle-mcp-memory-add}
 
@@ -1175,7 +1245,10 @@
                                        :items {:type "string"}
                                        :description "Optional tags to filter by"}
                                "limit" {:type "integer"
-                                        :description "Maximum number of results (default: 20)"}}
+                                        :description "Maximum number of results (default: 20)"}
+                               "duration" {:type "string"
+                                           :enum ["session" "short-term" "long-term" "permanent"]
+                                           :description "Filter by duration category"}}
                   :required ["type"]}
     :handler handle-mcp-memory-query}
 
@@ -1214,6 +1287,48 @@
                                        :description "Optional filter by memory type"}}
                   :required ["query"]}
     :handler handle-mcp-memory-search-semantic}
+
+   ;; Memory Duration Management Tools
+   {:name "mcp_memory_set_duration"
+    :description "Set duration category for a memory entry. session=current only, short-term=7 days, long-term=90 days, permanent=never expires."
+    :inputSchema {:type "object"
+                  :properties {"id" {:type "string"
+                                     :description "Memory entry ID"}
+                               "duration" {:type "string"
+                                           :enum ["session" "short-term" "long-term" "permanent"]
+                                           :description "Duration category to set"}}
+                  :required ["id" "duration"]}
+    :handler handle-mcp-memory-set-duration}
+
+   {:name "mcp_memory_promote"
+    :description "Promote memory entry to longer duration (e.g., short-term -> long-term)."
+    :inputSchema {:type "object"
+                  :properties {"id" {:type "string"
+                                     :description "Memory entry ID to promote"}}
+                  :required ["id"]}
+    :handler handle-mcp-memory-promote}
+
+   {:name "mcp_memory_demote"
+    :description "Demote memory entry to shorter duration (e.g., long-term -> short-term)."
+    :inputSchema {:type "object"
+                  :properties {"id" {:type "string"
+                                     :description "Memory entry ID to demote"}}
+                  :required ["id"]}
+    :handler handle-mcp-memory-demote}
+
+   {:name "mcp_memory_cleanup_expired"
+    :description "Remove all expired memory entries. Returns deletion count."
+    :inputSchema {:type "object" :properties {}}
+    :handler handle-mcp-memory-cleanup-expired}
+
+   {:name "mcp_memory_expiring_soon"
+    :description "List entries expiring within N days."
+    :inputSchema {:type "object"
+                  :properties {"days" {:type "integer"
+                                       :default 7
+                                       :description "Number of days to look ahead (default: 7)"}}
+                  :required []}
+    :handler handle-mcp-memory-expiring-soon}
 
    {:name "mcp_list_workflows"
     :description "List available user-defined workflows. Requires emacs-mcp.el."
@@ -1506,7 +1621,7 @@
 
    ;; Swarm Orchestration Tools (requires emacs-mcp-swarm addon)
    {:name "swarm_spawn"
-    :description "Spawn a new Claude slave instance for parallel task execution. Slaves run in vterm buffers with optional presets (system prompts)."
+    :description "Spawn a new Claude slave instance for parallel task execution. Slaves run in terminal buffers (vterm or eat) with optional presets (system prompts)."
     :inputSchema {:type "object"
                   :properties {"name" {:type "string"
                                        :description "Name for the slave (used in buffer name)"}
@@ -1516,7 +1631,10 @@
                                "cwd" {:type "string"
                                       :description "Working directory for the slave (optional)"}
                                "role" {:type "string"
-                                       :description "Predefined role (tester, reviewer, documenter, etc.)"}}
+                                       :description "Predefined role (tester, reviewer, documenter, coordinator, ling, etc.)"}
+                               "terminal" {:type "string"
+                                           :enum ["vterm" "eat"]
+                                           :description "Terminal backend to use (default: vterm). Use 'eat' for pure Emacs Lisp terminal."}}
                   :required ["name"]}
     :handler handle-swarm-spawn}
 
