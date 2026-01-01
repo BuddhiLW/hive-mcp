@@ -95,10 +95,32 @@ If nil, uses the current project root or `default-directory'."
   :type 'integer
   :group 'emacs-mcp-cider)
 
+(defcustom emacs-mcp-cider-eval-timeout 60
+  "Timeout in seconds for nREPL evaluation with heartbeat polling.
+Default is 60 seconds. The evaluation uses async request with polling
+instead of blocking sync request."
+  :type 'integer
+  :group 'emacs-mcp-cider)
+
+(defcustom emacs-mcp-cider-poll-interval 0.1
+  "Interval in seconds between heartbeat polls during async eval.
+Smaller values = more responsive, larger values = less CPU overhead."
+  :type 'number
+  :group 'emacs-mcp-cider)
+
 ;;;; Internal:
 
 (defvar emacs-mcp-cider--last-eval nil
   "Last evaluated expression and result for potential saving.")
+
+(defvar emacs-mcp-cider--async-result nil
+  "Result from async evaluation, set by callback.")
+
+(defvar emacs-mcp-cider--async-done nil
+  "Flag indicating async evaluation completed.")
+
+(defvar emacs-mcp-cider--async-error nil
+  "Error from async evaluation, if any.")
 
 (defvar emacs-mcp-cider--nrepl-process nil
   "Process object for auto-started nREPL server.")
@@ -252,7 +274,8 @@ Returns a vector (for JSON array encoding) of session plists."
 
 ;;;###autoload
 (defun emacs-mcp-cider-eval-in-session (name code)
-  "Evaluate CODE in the CIDER session NAME."
+  "Evaluate CODE in the CIDER session NAME.
+Uses async evaluation with heartbeat polling."
   (let* ((session (gethash name emacs-mcp-cider--sessions))
          (cider-buf (plist-get session :cider-buffer)))
     (unless session
@@ -261,10 +284,7 @@ Returns a vector (for JSON array encoding) of session plists."
       (error "Session '%s' not connected (status: %s)"
              name (plist-get session :status)))
     (with-current-buffer cider-buf
-      (let ((result (cider-nrepl-sync-request:eval code)))
-        (or (nrepl-dict-get result "value")
-            (nrepl-dict-get result "err")
-            (nrepl-dict-get result "out"))))))
+      (emacs-mcp-cider--eval-with-heartbeat code))))
 
 ;;;###autoload
 (defun emacs-mcp-cider-kill-all-sessions ()
@@ -528,13 +548,53 @@ Use this when nREPL is started externally."
 ;;;###autoload
 (defun emacs-mcp-cider-eval-silent (code)
   "Evaluate CODE via CIDER silently, return result.
-Fast evaluation without REPL buffer output."
+Uses async evaluation with heartbeat polling instead of sync request.
+Polls every `emacs-mcp-cider-poll-interval' seconds until result ready
+or `emacs-mcp-cider-eval-timeout' seconds elapsed."
   (if (and (featurep 'cider) (cider-connected-p))
-      (let ((result (cider-nrepl-sync-request:eval code)))
-        (or (nrepl-dict-get result "value")
-            (nrepl-dict-get result "err")
-            (nrepl-dict-get result "out")))
+      (emacs-mcp-cider--eval-with-heartbeat code)
     (error "CIDER not connected")))
+
+(defun emacs-mcp-cider--eval-with-heartbeat (code)
+  "Evaluate CODE asynchronously with heartbeat polling.
+Returns result when ready or signals error on timeout."
+  ;; Reset state
+  (setq emacs-mcp-cider--async-result nil
+        emacs-mcp-cider--async-done nil
+        emacs-mcp-cider--async-error nil)
+  ;; Send async request - callback may be called multiple times
+  (cider-nrepl-request:eval
+   code
+   (lambda (response)
+     (let ((value (nrepl-dict-get response "value"))
+           (err (nrepl-dict-get response "err"))
+           (out (nrepl-dict-get response "out"))
+           (status (nrepl-dict-get response "status")))
+       ;; Accumulate value/err/out as they arrive
+       (when value
+         (setq emacs-mcp-cider--async-result value))
+       (when err
+         (setq emacs-mcp-cider--async-error err))
+       (when (and out (not emacs-mcp-cider--async-result))
+         (setq emacs-mcp-cider--async-result out))
+       ;; Mark done when status contains "done"
+       (when (member "done" status)
+         (setq emacs-mcp-cider--async-done t)))))
+  ;; Poll with heartbeat until done or timeout
+  (let ((start-time (float-time))
+        (timeout emacs-mcp-cider-eval-timeout)
+        (interval emacs-mcp-cider-poll-interval))
+    (while (and (not emacs-mcp-cider--async-done)
+                (< (- (float-time) start-time) timeout))
+      (accept-process-output nil interval))
+    (cond
+     ((not emacs-mcp-cider--async-done)
+      (error "Eval timed out after %d seconds (heartbeat polling)" timeout))
+     (emacs-mcp-cider--async-error
+      emacs-mcp-cider--async-error)
+     (emacs-mcp-cider--async-result
+      emacs-mcp-cider--async-result)
+     (t "nil"))))
 
 ;;;###autoload
 (defun emacs-mcp-cider-eval-explicit (code)
