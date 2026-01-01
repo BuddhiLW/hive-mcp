@@ -1,61 +1,76 @@
 {
   "date": "2025-12-31",
-  "focus_area": "Bug verification and MCP tool timeout investigation",
-  "branches_created": [],
-  "merged_prs": [],
-  "key_files": [
-    "elisp/addons/emacs-mcp-cider.el",
-    "test/emacs_mcp/bug_regression_test.clj"
+  "focus_area": "Chroma v2 API fix and semantic search activation",
+  "branches_created": ["feat/swarm-recursion-safeguards", "feat/chroma-auto-init"],
+  "branches_shipped": ["fix/mcp-async-handler", "fix/mcp-response-format", "feat/swarm-recursion-safeguards", "feat/chroma-auto-init", "fix/cider-heartbeat-timeout"],
+  "open_prs": [],
+  "merged_prs": [
+    "#28 - fix(mcp): Add async handler fix via submodule + stderr logging",
+    "#29 - fix(mcp): Standardize MCP tool response format to prevent timeouts",
+    "#30 - feat(swarm): Add recursion safeguards with max depth 3",
+    "#31 - feat(chroma): Auto-initialize Ollama embedding provider at server startup",
+    "#32 - fix(cider): Replace sync eval with heartbeat polling to overcome 10s limit"
   ],
-  "adrs_created": [],
+  "upstream_prs_created": [
+    "clojure-lsp/jsonrpc4clj#2 - feat: Use p/future for async handler execution"
+  ],
+  "key_files": [
+    "clojure-chroma-client/src/clojure_chroma_client/api.clj",
+    "clojure-chroma-client/src/clojure_chroma_client/config.clj",
+    "src/emacs_mcp/server.clj",
+    "start-mcp.sh",
+    "elisp/addons/emacs-mcp-chroma.el",
+    "elisp/addons/emacs-mcp-swarm.el"
+  ],
   "completed_tasks": [
-    "Verified all 6 bugs from previous session are FIXED",
-    "Fixed json-encode null bug in emacs-mcp-cider-list-sessions",
-    "Ran full regression test suite (7 tests, 21 assertions, 0 failures)",
-    "Investigated MCP tool timeout issue - not our code"
+    "Fixed clojure-chroma-client to use Chroma v2 API (merged feature/v2-api-support to main)",
+    "Updated submodule to v2 API commit (ae40924d7c4cdecbb387fa559f1eee6d7f9aa3c1)",
+    "Added environment variable configuration for CHROMA_HOST, CHROMA_PORT, OLLAMA_HOST",
+    "Updated start-mcp.sh with default environment variables",
+    "Enhanced init-embedding-provider! to configure Chroma from env vars",
+    "Verified semantic search works end-to-end via MCP tool",
+    "Added emacs-mcp configuration to Emacs.org and tangled to config.el",
+    "All PRs merged to main (#28, #29, #30, #31, #32)"
   ],
   "in_progress_tasks": [],
-  "blocking_issues": [
-    "MCP tool calls via emacs-mcp server timeout/abort",
-    "This is Claude Code infrastructure issue, not emacs-mcp code",
-    "Underlying emacsclient calls work fine (14-27ms)"
-  ],
+  "blocking_issues": [],
   "next_actions": [
-    "Report MCP timeout issue to Claude Code team",
-    "Consider alternative MCP server implementation",
-    "Test swarm with working tools (bash/emacsclient directly)"
+    "Monitor upstream PR clojure-lsp/jsonrpc4clj#2 for async handler fix",
+    "Consider adding more memory entries to test semantic search quality",
+    "Test semantic search with real project memories"
   ],
   "decisions_made": [
-    "Use vconcat for empty list JSON encoding ([] not null)",
-    "Convert symbols to strings before JSON encoding",
-    "Workaround MCP timeout by using bash/emacsclient directly"
+    "Chroma v2 API: Use /api/v2/tenants/{tenant}/databases/{database}/ path format",
+    "Environment config: CHROMA_HOST (default: localhost), CHROMA_PORT (default: 8000), OLLAMA_HOST (default: http://localhost:11434)",
+    "Merged v2 API branch to main in clojure-chroma-client fork",
+    "Emacs config: Set env vars before loading emacs-mcp for MCP server to pick up",
+    "Max spawn depth: 3 (master → child → grandchild → great-grandchild)",
+    "Rate limit: 10 spawns per 60 seconds"
   ],
-  "bugs_fixed": {
-    "BUG_1": "parser/parse-file - ALREADY FIXED",
-    "BUG_2": "CIDER eval returning feature name - ALREADY FIXED",
-    "BUG_3": "list-prompts nil fields - WAS NOT A BUG (nil is valid)",
-    "BUG_4": "Render stats vs column count - ALREADY FIXED",
-    "BUG_5": "kanban-status timeout - NOT A BUG (works in 24ms)",
-    "BUG_6": "Swarm double-encoded JSON - ALREADY FIXED",
-    "NEW": "list-sessions returning null instead of [] - FIXED"
+  "swarm_safeguards": {
+    "max_depth": 3,
+    "depth_labels": ["master", "child", "grandchild", "great-grandchild"],
+    "rate_limit_window": 60,
+    "rate_limit_max_spawns": 10,
+    "ancestry_tracking": true
   },
-  "test_suite": {
-    "file": "test/emacs_mcp/bug_regression_test.clj",
-    "tests": 7,
-    "assertions": 21,
-    "status": "all passing"
-  },
-  "mcp_timeout_investigation": {
-    "symptom": "MCP tool calls abort with -32001 error",
-    "emacsclient_works": true,
-    "clojure_repl_works": true,
-    "root_cause": "Claude Code MCP client timeout or connection issue",
-    "not_our_code": true
+  "chroma_config": {
+    "api_version": "v2",
+    "submodule_commit": "ae40924d7c4cdecbb387fa559f1eee6d7f9aa3c1",
+    "embedding_model": "nomic-embed-text",
+    "dimension": 768,
+    "collection": "emacs-mcp-memory",
+    "docker_compose": "docker-compose.yml",
+    "check_script": "scripts/chroma-check.bb"
   },
   "vibe_kanban_project_id": "b70720e8-3a52-41ba-a115-964b81369bb5",
   "git_state": {
-    "current_branch": "feat/memory-lazy-loading",
-    "clean_working_tree": false
+    "current_branch": "main",
+    "all_prs_merged": true,
+    "feature_branches": []
   },
-  "release": "v0.3.0"
+  "conventions_added": [
+    "Use magit MCP addon preferentially for git operations",
+    "main branch is write-protected - always use feature branches + PRs"
+  ]
 }

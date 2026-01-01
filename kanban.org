@@ -6,7 +6,33 @@
 :PROPERTIES:
 :ID: b70720e8-3a52-41ba-a115-964b81369bb5
 :END:
-** TODO Implement bidirectional sync between vibe-kanban and org-kanban
+** TODO Monitor upstream PR: jsonrpc4clj p/future async handler fix
+:PROPERTIES:
+:ID: 9165d016-monitor-upstream
+:VIBE_ID: 9165d016-9376-4b96-9959-34af12ec813b
+:CREATED: 2025-12-31
+:END:
+Track clojure-lsp/jsonrpc4clj#2 - if merged, switch mcp-clojure-sdk back to upstream.
+** DONE Bug: CIDER sync nREPL timeout (10s) too short
+:PROPERTIES:
+:ID: 7bb836d7-db3a-48cd-a33d-4ed2643bc3b5
+:VIBE_ID: 7bb836d7-db3a-48cd-a33d-4ed2643bc3b5
+:CREATED: 2025-12-31
+:END:
+Increase emacs-mcp-cider-connect-max-retries or timeout for slow nREPL startups.
+** DONE Auto-initialize Chroma embedding provider at server startup
+CLOSED: [2025-12-31]
+:PROPERTIES:
+:ID: chroma-auto-init
+:CREATED: 2025-12-31
+:END:
+PR #31. Added init-embedding-provider! to server.clj that:
+- Configures Ollama with nomic-embed-text model (768 dims)
+- Sets up Chroma for semantic memory search
+- Fails gracefully if Ollama/Chroma unavailable
+Enables mcp_memory_search_semantic without manual config.
+** DONE Implement bidirectional sync between vibe-kanban and org-kanban
+CLOSED: [2025-12-31]
 :PROPERTIES:
 :ID: c75935fb-2f77-49b8-ba0e-2e0db9e4d044
 :VIBE_ID: e54edcbd-3b67-42fd-8ce3-487d22e883fe
