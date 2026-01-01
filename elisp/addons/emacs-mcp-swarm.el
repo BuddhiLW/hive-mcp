@@ -421,14 +421,15 @@ Kill some slaves with `emacs-mcp-swarm-kill' before spawning more."
            emacs-mcp-swarm-max-slaves)))
 
 (cl-defun emacs-mcp-swarm-spawn (name &key presets cwd role terminal)
-  "Spawn a new Claude slave with NAME.
+  "Spawn a new Claude slave with NAME - FULLY ASYNC.
 
 PRESETS is a list of preset names to apply (e.g., '(\"tdd\" \"clarity\")).
 CWD is the working directory (defaults to current project root).
 ROLE is a predefined role that maps to presets.
 TERMINAL overrides `emacs-mcp-swarm-terminal' for this spawn ('vterm or 'eat).
 
-Returns the slave-id."
+Returns the slave-id IMMEDIATELY.  The actual spawn happens async.
+Poll the slave's :status to check progress: spawning -> starting -> idle."
   (interactive
    (list (read-string "Slave name: ")
          :presets (completing-read-multiple
@@ -444,25 +445,85 @@ Returns the slave-id."
     (setq presets (emacs-mcp-swarm--role-to-presets role)))
 
   (let* ((slave-id (emacs-mcp-swarm--generate-slave-id name))
-         (buffer-name (format "%s%s*" emacs-mcp-swarm-buffer-prefix name))
          (work-dir (or cwd (emacs-mcp-swarm--project-root) default-directory))
-         (system-prompt (emacs-mcp-swarm--build-system-prompt presets))
          (term-backend (or terminal emacs-mcp-swarm-terminal))
-         buffer process)
+         (parent-id (or (getenv "CLAUDE_SWARM_SLAVE_ID") "master"))
+         (spawn-depth (1+ emacs-mcp-swarm--current-depth)))
 
-    ;; Require terminal emulator
+    ;; Register slave IMMEDIATELY with "spawning" status - BEFORE any work
+    (puthash slave-id
+             (list :slave-id slave-id
+                   :name name
+                   :role role
+                   :presets presets
+                   :status 'spawning  ; Not starting yet - we return immediately
+                   :buffer nil        ; Buffer created async
+                   :terminal term-backend
+                   :cwd work-dir
+                   :depth spawn-depth
+                   :parent-id parent-id
+                   :current-task nil
+                   :task-queue '()
+                   :tasks-completed 0
+                   :tasks-failed 0
+                   :spawned-at (format-time-string "%FT%T%z")
+                   :last-activity (format-time-string "%FT%T%z"))
+             emacs-mcp-swarm--slaves)
+
+    ;; Log spawn intent
+    (message "[swarm] Spawning %s (%s) at depth %d, parent: %s (async)"
+             slave-id
+             (emacs-mcp-swarm--depth-label spawn-depth)
+             spawn-depth
+             parent-id)
+
+    ;; FULLY ASYNC: Defer ALL work to timer so we return IMMEDIATELY
+    (run-with-timer
+     0 nil
+     (lambda ()
+       (condition-case err
+           (emacs-mcp-swarm--do-spawn-async slave-id name presets work-dir term-backend)
+         (error
+          ;; Mark slave as errored
+          (when-let* ((slave (gethash slave-id emacs-mcp-swarm--slaves)))
+            (plist-put slave :status 'error)
+            (plist-put slave :error (error-message-string err)))
+          (message "[swarm] Spawn error for %s: %s" slave-id (error-message-string err))))))
+
+    (when (called-interactively-p 'any)
+      (message "Spawning slave: %s (async)" slave-id))
+
+    slave-id))
+
+(defun emacs-mcp-swarm--do-spawn-async (slave-id name presets work-dir term-backend)
+  "Actually spawn the slave buffer for SLAVE-ID.
+Called async from `emacs-mcp-swarm-spawn'.  Updates slave status as work progresses."
+  (let* ((slave (gethash slave-id emacs-mcp-swarm--slaves))
+         (buffer-name (format "%s%s*" emacs-mcp-swarm-buffer-prefix name))
+         (system-prompt (emacs-mcp-swarm--build-system-prompt presets))
+         buffer)
+
+    (unless slave
+      (error "Slave record not found: %s" slave-id))
+
+    ;; Require terminal emulator (could potentially block on first load)
     (pcase term-backend
       ('vterm (unless (require 'vterm nil t)
                 (error "Vterm is required but not available")))
       ('eat (unless (require 'eat nil t)
               (error "Eat is required but not available"))))
 
+    ;; Update status to starting
+    (plist-put slave :status 'starting)
+
     ;; Create terminal buffer
     (setq buffer (generate-new-buffer buffer-name))
+    (plist-put slave :buffer buffer)
+
     (let ((default-directory work-dir)
           (process-environment
            (append
-            (list (format "CLAUDE_SWARM_DEPTH=%d" (1+ emacs-mcp-swarm--current-depth))
+            (list (format "CLAUDE_SWARM_DEPTH=%d" (plist-get slave :depth))
                   (format "CLAUDE_SWARM_MASTER=%s" (or emacs-mcp-swarm--session-id "direct"))
                   (format "CLAUDE_SWARM_SLAVE_ID=%s" slave-id))
             process-environment))
@@ -489,7 +550,6 @@ Returns the slave-id."
                               (vterm-send-string claude-cmd)
                               (vterm-send-return)))))))
         ('eat
-         ;; Use eat-exec to start shell in our buffer
          (with-current-buffer buffer
            (eat-mode)
            (eat-exec buffer "swarm-shell" "/bin/bash" nil '("-l")))
@@ -499,49 +559,18 @@ Returns the slave-id."
                           (with-current-buffer buffer
                             (when (and (boundp 'eat-terminal) eat-terminal)
                               (eat-term-send-string eat-terminal claude-cmd)
-                              ;; Use carriage return for eat terminals
                               (eat-term-send-string eat-terminal "\r")))))))))
 
-    ;; Store slave state with ancestry info
-    (let ((parent-id (or (getenv "CLAUDE_SWARM_SLAVE_ID") "master"))
-          (spawn-depth (1+ emacs-mcp-swarm--current-depth)))
-      (puthash slave-id
-               (list :slave-id slave-id
-                     :name name
-                     :role role
-                     :presets presets
-                     :status 'starting
-                     :buffer buffer
-                     :terminal term-backend
-                     :cwd work-dir
-                     :depth spawn-depth
-                     :parent-id parent-id
-                     :current-task nil
-                     :task-queue '()
-                     :tasks-completed 0
-                     :tasks-failed 0
-                     :spawned-at (format-time-string "%FT%T%z")
-                     :last-activity (format-time-string "%FT%T%z"))
-               emacs-mcp-swarm--slaves)
-      ;; Telemetry: log spawn event
-      (message "[swarm] Spawned %s (%s) at depth %d, parent: %s"
-               slave-id
-               (emacs-mcp-swarm--depth-label spawn-depth)
-               spawn-depth
-               parent-id))
+    ;; Log completion
+    (message "[swarm] Spawned %s buffer created" slave-id)
 
-    ;; Schedule status check
+    ;; Schedule status transition to idle
     (run-at-time
      3 nil
      (lambda ()
-       (when-let* ((slave (gethash slave-id emacs-mcp-swarm--slaves)))
-         (plist-put slave :status 'idle))))
-
-    (when (called-interactively-p 'any)
-      (message "Spawned slave: %s" slave-id)
-      (display-buffer buffer))
-
-    slave-id))
+       (when-let* ((s (gethash slave-id emacs-mcp-swarm--slaves)))
+         (when (memq (plist-get s :status) '(starting spawning))
+           (plist-put s :status 'idle)))))))
 
 (defun emacs-mcp-swarm--role-to-presets (role)
   "Convert ROLE to list of preset names."
