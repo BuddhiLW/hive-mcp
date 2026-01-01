@@ -154,6 +154,28 @@ This delay increases with each retry (exponential backoff)."
   :type 'float
   :group 'emacs-mcp-swarm)
 
+(defcustom emacs-mcp-swarm-return-delay 0.05
+  "Delay in seconds between sending text and sending return.
+Helps ensure vterm processes the text before return is sent."
+  :type 'float
+  :group 'emacs-mcp-swarm)
+
+(defcustom emacs-mcp-swarm-auto-approve t
+  "If non-nil, automatically approve tool permission prompts.
+Claude Code asks for permission before running tools. This setting
+auto-sends 'y' when permission prompts are detected."
+  :type 'boolean
+  :group 'emacs-mcp-swarm)
+
+(defcustom emacs-mcp-swarm-auto-approve-patterns
+  '("Allow\\|Deny" "Yes\\|No" "(y/n)" "[Y/n]" "[y/N]"
+    "Do you want to" "Would you like to" "Proceed\\?")
+  "Patterns that indicate a permission/confirmation prompt.
+When any of these are found in the buffer, and `emacs-mcp-swarm-auto-approve'
+is non-nil, automatically send 'y' to approve."
+  :type '(repeat string)
+  :group 'emacs-mcp-swarm)
+
 (defcustom emacs-mcp-swarm-prompt-marker "❯"
   "Marker indicating Claude is ready for input."
   :type 'string
@@ -189,6 +211,83 @@ This delay increases with each retry (exponential backoff)."
 
 (defvar emacs-mcp-swarm--ancestry nil
   "Ancestry chain: list of (slave-id . master-id) for loop detection.")
+
+(defvar emacs-mcp-swarm--auto-approve-timer nil
+  "Timer for auto-approve watcher.")
+
+(defvar emacs-mcp-swarm--last-approve-positions (make-hash-table :test 'equal)
+  "Hash of slave-id -> last checked position to avoid re-approving.")
+
+;;;; Auto-Approve Watcher:
+
+(defun emacs-mcp-swarm--check-for-prompts (buffer)
+  "Check BUFFER for permission prompts and return position if found."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (save-excursion
+        (goto-char (point-max))
+        ;; Look back at most 500 chars for prompt
+        (let ((search-start (max (point-min) (- (point-max) 500))))
+          (goto-char search-start)
+          (cl-loop for pattern in emacs-mcp-swarm-auto-approve-patterns
+                   when (re-search-forward pattern nil t)
+                   return (point)))))))
+
+(defun emacs-mcp-swarm--send-approval (buffer term-type)
+  "Send 'y' approval to BUFFER using TERM-TYPE."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (goto-char (point-max))
+      (pcase term-type
+        ('vterm
+         (vterm-send-string "y")
+         (run-at-time 0.05 nil
+                      (lambda ()
+                        (when (buffer-live-p buffer)
+                          (with-current-buffer buffer
+                            (vterm-send-return))))))
+        ('eat
+         (when (and (boundp 'eat-terminal) eat-terminal)
+           (eat-term-send-string eat-terminal "y")
+           (run-at-time 0.05 nil
+                        (lambda ()
+                          (when (and (buffer-live-p buffer)
+                                     (boundp 'eat-terminal)
+                                     eat-terminal)
+                            (eat-term-send-string eat-terminal "\r"))))))))))
+
+(defun emacs-mcp-swarm--auto-approve-tick ()
+  "Check all slave buffers for permission prompts and auto-approve."
+  (when emacs-mcp-swarm-auto-approve
+    (maphash
+     (lambda (slave-id slave)
+       (let* ((buffer (plist-get slave :buffer))
+              (term-type (or (plist-get slave :terminal) emacs-mcp-swarm-terminal))
+              (last-pos (gethash slave-id emacs-mcp-swarm--last-approve-positions 0)))
+         (when (and (buffer-live-p buffer)
+                    (eq (plist-get slave :status) 'working))
+           (let ((prompt-pos (emacs-mcp-swarm--check-for-prompts buffer)))
+             (when (and prompt-pos (> prompt-pos last-pos))
+               (message "[swarm] Auto-approving prompt in %s" slave-id)
+               (puthash slave-id prompt-pos emacs-mcp-swarm--last-approve-positions)
+               (emacs-mcp-swarm--send-approval buffer term-type))))))
+     emacs-mcp-swarm--slaves)))
+
+(defun emacs-mcp-swarm-start-auto-approve ()
+  "Start the auto-approve watcher timer."
+  (interactive)
+  (emacs-mcp-swarm-stop-auto-approve)
+  (setq emacs-mcp-swarm--auto-approve-timer
+        (run-with-timer 1 2 #'emacs-mcp-swarm--auto-approve-tick))
+  (message "[swarm] Auto-approve watcher started"))
+
+(defun emacs-mcp-swarm-stop-auto-approve ()
+  "Stop the auto-approve watcher timer."
+  (interactive)
+  (when emacs-mcp-swarm--auto-approve-timer
+    (cancel-timer emacs-mcp-swarm--auto-approve-timer)
+    (setq emacs-mcp-swarm--auto-approve-timer nil)
+    (message "[swarm] Auto-approve watcher stopped")))
 
 ;;;; Preset Management:
 
@@ -421,8 +520,8 @@ Returns the slave-id."
                      :task-queue '()
                      :tasks-completed 0
                      :tasks-failed 0
-                     :spawned-at (format-time-string "%FT%TZ")
-                     :last-activity (format-time-string "%FT%TZ"))
+                     :spawned-at (format-time-string "%FT%T%z")
+                     :last-activity (format-time-string "%FT%T%z"))
                emacs-mcp-swarm--slaves)
       ;; Telemetry: log spawn event
       (message "[swarm] Spawned %s (%s) at depth %d, parent: %s"
@@ -490,62 +589,99 @@ Returns the slave-id."
 
 ;;;; Terminal Send Functions:
 
-(defun emacs-mcp-swarm--buffer-contains-p (buffer text)
-  "Check if BUFFER contains TEXT (uses first 40 chars as signature)."
+(defun emacs-mcp-swarm--buffer-contains-p (buffer text &optional start-point)
+  "Check if BUFFER contains TEXT after START-POINT.
+Uses first 40 chars as signature. Returns position if found, nil otherwise."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
       (save-excursion
-        (goto-char (point-min))
+        (goto-char (or start-point (point-min)))
         (let ((sig (substring text 0 (min 40 (length text)))))
           (search-forward sig nil t))))))
 
+(defun emacs-mcp-swarm--claude-responded-p (buffer text &optional start-point)
+  "Check if Claude has responded to TEXT in BUFFER after START-POINT.
+Looks for the prompt followed by Claude's response marker (●)."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (save-excursion
+        (goto-char (or start-point (point-min)))
+        (let ((sig (substring text 0 (min 40 (length text)))))
+          ;; Find our prompt
+          (when (search-forward sig nil t)
+            ;; Check if there's a response marker after it
+            (search-forward "●" nil t)))))))
+
 (defun emacs-mcp-swarm--send-to-terminal (buffer text term-type)
   "Send TEXT to terminal BUFFER using TERM-TYPE backend.
-Returns the point-max before sending for verification."
+Returns the point-max before sending for verification.
+For vterm, adds a small delay between text and return to ensure proper processing."
   (let ((start-point (with-current-buffer buffer (point-max))))
     (with-current-buffer buffer
       (goto-char (point-max))
       (pcase term-type
         ('vterm
          (vterm-send-string text)
-         (vterm-send-return))
+         ;; Delay before return to ensure vterm processes the text
+         (run-at-time emacs-mcp-swarm-return-delay nil
+                      (lambda ()
+                        (when (buffer-live-p buffer)
+                          (with-current-buffer buffer
+                            (vterm-send-return))))))
         ('eat
          (if (and (boundp 'eat-terminal) eat-terminal)
              (progn
                (eat-term-send-string eat-terminal text)
-               (eat-term-send-string eat-terminal "\r"))
+               ;; Small delay for eat as well
+               (run-at-time emacs-mcp-swarm-return-delay nil
+                            (lambda ()
+                              (when (and (buffer-live-p buffer)
+                                         (boundp 'eat-terminal)
+                                         eat-terminal)
+                                (eat-term-send-string eat-terminal "\r")))))
            (error "Eat-terminal not available in buffer %s" (buffer-name buffer))))))
     start-point))
 
-(defun emacs-mcp-swarm--send-with-retry (buffer text term-type &optional attempt)
+(defun emacs-mcp-swarm--send-with-retry (buffer text term-type &optional attempt start-point)
   "Send TEXT to BUFFER with retry logic.
 TERM-TYPE is 'vterm or 'eat.  ATTEMPT is current attempt number.
+START-POINT is the buffer position before first send (for verification).
 Returns t on success, signals error on failure after all retries."
   (let* ((attempt (or attempt 1))
          (delay (* emacs-mcp-swarm-send-delay attempt))  ; exponential backoff
-         (max-retries emacs-mcp-swarm-send-retries))
+         (max-retries emacs-mcp-swarm-send-retries)
+         (start-pt (or start-point (with-current-buffer buffer (point-max)))))
     
     (unless (buffer-live-p buffer)
       (error "Buffer is dead, cannot send"))
     
-    ;; Send the text
-    (emacs-mcp-swarm--send-to-terminal buffer text term-type)
+    ;; Only send on first attempt - retries just re-verify
+    (when (= attempt 1)
+      (emacs-mcp-swarm--send-to-terminal buffer text term-type))
     
     ;; If verification is disabled, assume success
     (unless emacs-mcp-swarm-send-verify
       (cl-return-from emacs-mcp-swarm--send-with-retry t))
     
-    ;; Wait for the text to appear
+    ;; Wait and verify the text appeared
     (run-at-time delay nil
                  (lambda ()
-                   (if (emacs-mcp-swarm--buffer-contains-p buffer text)
-                       (message "[swarm] Send verified (attempt %d)" attempt)
-                     (if (< attempt max-retries)
-                         (progn
-                           (message "[swarm] Send not verified, retrying (%d/%d)..."
-                                    attempt max-retries)
-                           (emacs-mcp-swarm--send-with-retry buffer text term-type (1+ attempt)))
-                       (message "[swarm] WARNING: Send failed after %d attempts" max-retries)))))
+                   (cond
+                    ;; Claude already responded - success, no retry needed
+                    ((emacs-mcp-swarm--claude-responded-p buffer text start-pt)
+                     (message "[swarm] Send verified - Claude responded (attempt %d)" attempt))
+                    ;; Text is in buffer - success
+                    ((emacs-mcp-swarm--buffer-contains-p buffer text start-pt)
+                     (message "[swarm] Send verified (attempt %d)" attempt))
+                    ;; Text not found, retry verification (not re-send!)
+                    ((< attempt max-retries)
+                     (message "[swarm] Verifying send (%d/%d)..." attempt max-retries)
+                     (emacs-mcp-swarm--send-with-retry buffer text term-type 
+                                                       (1+ attempt) start-pt))
+                    ;; All retries exhausted
+                    (t
+                     (message "[swarm] WARNING: Send verification failed after %d attempts" 
+                              max-retries)))))
     t))
 
 ;;;; Task Dispatch and Collection:
@@ -581,7 +717,7 @@ Returns task-id."
                    :priority (or priority 'normal)
                    :timeout (or timeout emacs-mcp-swarm-default-timeout)
                    :context context
-                   :dispatched-at (format-time-string "%FT%TZ")
+                   :dispatched-at (format-time-string "%FT%T%z")
                    :completed-at nil
                    :result nil
                    :error nil)
@@ -590,7 +726,7 @@ Returns task-id."
     ;; Update slave state
     (plist-put slave :status 'working)
     (plist-put slave :current-task task-id)
-    (plist-put slave :last-activity (format-time-string "%FT%TZ"))
+    (plist-put slave :last-activity (format-time-string "%FT%T%z"))
     (plist-put slave :task-start-point
                (with-current-buffer buffer (point-max)))
 
@@ -671,7 +807,7 @@ Returns the task plist with :result populated."
         (progn
           (plist-put task :status 'completed)
           (plist-put task :result result)
-          (plist-put task :completed-at (format-time-string "%FT%TZ"))
+          (plist-put task :completed-at (format-time-string "%FT%T%z"))
           ;; Update slave stats
           (plist-put slave :status 'idle)
           (plist-put slave :current-task nil)
@@ -867,7 +1003,7 @@ but this function never blocks."
             ;; Update task
             (plist-put task :status 'completed)
             (plist-put task :result result)
-            (plist-put task :completed-at (format-time-string "%FT%TZ"))
+            (plist-put task :completed-at (format-time-string "%FT%T%z"))
             ;; Update slave
             (when slave
               (plist-put slave :status 'idle)
@@ -949,9 +1085,13 @@ but this function never blocks."
                       (format-time-string "%Y%m%d")
                       (random 65535)))
         (emacs-mcp-swarm-reload-presets)
-        (message "Emacs-mcp-swarm enabled (session: %s, %d presets)"
+        (when emacs-mcp-swarm-auto-approve
+          (emacs-mcp-swarm-start-auto-approve))
+        (message "Emacs-mcp-swarm enabled (session: %s, %d presets, auto-approve: %s)"
                  emacs-mcp-swarm--session-id
-                 (hash-table-count emacs-mcp-swarm--presets-cache)))
+                 (hash-table-count emacs-mcp-swarm--presets-cache)
+                 (if emacs-mcp-swarm-auto-approve "on" "off")))
+    (emacs-mcp-swarm-stop-auto-approve)
     (emacs-mcp-swarm-kill-all)
     (message "Emacs-mcp-swarm disabled")))
 
@@ -963,11 +1103,15 @@ but this function never blocks."
   (setq emacs-mcp-swarm--session-id
         (format "session-%s-%04x"
                 (format-time-string "%Y%m%d")
-                (random 65535))))
+                (random 65535)))
+  (when emacs-mcp-swarm-auto-approve
+    (emacs-mcp-swarm-start-auto-approve)))
 
 (defun emacs-mcp-swarm--addon-shutdown ()
   "Shutdown swarm addon - kill all slaves."
+  (emacs-mcp-swarm-stop-auto-approve)
   (emacs-mcp-swarm-kill-all)
+  (clrhash emacs-mcp-swarm--last-approve-positions)
   (setq emacs-mcp-swarm--presets-cache nil)
   (setq emacs-mcp-swarm--session-id nil))
 
