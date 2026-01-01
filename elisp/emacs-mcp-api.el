@@ -177,6 +177,29 @@ Use this after `emacs-mcp-api-memory-query-metadata' to fetch full content."
   "Return full project context including all memory."
   (emacs-mcp-memory-get-project-context))
 
+;;;; Memory Deduplication API:
+
+(defun emacs-mcp-api-memory-check-duplicate (type content)
+  "Check if CONTENT already exists in memory TYPE.
+TYPE is a string: \"note\", \"snippet\", \"convention\", \"decision\".
+CONTENT is the content to check.
+Returns an alist with:
+  - exists: t if duplicate found, nil otherwise
+  - entry: the existing entry (as alist) if found, nil otherwise
+  - content-hash: the computed hash for the content"
+  (let* ((type-sym (if (stringp type) (intern type) type))
+         (content-hash (emacs-mcp-memory-content-hash content))
+         (existing (emacs-mcp-memory-find-duplicate type-sym content)))
+    `((exists . ,(if existing t :false))
+      (entry . ,(when existing
+                  (emacs-mcp-api--plist-to-alist existing)))
+      (content_hash . ,content-hash))))
+
+(defun emacs-mcp-api-memory-content-hash (content)
+  "Compute content hash for CONTENT.
+Returns the SHA-256 hash as a string."
+  (emacs-mcp-memory-content-hash content))
+
 ;;;; Memory Duration API:
 
 (defun emacs-mcp-api-memory-set-duration (id duration)
