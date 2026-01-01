@@ -419,12 +419,7 @@
     (v/validate-cider-eval-request params)
     (let [{:keys [code]} params]
       (telemetry/with-eval-telemetry :cider-silent code nil
-        (let [elisp (format "(progn
-                              (require 'emacs-mcp-cider nil t)
-                              (if (fboundp 'emacs-mcp-cider-eval-silent)
-                                  (emacs-mcp-cider-eval-silent %s)
-                                (error \"emacs-mcp-cider not loaded\")))"
-                            (pr-str code))
+        (let [elisp (el/require-and-call-text 'emacs-mcp-cider 'emacs-mcp-cider-eval-silent code)
               {:keys [success result error]} (ec/eval-elisp elisp)]
           (if success
             {:type "text" :text result}
@@ -441,12 +436,7 @@
     (v/validate-cider-eval-request params)
     (let [{:keys [code]} params]
       (telemetry/with-eval-telemetry :cider-explicit code nil
-        (let [elisp (format "(progn
-                              (require 'emacs-mcp-cider nil t)
-                              (if (fboundp 'emacs-mcp-cider-eval-explicit)
-                                  (emacs-mcp-cider-eval-explicit %s)
-                                (error \"emacs-mcp-cider not loaded\")))"
-                            (pr-str code))
+        (let [elisp (el/require-and-call-text 'emacs-mcp-cider 'emacs-mcp-cider-eval-explicit code)
               {:keys [success result error]} (ec/eval-elisp elisp)]
           (if success
             {:type "text" :text result}
@@ -465,14 +455,8 @@
    Useful for parallel agent work where each agent needs isolated REPL."
   [{:keys [name project_dir agent_id]}]
   (log/info "cider-spawn-session" {:name name :agent_id agent_id})
-  (let [elisp (format "(progn
-                         (require 'emacs-mcp-cider nil t)
-                         (if (fboundp 'emacs-mcp-cider-spawn-session)
-                             (json-encode (emacs-mcp-cider-spawn-session %s %s %s))
-                           (error \"emacs-mcp-cider not loaded\")))"
-                      (pr-str name)
-                      (if project_dir (pr-str project_dir) "nil")
-                      (if agent_id (pr-str agent_id) "nil"))
+  (let [elisp (el/require-and-call-json 'emacs-mcp-cider 'emacs-mcp-cider-spawn-session
+                                        name project_dir agent_id)
         {:keys [success result error]} (ec/eval-elisp elisp)]
     (if success
       (mcp-success result)
@@ -482,11 +466,7 @@
   "List all active CIDER sessions with their status and ports."
   [_]
   (log/info "cider-list-sessions")
-  (let [elisp "(progn
-                 (require 'emacs-mcp-cider nil t)
-                 (if (fboundp 'emacs-mcp-cider-list-sessions)
-                     (json-encode (emacs-mcp-cider-list-sessions))
-                   (json-encode (list))))"
+  (let [elisp (el/require-and-call-json 'emacs-mcp-cider 'emacs-mcp-cider-list-sessions)
         {:keys [success result error]} (ec/eval-elisp elisp)]
     (if success
       (mcp-success result)
@@ -496,13 +476,8 @@
   "Evaluate Clojure code in a specific named CIDER session."
   [{:keys [session_name code]}]
   (log/info "cider-eval-session" {:session session_name :code-length (count code)})
-  (let [elisp (format "(progn
-                         (require 'emacs-mcp-cider nil t)
-                         (if (fboundp 'emacs-mcp-cider-eval-in-session)
-                             (emacs-mcp-cider-eval-in-session %s %s)
-                           (error \"emacs-mcp-cider not loaded\")))"
-                      (pr-str session_name)
-                      (pr-str code))
+  (let [elisp (el/require-and-call-text 'emacs-mcp-cider 'emacs-mcp-cider-eval-in-session
+                                        session_name code)
         {:keys [success result error]} (ec/eval-elisp elisp)]
     (if success
       (mcp-success result)
@@ -512,13 +487,8 @@
   "Kill a specific named CIDER session."
   [{:keys [session_name]}]
   (log/info "cider-kill-session" {:session session_name})
-  (let [elisp (format "(progn
-                         (require 'emacs-mcp-cider nil t)
-                         (if (fboundp 'emacs-mcp-cider-kill-session)
-                             (progn (emacs-mcp-cider-kill-session %s) \"killed\")
-                           (error \"emacs-mcp-cider not loaded\")))"
-                      (pr-str session_name))
-        {:keys [success result error]} (ec/eval-elisp elisp)]
+  (let [elisp (el/require-and-call 'emacs-mcp-cider 'emacs-mcp-cider-kill-session session_name)
+        {:keys [success error]} (ec/eval-elisp elisp)]
     (if success
       (mcp-success (format "Session '%s' killed" session_name))
       (mcp-error (format "Error: %s" error)))))
@@ -527,12 +497,8 @@
   "Kill all CIDER sessions."
   [_]
   (log/info "cider-kill-all-sessions")
-  (let [elisp "(progn
-                 (require 'emacs-mcp-cider nil t)
-                 (if (fboundp 'emacs-mcp-cider-kill-all-sessions)
-                     (progn (emacs-mcp-cider-kill-all-sessions) \"all sessions killed\")
-                   (error \"emacs-mcp-cider not loaded\")))"
-        {:keys [success result error]} (ec/eval-elisp elisp)]
+  (let [elisp (el/require-and-call 'emacs-mcp-cider 'emacs-mcp-cider-kill-all-sessions)
+        {:keys [success error]} (ec/eval-elisp elisp)]
     (if success
       (mcp-success "All CIDER sessions killed")
       (mcp-error (format "Error: %s" error)))))
