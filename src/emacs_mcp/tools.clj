@@ -12,6 +12,8 @@
             [emacs-mcp.prompt-capture :as prompt-capture]
             [emacs-mcp.chroma :as chroma]
             [clojure.data.json :as json]
+            [clojure.java.shell :as shell]
+            [clojure.string :as str]
             [taoensso.timbre :as log]))
 
 ;; =============================================================================
@@ -353,6 +355,53 @@
   (if (emacs-mcp-el-available?)
     (let [days-val (or days 7)
           elisp (el/require-and-call-json "emacs-mcp-api" "emacs-mcp-api-memory-expiring-soon" days-val)
+          {:keys [success result error]} (ec/eval-elisp elisp)]
+      (if success
+        {:type "text" :text result}
+        {:type "text" :text (str "Error: " error) :isError true}))
+    {:type "text" :text "Error: emacs-mcp.el is not loaded." :isError true}))
+
+(defn handle-mcp-memory-log-access
+  "Log access to a memory entry.
+   Increments access-count and updates last-accessed timestamp."
+  [{:keys [id]}]
+  (log/info "mcp-memory-log-access:" id)
+  (if (emacs-mcp-el-available?)
+    (let [elisp (el/require-and-call-json "emacs-mcp-memory"
+                                          "emacs-mcp-memory-log-access"
+                                          id)
+          {:keys [success result error]} (ec/eval-elisp elisp)]
+      (if success
+        {:type "text" :text result}
+        {:type "text" :text (str "Error: " error) :isError true}))
+    {:type "text" :text "Error: emacs-mcp.el is not loaded." :isError true}))
+
+(defn handle-mcp-memory-feedback
+  "Submit helpfulness feedback for a memory entry.
+   feedback should be 'helpful' or 'unhelpful'."
+  [{:keys [id feedback]}]
+  (log/info "mcp-memory-feedback:" id feedback)
+  (if (emacs-mcp-el-available?)
+    (let [fn-name (case feedback
+                    "helpful" "emacs-mcp-memory-mark-helpful"
+                    "unhelpful" "emacs-mcp-memory-mark-unhelpful"
+                    (throw (ex-info "Invalid feedback type" {:feedback feedback})))
+          elisp (el/require-and-call-json "emacs-mcp-memory" fn-name id)
+          {:keys [success result error]} (ec/eval-elisp elisp)]
+      (if success
+        {:type "text" :text result}
+        {:type "text" :text (str "Error: " error) :isError true}))
+    {:type "text" :text "Error: emacs-mcp.el is not loaded." :isError true}))
+
+(defn handle-mcp-memory-helpfulness-ratio
+  "Get helpfulness ratio for a memory entry.
+   Returns helpful/(helpful+unhelpful) or null if no feedback."
+  [{:keys [id]}]
+  (log/info "mcp-memory-helpfulness-ratio:" id)
+  (if (emacs-mcp-el-available?)
+    (let [elisp (el/require-and-call-json "emacs-mcp-memory"
+                                          "emacs-mcp-memory-helpfulness-ratio"
+                                          id)
           {:keys [success result error]} (ec/eval-elisp elisp)]
       (if success
         {:type "text" :text result}
@@ -979,6 +1028,227 @@
         {:type "text" :text result}
         {:type "text" :text (str "Error: " error) :isError true}))
     {:type "text" :text "emacs-mcp-swarm addon not loaded." :isError true}))
+
+;; ============================================================
+;; JVM Process Cleanup (for swarm garbage collection)
+;; ============================================================
+
+(defn parse-jvm-process-line
+  "Parse a ps output line into a process map."
+  [line]
+  (let [parts (str/split (str/trim line) #"\s+" 5)]
+    (when (>= (count parts) 5)
+      {:pid (first parts)
+       :cpu (second parts)
+       :mem (nth parts 2)
+       :etime (nth parts 3)
+       :cmd (nth parts 4)})))
+
+(defn parse-etime-to-minutes
+  "Parse elapsed time (format: [[DD-]HH:]MM:SS) to minutes."
+  [etime]
+  (try
+    (let [parts (str/split etime #"[-:]")
+          nums (map #(Integer/parseInt %) parts)]
+      (case (count nums)
+        2 (first nums) ; MM:SS -> minutes
+        3 (+ (* 60 (first nums)) (second nums)) ; HH:MM:SS -> minutes
+        4 (+ (* 24 60 (first nums)) (* 60 (second nums)) (nth nums 2)) ; DD-HH:MM:SS
+        0))
+    (catch Exception _ 0)))
+
+(defn find-jvm-processes
+  "Find all JVM processes with their details including parent info."
+  []
+  (try
+    (let [result (shell/sh "ps" "-eo" "pid,ppid,pcpu,pmem,etime,args" "--no-headers")
+          lines (str/split-lines (:out result))
+          jvm-lines (filter #(re-find #"java" %) lines)]
+      (keep (fn [line]
+              (let [parts (str/split (str/trim line) #"\s+" 6)]
+                (when (>= (count parts) 6)
+                  {:pid (nth parts 0)
+                   :ppid (nth parts 1)
+                   :cpu (nth parts 2)
+                   :mem (nth parts 3)
+                   :etime (nth parts 4)
+                   :cmd (nth parts 5)})))
+            jvm-lines))
+    (catch Exception e
+      (log/error "Error finding JVM processes:" (.getMessage e))
+      [])))
+
+(defn get-all-process-parents
+  "Get pid->{:ppid :comm} map for all processes in ONE ps call. Efficient!"
+  []
+  (try
+    (let [result (shell/sh "ps" "-eo" "pid,ppid,comm" "--no-headers")
+          lines (str/split-lines (:out result))]
+      (into {}
+            (keep (fn [line]
+                    (let [parts (str/split (str/trim line) #"\s+" 3)]
+                      (when (= 3 (count parts))
+                        [(first parts) {:ppid (second parts) :comm (nth parts 2)}])))
+                  lines)))
+    (catch Exception _ {})))
+
+(defn enrich-with-parent-info
+  "Enrich process with parent info from pre-fetched map."
+  [proc all-parents]
+  (let [ppid (:ppid proc)
+        parent (get all-parents ppid)
+        parent-alive (boolean parent)
+        parent-comm (:comm parent)
+        is-init (= "1" ppid)
+        is-claude (= "claude" parent-comm)
+        truly-orphaned (or (not parent-alive) is-init)]
+    (assoc proc
+           :parent-alive parent-alive
+           :parent-comm parent-comm
+           :parent-is-claude is-claude
+           :truly-orphaned truly-orphaned)))
+
+(defn get-process-swarm-info
+  "Get swarm environment variables from /proc/<pid>/environ.
+   Returns nil if not a swarm-spawned process, or a map with swarm info."
+  [pid]
+  (try
+    (let [environ-file (str "/proc/" pid "/environ")
+          content (slurp environ-file)
+          ;; environ file has null-separated entries
+          entries (str/split content #"\x00")
+          env-map (into {} (keep #(let [parts (str/split % #"=" 2)]
+                                    (when (= 2 (count parts))
+                                      [(first parts) (second parts)]))
+                                 entries))
+          slave-id (get env-map "CLAUDE_SWARM_SLAVE_ID")
+          master-id (get env-map "CLAUDE_SWARM_MASTER")
+          depth (get env-map "CLAUDE_SWARM_DEPTH")]
+      (when (or slave-id master-id depth)
+        {:swarm-slave-id slave-id
+         :swarm-master-id master-id
+         :swarm-depth (when depth (try (Integer/parseInt depth) (catch Exception _ nil)))}))
+    (catch Exception _
+      ;; Can't read environ (permission denied or process gone)
+      nil)))
+
+(defn classify-jvm-process
+  "Classify a JVM process by type and swarm status (parent info added separately)."
+  [{:keys [cmd pid] :as proc}]
+  (let [swarm-info (get-process-swarm-info pid)
+        proc-type (cond
+                    (re-find #"shadow-cljs|shadow\.cljs" cmd) :shadow-cljs
+                    (re-find #"emacs-mcp|emacs_mcp" cmd) :emacs-mcp
+                    (re-find #"clojure-mcp|clj-mcp" cmd) :clojure-mcp
+                    (re-find #"nrepl" cmd) :nrepl
+                    (re-find #"leiningen" cmd) :leiningen
+                    :else :other)]
+    (-> proc
+        (assoc :type proc-type)
+        (assoc :swarm-spawned (boolean swarm-info))
+        (merge swarm-info))))
+
+(defn handle-jvm-cleanup
+  "Find and optionally kill orphaned JVM processes.
+
+   TRUE ORPHAN DETECTION:
+   - Parent process is dead (not running)
+   - Parent is PID 1 (reparented to init/systemd)
+   
+   EFFICIENT: Uses only 2 ps calls total (not O(n) per process).
+   
+   Keeps processes whose parent is a living Claude session."
+  [{:keys [min_age_minutes dry_run keep_types swarm_only true_orphans_only]}]
+  (try
+    (let [min-age (or min_age_minutes 30)
+          dry-run (if (nil? dry_run) true dry_run)
+          keep-types-set (set (or keep_types ["shadow-cljs" "leiningen"]))
+          swarm-only (boolean swarm_only)
+          true-orphans-only (if (nil? true_orphans_only) true true_orphans_only)
+
+          ;; EFFICIENT: Get all parent info in ONE call
+          all-parents (get-all-process-parents)
+
+          ;; Get JVM processes and classify
+          all-procs (find-jvm-processes)
+          classified (->> all-procs
+                          (map classify-jvm-process)
+                          (map #(enrich-with-parent-info % all-parents)))
+
+          ;; Filter to swarm-only if requested
+          working-procs (if swarm-only
+                          (filter :swarm-spawned classified)
+                          classified)
+
+          ;; Swarm statistics
+          swarm-procs (filter :swarm-spawned classified)
+          by-slave (group-by :swarm-slave-id swarm-procs)
+
+          ;; Group by type
+          by-type (group-by :type working-procs)
+
+          ;; Identify orphans based on detection mode
+          identify-orphans (fn [procs]
+                             (map (fn [p]
+                                    (let [age (parse-etime-to-minutes (:etime p))
+                                          protected-type (contains? keep-types-set (name (:type p)))
+                                          truly-orphaned (:truly-orphaned p)
+                                          age-orphaned (>= age min-age)
+                                          is-orphan (cond
+                                                      protected-type false
+                                                      true-orphans-only truly-orphaned
+                                                      :else (and truly-orphaned age-orphaned))
+                                          reason (cond
+                                                   protected-type "protected-type"
+                                                   truly-orphaned (str "truly-orphaned (parent: "
+                                                                       (or (:parent-comm p) "dead") ")")
+                                                   (:parent-is-claude p) (str "managed-by-claude (ppid: "
+                                                                              (:ppid p) ")")
+                                                   :else (str "has-parent: " (:parent-comm p)))]
+                                      (assoc p
+                                             :orphan is-orphan
+                                             :age-minutes age
+                                             :reason reason)))
+                                  procs))
+
+          all-classified (identify-orphans working-procs)
+          orphans (filter :orphan all-classified)
+          managed (filter :parent-is-claude all-classified)
+
+          ;; Kill orphans if not dry run
+          killed-pids (when (and (not dry-run) (seq orphans))
+                        (doseq [{:keys [pid]} orphans]
+                          (try
+                            (shell/sh "kill" pid)
+                            (catch Exception e
+                              (log/warn "Failed to kill PID" pid ":" (.getMessage e)))))
+                        (map :pid orphans))
+
+          summary {:total-jvm-processes (count all-procs)
+                   :by-type (into {} (map (fn [[k v]] [(name k) (count v)]) by-type))
+                   :swarm {:total-swarm-spawned (count swarm-procs)
+                           :by-slave (into {} (map (fn [[k v]]
+                                                     [(or k "unknown")
+                                                      {:count (count v)
+                                                       :pids (map :pid v)}])
+                                                   by-slave))}
+                   :orphan-detection {:mode (if true-orphans-only "true-orphans" "age-based")
+                                      :truly-orphaned-count (count (filter :truly-orphaned all-classified))
+                                      :managed-by-claude (count managed)}
+                   :orphans-found (count orphans)
+                   :orphan-pids (map :pid orphans)
+                   :dry-run dry-run
+                   :swarm-only-mode swarm-only
+                   :killed (if dry-run [] (or killed-pids []))
+                   :min-age-threshold min-age
+                   :details (map #(select-keys % [:pid :ppid :type :etime :orphan :reason :age-minutes
+                                                  :truly-orphaned :parent-alive :parent-comm :parent-is-claude
+                                                  :swarm-spawned :swarm-slave-id :swarm-master-id :swarm-depth])
+                                 all-classified)}]
+
+      (mcp-json summary))
+    (catch Exception e
+      (mcp-error (str "Error during JVM cleanup: " (.getMessage e))))))
 
 ;; ============================================================
 ;; org-clj Native Org-Mode Tools
@@ -1688,6 +1958,22 @@
                                          :description "The prompt to broadcast to all slaves"}}
                   :required ["prompt"]}
     :handler handle-swarm-broadcast}
+
+   ;; JVM Process Cleanup (for swarm garbage collection)
+   {:name "jvm_cleanup"
+    :description "Find and optionally kill orphaned JVM processes. Detects swarm-spawned processes via CLAUDE_SWARM_* environment variables. Useful after swarm sessions to garbage collect spawned MCP servers. By default runs in dry-run mode. Strategy: keeps the newest process of each type (shadow-cljs, emacs-mcp, etc.) and marks older processes above the age threshold as orphans."
+    :inputSchema {:type "object"
+                  :properties {"min_age_minutes" {:type "integer"
+                                                  :description "Minimum age in minutes for a process to be considered orphaned (default: 30)"}
+                               "dry_run" {:type "boolean"
+                                          :description "If true (default), only report orphans without killing them. Set to false to actually kill orphaned processes."}
+                               "keep_types" {:type "array"
+                                             :items {:type "string"}
+                                             :description "Process types to always keep (default: [\"shadow-cljs\", \"leiningen\"]). Valid types: shadow-cljs, emacs-mcp, clojure-mcp, nrepl, leiningen, other"}
+                               "swarm_only" {:type "boolean"
+                                             :description "If true, only consider processes spawned by swarm slaves (those with CLAUDE_SWARM_* env vars). Useful for targeted cleanup of ling-spawned JVMs."}}
+                  :required []}
+    :handler handle-jvm-cleanup}
 
    ;; org-clj Native Org-Mode Tools (no elisp dependency)
    {:name "org_clj_parse"
