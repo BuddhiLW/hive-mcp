@@ -18,6 +18,7 @@
 ;;; Code:
 
 (require 'emacs-mcp-memory)
+(require 'emacs-mcp-kanban)
 (require 'emacs-mcp-context)
 (require 'emacs-mcp-graceful)
 
@@ -433,11 +434,76 @@ Returns position if found, nil otherwise."
   (list
    :version emacs-mcp-api-version
    :capabilities '("context" "memory" "conversation" "workflows" "triggers"
-                   "interaction" "navigation" "visual-feedback")
+                   "interaction" "navigation" "visual-feedback" "kanban")
    :memory-types '("note" "snippet" "convention" "decision" "conversation")
    :memory-durations '("session" "short-term" "long-term" "permanent")
+   :kanban-statuses '("todo" "doing" "review" "done")
+   :kanban-priorities '("high" "medium" "low")
    :workflow-step-types '("elisp" "shell" "prompt" "confirm" "condition"
                           "memory-add" "notify")))
+
+;;;; In-Memory Kanban API:
+
+(defun emacs-mcp-api-kanban-create (title &optional priority context)
+  "API: Create kanban task with TITLE.
+PRIORITY is optional (default: medium). Valid: high, medium, low.
+CONTEXT is optional notes.
+Returns created entry as alist."
+  (emacs-mcp-with-fallback
+      (let ((entry (emacs-mcp-kanban-task-create title priority context)))
+        (emacs-mcp-api--plist-to-alist entry))
+    `((error . "kanban-create-failed") (title . ,title))))
+
+(defun emacs-mcp-api-kanban-list (&optional status)
+  "API: List kanban tasks.
+STATUS filters by todo/doing/review. If nil, returns all tasks.
+Returns vector of alists."
+  (emacs-mcp-with-fallback
+      (let ((entries (if status
+                         (emacs-mcp-kanban-list-by-status status)
+                       (emacs-mcp-kanban-list-all))))
+        (emacs-mcp-api--convert-entries entries))
+    []))
+
+(defun emacs-mcp-api-kanban-move (task-id new-status)
+  "API: Move task TASK-ID to NEW-STATUS.
+Valid statuses: todo, doing, review, done.
+If moved to done, task is DELETED.
+Returns updated entry as alist, or ((deleted . t)) if done."
+  (emacs-mcp-with-fallback
+      (let ((result (emacs-mcp-kanban-task-move task-id new-status)))
+        (if (eq result t)
+            '((deleted . t) (status . "done"))
+          (emacs-mcp-api--plist-to-alist result)))
+    `((error . "kanban-move-failed") (task_id . ,task-id))))
+
+(defun emacs-mcp-api-kanban-delete (task-id)
+  "API: Delete task TASK-ID.
+Returns ((deleted . t)) on success, ((deleted . :false)) if not found."
+  (emacs-mcp-with-fallback
+      (if (emacs-mcp-kanban-task-delete task-id)
+          '((deleted . t))
+        '((deleted . :false)))
+    `((error . "kanban-delete-failed") (task_id . ,task-id))))
+
+(defun emacs-mcp-api-kanban-stats ()
+  "API: Get task counts by status.
+Returns alist with todo, doing, review counts."
+  (emacs-mcp-with-fallback
+      (let ((stats (emacs-mcp-kanban-stats)))
+        `((todo . ,(plist-get stats :todo))
+          (doing . ,(plist-get stats :doing))
+          (review . ,(plist-get stats :review))))
+    '((error . "kanban-stats-failed"))))
+
+(defun emacs-mcp-api-kanban-update (task-id &optional title priority context)
+  "API: Update task TASK-ID with new TITLE, PRIORITY, or CONTEXT.
+Only provided fields are updated.
+Returns updated entry as alist."
+  (emacs-mcp-with-fallback
+      (let ((entry (emacs-mcp-kanban-task-update task-id title priority context)))
+        (emacs-mcp-api--plist-to-alist entry))
+    `((error . "kanban-update-failed") (task_id . ,task-id))))
 
 (provide 'emacs-mcp-api)
 ;;; emacs-mcp-api.el ends here

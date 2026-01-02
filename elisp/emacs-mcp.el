@@ -4,7 +4,7 @@
 
 ;; Author: Pedro G. Branquinho <pedrogbranquinho@gmail.com>
 ;; Maintainer: Pedro G. Branquinho <pedrogbranquinho@gmail.com>
-;; Version: 0.4.0
+;; Version: 0.5.1
 ;; Package-Requires: ((emacs "28.1") (transient "0.4.0"))
 ;; Keywords: tools, ai, convenience
 ;; URL: https://github.com/BuddhiLW/emacs-mcp
@@ -82,6 +82,7 @@ and enables auto-loading for feature-triggered addons."
 ;;; Require submodules
 
 (require 'emacs-mcp-memory)
+(require 'emacs-mcp-kanban)
 (require 'emacs-mcp-context)
 (require 'emacs-mcp-triggers)
 (require 'emacs-mcp-workflows)

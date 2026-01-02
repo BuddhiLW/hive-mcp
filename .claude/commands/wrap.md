@@ -48,17 +48,30 @@ mcp__emacs-mcp__mcp_memory_add
 
 ### 2. Sync with Kanbans
 
-**a) Check dynamic-kanban status:**
+**a) Sync In-Memory Kanban first:**
+```
+mcp__emacs-mcp__mcp_mem_kanban_stats
+mcp__emacs-mcp__mcp_mem_kanban_list status:"doing"
+```
+
+For each DOING task, ask user:
+- "Task X is DOING. Complete it?" → move to done (auto-deletes)
+- "Keep as DOING?" → leave as-is
+- "Move back to TODO?" → move to todo
+
+Include kanban stats in session summary.
+
+**b) Check dynamic-kanban status:**
 ```
 mcp__dynamic-kanban__kanban_status
 ```
 
-**b) For each task worked on today:**
+**c) For each task worked on today:**
 - Move completed tasks to `done`
 - Update in-progress tasks with notes
 - Add any new tasks discovered during implementation
 
-**c) Check vibe-kanban for project-level tasks:**
+**d) Check vibe-kanban for project-level tasks:**
 ```
 mcp__vibe_kanban__list_tasks
 ```

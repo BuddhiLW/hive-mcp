@@ -22,6 +22,7 @@
             [emacs-mcp.tools.core :as core]
             [emacs-mcp.tools.buffer :as buffer]
             [emacs-mcp.tools.memory :as memory]
+            [emacs-mcp.tools.memory-kanban :as mem-kanban]
             [emacs-mcp.tools.cider :as cider]
             [emacs-mcp.tools.magit :as magit]
             [emacs-mcp.tools.projectile :as projectile]
@@ -1522,6 +1523,7 @@
    modules without modifying this aggregation."
   (vec (concat buffer/tools
                memory/tools
+               mem-kanban/tools
                cider/tools
                magit/tools
                projectile/tools

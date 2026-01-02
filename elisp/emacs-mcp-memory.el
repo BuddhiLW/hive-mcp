@@ -413,7 +413,8 @@ Entries without :duration are treated as `long-term' for backwards compatibility
             (seq-filter
              (lambda (entry)
                (let ((entry-tags (plist-get entry :tags)))
-                 (seq-every-p (lambda (tag) (member tag entry-tags)) tags)))
+                 ;; Handle both list and vector tags (vectors from JSON)
+                 (seq-every-p (lambda (tag) (seq-contains-p entry-tags tag #'equal)) tags)))
              results)))
     ;; Filter by duration if provided
     (when duration

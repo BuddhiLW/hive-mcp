@@ -49,13 +49,26 @@ Read CLAUDE.md
 
 ### 3. Check Kanban Status
 
-**Dynamic Kanban:**
+**a) Load In-Memory Kanban first:**
+```
+mcp__emacs-mcp__mcp_mem_kanban_stats
+mcp__emacs-mcp__mcp_mem_kanban_list status:"doing"
+```
+
+Show DOING tasks as "In Progress" in the summary.
+
+Check for stale TODO tasks (> 5 days old):
+- Suggest promoting priority if still relevant
+- Suggest moving to DOING if ready to start
+- Suggest deleting if no longer relevant
+
+**b) Dynamic Kanban:**
 ```
 mcp__dynamic-kanban__kanban_status
 mcp__dynamic-kanban__kanban_get_ready_tasks
 ```
 
-**Vibe Kanban (if applicable):**
+**c) Vibe Kanban (if applicable):**
 ```
 mcp__vibe_kanban__list_tasks
 ```
