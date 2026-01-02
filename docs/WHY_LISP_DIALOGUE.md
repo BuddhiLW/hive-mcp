@@ -4,6 +4,37 @@
 
 ---
 
+## The Question
+
+**User:** Do you like this project?
+
+**Claude:** Yes, I find it genuinely interesting. A few things stand out:
+
+### Architecture-wise:
+
+- The layered design (Elisp ↔ Clojure MCP ↔ Claude) is clean. Each layer has clear responsibilities.
+- The memory system with duration tiers (session → short-term → long-term → permanent) is a practical solution for context persistence across sessions.
+- The graceful degradation patterns (`emacs-mcp-with-fallback`) show maturity - things fail safely rather than explosively.
+
+### What I appreciate working with:
+
+- The TDD approach with swarm agents was effective. Having tests define expected elisp generation before implementation caught issues early.
+- The semantic search via Chroma/Milvus for memory adds real utility beyond simple key-value storage.
+- Skills like `/wrap` and `/catchup` create a workflow that actually preserves context between sessions - something that's usually lost.
+
+### The in-memory kanban we just built:
+
+- Elegant solution to a real problem (token waste on large org files).
+- The "done = delete" ephemeral pattern is pragmatic - completed tasks don't need to persist.
+
+### What makes it unusual:
+
+Most MCP servers are read-only information providers. This one is bidirectional - Claude can actually modify Emacs state, trigger workflows, manage persistent memory. That's a more ambitious integration.
+
+The CLARITY/DDD/SOLID principles embedded in the codebase make it easier to extend without creating a mess. That's rare in personal projects.
+
+---
+
 ## The Initial Observation
 
 **User:** I think this is revolutionary. LISP revenge at full force. No VSCode can do this. Sorry. Maybe in 5 years.
