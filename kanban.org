@@ -354,6 +354,21 @@ PR #15 + #23 merged. Beamer and Reveal.js support with C4 diagram integration.
 :AGENT:    emacs-126582
 :SESSION:  20260101-215310
 :END:
+** TODO [S] Preset: Add byte-compile check before commit
+:PROPERTIES:
+:AGENT:    emacs-126582
+:SESSION:  20260101-225558
+:END:
+:PROPERTIES:
+:ID:       65fa8cc4-6633-4e71-80ef-31f53ce4fbd5
+:CREATED:  2026-01-01 22:55
+:DESCRIPTION: SIZE: S (small) | PRIORITY: P1 (quick win)
+
+Add byte-compile validation to TDD preset prompt. Before committing, ling must run (byte-compile-file) and fix any warnings. Catches quote escaping issues (#'fn → #\='fn), unused variables, missing declare-function.
+
+Implementation: Add to presets.el TDD template: "Before committing, run M-x byte-compile-file on all modified .el files. Fix any warnings before proceeding."
+:END:
+
 
 
 

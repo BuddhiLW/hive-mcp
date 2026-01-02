@@ -51,3 +51,17 @@ Examples:
 - Flaky tests (fix or delete them)
 - Slow tests in the fast feedback loop
 - Comments in tests (the test IS the documentation)
+
+## Before Commit (Elisp)
+
+For elisp files, **always byte-compile before committing**:
+
+```elisp
+(byte-compile-file "path/to/file.el")
+```
+
+Fix ALL warnings before commit:
+- Quote escaping: `#'fn` → `#\='fn` in docstrings
+- Unused variables: remove or prefix with `_`
+- Missing `declare-function` for external functions
+- Unbalanced parentheses
