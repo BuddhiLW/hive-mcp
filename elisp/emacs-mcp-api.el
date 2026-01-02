@@ -19,6 +19,7 @@
 
 (require 'emacs-mcp-memory)
 (require 'emacs-mcp-context)
+(require 'emacs-mcp-graceful)
 
 ;; Workflows loaded conditionally
 (declare-function emacs-mcp-workflow-list "emacs-mcp-workflows")
@@ -31,11 +32,20 @@
 
 (defun emacs-mcp-api-get-context ()
   "Return full context as JSON-compatible plist.
-Includes buffer, region, defun, project, git, and memory."
-  (let ((ctx (emacs-mcp-context-full)))
-    ;; Add memory context
-    (plist-put ctx :memory (emacs-mcp-memory-get-project-context))
-    ctx))
+Includes buffer, region, defun, project, git, and memory.
+Returns partial context on errors - never fails completely."
+  (emacs-mcp-with-fallback
+      (let ((ctx (emacs-mcp-context-full)))
+        ;; Add memory context with fallback
+        (plist-put ctx :memory
+                   (emacs-mcp-with-fallback
+                       (emacs-mcp-memory-get-project-context)
+                     nil))
+        ctx)
+    ;; Complete fallback: minimal context
+    (list :error "context-unavailable"
+          :buffer (buffer-name)
+          :point (point))))
 
 (defun emacs-mcp-api-get-buffer-context ()
   "Return current buffer context."
@@ -100,9 +110,12 @@ TYPE is a string: \"note\", \"snippet\", \"convention\", \"decision\",
 or \"conversation\".
 TAGS is a list of strings.
 LIMIT is max results (default 20).
-Returns a vector of alists suitable for JSON encoding."
-  (let ((results (emacs-mcp-memory-query (intern type) tags nil (or limit 20))))
-    (emacs-mcp-api--convert-entries results)))
+Returns a vector of alists suitable for JSON encoding.
+Returns empty vector on error."
+  (emacs-mcp-with-fallback
+      (let ((results (emacs-mcp-memory-query (intern type) tags nil (or limit 20))))
+        (emacs-mcp-api--convert-entries results))
+    []))
 
 (defun emacs-mcp-api-memory-add (type content &optional tags duration)
   "Add entry to project memory.
@@ -110,10 +123,13 @@ TYPE is a string: \"note\", \"snippet\", \"convention\", \"decision\".
 CONTENT is the entry content (string or plist).
 TAGS is optional list of strings.
 DURATION is optional string: \"session\", \"short-term\", \"long-term\", \"permanent\".
-Returns the created entry as alist suitable for JSON encoding."
-  (let ((entry (emacs-mcp-memory-add (intern type) content tags nil
-                                     (when duration (intern duration)))))
-    (emacs-mcp-api--plist-to-alist entry)))
+Returns the created entry as alist suitable for JSON encoding.
+Returns error alist on failure."
+  (emacs-mcp-with-fallback
+      (let ((entry (emacs-mcp-memory-add (intern type) content tags nil
+                                         (when duration (intern duration)))))
+        (emacs-mcp-api--plist-to-alist entry))
+    '((error . "memory-add-failed") (type . nil) (id . nil))))
 
 (defun emacs-mcp-api-memory-get (id)
   "Get memory entry by ID."
@@ -254,10 +270,13 @@ LIMIT defaults to 20 entries."
     '()))
 
 (defun emacs-mcp-api-run-workflow (name &optional args)
-  "Run workflow by NAME with optional ARGS plist."
-  (if (fboundp 'emacs-mcp-workflow-run)
-      (emacs-mcp-workflow-run name args)
-    (error "Workflows not available")))
+  "Run workflow by NAME with optional ARGS plist.
+Returns error alist on failure instead of signaling."
+  (emacs-mcp-with-fallback
+      (if (fboundp 'emacs-mcp-workflow-run)
+          (emacs-mcp-workflow-run name args)
+        '((error . "workflows-not-available")))
+    '((error . "workflow-execution-failed") (workflow . name))))
 
 (defun emacs-mcp-api-register-workflow (name spec)
   "Register a new workflow.
@@ -315,12 +334,16 @@ Returns the selected option."
 ;;;; Buffer and File Operations API:
 
 (defun emacs-mcp-api-open-file (path &optional line)
-  "Open file at PATH and optionally go to LINE."
-  (find-file path)
-  (when line
-    (goto-char (point-min))
-    (forward-line (1- line)))
-  t)
+  "Open file at PATH and optionally go to LINE.
+Returns t on success, error alist on failure."
+  (emacs-mcp-with-fallback
+      (progn
+        (find-file path)
+        (when line
+          (goto-char (point-min))
+          (forward-line (1- line)))
+        t)
+    `((error . "file-open-failed") (path . ,path))))
 
 (defun emacs-mcp-api-save-buffer ()
   "Save current buffer."

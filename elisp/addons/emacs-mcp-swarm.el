@@ -63,6 +63,7 @@
 (require 'cl-lib)
 (require 'json)
 (require 'subr-x)
+(require 'emacs-mcp-graceful)
 
 ;; Soft dependency on vterm
 (declare-function vterm "vterm")
@@ -768,40 +769,57 @@ Otherwise return aggregate status."
 ;;;; API for MCP Tools:
 
 (defun emacs-mcp-swarm-api-spawn (name presets &optional cwd terminal)
-  "API: Spawn slave NAME with PRESETS in CWD using TERMINAL backend."
-  (emacs-mcp-swarm-spawn name :presets presets :cwd cwd 
-                         :terminal (when terminal (intern terminal))))
+  "API: Spawn slave NAME with PRESETS in CWD using TERMINAL backend.
+Returns slave-id on success, or error plist on failure."
+  (emacs-mcp-with-fallback
+      (emacs-mcp-swarm-spawn name :presets presets :cwd cwd
+                             :terminal (when terminal (intern terminal)))
+    `(:error "spawn-failed" :name ,name :reason "unknown")))
 
 (defun emacs-mcp-swarm-api-dispatch (slave-id prompt &optional timeout-ms)
-  "API: Dispatch PROMPT to SLAVE-ID with TIMEOUT-MS."
-  (emacs-mcp-swarm-dispatch slave-id prompt :timeout timeout-ms))
+  "API: Dispatch PROMPT to SLAVE-ID with TIMEOUT-MS.
+Returns task-id on success, or error plist on failure."
+  (emacs-mcp-with-fallback
+      (emacs-mcp-swarm-dispatch slave-id prompt :timeout timeout-ms)
+    `(:error "dispatch-failed" :slave-id ,slave-id :reason "unknown")))
 
 (defun emacs-mcp-swarm-api-status ()
   "API: Get swarm status as JSON-serializable plist."
   (emacs-mcp-swarm-status))
 
 (defun emacs-mcp-swarm-api-collect (task-id &optional timeout-ms)
-  "API: Collect result for TASK-ID with optional TIMEOUT-MS."
-  (let ((task (emacs-mcp-swarm-collect task-id timeout-ms)))
-    `(:task-id ,(plist-get task :task-id)
-      :status ,(symbol-name (plist-get task :status))
-      :result ,(plist-get task :result)
-      :error ,(plist-get task :error))))
+  "API: Collect result for TASK-ID with optional TIMEOUT-MS.
+Returns task plist with status/result/error. Never fails."
+  (emacs-mcp-with-fallback
+      (let ((task (emacs-mcp-swarm-collect task-id timeout-ms)))
+        `(:task-id ,(plist-get task :task-id)
+          :status ,(symbol-name (plist-get task :status))
+          :result ,(plist-get task :result)
+          :error ,(plist-get task :error)))
+    `(:task-id ,task-id :status "error" :result nil
+      :error "collection-failed")))
 
 (defun emacs-mcp-swarm-api-list-presets ()
   "API: List available presets."
   (emacs-mcp-swarm-list-presets))
 
 (defun emacs-mcp-swarm-api-kill (slave-id)
-  "API: Kill SLAVE-ID."
-  (emacs-mcp-swarm-kill slave-id)
-  `(:killed ,slave-id))
+  "API: Kill SLAVE-ID.
+Returns result plist. Never fails."
+  (emacs-mcp-with-fallback
+      (progn
+        (emacs-mcp-swarm-kill slave-id)
+        `(:killed ,slave-id))
+    `(:error "kill-failed" :slave-id ,slave-id)))
 
 (defun emacs-mcp-swarm-api-kill-all ()
-  "API: Kill all slaves."
-  (let ((count (hash-table-count emacs-mcp-swarm--slaves)))
-    (emacs-mcp-swarm-kill-all)
-    `(:killed-count ,count)))
+  "API: Kill all slaves.
+Returns result plist. Never fails."
+  (emacs-mcp-with-fallback
+      (let ((count (hash-table-count emacs-mcp-swarm--slaves)))
+        (emacs-mcp-swarm-kill-all)
+        `(:killed-count ,count))
+    `(:error "kill-all-failed" :killed-count 0)))
 
 ;;;; Transient Menu:
 
