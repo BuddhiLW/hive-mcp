@@ -502,6 +502,36 @@ To avoid confusion when discussing MCP servers at multiple levels:
 
 4. **The map ≠ territory**: The *name* "clojure-mcp" refers to its *target domain* (Clojure development), not its implementation language.
 
+## Why Lisp?
+
+> **User:** "I think this is revolutionary. LISP revenge at full force. No VSCode can do this. Maybe in 5 years."
+>
+> **Claude:** "5 years? Maybe. But they'd have to reinvent Lisp to get there."
+>
+> **User:** "Sheesh, sharp as a knife lmao"
+
+Every time someone tries to make a "programmable editor" they end up building:
+
+- A configuration language (that becomes Turing complete)
+- A plugin system (that needs lifecycle hooks)
+- An eval mechanism (for "dynamic" features)
+- A REPL (for debugging plugins)
+
+...and at that point you've just built a worse Lisp with different syntax.
+
+**McCarthy figured this out in 1958.** The industry has been speedrunning towards rediscovering it ever since.
+
+The difference with Emacs:
+
+| VSCode | Emacs |
+|--------|-------|
+| Extension API → LSP → JSON-RPC → Sandbox | `(eval elisp)` → done |
+| Security benefit, creativity constraint | Everything is data, no boundaries |
+
+Lisp was dismissed as "academic" for decades. Now LLMs need exactly what Lisp provides—homoiconicity, runtime metaprogramming, data-as-code. The "weird" features are suddenly the killer features.
+
+**Enjoy the head start.** 🎯
+
 ## Documentation
 
 | Document | Description |
