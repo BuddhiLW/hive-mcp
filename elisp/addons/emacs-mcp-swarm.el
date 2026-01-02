@@ -566,15 +566,21 @@ Returns the slave-id."
       default-directory))
 
 (defun emacs-mcp-swarm-kill (slave-id)
-  "Kill slave SLAVE-ID."
+  "Kill slave SLAVE-ID without prompts.
+Force-kills the buffer to prevent blocking on process/unsaved prompts."
   (interactive
    (list (completing-read "Kill slave: "
                           (hash-table-keys emacs-mcp-swarm--slaves))))
   (when-let* ((slave (gethash slave-id emacs-mcp-swarm--slaves)))
     (let ((buffer (plist-get slave :buffer)))
       (when (buffer-live-p buffer)
-        (kill-buffer buffer)))
+        ;; Force kill without any confirmation prompts
+        ;; This prevents Emacs from blocking on "Buffer has running process" etc.
+        (let ((kill-buffer-query-functions nil)
+              (kill-buffer-hook nil))
+          (kill-buffer buffer))))
     (remhash slave-id emacs-mcp-swarm--slaves)
+    (remhash slave-id emacs-mcp-swarm--last-approve-positions)
     (message "Killed slave: %s" slave-id)))
 
 (defun emacs-mcp-swarm-kill-all ()
