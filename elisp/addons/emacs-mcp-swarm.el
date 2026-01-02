@@ -177,6 +177,30 @@ is non-nil, automatically send 'y' to approve."
   :type '(repeat string)
   :group 'emacs-mcp-swarm)
 
+(defcustom emacs-mcp-swarm-prompt-mode 'bypass
+  "How to handle permission prompts in slaves.
+- `bypass': Use --permission-mode bypassPermissions (no prompts)
+- `auto': Timer-based auto-approve (legacy behavior)
+- `human': Forward prompts to master for human decision"
+  :type '(choice (const :tag "Bypass permissions (CLI flag)" bypass)
+                 (const :tag "Auto-approve (timer)" auto)
+                 (const :tag "Human decision (hooks)" human))
+  :group 'emacs-mcp-swarm)
+
+(defcustom emacs-mcp-swarm-prompt-notify t
+  "If non-nil, show notification when prompts are pending in human mode."
+  :type 'boolean
+  :group 'emacs-mcp-swarm)
+
+(defcustom emacs-mcp-swarm-desktop-notify t
+  "If non-nil, send desktop notification via notify-send for prompts.
+This alerts the human even when running master Claude in a terminal."
+  :type 'boolean
+  :group 'emacs-mcp-swarm)
+
+(defvar emacs-mcp-swarm-prompts-buffer-name "*Swarm Prompts*"
+  "Buffer name for displaying pending prompts.")
+
 (defcustom emacs-mcp-swarm-prompt-marker "❯"
   "Marker indicating Claude is ready for input."
   :type 'string
@@ -219,6 +243,10 @@ is non-nil, automatically send 'y' to approve."
 (defvar emacs-mcp-swarm--last-approve-positions (make-hash-table :test 'equal)
   "Hash of slave-id -> last checked position to avoid re-approving.")
 
+(defvar emacs-mcp-swarm--pending-prompts nil
+  "List of pending prompts awaiting human decision.
+Each entry is a plist: (:slave-id ID :prompt TEXT :buffer BUF :timestamp TIME)")
+
 ;;;; Auto-Approve Watcher:
 
 (defun emacs-mcp-swarm--check-for-prompts (buffer)
@@ -258,21 +286,32 @@ is non-nil, automatically send 'y' to approve."
                             (eat-term-send-string eat-terminal "\r"))))))))))
 
 (defun emacs-mcp-swarm--auto-approve-tick ()
-  "Check all slave buffers for permission prompts and auto-approve."
-  (when emacs-mcp-swarm-auto-approve
-    (maphash
-     (lambda (slave-id slave)
-       (let* ((buffer (plist-get slave :buffer))
-              (term-type (or (plist-get slave :terminal) emacs-mcp-swarm-terminal))
-              (last-pos (gethash slave-id emacs-mcp-swarm--last-approve-positions 0)))
-         (when (and (buffer-live-p buffer)
-                    (eq (plist-get slave :status) 'working))
-           (let ((prompt-pos (emacs-mcp-swarm--check-for-prompts buffer)))
-             (when (and prompt-pos (> prompt-pos last-pos))
-               (message "[swarm] Auto-approving prompt in %s" slave-id)
-               (puthash slave-id prompt-pos emacs-mcp-swarm--last-approve-positions)
-               (emacs-mcp-swarm--send-approval buffer term-type))))))
-     emacs-mcp-swarm--slaves)))
+  "Check all slave buffers for permission prompts.
+Action depends on `emacs-mcp-swarm-prompt-mode':
+- bypass: do nothing (CLI handles it)
+- auto: auto-approve prompts
+- human: forward prompts to master for decision"
+  (pcase emacs-mcp-swarm-prompt-mode
+    ('bypass nil)  ; Nothing to do, CLI bypasses permissions
+    ('auto
+     ;; Legacy timer-based auto-approve
+     (when emacs-mcp-swarm-auto-approve
+       (maphash
+        (lambda (slave-id slave)
+          (let* ((buffer (plist-get slave :buffer))
+                 (term-type (or (plist-get slave :terminal) emacs-mcp-swarm-terminal))
+                 (last-pos (gethash slave-id emacs-mcp-swarm--last-approve-positions 0)))
+            (when (and (buffer-live-p buffer)
+                       (eq (plist-get slave :status) 'working))
+              (let ((prompt-pos (emacs-mcp-swarm--check-for-prompts buffer)))
+                (when (and prompt-pos (> prompt-pos last-pos))
+                  (message "[swarm] Auto-approving prompt in %s" slave-id)
+                  (puthash slave-id prompt-pos emacs-mcp-swarm--last-approve-positions)
+                  (emacs-mcp-swarm--send-approval buffer term-type))))))
+        emacs-mcp-swarm--slaves)))
+    ('human
+     ;; Forward prompts to master for human decision
+     (emacs-mcp-swarm--human-prompt-tick))))
 
 (defun emacs-mcp-swarm-start-auto-approve ()
   "Start the auto-approve watcher timer."
@@ -289,6 +328,163 @@ is non-nil, automatically send 'y' to approve."
     (cancel-timer emacs-mcp-swarm--auto-approve-timer)
     (setq emacs-mcp-swarm--auto-approve-timer nil)
     (message "[swarm] Auto-approve watcher stopped")))
+
+;;;; Human Mode - Prompt Hooks:
+
+(defun emacs-mcp-swarm--extract-prompt (buffer)
+  "Extract prompt text and position from BUFFER.
+Returns plist (:text TEXT :pos POS) or nil."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (save-excursion
+        (goto-char (point-max))
+        (let ((search-start (max (point-min) (- (point-max) 500))))
+          (when (re-search-backward
+                 (regexp-opt emacs-mcp-swarm-auto-approve-patterns)
+                 search-start t)
+            (let ((line-start (line-beginning-position))
+                  (line-end (line-end-position)))
+              (list :text (buffer-substring-no-properties line-start line-end)
+                    :pos (match-beginning 0)))))))))
+
+(defun emacs-mcp-swarm--display-prompt (slave-id prompt-text)
+  "Display PROMPT-TEXT from SLAVE-ID in the prompts buffer."
+  (let ((buf (get-buffer-create emacs-mcp-swarm-prompts-buffer-name)))
+    (with-current-buffer buf
+      (goto-char (point-max))
+      (insert (format "\n[%s] %s\n  %s\n"
+                      (format-time-string "%H:%M:%S")
+                      slave-id
+                      prompt-text))
+      (insert "  → Awaiting response (C-c m s y/n/p or MCP tool)\n"))
+    (display-buffer buf '(display-buffer-in-side-window
+                          (side . bottom)
+                          (slot . 0)
+                          (window-height . 8)))))
+
+(defun emacs-mcp-swarm--send-desktop-notification (title body)
+  "Send desktop notification with TITLE and BODY via notify-send."
+  (when (and emacs-mcp-swarm-desktop-notify
+             (executable-find "notify-send"))
+    (start-process "swarm-notify" nil "notify-send"
+                   "--urgency=critical"
+                   "--app-name=Swarm"
+                   title body)))
+
+(defun emacs-mcp-swarm--queue-prompt (slave-id prompt-text buffer)
+  "Add a prompt to the pending queue and notify user.
+Sends both Emacs message and desktop notification for immediate awareness."
+  (push (list :slave-id slave-id
+              :prompt prompt-text
+              :buffer buffer
+              :timestamp (current-time))
+        emacs-mcp-swarm--pending-prompts)
+  (emacs-mcp-swarm--display-prompt slave-id prompt-text)
+  ;; Emacs message
+  (when emacs-mcp-swarm-prompt-notify
+    (message "[swarm] Prompt from %s: %s"
+             slave-id
+             (truncate-string-to-width prompt-text 50)))
+  ;; Desktop notification (immediate hook - not polling!)
+  (emacs-mcp-swarm--send-desktop-notification
+   (format "🐝 Swarm Prompt: %s" slave-id)
+   (truncate-string-to-width prompt-text 100)))
+
+(defun emacs-mcp-swarm--update-prompts-buffer ()
+  "Refresh the prompts buffer with current pending prompts."
+  (when-let* ((buf (get-buffer emacs-mcp-swarm-prompts-buffer-name)))
+    (with-current-buffer buf
+      (erase-buffer)
+      (insert (format "=== Pending Swarm Prompts (%d) ===\n"
+                      (length emacs-mcp-swarm--pending-prompts)))
+      (if emacs-mcp-swarm--pending-prompts
+          (dolist (prompt (reverse emacs-mcp-swarm--pending-prompts))
+            (insert (format "\n[%s] %s\n  %s\n"
+                            (format-time-string "%H:%M:%S"
+                                                (plist-get prompt :timestamp))
+                            (plist-get prompt :slave-id)
+                            (plist-get prompt :prompt))))
+        (insert "\nNo pending prompts.\n")))))
+
+(defun emacs-mcp-swarm--human-prompt-tick ()
+  "Check all slave buffers for prompts in human mode."
+  (maphash
+   (lambda (slave-id slave)
+     (let* ((buffer (plist-get slave :buffer))
+            (last-pos (gethash slave-id emacs-mcp-swarm--last-approve-positions 0)))
+       (when (and (buffer-live-p buffer)
+                  (eq (plist-get slave :status) 'working))
+         (let ((prompt-info (emacs-mcp-swarm--extract-prompt buffer)))
+           (when (and prompt-info
+                      (> (plist-get prompt-info :pos) last-pos)
+                      ;; Not already in queue
+                      (not (cl-find slave-id emacs-mcp-swarm--pending-prompts
+                                    :key (lambda (p) (plist-get p :slave-id))
+                                    :test #'equal)))
+             (puthash slave-id (plist-get prompt-info :pos)
+                      emacs-mcp-swarm--last-approve-positions)
+             (emacs-mcp-swarm--queue-prompt
+              slave-id
+              (plist-get prompt-info :text)
+              buffer))))))
+   emacs-mcp-swarm--slaves))
+
+(defun emacs-mcp-swarm--send-response (buffer response)
+  "Send RESPONSE to slave BUFFER."
+  (when (buffer-live-p buffer)
+    (let ((term-type (with-current-buffer buffer
+                       (cond ((derived-mode-p 'vterm-mode) 'vterm)
+                             ((derived-mode-p 'eat-mode) 'eat)))))
+      (pcase term-type
+        ('vterm
+         (with-current-buffer buffer
+           (vterm-send-string response)
+           (sit-for 0.05)
+           (vterm-send-return)))
+        ('eat
+         (with-current-buffer buffer
+           (when (and (boundp 'eat-terminal) eat-terminal)
+             (eat-term-send-string eat-terminal response)
+             (eat-term-send-string eat-terminal "\r"))))))))
+
+(defun emacs-mcp-swarm-respond ()
+  "Respond to the next pending prompt interactively."
+  (interactive)
+  (if-let* ((prompt (car emacs-mcp-swarm--pending-prompts)))
+      (let* ((slave-id (plist-get prompt :slave-id))
+             (text (plist-get prompt :prompt))
+             (response (read-string (format "[%s] %s → " slave-id text))))
+        (pop emacs-mcp-swarm--pending-prompts)
+        (emacs-mcp-swarm--send-response (plist-get prompt :buffer) response)
+        (emacs-mcp-swarm--update-prompts-buffer)
+        (message "[swarm] Sent response to %s" slave-id))
+    (message "[swarm] No pending prompts")))
+
+(defun emacs-mcp-swarm-approve ()
+  "Approve (send \\='y\\=') to the next pending prompt."
+  (interactive)
+  (if-let* ((prompt (pop emacs-mcp-swarm--pending-prompts)))
+      (progn
+        (emacs-mcp-swarm--send-response (plist-get prompt :buffer) "y")
+        (emacs-mcp-swarm--update-prompts-buffer)
+        (message "[swarm] Approved: %s" (plist-get prompt :slave-id)))
+    (message "[swarm] No pending prompts")))
+
+(defun emacs-mcp-swarm-deny ()
+  "Deny (send \\='n\\=') to the next pending prompt."
+  (interactive)
+  (if-let* ((prompt (pop emacs-mcp-swarm--pending-prompts)))
+      (progn
+        (emacs-mcp-swarm--send-response (plist-get prompt :buffer) "n")
+        (emacs-mcp-swarm--update-prompts-buffer)
+        (message "[swarm] Denied: %s" (plist-get prompt :slave-id)))
+    (message "[swarm] No pending prompts")))
+
+(defun emacs-mcp-swarm-list-prompts ()
+  "List all pending prompts in the prompts buffer."
+  (interactive)
+  (emacs-mcp-swarm--update-prompts-buffer)
+  (display-buffer (get-buffer-create emacs-mcp-swarm-prompts-buffer-name)))
 
 ;;;; Preset Management:
 
@@ -521,24 +717,29 @@ Called async from `emacs-mcp-swarm-spawn'.  Updates slave status as work progres
     (setq buffer (generate-new-buffer buffer-name))
     (plist-put slave :buffer buffer)
 
-    (let ((default-directory work-dir)
-          (process-environment
-           (append
-            (list (format "CLAUDE_SWARM_DEPTH=%d" (plist-get slave :depth))
-                  (format "CLAUDE_SWARM_MASTER=%s" (or emacs-mcp-swarm--session-id "direct"))
-                  (format "CLAUDE_SWARM_SLAVE_ID=%s" slave-id))
-            process-environment))
-          (claude-cmd (if system-prompt
+    (let* ((default-directory work-dir)
+           (process-environment
+            (append
+             (list (format "CLAUDE_SWARM_DEPTH=%d" (plist-get slave :depth))
+                   (format "CLAUDE_SWARM_MASTER=%s" (or emacs-mcp-swarm--session-id "direct"))
+                   (format "CLAUDE_SWARM_SLAVE_ID=%s" slave-id))
+             process-environment))
+           (permission-flag (pcase emacs-mcp-swarm-prompt-mode
+                              ('bypass "--permission-mode bypassPermissions")
+                              (_ "")))
+           (claude-cmd (if system-prompt
                           (let ((prompt-file (make-temp-file "swarm-prompt-" nil ".md")))
                             (with-temp-file prompt-file
                               (insert system-prompt))
-                            (format "cd %s && %s --system-prompt %s"
+                            (format "cd %s && %s %s --system-prompt %s"
                                     (shell-quote-argument work-dir)
                                     emacs-mcp-swarm-claude-command
+                                    permission-flag
                                     (shell-quote-argument prompt-file)))
-                        (format "cd %s && %s"
+                        (format "cd %s && %s %s"
                                 (shell-quote-argument work-dir)
-                                emacs-mcp-swarm-claude-command))))
+                                emacs-mcp-swarm-claude-command
+                                permission-flag))))
 
       (pcase term-backend
         ('vterm
@@ -1105,6 +1306,41 @@ Returns result plist. Never fails."
         `(:killed-count ,count))
     `(:error "kill-all-failed" :killed-count 0)))
 
+(defun emacs-mcp-swarm-api-pending-prompts ()
+  "API: Get list of pending prompts awaiting human decision.
+Returns list of prompts with slave-id, prompt text, and timestamp."
+  (emacs-mcp-with-fallback
+      (let ((prompts
+             (mapcar (lambda (p)
+                       `(:slave-id ,(plist-get p :slave-id)
+                         :prompt ,(plist-get p :prompt)
+                         :timestamp ,(format-time-string
+                                      "%Y-%m-%dT%H:%M:%S"
+                                      (plist-get p :timestamp))))
+                     emacs-mcp-swarm--pending-prompts)))
+        `(:count ,(length prompts)
+          :prompts ,prompts
+          :mode ,emacs-mcp-swarm-prompt-mode))
+    `(:error "pending-prompts-failed" :count 0 :prompts nil)))
+
+(defun emacs-mcp-swarm-api-respond-prompt (slave-id response)
+  "API: Send RESPONSE to the pending prompt from SLAVE-ID.
+Returns result plist indicating success or failure."
+  (emacs-mcp-with-fallback
+      (if-let* ((prompt (cl-find slave-id emacs-mcp-swarm--pending-prompts
+                                 :key (lambda (p) (plist-get p :slave-id))
+                                 :test #'equal)))
+          (let ((buffer (plist-get prompt :buffer)))
+            (setq emacs-mcp-swarm--pending-prompts
+                  (cl-remove slave-id emacs-mcp-swarm--pending-prompts
+                             :key (lambda (p) (plist-get p :slave-id))
+                             :test #'equal))
+            (emacs-mcp-swarm--send-response buffer response)
+            (emacs-mcp-swarm--update-prompts-buffer)
+            `(:success t :slave-id ,slave-id :response ,response))
+        `(:success nil :error "no-pending-prompt" :slave-id ,slave-id))
+    `(:error "respond-prompt-failed" :slave-id ,slave-id)))
+
 ;;;; Transient Menu:
 
 (require 'transient nil t)
@@ -1122,9 +1358,14 @@ Returns result plist. Never fails."
       ("d" "Dispatch" emacs-mcp-swarm-dispatch)
       ("c" "Collect" emacs-mcp-swarm-collect)
       ("b" "Broadcast" emacs-mcp-swarm-broadcast)]
+     ["Prompts (human mode)"
+      ("y" "Approve next" emacs-mcp-swarm-approve)
+      ("n" "Deny next" emacs-mcp-swarm-deny)
+      ("p" "Respond custom" emacs-mcp-swarm-respond)
+      ("l" "List pending" emacs-mcp-swarm-list-prompts)]
      ["Info"
       ("?" "Status" emacs-mcp-swarm-status)
-      ("p" "List presets" emacs-mcp-swarm-list-presets)
+      ("P" "List presets" emacs-mcp-swarm-list-presets)
       ("r" "Reload presets" emacs-mcp-swarm-reload-presets)
       ("a" "Add presets dir" emacs-mcp-swarm-add-custom-presets-dir)]]))
 

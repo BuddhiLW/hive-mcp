@@ -195,6 +195,50 @@ Or directly with clojure:
 
 **No nREPL needed!** The MCP server runs standalone via `clojure -X:mcp`.
 
+### Alternative: Lightweight Mode (bb-mcp)
+
+For memory-constrained environments, use **bb-mcp** - a Babashka-based MCP server:
+
+| Metric | JVM (start-mcp.sh) | bb-mcp (start-bb-mcp.sh) |
+|--------|-------------------|--------------------------|
+| Memory | ~500 MB | ~50 MB |
+| Startup | ~2-3s | ~5ms |
+| Tools | 50+ (full Emacs) | 6 (basic file ops) |
+
+**bb-mcp tools:** `bash`, `read_file`, `file_write`, `glob_files`, `grep`, `clojure_eval`
+
+**Setup:**
+
+1. Clone bb-mcp:
+   ```bash
+   git clone https://github.com/BuddhiLW/bb-mcp.git ~/bb-mcp
+   ```
+
+2. Configure Claude Code:
+   ```json
+   {
+     "mcpServers": {
+       "emacs-mcp": {
+         "command": "/path/to/emacs-mcp/start-bb-mcp.sh"
+       }
+     }
+   }
+   ```
+
+3. (Optional) Start shared nREPL for `clojure_eval`:
+   ```bash
+   cd /your/project && clojure -M:nrepl -p 7910
+   ```
+
+**When to use bb-mcp:**
+- Multiple Claude sessions (saves ~450MB per session)
+- Fast startup needed
+- Only need basic file/bash operations
+
+**When to use full JVM:**
+- Need Emacs integration (eval_elisp, buffers, kanban)
+- Need memory, workflows, magit, projectile tools
+
 ## Development
 
 ### Start nREPL for development
