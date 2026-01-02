@@ -274,6 +274,96 @@ PR #15 + #23 merged. Beamer and Reveal.js support with C4 diagram integration.
 :UPDATED:  2026-01-01 21:33
 :LAST_AGENT: emacs-126582
 :END:
+** TODO [EPIC] SOLID+CLARITY+DDD Refactor for elisp
+:PROPERTIES:
+:ID:       7d2a5b68-1e11-45ba-a336-f0058f74581e
+:CREATED:  2026-01-01 21:52
+:DESCRIPTION: Apply CLARITY framework to emacs-mcp elisp codebase. Goals: SRP compliance, layer purity, domain entities, input guards, telemetry. Major targets: swarm.el (1180 lines), memory.el (617 lines), api.el (420 lines).
+:AGENT:    emacs-126582
+:SESSION:  20260101-215247
+:END:
+** TODO CLARITY-C: Extract terminal-backend protocol (OCP)
+:PROPERTIES:
+:ID:       a8b0bb42-a24d-41cf-8891-d3e48d08666f
+:CREATED:  2026-01-01 21:52
+:DESCRIPTION: Replace pcase vterm/eat dispatching with composable protocol. Create terminal-backend abstraction with send-string, send-return methods. Enable adding new terminals without modifying swarm.el core.
+:AGENT:    emacs-126582
+:SESSION:  20260101-215247
+:END:
+** TODO CLARITY-L: Separate API transformation from domain logic
+:PROPERTIES:
+:ID:       fcbe08f0-1a6f-4a02-8afe-52f0997ed1b6
+:CREATED:  2026-01-01 21:52
+:DESCRIPTION: emacs-mcp-api.el mixes plist-to-alist conversion with business logic. Extract data transformation layer. Create pure domain functions that API layer calls.
+:AGENT:    emacs-126582
+:SESSION:  20260101-215248
+:END:
+** TODO CLARITY-R: Define domain entities with cl-defstruct
+:PROPERTIES:
+:ID:       562a72b8-49af-4dcf-a220-15eda41d429b
+:CREATED:  2026-01-01 21:52
+:DESCRIPTION: Replace raw plists with typed structures: (cl-defstruct swarm-slave id name status buffer), (cl-defstruct swarm-task id prompt status result), (cl-defstruct memory-entry id type content tags). Enables compile-time safety.
+:AGENT:    emacs-126582
+:SESSION:  20260101-215248
+:END:
+** TODO CLARITY-I: Add input validation at API boundaries
+:PROPERTIES:
+:ID:       48cad8ea-254d-4657-a00f-e783ae6a5360
+:CREATED:  2026-01-01 21:53
+:DESCRIPTION: API functions accept any input without validation. Add guards: validate slave-id format, sanitize prompt strings, check timeout ranges, validate memory entry types. Fail fast with clear errors.
+:AGENT:    emacs-126582
+:SESSION:  20260101-215300
+:END:
+** TODO CLARITY-T: Add structured logging infrastructure
+:PROPERTIES:
+:ID:       58e924c0-6a48-48b9-99c6-d37ec11d98fe
+:CREATED:  2026-01-01 21:53
+:DESCRIPTION: Replace (message ...) with structured logging. Create emacs-mcp-log with levels (debug, info, warn, error). Add timing instrumentation for MCP calls. Enable log filtering by component.
+:AGENT:    emacs-126582
+:SESSION:  20260101-215301
+:END:
+** TODO CLARITY-Y: Graceful degradation for missing backends
+:PROPERTIES:
+:ID:       b3b100e7-c0be-410c-8c5b-d6650f0f498f
+:CREATED:  2026-01-01 21:53
+:DESCRIPTION: Swarm fails hard if vterm/eat missing. Memory fails if file unwritable. Add fallback strategies: swarm could use shell-mode, memory could use temp storage. Feature flags for optional features.
+:AGENT:    emacs-126582
+:SESSION:  20260101-215301
+:END:
+** TODO SRP: Split swarm.el into focused modules
+:PROPERTIES:
+:ID:       81aa470e-3400-4b3d-9aa8-4cb772bec2f5
+:CREATED:  2026-01-01 21:53
+:DESCRIPTION: swarm.el (1180 lines) does too much. Split into: swarm-core.el (spawn/kill), swarm-dispatch.el (send/collect), swarm-presets.el (preset loading), swarm-auto-approve.el (approval watcher). Each module single responsibility.
+:AGENT:    emacs-126582
+:SESSION:  20260101-215301
+:END:
+** TODO DDD: Create Value Objects for domain primitives
+:PROPERTIES:
+:ID:       a17d098d-a06f-420c-ba36-67c80469921c
+:CREATED:  2026-01-01 21:53
+:DESCRIPTION: Replace magic strings with Value Objects: SlaveStatus (idle/working/error), TaskStatus (pending/dispatched/completed), MemoryDuration (ephemeral/short/medium/long/permanent). Encapsulate validation in constructors.
+:AGENT:    emacs-126582
+:SESSION:  20260101-215310
+:END:
+** TODO DIP: Extract memory storage interface
+:PROPERTIES:
+:ID:       d095fe75-403d-42d6-9696-a16cd7d7c880
+:CREATED:  2026-01-01 21:53
+:DESCRIPTION: Memory layer couples to file storage. Define storage protocol with save/load/query. Implement file-storage, add option for sqlite-storage or chroma-storage. Enables testing with mock storage.
+:AGENT:    emacs-126582
+:SESSION:  20260101-215310
+:END:
+
+
+
+
+
+
+
+
+
+
 
 
 * MCP-Native Documentation Tools (Emacs RAG)
