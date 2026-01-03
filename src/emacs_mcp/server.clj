@@ -6,6 +6,7 @@
             [emacs-mcp.chroma :as chroma]
             [emacs-mcp.channel :as channel]
             [emacs-mcp.hivemind :as hivemind]
+            [emacs-mcp.swarm.sync :as sync]
             [emacs-mcp.embeddings.ollama :as ollama]
             [nrepl.server :as nrepl-server]
             [taoensso.timbre :as log])
@@ -86,8 +87,11 @@
                            (when mw-var @mw-var))
                          (catch Exception _
                            nil))
-            server-opts (cond-> {:port nrepl-port :bind "127.0.0.1"}
-                          middleware (assoc :handler (nrepl-server/default-handler middleware)))]
+            ;; default-handler takes middleware as varargs, use apply
+            handler (if (seq middleware)
+                      (apply nrepl-server/default-handler middleware)
+                      (nrepl-server/default-handler))
+            server-opts {:port nrepl-port :bind "127.0.0.1" :handler handler}]
         (let [server (nrepl-server/start-server server-opts)]
           (reset! nrepl-server-atom server)
           (log/info "Embedded nREPL started on port" nrepl-port
@@ -114,6 +118,13 @@
         (log/info "Channel server started on TCP port" channel-port)
         (catch Exception e
           (log/warn "Channel server failed to start (non-fatal):" (.getMessage e)))))
+    ;; Start swarm sync - bridges channel events to logic database
+    ;; This enables: task-completed → release claims → process queue
+    (try
+      (sync/start-sync!)
+      (log/info "Swarm sync started - logic database will track swarm state")
+      (catch Exception e
+        (log/warn "Swarm sync failed to start (non-fatal):" (.getMessage e))))
     @(io-server/run! (assoc emacs-server-spec :server-id server-id))))
 
 (defn -main

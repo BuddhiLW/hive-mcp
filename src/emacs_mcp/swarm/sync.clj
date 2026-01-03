@@ -10,11 +10,13 @@
    - :slave-killed     - Remove slave and release claims
    - :task-dispatched  - Register task and file claims
    - :task-completed   - Mark task complete, release claims, process queue
-   - :task-failed      - Mark task failed, release claims, process queue"
+   - :task-failed      - Mark task failed, release claims, process queue
+   - :prompt-shown     - Forward permission prompts to hivemind coordinator"
   (:require [emacs-mcp.swarm.logic :as logic]
             [emacs-mcp.swarm.coordinator :as coord]
             [emacs-mcp.channel :as channel]
             [emacs-mcp.emacsclient :as ec]
+            [emacs-mcp.hivemind :as hivemind]
             [clojure.core.async :as async :refer [go go-loop <!]]
             [clojure.data.json :as json]
             [taoensso.timbre :as log]))
@@ -102,18 +104,34 @@
       (coord/process-queue!)
       (log/debug "Sync: task failed" task-id))))
 
+(defn- handle-prompt-shown
+  "Handle permission prompt event from Emacs swarm slave.
+   Event: {:slave-id :prompt :timestamp :session-id}
+   
+   Forwards the prompt to hivemind so the coordinator can see it
+   via hivemind_status without polling swarm_pending_prompts."
+  [event]
+  (let [slave-id (or (get event "slave-id") (:slave-id event))
+        prompt (or (get event "prompt") (:prompt event))
+        timestamp (or (get event "timestamp") (:timestamp event))
+        session-id (or (get event "session-id") (:session-id event))]
+    (when (and slave-id prompt)
+      (hivemind/add-swarm-prompt! slave-id prompt session-id timestamp)
+      (log/info "Sync: forwarded prompt from" slave-id "to hivemind"))))
+
 ;; =============================================================================
 ;; Event Subscription Management
 ;; =============================================================================
 
 (def ^:private event-handlers
   "Map of event types to handler functions."
-  {:slave-spawned  handle-slave-spawned
-   :slave-status   handle-slave-status
-   :slave-killed   handle-slave-killed
+  {:slave-spawned handle-slave-spawned
+   :slave-status handle-slave-status
+   :slave-killed handle-slave-killed
    :task-dispatched handle-task-dispatched
    :task-completed handle-task-completed
-   :task-failed    handle-task-failed})
+   :task-failed handle-task-failed
+   :prompt-shown handle-prompt-shown})
 
 (defn- subscribe-to-event!
   "Subscribe to a single event type with handler."

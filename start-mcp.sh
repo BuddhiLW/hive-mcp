@@ -5,6 +5,21 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_DIR="${HOME}/.config/emacs-mcp"
+LOCK_FILE="${CONFIG_DIR}/starting.lock"
+LOG_FILE="${CONFIG_DIR}/server.log"
+
+# Ensure config directory exists
+mkdir -p "$CONFIG_DIR"
+
+# Cleanup lock file on exit
+cleanup() {
+    rm -f "$LOCK_FILE"
+}
+trap cleanup EXIT
+
+# Create lock file immediately (signals "I'm starting" to bb-mcp)
+echo "$$:$(date +%s)" > "$LOCK_FILE"
 
 # Ensure emacsclient is available
 if ! command -v emacsclient &> /dev/null; then
@@ -31,11 +46,23 @@ export EMACS_MCP_CHANNEL_PORT="${EMACS_MCP_CHANNEL_PORT:-9998}"
 # nREPL port - embedded in MCP server for bb-mcp tool forwarding
 export EMACS_MCP_NREPL_PORT="${EMACS_MCP_NREPL_PORT:-7910}"
 
+# Check if a healthy emacs-mcp is already running
+# (bb-mcp might have spawned one already)
+if timeout 1 bash -c "echo > /dev/tcp/localhost/${EMACS_MCP_NREPL_PORT}" 2>/dev/null; then
+    echo "emacs-mcp already running on port ${EMACS_MCP_NREPL_PORT}" >&2
+    # Don't kill it! Just exit - bb-mcp will handle tool forwarding
+    # This prevents killing a healthy server spawned by bb-mcp
+    rm -f "$LOCK_FILE"
+    exit 0
+fi
+
 # Kill any stale processes on our ports before starting
-# The embedded nREPL MUST run in the same JVM as the channel server
-# so hivemind broadcasts actually reach connected clients
+# Only reached if no healthy server is running
 fuser -k "${EMACS_MCP_CHANNEL_PORT}/tcp" 2>/dev/null || true
 fuser -k "${EMACS_MCP_NREPL_PORT}/tcp" 2>/dev/null || true
+
+# Log startup
+echo "=== Starting emacs-mcp at $(date) ===" >> "$LOG_FILE"
 
 # Run the MCP server
 exec clojure -X:mcp

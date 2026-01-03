@@ -28,6 +28,36 @@
   agent-registry
   (atom {}))
 
+(defonce ^{:doc "Map of slave-id -> {:prompt :timestamp :session-id}
+                 Permission prompts pushed from Emacs swarm slaves.
+                 These are distinct from asks (agent-initiated questions)."}
+  pending-swarm-prompts
+  (atom {}))
+
+(defn add-swarm-prompt!
+  "Add a permission prompt from a swarm slave.
+   Called by sync.clj when :prompt-shown event received from Emacs."
+  [slave-id prompt-text session-id timestamp]
+  (let [prompt-data {:prompt prompt-text
+                     :timestamp timestamp
+                     :session-id session-id
+                     :received-at (System/currentTimeMillis)}]
+    (swap! pending-swarm-prompts assoc slave-id prompt-data)
+    (log/info "Swarm prompt received from" slave-id ":"
+              (subs prompt-text 0 (min 50 (count prompt-text))))
+    prompt-data))
+
+(defn remove-swarm-prompt!
+  "Remove a swarm prompt (after it's been answered)."
+  [slave-id]
+  (swap! pending-swarm-prompts dissoc slave-id)
+  (log/debug "Swarm prompt cleared:" slave-id))
+
+(defn get-swarm-prompts
+  "Get all pending swarm prompts."
+  []
+  @pending-swarm-prompts)
+
 ;; =============================================================================
 ;; Core Functions
 
@@ -121,7 +151,8 @@
    
    Returns map with:
    - :agents - map of agent-id -> status
-   - :pending-asks - list of unanswered questions
+   - :pending-asks - list of unanswered questions (agent-initiated)
+   - :pending-swarm-prompts - list of permission prompts from slaves (push notifications)
    - :channel-connected - whether Emacs is connected"
   []
   {:agents @agent-registry
@@ -131,6 +162,13 @@
                           :question question
                           :options options})
                        @pending-asks)
+   :pending-swarm-prompts (mapv (fn [[slave-id {:keys [prompt timestamp session-id received-at]}]]
+                                  {:slave-id slave-id
+                                   :prompt prompt
+                                   :timestamp timestamp
+                                   :session-id session-id
+                                   :received-at received-at})
+                                @pending-swarm-prompts)
    :channel-connected (channel/server-connected?)})
 
 (defn get-agent-messages
@@ -149,15 +187,40 @@
 ;; =============================================================================
 ;; Event Subscriptions (for agents to listen)
 
-(defn subscribe!
-  "Subscribe to hivemind events of a specific type.
+(defn listen!
+  "Block and wait for the next hivemind event.
    
-   event-type: keyword like :hivemind-task-assigned
-   handler-fn: function that receives the event map
+   event-types: vector of event type keywords to listen for
+                e.g. [:hivemind-progress :hivemind-completed :hivemind-error]
+                Use nil or empty to listen for ALL hivemind events.
+   timeout-ms: how long to wait (default 30 seconds)
    
-   Returns subscription id for unsubscribing."
-  [event-type handler-fn]
-  (channel/subscribe! event-type handler-fn))
+   Returns the event map or {:timeout true} if no event within timeout.
+   
+   This enables push-like semantics for the coordinator:
+   instead of polling hivemind_status, call hivemind_listen to block
+   until an agent shouts."
+  [event-types timeout-ms]
+  (let [;; Default to all hivemind event types
+        types (if (seq event-types)
+                (mapv keyword event-types)
+                [:hivemind-progress :hivemind-completed :hivemind-error
+                 :hivemind-blocked :hivemind-started :hivemind-ask])
+        ;; Create channels for each event type
+        channels (mapv (fn [t] [t (channel/subscribe! t)]) types)
+        ;; Timeout channel
+        timeout-ch (timeout (or timeout-ms 30000))]
+    (try
+      (let [;; Use alts!! to wait on all channels + timeout
+            all-chs (conj (mapv second channels) timeout-ch)
+            [event ch] (async/alts!! all-chs)]
+        (if (= ch timeout-ch)
+          {:timeout true :listened-for types :timeout-ms (or timeout-ms 30000)}
+          event))
+      (finally
+        ;; Cleanup: unsubscribe from all channels
+        (doseq [[event-type ch] channels]
+          (channel/unsubscribe! event-type ch))))))
 
 ;; =============================================================================
 ;; MCP Tool Definitions
@@ -268,7 +331,40 @@ Use this to retrieve message content that agents have broadcast."
                        (if-let [messages (get-agent-messages agent_id)]
                          {:agent_id agent_id :messages messages}
                          {:error (str "Agent not found: " agent_id)
-                          :available-agents (keys @agent-registry)}))})}])
+                          :available-agents (keys @agent-registry)}))})}
+
+   {:name "hivemind_listen"
+    :description "Block and wait for the next hivemind event (push notification).
+                  
+USE THIS instead of polling hivemind_status when you want real-time updates.
+This tool BLOCKS until an event arrives or timeout expires.
+
+Returns the event directly when an agent shouts, without polling delay.
+
+Event types:
+- hivemind-started: Agent started a task
+- hivemind-progress: Agent progress update
+- hivemind-completed: Agent finished successfully
+- hivemind-error: Agent encountered an error
+- hivemind-blocked: Agent needs input
+- hivemind-ask: Agent asking a question
+
+Example workflow:
+1. Spawn agents with swarm_spawn
+2. Call hivemind_listen to wait for events
+3. Process the event (respond to asks, log progress)
+4. Loop back to step 2"
+    :inputSchema {:type "object"
+                  :properties {"event_types" {:type "array"
+                                              :items {:type "string"}
+                                              :description "Event types to listen for (omit for all)"}
+                               "timeout_ms" {:type "integer"
+                                             :description "Timeout in ms (default 30000 = 30 sec)"}}
+                  :required []}
+    :handler (fn [{:keys [event_types timeout_ms]}]
+               (let [result (listen! event_types (or timeout_ms 30000))]
+                 {:type "text"
+                  :text (json/write-str result)}))}])
 
 (defn register-tools!
   "Register hivemind tools with the MCP server."
