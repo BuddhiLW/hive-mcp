@@ -23,7 +23,8 @@
   pending-asks
   (atom {}))
 
-(defonce ^{:doc "Map of agent-id -> {:status :last-seen :current-task}"}
+(defonce ^{:doc "Map of agent-id -> {:status :last-seen :current-task :messages}
+                 Messages is a vector of recent shouts (max 10 per agent)."}
   agent-registry
   (atom {}))
 
@@ -36,17 +37,28 @@
    event-type: keyword like :progress, :completed, :error, :blocked
    data: map with event details
    
+   Stores up to 10 recent messages per agent for retrieval via hivemind_status.
    Returns true if broadcast succeeded."
   [agent-id event-type data]
-  (let [event {:type (keyword (str "hivemind-" (name event-type)))
+  (let [now (System/currentTimeMillis)
+        message {:event-type event-type
+                 :timestamp now
+                 :task (:task data)
+                 :message (:message data)
+                 :data (dissoc data :task :message)}
+        event {:type (keyword (str "hivemind-" (name event-type)))
                :agent-id agent-id
-               :timestamp (System/currentTimeMillis)
+               :timestamp now
                :data data}]
-    ;; Update agent registry
-    (swap! agent-registry assoc agent-id
-           {:status event-type
-            :last-seen (System/currentTimeMillis)
-            :current-task (:task data)})
+    ;; Update agent registry with message history (ring buffer, max 10)
+    (swap! agent-registry update agent-id
+           (fn [agent]
+             (let [messages (or (:messages agent) [])
+                   new-messages (vec (take-last 10 (conj messages message)))]
+               {:status event-type
+                :last-seen now
+                :current-task (:task data)
+                :messages new-messages})))
     ;; Broadcast to Emacs
     (channel/broadcast! event)
     (log/info "Hivemind shout:" agent-id event-type)
@@ -120,6 +132,13 @@
                           :options options})
                        @pending-asks)
    :channel-connected (channel/server-connected?)})
+
+(defn get-agent-messages
+  "Get recent messages from a specific agent.
+   
+   Returns vector of messages (up to 10) or nil if agent not found."
+  [agent-id]
+  (get-in @agent-registry [agent-id :messages]))
 
 (defn clear-agent!
   "Remove an agent from the registry (when it terminates)."
@@ -232,7 +251,24 @@ Used by the coordinator to answer agent questions."
                 :text (json/write-str
                        (if (respond-ask! ask_id decision)
                          {:success true}
-                         {:error "No pending ask with that ID"}))})}])
+                         {:error "No pending ask with that ID"}))})}
+
+   {:name "hivemind_messages"
+    :description "Get recent messages from a specific agent.
+                  
+Returns up to 10 recent shout messages with their payloads.
+Use this to retrieve message content that agents have broadcast."
+    :inputSchema {:type "object"
+                  :properties {"agent_id" {:type "string"
+                                           :description "Agent identifier to get messages from"}}
+                  :required ["agent_id"]}
+    :handler (fn [{:keys [agent_id]}]
+               {:type "text"
+                :text (json/write-str
+                       (if-let [messages (get-agent-messages agent_id)]
+                         {:agent_id agent_id :messages messages}
+                         {:error (str "Agent not found: " agent_id)
+                          :available-agents (keys @agent-registry)}))})}])
 
 (defn register-tools!
   "Register hivemind tools with the MCP server."
