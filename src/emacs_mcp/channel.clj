@@ -236,8 +236,10 @@
       (when-let [msg (recv! channel)]
         (log/debug "Received from" client-id ":" msg)
         ;; Route incoming messages to event bus
-        (when (:type msg)
-          (publish! (assoc msg :client-id client-id)))
+        ;; Note: bencode returns string keys, so check for "type" not :type
+        (when-let [type-str (get msg "type")]
+          (let [event-type (keyword type-str)]
+            (publish! (assoc msg :type event-type :client-id client-id))))
         (recur)))))
 
 (defn start-server!

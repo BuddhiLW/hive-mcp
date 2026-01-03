@@ -96,10 +96,19 @@
   (and (require 'nrepl-client nil t)
        (fboundp 'nrepl-bencode)))
 
+(defun emacs-mcp-channel--alist-to-nrepl-dict (alist)
+  "Convert ALIST to nrepl-dict format for bencode encoding."
+  (require 'nrepl-dict)
+  (let ((result (list 'dict)))
+    (dolist (pair alist)
+      (setq result (append result (list (car pair) (cdr pair)))))
+    result))
+
 (defun emacs-mcp-channel--encode (msg)
-  "Encode MSG to bencode string."
+  "Encode MSG to bencode string.
+MSG should be an alist like \\='((\"type\" . \"event\"))."
   (if (emacs-mcp-channel--bencode-available-p)
-      (nrepl-bencode msg)
+      (nrepl-bencode (emacs-mcp-channel--alist-to-nrepl-dict msg))
     ;; Fallback: simple bencode implementation
     (emacs-mcp-channel--bencode-fallback msg)))
 

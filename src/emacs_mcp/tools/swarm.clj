@@ -50,29 +50,45 @@
       (subscribe-fn event-type))))
 
 (defn- handle-task-completed
-  "Handle task-completed event from channel."
-  [{:keys [task-id slave-id result timestamp] :as event}]
-  (log/info "Channel: task-completed" task-id "from" slave-id)
-  (swap! event-journal assoc (str task-id)
-         {:status "completed"
-          :result result
-          :slave-id slave-id
-          :timestamp (or timestamp (System/currentTimeMillis))}))
+  "Handle task-completed event from channel.
+   Note: bencode returns string keys, so we use get instead of keywords."
+  [event]
+  (let [task-id (get event "task-id")
+        slave-id (get event "slave-id")
+        result (get event "result")
+        timestamp (get event "timestamp")]
+    (log/info "Channel: task-completed" task-id "from" slave-id)
+    (swap! event-journal assoc (str task-id)
+           {:status "completed"
+            :result result
+            :slave-id slave-id
+            :timestamp (or timestamp (System/currentTimeMillis))})))
 
 (defn- handle-task-failed
-  "Handle task-failed event from channel."
-  [{:keys [task-id slave-id error timestamp] :as event}]
-  (log/info "Channel: task-failed" task-id "from" slave-id ":" error)
-  (swap! event-journal assoc (str task-id)
-         {:status "failed"
-          :error error
-          :slave-id slave-id
-          :timestamp (or timestamp (System/currentTimeMillis))}))
+  "Handle task-failed event from channel.
+   Note: bencode returns string keys, so we use get instead of keywords."
+  [event]
+  (let [task-id (get event "task-id")
+        slave-id (get event "slave-id")
+        error (get event "error")
+        timestamp (get event "timestamp")]
+    (log/info "Channel: task-failed" task-id "from" slave-id ":" error)
+    (swap! event-journal assoc (str task-id)
+           {:status "failed"
+            :error error
+            :slave-id slave-id
+            :timestamp (or timestamp (System/currentTimeMillis))})))
 
 (defn- handle-prompt-shown
-  "Handle prompt-shown event from channel."
-  [{:keys [slave-id prompt timestamp] :as event}]
-  (log/info "Channel: prompt-shown from" slave-id))
+  "Handle prompt-shown event from channel.
+   Note: bencode returns string keys, so we use get instead of keywords."
+  [event]
+  (let [slave-id (get event "slave-id")
+        prompt (get event "prompt")
+        timestamp (get event "timestamp")]
+    (log/info "Channel: prompt-shown from" slave-id)
+    ;; For now just log - could add to a prompts journal if needed
+    ))
 
 (defn start-channel-subscriptions!
   "Start listening for swarm events via channel.
