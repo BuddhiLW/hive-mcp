@@ -105,16 +105,27 @@ Keyword keys become symbols, lists become vectors."
   "Convert list of plist ENTRIES to vector of alists for JSON."
   (apply #'vector (mapcar #'emacs-mcp-api--plist-to-alist entries)))
 
-(defun emacs-mcp-api-memory-query (type &optional tags limit)
+(defun emacs-mcp-api-memory-query (type &optional tags limit scope-filter)
   "Query project memory by TYPE with optional TAGS filter.
 TYPE is a string: \"note\", \"snippet\", \"convention\", \"decision\",
 or \"conversation\".
 TAGS is a list of strings.
 LIMIT is max results (default 20).
+SCOPE-FILTER controls scope filtering:
+  - nil or omitted: auto-filter by current project scope + global
+  - \"all\": return all entries regardless of scope
+  - \"global\": return only scope:global entries
+  - specific scope tag string: filter by that scope
 Returns a vector of alists suitable for JSON encoding.
 Returns empty vector on error."
   (emacs-mcp-with-fallback
-      (let ((results (emacs-mcp-memory-query (intern type) tags nil (or limit 20))))
+      (let* ((scope-arg (cond
+                         ((null scope-filter) nil)  ; auto-filter
+                         ((string= scope-filter "all") t)
+                         ((string= scope-filter "global") 'global)
+                         (t scope-filter)))  ; specific scope tag
+             (results (emacs-mcp-memory-query (intern type) tags nil
+                                               (or limit 20) nil scope-arg)))
         (emacs-mcp-api--convert-entries results))
     []))
 
@@ -172,16 +183,33 @@ Returns id, type, preview (first 100 chars), tags, created."
       (tags . ,(or (plist-get entry :tags) []))
       (created . ,(plist-get entry :created)))))
 
-(defun emacs-mcp-api-memory-query-metadata (type &optional tags limit)
+(defun emacs-mcp-api-memory-query-metadata (type &optional tags limit scope-filter)
   "Query project memory by TYPE, returning only metadata.
 TYPE is a string: \"note\", \"snippet\", \"convention\", \"decision\",
 or \"conversation\".
 TAGS is a list of strings.
 LIMIT is max results (default 20).
+SCOPE-FILTER: see `emacs-mcp-api-memory-query' for options.
 Returns a vector of alists with only: id, type, preview, tags, created.
 Use `emacs-mcp-api-memory-get-full' to fetch full content by ID."
-  (let ((results (emacs-mcp-memory-query (intern type) tags nil (or limit 20))))
+  (let* ((scope-arg (cond
+                     ((null scope-filter) nil)
+                     ((string= scope-filter "all") t)
+                     ((string= scope-filter "global") 'global)
+                     (t scope-filter)))
+         (results (emacs-mcp-memory-query (intern type) tags nil
+                                           (or limit 20) nil scope-arg)))
     (apply #'vector (mapcar #'emacs-mcp-api-memory--entry-to-metadata results))))
+
+(defun emacs-mcp-api-get-project-name ()
+  "Return the current project name, or nil if not in a project."
+  (emacs-mcp-memory--get-project-name))
+
+(defun emacs-mcp-api-get-applicable-scopes (&optional domain)
+  "Return list of scope tags applicable to current context.
+DOMAIN is optional domain name to include.
+Always includes scope:global and current project scope if in a project."
+  (emacs-mcp-memory--applicable-scope-tags nil domain))
 
 (defun emacs-mcp-api-memory-get-full (id)
   "Get full memory entry by ID.
@@ -286,6 +314,45 @@ SPEC is plist with :description, :steps, :params."
   (if (fboundp 'emacs-mcp-workflow-register)
       (emacs-mcp-workflow-register name spec)
     (error "Workflows not available")))
+
+(declare-function emacs-mcp-workflow-wrap "emacs-mcp-workflows")
+(declare-function emacs-mcp-workflow-catchup "emacs-mcp-workflows")
+
+(defun emacs-mcp-api-workflow-wrap (&optional accomplishments decisions conventions
+                                              in-progress next-actions completed-tasks)
+  "Run the wrap workflow with session data.
+ACCOMPLISHMENTS - list of completed tasks (stored as note, short-term)
+DECISIONS - list of decisions made (stored as decision, long-term)
+CONVENTIONS - list of conventions (stored as convention, permanent)
+IN-PROGRESS - list of in-progress items (for summary)
+NEXT-ACTIONS - list of priorities for next session (for summary)
+COMPLETED-TASKS - list of kanban task IDs to mark done
+
+All stored entries auto-inject project scope.
+Returns structured result suitable for JSON encoding."
+  (emacs-mcp-with-fallback
+      (if (fboundp 'emacs-mcp-workflow-wrap)
+          (let ((result (emacs-mcp-workflow-wrap
+                         (list :accomplishments accomplishments
+                               :decisions decisions
+                               :conventions conventions
+                               :in-progress in-progress
+                               :next-actions next-actions
+                               :completed-tasks completed-tasks))))
+            (emacs-mcp-api--plist-to-alist result))
+        '((error . "wrap-workflow-not-available")))
+    '((error . "wrap-workflow-failed"))))
+
+(defun emacs-mcp-api-workflow-catchup ()
+  "Run the catchup workflow to restore session context.
+Queries session notes, decisions, and conventions with project scope.
+Returns structured result suitable for JSON encoding."
+  (emacs-mcp-with-fallback
+      (if (fboundp 'emacs-mcp-workflow-catchup)
+          (let ((result (emacs-mcp-workflow-catchup)))
+            (emacs-mcp-api--plist-to-alist result))
+        '((error . "catchup-workflow-not-available")))
+    '((error . "catchup-workflow-failed"))))
 
 ;;;; Trigger API:
 

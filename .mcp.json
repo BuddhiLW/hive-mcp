@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "clojure-mcp": {
+      "type": "stdio",
+      "command": "/bin/bash",
+      "args": [
+        "-c",
+        "cd /home/lages/PP/funeraria/clojure-mcp && clojure -X:mcp :port 7910 :start-nrepl-cmd '[\"clojure\" \"-M:nrepl\"]' :project-dir '\"/home/lages/dotfiles/gitthings/emacs-mcp\"'"
+      ],
+      "env": {}
+    }
+  }
+}

@@ -589,24 +589,64 @@ Returns hash-table of name -> content."
   (setq emacs-mcp-swarm--presets-cache (emacs-mcp-swarm--load-all-presets))
   (message "Loaded %d presets" (hash-table-count emacs-mcp-swarm--presets-cache)))
 
+(defun emacs-mcp-swarm--list-memory-presets ()
+  "List preset names from memory system (conventions tagged swarm-preset)."
+  (when (fboundp 'emacs-mcp-memory-query)
+    (let ((entries (emacs-mcp-memory-query 'convention
+                                            '("swarm-preset")
+                                            nil 100 nil nil)))
+      (cl-remove-duplicates
+       (cl-remove-if-not
+        #'identity
+        (mapcar (lambda (e)
+                  (cl-find-if (lambda (tag)
+                                (and (not (string-prefix-p "scope:" tag))
+                                     (not (string= tag "swarm-preset"))))
+                              (plist-get e :tags)))
+                entries))
+       :test #'string=))))
+
 (defun emacs-mcp-swarm-list-presets ()
-  "List all available presets."
+  "List all available presets (file-based + memory-based)."
   (interactive)
   (unless emacs-mcp-swarm--presets-cache
     (emacs-mcp-swarm-reload-presets))
-  (let ((names (hash-table-keys emacs-mcp-swarm--presets-cache)))
+  (let* ((file-presets (hash-table-keys emacs-mcp-swarm--presets-cache))
+         (memory-presets (emacs-mcp-swarm--list-memory-presets))
+         (all-names (cl-remove-duplicates
+                     (append file-presets memory-presets)
+                     :test #'string=)))
     (if (called-interactively-p 'any)
-        (message "Available presets: %s" (string-join (sort names #'string<) ", "))
-      names)))
+        (message "Available presets: %s (file: %d, memory: %d)"
+                 (string-join (sort all-names #'string<) ", ")
+                 (length file-presets)
+                 (length memory-presets))
+      all-names)))
+
+(defun emacs-mcp-swarm--get-preset-from-memory (name)
+  "Get preset NAME from memory system (conventions tagged swarm-preset).
+Memory-based presets allow project-scoped and semantically searchable presets."
+  (when (fboundp 'emacs-mcp-memory-query)
+    (let ((entries (emacs-mcp-memory-query 'convention
+                                            (list "swarm-preset" name)
+                                            nil 1 nil nil)))
+      (when entries
+        (plist-get (car entries) :content)))))
 
 (defun emacs-mcp-swarm--get-preset-content (name)
-  "Get content of preset NAME."
-  (unless emacs-mcp-swarm--presets-cache
-    (emacs-mcp-swarm-reload-presets))
-  (when-let* ((path (gethash name emacs-mcp-swarm--presets-cache)))
-    (with-temp-buffer
-      (insert-file-contents path)
-      (buffer-string))))
+  "Get content of preset NAME.
+Priority: memory-based (project-scoped) → file-based (.md fallback).
+This allows project-specific overrides of global file presets."
+  ;; Try memory first (supports project scope)
+  (or (emacs-mcp-swarm--get-preset-from-memory name)
+      ;; Fallback to file-based preset
+      (progn
+        (unless emacs-mcp-swarm--presets-cache
+          (emacs-mcp-swarm-reload-presets))
+        (when-let* ((path (gethash name emacs-mcp-swarm--presets-cache)))
+          (with-temp-buffer
+            (insert-file-contents path)
+            (buffer-string))))))
 
 (defun emacs-mcp-swarm--build-system-prompt (presets)
   "Build combined system prompt from list of PRESETS."

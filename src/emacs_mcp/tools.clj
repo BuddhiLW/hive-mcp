@@ -225,18 +225,24 @@
     {:type "text" :text "Error: emacs-mcp.el is not loaded." :isError true}))
 
 (defn handle-mcp-memory-query
-  "Query project memory by type."
-  [{:keys [type tags limit duration]}]
-  (log/info "mcp-memory-query:" type)
+  "Query project memory by type with scope filtering.
+  SCOPE controls which memories are returned:
+    - nil/omitted: auto-filter by current project + global
+    - \"all\": return all entries regardless of scope  
+    - \"global\": return only scope:global entries
+    - specific scope tag: filter by that scope"
+  [{:keys [type tags limit duration scope]}]
+  (log/info "mcp-memory-query:" type "scope:" scope)
   (if (emacs-mcp-el-available?)
     (let [tags-str (if (seq tags) (str "'" (pr-str tags)) "nil")
           limit-val (or limit 20)
           duration-str (if duration (pr-str duration) "nil")
+          scope-str (if scope (pr-str scope) "nil")
           elisp (format "(json-encode (emacs-mcp-api-memory-query %s %s %d %s))"
                         (pr-str type)
                         tags-str
                         limit-val
-                        duration-str)
+                        scope-str)
           {:keys [success result error]} (ec/eval-elisp elisp)]
       (if success
         {:type "text" :text result}
@@ -246,16 +252,19 @@
 (defn handle-mcp-memory-query-metadata
   "Query project memory by type, returning only metadata (id, type, preview, tags, created).
   Use this for efficient browsing - returns ~10x fewer tokens than full query.
-  Follow up with mcp_memory_get_full to fetch specific entries."
-  [{:keys [type tags limit]}]
-  (log/info "mcp-memory-query-metadata:" type)
+  Follow up with mcp_memory_get_full to fetch specific entries.
+  SCOPE controls filtering (see handle-mcp-memory-query for options)."
+  [{:keys [type tags limit scope]}]
+  (log/info "mcp-memory-query-metadata:" type "scope:" scope)
   (if (emacs-mcp-el-available?)
     (let [tags-str (if (seq tags) (str "'" (pr-str tags)) "nil")
           limit-val (or limit 20)
-          elisp (format "(json-encode (emacs-mcp-api-memory-query-metadata %s %s %d))"
+          scope-str (if scope (pr-str scope) "nil")
+          elisp (format "(json-encode (emacs-mcp-api-memory-query-metadata %s %s %d %s))"
                         (pr-str type)
                         tags-str
-                        limit-val)
+                        limit-val
+                        scope-str)
           {:keys [success result error]} (ec/eval-elisp elisp)]
       (if success
         {:type "text" :text result}

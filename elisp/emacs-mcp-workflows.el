@@ -106,35 +106,47 @@ Each entry is TYPE -> function taking (step env) and returning env.")
     (error "Unknown workflow: %s" name)))
 
 (defun emacs-mcp-workflow--execute (spec args)
-  "Execute workflow SPEC with ARGS."
-  (let* ((steps (plist-get spec :steps))
-         (on-error (or (plist-get spec :on-error) :stop))
-         (env (emacs-mcp-workflow--init-env spec args))
-         (step-num 0))
-    (catch 'workflow-abort
-      (dolist (step steps)
-        (setq step-num (1+ step-num))
+  "Execute workflow SPEC with ARGS.
+Supports two modes:
+  1. :handler - direct function invocation with args plist
+  2. :steps - step-by-step execution with env passing"
+  (let ((handler (plist-get spec :handler)))
+    ;; If workflow has a :handler, call it directly with args
+    (if handler
         (condition-case err
-            (setq env (emacs-mcp-workflow--run-step step env))
+            (funcall handler args)
           (error
-           (pcase on-error
-             (:stop
-              (throw 'workflow-abort
-                     (list :success nil
-                           :error (error-message-string err)
-                           :failed-step step-num
-                           :env env)))
-             (:continue nil)
-             (:ask
-              (unless (yes-or-no-p
-                       (format "Step %d failed: %s. Continue? "
-                               step-num (error-message-string err)))
-                (throw 'workflow-abort
-                       (list :success nil
-                             :error "Aborted by user"
-                             :failed-step step-num
-                             :env env))))))))
-      (list :success t :env env))))
+           (list :success nil
+                 :error (error-message-string err))))
+      ;; Otherwise execute step-by-step
+      (let* ((steps (plist-get spec :steps))
+             (on-error (or (plist-get spec :on-error) :stop))
+             (env (emacs-mcp-workflow--init-env spec args))
+             (step-num 0))
+        (catch 'workflow-abort
+          (dolist (step steps)
+            (setq step-num (1+ step-num))
+            (condition-case err
+                (setq env (emacs-mcp-workflow--run-step step env))
+              (error
+               (pcase on-error
+                 (:stop
+                  (throw 'workflow-abort
+                         (list :success nil
+                               :error (error-message-string err)
+                               :failed-step step-num
+                               :env env)))
+                 (:continue nil)
+                 (:ask
+                  (unless (yes-or-no-p
+                           (format "Step %d failed: %s. Continue? "
+                                   step-num (error-message-string err)))
+                    (throw 'workflow-abort
+                           (list :success nil
+                                 :error "Aborted by user"
+                                 :failed-step step-num
+                                 :env env))))))))
+          (list :success t :env env))))))
 
 (defun emacs-mcp-workflow--init-env (spec args)
   "Initialize environment for workflow SPEC with ARGS."
@@ -302,6 +314,237 @@ HANDLER receives (step env) and should return updated env."
           (message "Workflow completed successfully")
         (message "Workflow failed: %s" (plist-get result :error))))))
 
+;;; Memory-Integrated Workflows
+;;
+;; These workflows use the memory system with project scope for persistence.
+
+(defun emacs-mcp-workflow-wrap--get-date ()
+  "Return current date in YYYY-MM-DD format."
+  (format-time-string "%Y-%m-%d"))
+
+(defun emacs-mcp-workflow-wrap--make-tags (base-tags)
+  "Create tags list with BASE-TAGS plus auto-injected project scope."
+  (emacs-mcp-memory--inject-project-scope base-tags))
+
+(defun emacs-mcp-workflow-wrap--git-status ()
+  "Get git status summary for wrap workflow."
+  (let ((branch (string-trim
+                 (shell-command-to-string
+                  "git rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'none'")))
+        (status (shell-command-to-string "git status --porcelain 2>/dev/null"))
+        (unmerged (string-trim
+                   (shell-command-to-string
+                    "git branch --no-merged main 2>/dev/null | grep -E '^\\s*(feature|fix|feat)/' | head -10 || true"))))
+    (list :branch branch
+          :has-uncommitted (not (string-empty-p status))
+          :unmerged-feature-branches
+          (when (not (string-empty-p unmerged))
+            (split-string unmerged "\n" t "\\s-*")))))
+
+(defun emacs-mcp-workflow-wrap--store-accomplishments (accomplishments)
+  "Store ACCOMPLISHMENTS as session-summary note with short-term duration.
+Returns the stored entry."
+  (when accomplishments
+    (let* ((tags (emacs-mcp-workflow-wrap--make-tags
+                  '("session-summary" "wrap")))
+           (date (emacs-mcp-workflow-wrap--get-date))
+           (content (format "## Session Summary: %s\n\n### Completed\n%s"
+                            date
+                            (mapconcat (lambda (a) (format "- [x] %s" a))
+                                       accomplishments "\n"))))
+      (emacs-mcp-memory-add 'note content tags nil 'short-term))))
+
+(defun emacs-mcp-workflow-wrap--store-decisions (decisions)
+  "Store DECISIONS as decision entries with long-term duration.
+Returns list of stored entries."
+  (when decisions
+    (mapcar
+     (lambda (decision)
+       (let* ((tags (emacs-mcp-workflow-wrap--make-tags '("wrap" "session-decision")))
+              (date (emacs-mcp-workflow-wrap--get-date))
+              (content (list :title decision
+                             :rationale "Session decision"
+                             :date date)))
+         (emacs-mcp-memory-add 'decision content tags nil 'long-term)))
+     decisions)))
+
+(defun emacs-mcp-workflow-wrap--store-conventions (conventions)
+  "Store CONVENTIONS as convention entries with permanent duration.
+Returns list of stored entries."
+  (when conventions
+    (mapcar
+     (lambda (convention)
+       (let* ((tags (emacs-mcp-workflow-wrap--make-tags '("wrap")))
+              (date (emacs-mcp-workflow-wrap--get-date))
+              (content (list :description convention
+                             :date date)))
+         (emacs-mcp-memory-add 'convention content tags nil 'permanent)))
+     conventions)))
+
+(defun emacs-mcp-workflow-wrap--sync-kanban (completed-task-ids)
+  "Move COMPLETED-TASK-IDS to done status in kanban.
+Returns count of successfully moved tasks."
+  (when (and completed-task-ids (fboundp 'emacs-mcp-kanban-task-move))
+    (let ((moved 0))
+      (dolist (task-id completed-task-ids)
+        (condition-case nil
+            (progn
+              (emacs-mcp-kanban-task-move task-id "done")
+              (setq moved (1+ moved)))
+          (error nil)))
+      moved)))
+
+(defun emacs-mcp-workflow-wrap--get-kanban-status ()
+  "Get kanban stats if available."
+  (when (fboundp 'emacs-mcp-kanban-stats)
+    (condition-case nil
+        (emacs-mcp-kanban-stats)
+      (error nil))))
+
+(defun emacs-mcp-workflow-wrap (&optional args)
+  "Execute wrap workflow with ARGS plist.
+
+ARGS can contain:
+  :accomplishments - list of completed tasks (stored as note, short-term)
+  :decisions - list of decisions made (stored as decision, long-term)
+  :conventions - list of conventions (stored as convention, permanent)
+  :in-progress - list of in-progress items (for summary)
+  :next-actions - list of next session priorities (for summary)
+  :completed-tasks - list of kanban task IDs to mark done
+
+All stored entries auto-inject project scope via
+`emacs-mcp-memory--inject-project-scope'.
+
+Returns structured result with:
+  :success, :project, :date, :stored, :expired-cleaned, :git, :kanban"
+  (interactive)
+  (let* ((accomplishments (plist-get args :accomplishments))
+         (decisions (plist-get args :decisions))
+         (conventions (plist-get args :conventions))
+         (in-progress (plist-get args :in-progress))
+         (next-actions (plist-get args :next-actions))
+         (completed-tasks (plist-get args :completed-tasks))
+         (project-name (emacs-mcp-memory--get-project-name))
+         (date (emacs-mcp-workflow-wrap--get-date))
+         (git-info (emacs-mcp-workflow-wrap--git-status))
+         (kanban-before (emacs-mcp-workflow-wrap--get-kanban-status))
+         (stored '())
+         (expired-count 0))
+
+    ;; 1. Cleanup expired memory entries first
+    (setq expired-count (emacs-mcp-memory-cleanup-expired))
+
+    ;; 2. Store accomplishments as session summary
+    (when accomplishments
+      (emacs-mcp-workflow-wrap--store-accomplishments accomplishments)
+      (push 'accomplishments stored))
+
+    ;; 3. Store decisions
+    (when decisions
+      (emacs-mcp-workflow-wrap--store-decisions decisions)
+      (push 'decisions stored))
+
+    ;; 4. Store conventions
+    (when conventions
+      (emacs-mcp-workflow-wrap--store-conventions conventions)
+      (push 'conventions stored))
+
+    ;; 5. Create full session summary note if any content provided
+    (when (or accomplishments decisions in-progress next-actions)
+      (let* ((tags (emacs-mcp-workflow-wrap--make-tags
+                    '("session-summary" "wrap" "full-summary")))
+             (content (format "## Session Summary: %s\n\n### Completed\n%s\n\n### Decisions Made\n%s\n\n### In Progress\n%s\n\n### Next Actions\n%s"
+                              date
+                              (if accomplishments
+                                  (mapconcat (lambda (a) (format "- [x] %s" a))
+                                             accomplishments "\n")
+                                "- (none)")
+                              (if decisions
+                                  (mapconcat (lambda (d) (format "- %s" d))
+                                             decisions "\n")
+                                "- (none)")
+                              (if in-progress
+                                  (mapconcat (lambda (ip) (format "- [ ] %s" ip))
+                                             in-progress "\n")
+                                "- (none)")
+                              (if next-actions
+                                  (mapconcat (lambda (na) (format "- %s" na))
+                                             next-actions "\n")
+                                "- (none)"))))
+        (emacs-mcp-memory-add 'note content tags nil 'short-term)
+        (push 'session-summary stored)))
+
+    ;; 6. Sync kanban - move completed tasks to done
+    (when completed-tasks
+      (let ((moved-count (emacs-mcp-workflow-wrap--sync-kanban completed-tasks)))
+        (when (> moved-count 0)
+          (push 'kanban-synced stored))))
+
+    ;; 7. Get final kanban status
+    (let ((kanban-after (emacs-mcp-workflow-wrap--get-kanban-status)))
+
+      ;; Return result
+      (list :success t
+            :date date
+            :project (or project-name "global")
+            :stored (nreverse stored)
+            :counts (list :accomplishments (length accomplishments)
+                          :decisions (length decisions)
+                          :conventions (length conventions)
+                          :tasks-completed (length completed-tasks))
+            :expired-cleaned expired-count
+            :git git-info
+            :kanban (list :before kanban-before
+                          :after kanban-after)
+            :summary (format "Session wrapped for %s. Stored: %s. Cleaned %d expired entries."
+                             (or project-name "global")
+                             (mapconcat #'symbol-name stored ", ")
+                             expired-count)))))
+
+(defun emacs-mcp-workflow-catchup ()
+  "Execute the catchup workflow - restore context from memory.
+Queries session notes, decisions, and conventions with project scope.
+Returns structured context for display."
+  (interactive)
+  (let* ((project-name (emacs-mcp-memory--get-project-name))
+         (applicable-scopes (emacs-mcp-memory--applicable-scope-tags)))
+    
+    ;; Query each type with scope filtering
+    (let ((session-notes (emacs-mcp-memory-query 'note '("session-summary") nil 3 nil nil))
+          (decisions (emacs-mcp-memory-query 'decision nil nil 10 nil nil))
+          (conventions (emacs-mcp-memory-query 'convention nil nil 10 nil nil))
+          (snippets-meta (seq-take 
+                          (mapcar (lambda (e) 
+                                    (list :id (plist-get e :id)
+                                          :preview (truncate-string-to-width 
+                                                    (or (plist-get e :content) "") 60)))
+                                  (emacs-mcp-memory-query 'snippet nil nil 5 nil nil))
+                          5))
+          (expiring (emacs-mcp-memory-query-expiring 7))
+          (git-branch (string-trim 
+                       (shell-command-to-string "git rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'none'")))
+          (uncommitted (not (string-empty-p 
+                             (shell-command-to-string "git status --porcelain 2>/dev/null"))))
+          (last-commit (string-trim
+                        (shell-command-to-string "git log -1 --format='%h - %s' 2>/dev/null || echo 'none'"))))
+      
+      (list :success t
+            :project project-name
+            :scopes applicable-scopes
+            :git (list :branch git-branch
+                       :uncommitted uncommitted  
+                       :last-commit last-commit)
+            :memory (list :session-notes (length session-notes)
+                          :decisions (length decisions)
+                          :conventions (length conventions)
+                          :snippets-available (length snippets-meta)
+                          :expiring-soon (length expiring))
+            :context (list :recent-sessions session-notes
+                           :active-decisions decisions
+                           :conventions conventions
+                           :snippet-previews snippets-meta
+                           :expiring-entries expiring)))))
+
 ;;; Built-in Example Workflows
 
 (defun emacs-mcp-workflow--register-builtins ()
@@ -333,7 +576,39 @@ HANDLER receives (step env) and should return updated env."
                         :command "git commit -m \"${message}\"")
                        (:type :notify
                         :message "Committed: ${message}")))
+             emacs-mcp-workflow-registry))
+  
+  ;; Wrap workflow (memory-integrated)
+  ;; Uses :handler instead of :steps for direct function invocation with args
+  (unless (gethash "wrap" emacs-mcp-workflow-registry)
+    (puthash "wrap"
+             '(:name "wrap"
+               :description "End-of-session wrap-up (Memory-Integrated)"
+               :params ((:name "accomplishments" :type list :required nil
+                         :description "List of completed tasks")
+                        (:name "decisions" :type list :required nil
+                         :description "List of decisions made")
+                        (:name "conventions" :type list :required nil
+                         :description "List of conventions to store permanently")
+                        (:name "in-progress" :type list :required nil
+                         :description "List of in-progress items")
+                        (:name "next-actions" :type list :required nil
+                         :description "List of next session priorities")
+                        (:name "completed-tasks" :type list :required nil
+                         :description "Kanban task IDs to mark done"))
+               :handler emacs-mcp-workflow-wrap)
+             emacs-mcp-workflow-registry))
+
+  ;; Catchup workflow (memory-integrated)
+  (unless (gethash "catchup" emacs-mcp-workflow-registry)
+    (puthash "catchup"
+             '(:name "catchup"
+               :description "Catch Up (Memory-Integrated)"
+               :handler emacs-mcp-workflow-catchup)
              emacs-mcp-workflow-registry)))
+
+;; Auto-register builtins on load
+(emacs-mcp-workflow--register-builtins)
 
 (provide 'emacs-mcp-workflows)
 ;;; emacs-mcp-workflows.el ends here

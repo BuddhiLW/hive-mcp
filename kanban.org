@@ -358,6 +358,7 @@ PR #15 + #23 merged. Beamer and Reveal.js support with C4 diagram integration.
 :PROPERTIES:
 :AGENT:    emacs-126582
 :SESSION:  20260101-225558
+:ID:       f5a1df59-69e0-4627-b504-f0f5b449acd0
 :END:
 :PROPERTIES:
 :ID:       65fa8cc4-6633-4e71-80ef-31f53ce4fbd5
@@ -368,6 +369,15 @@ Add byte-compile validation to TDD preset prompt. Before committing, ling must r
 
 Implementation: Add to presets.el TDD template: "Before committing, run M-x byte-compile-file on all modified .el files. Fix any warnings before proceeding."
 :END:
+** TODO BUG: Production missing DLQ tables + 1927 orphaned dependents
+:PROPERTIES:
+:ID:       224bdf18-029a-468d-987c-c5bf7e33d89e
+:CREATED:  2026-01-02 20:02
+:DESCRIPTION: CRITICAL: Production sync.schema missing cursors and dead_letter_queue tables. 1927 dependents in key_mappings but not in contributor.dependents table. Need to: 1) Apply missing migrations, 2) Re-sync dependents with proper FK resolution
+:AGENT:    emacs-14302
+:SESSION:  20260102-200244
+:END:
+
 
 
 

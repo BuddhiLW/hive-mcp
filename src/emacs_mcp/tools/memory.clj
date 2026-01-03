@@ -61,18 +61,23 @@
     {:type "text" :text "Error: emacs-mcp.el is not loaded." :isError true}))
 
 (defn handle-mcp-memory-query
-  "Query project memory by type."
-  [{:keys [type tags limit duration]}]
-  (log/info "mcp-memory-query:" type)
+  "Query project memory by type with scope filtering.
+  SCOPE controls which memories are returned:
+    - nil/omitted: auto-filter by current project + global
+    - \"all\": return all entries regardless of scope  
+    - \"global\": return only scope:global entries
+    - specific scope tag: filter by that scope"
+  [{:keys [type tags limit duration scope]}]
+  (log/info "mcp-memory-query:" type "scope:" scope)
   (if (emacs-mcp-el-available?)
     (let [tags-str (vec->elisp-list tags)
           limit-val (or limit 20)
-          duration-str (if duration (pr-str duration) "nil")
+          scope-str (if scope (pr-str scope) "nil")
           elisp (format "(json-encode (emacs-mcp-api-memory-query %s %s %d %s))"
                         (pr-str type)
                         tags-str
                         limit-val
-                        duration-str)
+                        scope-str)
           {:keys [success result error]} (ec/eval-elisp elisp)]
       (if success
         {:type "text" :text result}
@@ -82,16 +87,19 @@
 (defn handle-mcp-memory-query-metadata
   "Query project memory by type, returning only metadata (id, type, preview, tags, created).
   Use this for efficient browsing - returns ~10x fewer tokens than full query.
-  Follow up with mcp_memory_get_full to fetch specific entries."
-  [{:keys [type tags limit]}]
-  (log/info "mcp-memory-query-metadata:" type)
+  Follow up with mcp_memory_get_full to fetch specific entries.
+  SCOPE controls filtering (see handle-mcp-memory-query for options)."
+  [{:keys [type tags limit scope]}]
+  (log/info "mcp-memory-query-metadata:" type "scope:" scope)
   (if (emacs-mcp-el-available?)
     (let [tags-str (vec->elisp-list tags)
           limit-val (or limit 20)
-          elisp (format "(json-encode (emacs-mcp-api-memory-query-metadata %s %s %d))"
+          scope-str (if scope (pr-str scope) "nil")
+          elisp (format "(json-encode (emacs-mcp-api-memory-query-metadata %s %s %d %s))"
                         (pr-str type)
                         tags-str
-                        limit-val)
+                        limit-val
+                        scope-str)
           {:keys [success result error]} (ec/eval-elisp elisp)]
       (if success
         {:type "text" :text result}
@@ -296,7 +304,7 @@
     :handler handle-mcp-memory-add}
 
    {:name "mcp_memory_query"
-    :description "Query project memory by type. Returns stored notes, snippets, conventions, or decisions. Optionally filter by duration category. Requires emacs-mcp.el."
+    :description "Query project memory by type with scope filtering. Returns stored notes, snippets, conventions, or decisions filtered by scope (auto-filters by current project + global unless specified). Requires emacs-mcp.el."
     :inputSchema {:type "object"
                   :properties {"type" {:type "string"
                                        :enum ["note" "snippet" "convention" "decision" "conversation"]
@@ -308,7 +316,9 @@
                                         :description "Maximum number of results (default: 20)"}
                                "duration" {:type "string"
                                            :enum ["ephemeral" "short" "medium" "long" "permanent"]
-                                           :description "Filter by duration category"}}
+                                           :description "Filter by duration category"}
+                               "scope" {:type "string"
+                                        :description "Scope filter: nil=auto (project+global), 'all'=no filter, 'global'=only global, or specific scope tag"}}
                   :required ["type"]}
     :handler handle-mcp-memory-query}
 
@@ -322,7 +332,9 @@
                                        :items {:type "string"}
                                        :description "Optional tags to filter by"}
                                "limit" {:type "integer"
-                                        :description "Maximum number of results (default: 20)"}}
+                                        :description "Maximum number of results (default: 20)"}
+                               "scope" {:type "string"
+                                        :description "Scope filter: nil=auto (project+global), 'all'=no filter, 'global'=only global, or specific scope tag"}}
                   :required ["type"]}
     :handler handle-mcp-memory-query-metadata}
 

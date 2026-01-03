@@ -92,6 +92,78 @@ Uses SHA1 hash of absolute path for filesystem-safe naming."
   (when-let* ((proj (project-current)))
     (project-root proj)))
 
+(defun emacs-mcp-memory--get-project-name ()
+  "Get current project name (directory basename), or nil if not in a project."
+  (when-let* ((root (emacs-mcp-memory--get-project-root)))
+    (file-name-nondirectory (directory-file-name root))))
+
+;;; Scope System
+;;
+;; Scopes allow layered memory isolation:
+;;   scope:global         - universal (SOLID, DDD, etc.)
+;;   scope:domain:<name>  - cross-project within domain
+;;   scope:project:<name> - single project only
+;;
+;; Query behavior: returns union of applicable scopes
+
+(defun emacs-mcp-memory--make-scope-tag (level &optional name)
+  "Create a scope tag for LEVEL with optional NAME.
+LEVEL is one of: global, domain, project.
+NAME is required for domain and project levels."
+  (pcase level
+    ('global "scope:global")
+    ('domain (format "scope:domain:%s" name))
+    ('project (format "scope:project:%s" name))
+    (_ (error "Invalid scope level: %s" level))))
+
+(defun emacs-mcp-memory--parse-scope-tag (tag)
+  "Parse a scope TAG into (level . name) cons.
+Returns nil if TAG is not a scope tag."
+  (cond
+   ((string= tag "scope:global") '(global . nil))
+   ((string-prefix-p "scope:domain:" tag)
+    (cons 'domain (substring tag (length "scope:domain:"))))
+   ((string-prefix-p "scope:project:" tag)
+    (cons 'project (substring tag (length "scope:project:"))))
+   (t nil)))
+
+(defun emacs-mcp-memory--has-scope-tag-p (tags)
+  "Return non-nil if TAGS contains any scope tag."
+  (seq-some (lambda (tag) (string-prefix-p "scope:" tag)) tags))
+
+(defun emacs-mcp-memory--inject-project-scope (tags)
+  "Inject current project scope into TAGS if no scope present.
+Returns modified tags list."
+  (if (emacs-mcp-memory--has-scope-tag-p tags)
+      tags  ; Already has scope
+    (if-let* ((project-name (emacs-mcp-memory--get-project-name)))
+        (cons (emacs-mcp-memory--make-scope-tag 'project project-name) tags)
+      tags)))  ; Not in project, leave as-is (global)
+
+(defun emacs-mcp-memory--applicable-scope-tags (&optional project-name domain-name)
+  "Return list of scope tags applicable to current context.
+PROJECT-NAME defaults to current project.
+DOMAIN-NAME is optional domain filter.
+Always includes scope:global."
+  (let ((tags (list "scope:global")))
+    (when domain-name
+      (push (emacs-mcp-memory--make-scope-tag 'domain domain-name) tags))
+    (when-let* ((proj (or project-name (emacs-mcp-memory--get-project-name))))
+      (push (emacs-mcp-memory--make-scope-tag 'project proj) tags))
+    tags))
+
+(defun emacs-mcp-memory--entry-matches-scope-p (entry scope-tags)
+  "Return non-nil if ENTRY matches any of SCOPE-TAGS.
+Entries without scope tags are treated as global."
+  (let ((entry-tags (plist-get entry :tags)))
+    (if (emacs-mcp-memory--has-scope-tag-p entry-tags)
+        ;; Entry has scope - check if it matches any applicable scope
+        (seq-some (lambda (scope-tag)
+                    (seq-contains-p entry-tags scope-tag #'string=))
+                  scope-tags)
+      ;; No scope tag = global, always matches
+      t)))
+
 ;;; Duration Functions
 
 (defun emacs-mcp-memory--calculate-expires (duration)
@@ -338,7 +410,9 @@ Returns a list of unique tags."
   "Add a memory entry of TYPE with CONTENT.
 TYPE is one of: note, snippet, convention, decision, conversation.
 CONTENT is a string or plist.
-TAGS is optional list of strings.
+TAGS is optional list of strings.  If no scope tag (scope:global,
+scope:domain:*, scope:project:*) is present, automatically injects
+the current project scope.
 PROJECT-ID defaults to current project or global.
 DURATION is optional lifespan (symbol from `emacs-mcp-memory-durations').
 Defaults to `emacs-mcp-memory-default-duration'.
@@ -348,15 +422,17 @@ the existing entry is returned instead of creating a duplicate.
 If TAGS are provided, they are merged with the existing entry's tags."
   (let* ((pid (or project-id (emacs-mcp-memory--project-id)))
          (type-str (if (symbolp type) (symbol-name type) type))
+         ;; Auto-inject project scope if no scope tag present
+         (tags-with-scope (emacs-mcp-memory--inject-project-scope (or tags '())))
          (content-hash (emacs-mcp-memory-content-hash content))
          ;; Check for duplicate (skip for conversations - they're logs)
          (existing (unless (string= type-str "conversation")
                      (emacs-mcp-memory-find-duplicate type content pid))))
     (if existing
         ;; Duplicate found - merge tags if new ones provided
-        (if (and tags (not (seq-empty-p tags)))
+        (if (and tags-with-scope (not (seq-empty-p tags-with-scope)))
             (let ((merged-tags (emacs-mcp-memory--merge-tags
-                                (plist-get existing :tags) tags)))
+                                (plist-get existing :tags) tags-with-scope)))
               (emacs-mcp-memory-update (plist-get existing :id)
                                        (list :tags merged-tags) pid)
               ;; Return updated entry
@@ -369,7 +445,7 @@ If TAGS are provided, they are merged with the existing entry's tags."
                           :type type-str
                           :content content
                           :content-hash content-hash
-                          :tags (or tags '())
+                          :tags tags-with-scope
                           :duration (symbol-name dur)
                           :expires (emacs-mcp-memory--calculate-expires dur)
                           :created (emacs-mcp-memory--timestamp)
@@ -396,26 +472,46 @@ If TAGS are provided, they are merged with the existing entry's tags."
             (throw 'found entry))))
       nil)))
 
-(defun emacs-mcp-memory-query (type &optional tags project-id limit duration)
+(defun emacs-mcp-memory-query (type &optional tags project-id limit duration scope-filter)
   "Query memories by TYPE and optional TAGS.
 PROJECT-ID specifies the project (defaults to current).
 Returns list of matching entries, most recent first.
 LIMIT caps the number of results.
 DURATION filters by lifespan category (symbol from `emacs-mcp-memory-durations').
-Entries without :duration are treated as `long-term' for backwards compatibility."
+Entries without :duration are treated as `long-term' for backwards compatibility.
+SCOPE-FILTER controls scope filtering:
+  - nil: apply automatic scope filtering (global + current project)
+  - t or 'all: return all entries regardless of scope
+  - 'global: return only scope:global entries
+  - string: filter by specific scope tag (e.g., \"scope:project:myproj\")"
   (let* ((pid (or project-id (emacs-mcp-memory--project-id)))
          (type-str (if (symbolp type) (symbol-name type) type))
          (data (emacs-mcp-memory--get-data pid type-str))
          (results data))
-    ;; Filter by tags if provided
+    ;; Apply scope filtering
+    (unless (or (eq scope-filter t) (eq scope-filter 'all))
+      (let ((applicable-scopes
+             (cond
+              ((eq scope-filter 'global) (list "scope:global"))
+              ((stringp scope-filter) (list scope-filter "scope:global"))
+              (t (emacs-mcp-memory--applicable-scope-tags)))))
+        (setq results
+              (seq-filter
+               (lambda (entry)
+                 (emacs-mcp-memory--entry-matches-scope-p entry applicable-scopes))
+               results))))
+    ;; Filter by tags if provided (non-scope tags)
     (when tags
-      (setq results
-            (seq-filter
-             (lambda (entry)
-               (let ((entry-tags (plist-get entry :tags)))
-                 ;; Handle both list and vector tags (vectors from JSON)
-                 (seq-every-p (lambda (tag) (seq-contains-p entry-tags tag #'equal)) tags)))
-             results)))
+      (let ((non-scope-tags (seq-remove (lambda (tag) (string-prefix-p "scope:" tag)) tags)))
+        (when non-scope-tags
+          (setq results
+                (seq-filter
+                 (lambda (entry)
+                   (let ((entry-tags (plist-get entry :tags)))
+                     ;; Handle both list and vector tags (vectors from JSON)
+                     (seq-every-p (lambda (tag) (seq-contains-p entry-tags tag #'equal))
+                                  non-scope-tags)))
+                 results)))))
     ;; Filter by duration if provided
     (when duration
       (let ((dur-str (symbol-name duration)))
