@@ -7,12 +7,13 @@
    Tools:
    - hivemind_shout: Broadcast status/progress to coordinator
    - hivemind_ask: Request human decision (blocks until response)
-   - hivemind_status: Get current hivemind state
-   - hivemind_listen: Subscribe to specific event types
+   - hivemind_status: Get current hivemind state (includes pending prompts)
+   - hivemind_messages: Get recent messages from specific agent
    
-   All communication flows through the bidirectional channel to Emacs."
+   Architecture: Pure push via channel.clj, accumulated state via atoms.
+   Coordinator queries get-status when ready - no polling loops needed."
   (:require [emacs-mcp.channel :as channel]
-            [clojure.core.async :as async :refer [<!! >!! chan timeout alt!!]]
+            [clojure.core.async :as async :refer [<!! >!! chan alt!!]]
             [clojure.data.json :as json]
             [taoensso.timbre :as log]))
 
@@ -187,40 +188,9 @@
 ;; =============================================================================
 ;; Event Subscriptions (for agents to listen)
 
-(defn listen!
-  "Block and wait for the next hivemind event.
-   
-   event-types: vector of event type keywords to listen for
-                e.g. [:hivemind-progress :hivemind-completed :hivemind-error]
-                Use nil or empty to listen for ALL hivemind events.
-   timeout-ms: how long to wait (default 30 seconds)
-   
-   Returns the event map or {:timeout true} if no event within timeout.
-   
-   This enables push-like semantics for the coordinator:
-   instead of polling hivemind_status, call hivemind_listen to block
-   until an agent shouts."
-  [event-types timeout-ms]
-  (let [;; Default to all hivemind event types
-        types (if (seq event-types)
-                (mapv keyword event-types)
-                [:hivemind-progress :hivemind-completed :hivemind-error
-                 :hivemind-blocked :hivemind-started :hivemind-ask])
-        ;; Create channels for each event type
-        channels (mapv (fn [t] [t (channel/subscribe! t)]) types)
-        ;; Timeout channel
-        timeout-ch (timeout (or timeout-ms 30000))]
-    (try
-      (let [;; Use alts!! to wait on all channels + timeout
-            all-chs (conj (mapv second channels) timeout-ch)
-            [event ch] (async/alts!! all-chs)]
-        (if (= ch timeout-ch)
-          {:timeout true :listened-for types :timeout-ms (or timeout-ms 30000)}
-          event))
-      (finally
-        ;; Cleanup: unsubscribe from all channels
-        (doseq [[event-type ch] channels]
-          (channel/unsubscribe! event-type ch))))))
+;; REMOVED: listen! was a polling anti-pattern
+;; Event-driven architecture: shout! pushes to channel, get-status reads accumulated state
+;; No blocking/polling needed - the coordinator queries when ready
 
 ;; =============================================================================
 ;; MCP Tool Definitions
@@ -331,40 +301,8 @@ Use this to retrieve message content that agents have broadcast."
                        (if-let [messages (get-agent-messages agent_id)]
                          {:agent_id agent_id :messages messages}
                          {:error (str "Agent not found: " agent_id)
-                          :available-agents (keys @agent-registry)}))})}
-
-   {:name "hivemind_listen"
-    :description "Block and wait for the next hivemind event (push notification).
-                  
-USE THIS instead of polling hivemind_status when you want real-time updates.
-This tool BLOCKS until an event arrives or timeout expires.
-
-Returns the event directly when an agent shouts, without polling delay.
-
-Event types:
-- hivemind-started: Agent started a task
-- hivemind-progress: Agent progress update
-- hivemind-completed: Agent finished successfully
-- hivemind-error: Agent encountered an error
-- hivemind-blocked: Agent needs input
-- hivemind-ask: Agent asking a question
-
-Example workflow:
-1. Spawn agents with swarm_spawn
-2. Call hivemind_listen to wait for events
-3. Process the event (respond to asks, log progress)
-4. Loop back to step 2"
-    :inputSchema {:type "object"
-                  :properties {"event_types" {:type "array"
-                                              :items {:type "string"}
-                                              :description "Event types to listen for (omit for all)"}
-                               "timeout_ms" {:type "integer"
-                                             :description "Timeout in ms (default 30000 = 30 sec)"}}
-                  :required []}
-    :handler (fn [{:keys [event_types timeout_ms]}]
-               (let [result (listen! event_types (or timeout_ms 30000))]
-                 {:type "text"
-                  :text (json/write-str result)}))}])
+                          :available-agents (keys @agent-registry)}))})}])
+;; REMOVED: hivemind_listen - polling anti-pattern, use event-driven get-status instead
 
 (defn register-tools!
   "Register hivemind tools with the MCP server."
