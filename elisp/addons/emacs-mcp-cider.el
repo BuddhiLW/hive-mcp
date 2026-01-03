@@ -624,6 +624,93 @@ Shows output in REPL buffer for collaborative debugging."
         :repl-type (when (and (featurep 'cider) (boundp 'cider-repl-type))
                      cider-repl-type)))
 
+;;;###autoload
+(defun emacs-mcp-cider-doc (symbol-name)
+  "Get documentation for SYMBOL-NAME using CIDER.
+Returns a plist with :doc, :arglists, :ns, :name."
+  (if (and (featurep 'cider) (cider-connected-p))
+      (let* ((info (cider-var-info symbol-name))
+             (doc (nrepl-dict-get info "doc"))
+             (arglists (nrepl-dict-get info "arglists"))
+             (ns (nrepl-dict-get info "ns"))
+             (name (nrepl-dict-get info "name"))
+             (file (nrepl-dict-get info "file"))
+             (line (nrepl-dict-get info "line")))
+        (list :doc (or doc "No documentation available")
+              :arglists (or arglists "")
+              :ns (or ns "")
+              :name (or name symbol-name)
+              :file (or file "")
+              :line (or line 0)))
+    (error "CIDER not connected")))
+
+;;;###autoload
+(defun emacs-mcp-cider-apropos (pattern &optional docs-p)
+  "Search for symbols matching PATTERN using CIDER.
+If DOCS-P is non-nil, also search in docstrings.
+Returns a vector of matching symbols with their info."
+  (if (and (featurep 'cider) (cider-connected-p))
+      (let* ((ns (cider-current-ns))
+             (response (cider-nrepl-send-sync-request
+                        (list "op" "apropos"
+                              "query" pattern
+                              "ns" ns
+                              "docs?" (if docs-p "t" nil)
+                              "privates?" "t"
+                              "case-sensitive?" nil)))
+             (apropos-matches (nrepl-dict-get response "apropos-matches")))
+        (if apropos-matches
+            (vconcat
+             (mapcar (lambda (match)
+                       (list :name (nrepl-dict-get match "name")
+                             :type (nrepl-dict-get match "type")
+                             :doc (or (nrepl-dict-get match "doc") "")))
+                     apropos-matches))
+          []))
+    (error "CIDER not connected")))
+
+;;;###autoload
+(defun emacs-mcp-cider-info (symbol-name)
+  "Get full semantic info for SYMBOL-NAME via CIDER's info op.
+Returns comprehensive information including source location, spec, etc."
+  (if (and (featurep 'cider) (cider-connected-p))
+      (let* ((info (cider-var-info symbol-name)))
+        (if info
+            (let ((result '()))
+              ;; Extract all useful fields from the nrepl-dict
+              (dolist (key '("name" "ns" "doc" "arglists" "file" "line" "column"
+                             "resource" "macro" "special-form" "protocol"
+                             "spec" "see-also" "added" "deprecated"))
+                (let ((val (nrepl-dict-get info key)))
+                  (when val
+                    (setq result (plist-put result (intern (concat ":" key)) val)))))
+              result)
+          (list :error (format "No info found for '%s'" symbol-name))))
+    (error "CIDER not connected")))
+
+;;;###autoload
+(defun emacs-mcp-cider-complete (prefix)
+  "Get completions for PREFIX using CIDER.
+Returns a vector of completion candidates."
+  (if (and (featurep 'cider) (cider-connected-p))
+      (let* ((ns (cider-current-ns))
+             (context (cider-completion-get-context))
+             (response (cider-nrepl-send-sync-request
+                        (list "op" "complete"
+                              "ns" ns
+                              "prefix" prefix
+                              "context" context)))
+             (completions (nrepl-dict-get response "completions")))
+        (if completions
+            (vconcat
+             (mapcar (lambda (c)
+                       (list :candidate (nrepl-dict-get c "candidate")
+                             :type (nrepl-dict-get c "type")
+                             :ns (nrepl-dict-get c "ns")))
+                     completions))
+          []))
+    (error "CIDER not connected")))
+
 ;;;; Addon Lifecycle Functions:
 
 (defun emacs-mcp-cider--addon-init ()

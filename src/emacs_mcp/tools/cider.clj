@@ -118,6 +118,51 @@
       (mcp-error (format "Error: %s" error)))))
 
 ;; =============================================================================
+;; CIDER Documentation Tools
+;; =============================================================================
+
+(defn handle-cider-doc
+  "Get documentation for a Clojure symbol via CIDER."
+  [{:keys [symbol]}]
+  (log/info "cider-doc" {:symbol symbol})
+  (let [elisp (el/require-and-call-json 'emacs-mcp-cider 'emacs-mcp-cider-doc symbol)
+        {:keys [success result error]} (ec/eval-elisp elisp)]
+    (if success
+      (mcp-success result)
+      (mcp-error (str "Error: " error)))))
+
+(defn handle-cider-apropos
+  "Search for symbols matching a pattern via CIDER."
+  [{:keys [pattern search_docs]}]
+  (log/info "cider-apropos" {:pattern pattern :search_docs search_docs})
+  (let [elisp (el/require-and-call-json 'emacs-mcp-cider 'emacs-mcp-cider-apropos
+                                        pattern (boolean search_docs))
+        {:keys [success result error]} (ec/eval-elisp elisp)]
+    (if success
+      (mcp-success result)
+      (mcp-error (str "Error: " error)))))
+
+(defn handle-cider-info
+  "Get full semantic info for a symbol via CIDER."
+  [{:keys [symbol]}]
+  (log/info "cider-info" {:symbol symbol})
+  (let [elisp (el/require-and-call-json 'emacs-mcp-cider 'emacs-mcp-cider-info symbol)
+        {:keys [success result error]} (ec/eval-elisp elisp)]
+    (if success
+      (mcp-success result)
+      (mcp-error (str "Error: " error)))))
+
+(defn handle-cider-complete
+  "Get completions for a prefix via CIDER."
+  [{:keys [prefix]}]
+  (log/info "cider-complete" {:prefix prefix})
+  (let [elisp (el/require-and-call-json 'emacs-mcp-cider 'emacs-mcp-cider-complete prefix)
+        {:keys [success result error]} (ec/eval-elisp elisp)]
+    (if success
+      (mcp-success result)
+      (mcp-error (str "Error: " error)))))
+
+;; =============================================================================
 ;; Tool Definitions
 ;; =============================================================================
 
@@ -181,4 +226,40 @@
    {:name "cider_kill_all_sessions"
     :description "Kill all CIDER sessions. Useful for cleanup after parallel agent work."
     :inputSchema {:type "object" :properties {}}
-    :handler handle-cider-kill-all-sessions}])
+    :handler handle-cider-kill-all-sessions}
+
+   ;; Documentation Tools
+   {:name "cider_doc"
+    :description "Get documentation for a Clojure symbol. Returns docstring, arglists, namespace, source location. Use for looking up function/var documentation."
+    :inputSchema {:type "object"
+                  :properties {"symbol" {:type "string"
+                                         :description "Fully qualified or unqualified symbol name (e.g., 'map', 'clojure.string/join')"}}
+                  :required ["symbol"]}
+    :handler handle-cider-doc}
+
+   {:name "cider_apropos"
+    :description "Search for Clojure symbols matching a pattern. Finds functions, vars, macros by name. Optionally searches docstrings too."
+    :inputSchema {:type "object"
+                  :properties {"pattern" {:type "string"
+                                          :description "Regex pattern to match symbol names (e.g., 'map', 'str.*join')"}
+                               "search_docs" {:type "boolean"
+                                              :description "Also search in docstrings (default: false)"}}
+                  :required ["pattern"]}
+    :handler handle-cider-apropos}
+
+   {:name "cider_info"
+    :description "Get full semantic info for a Clojure symbol via CIDER. Returns comprehensive metadata: namespace, arglists, docstring, source file/line, specs, deprecation info, etc."
+    :inputSchema {:type "object"
+                  :properties {"symbol" {:type "string"
+                                         :description "Fully qualified or unqualified symbol name"}}
+                  :required ["symbol"]}
+    :handler handle-cider-info}
+
+   {:name "cider_complete"
+    :description "Get code completions for a prefix. Returns matching symbols with their types and namespaces. Useful for discovering available functions."
+    :inputSchema {:type "object"
+                  :properties {"prefix" {:type "string"
+                                         :description "Prefix to complete (e.g., 'clojure.string/jo', 'map')"}}
+                  :required ["prefix"]}
+    :handler handle-cider-complete}])
+

@@ -18,13 +18,21 @@
   (let [{:keys [success result]} (ec/eval-elisp "(featurep 'emacs-mcp)")]
     (and success (= result "t"))))
 
+(defn- vec->elisp-list
+  "Convert Clojure vector to elisp list string.
+   [\"a\" \"b\"] -> \"'(\\\"a\\\" \\\"b\\\")\""
+  [v]
+  (if (seq v)
+    (str "'(" (str/join " " (map pr-str v)) ")")
+    "nil"))
+
 (defn handle-mcp-memory-add
   "Add an entry to project memory.
    After successful elisp memory add, auto-indexes in Chroma if configured."
   [{:keys [type content tags duration]}]
   (log/info "mcp-memory-add:" type)
   (if (emacs-mcp-el-available?)
-    (let [tags-str (if (seq tags) (str "'" (pr-str tags)) "nil")
+    (let [tags-str (vec->elisp-list tags)
           duration-str (if duration (pr-str duration) "nil")
           elisp (format "(json-encode (emacs-mcp-api-memory-add %s %s %s %s))"
                         (pr-str type)
@@ -57,7 +65,7 @@
   [{:keys [type tags limit duration]}]
   (log/info "mcp-memory-query:" type)
   (if (emacs-mcp-el-available?)
-    (let [tags-str (if (seq tags) (str "'" (pr-str tags)) "nil")
+    (let [tags-str (vec->elisp-list tags)
           limit-val (or limit 20)
           duration-str (if duration (pr-str duration) "nil")
           elisp (format "(json-encode (emacs-mcp-api-memory-query %s %s %d %s))"
@@ -78,7 +86,7 @@
   [{:keys [type tags limit]}]
   (log/info "mcp-memory-query-metadata:" type)
   (if (emacs-mcp-el-available?)
-    (let [tags-str (if (seq tags) (str "'" (pr-str tags)) "nil")
+    (let [tags-str (vec->elisp-list tags)
           limit-val (or limit 20)
           elisp (format "(json-encode (emacs-mcp-api-memory-query-metadata %s %s %d))"
                         (pr-str type)

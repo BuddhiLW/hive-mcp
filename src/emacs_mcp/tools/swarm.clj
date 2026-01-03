@@ -11,6 +11,7 @@
   (:require [emacs-mcp.tools.core :refer [mcp-success mcp-error mcp-json]]
             [emacs-mcp.emacsclient :as ec]
             [emacs-mcp.validation :as v]
+            [emacs-mcp.swarm.coordinator :as coord]
             [clojure.data.json :as json]
             [clojure.java.shell :as shell]
             [clojure.string :as str]
@@ -184,28 +185,77 @@
 
 (defn handle-swarm-dispatch
   "Dispatch a prompt to a slave.
-   Uses timeout to prevent MCP blocking."
-  [{:keys [slave_id prompt timeout_ms]}]
+   Runs pre-flight conflict checks before dispatch.
+   Uses timeout to prevent MCP blocking.
+
+   Parameters:
+   - slave_id: Target slave for dispatch
+   - prompt: The prompt/task to send
+   - timeout_ms: Optional timeout in milliseconds
+   - files: Optional explicit list of files task will modify"
+  [{:keys [slave_id prompt timeout_ms files]}]
   (if (swarm-addon-available?)
-    (let [elisp (format "(json-encode (emacs-mcp-swarm-api-dispatch \"%s\" \"%s\" %s))"
-                        (v/escape-elisp-string slave_id)
-                        (v/escape-elisp-string prompt)
-                        (or timeout_ms "nil"))
-          ;; Dispatch should be quick - 5s default timeout
-          {:keys [success result error timed-out]} (ec/eval-elisp-with-timeout elisp 5000)]
-      (cond
-        timed-out
+    ;; Pre-flight check: detect conflicts before dispatch
+    (let [preflight (coord/dispatch-or-queue!
+                     {:slave-id slave_id
+                      :prompt prompt
+                      :files files
+                      :timeout-ms timeout_ms})]
+      (case (:action preflight)
+        ;; Blocked due to circular dependency - cannot proceed
+        :blocked
         {:type "text"
-         :text (json/write-str {:error "Dispatch operation timed out"
-                                :status "timeout"
+         :text (json/write-str {:error "Dispatch blocked: circular dependency detected"
+                                :status "blocked"
+                                :would_deadlock (:would-deadlock preflight)
                                 :slave_id slave_id})
          :isError true}
 
-        success
-        {:type "text" :text result}
+        ;; Queued due to file conflicts - will dispatch when conflicts clear
+        :queued
+        {:type "text"
+         :text (json/write-str {:status "queued"
+                                :task_id (:task-id preflight)
+                                :queue_position (:position preflight)
+                                :conflicts (:conflicts preflight)
+                                :slave_id slave_id
+                                :message "Task queued - waiting for file conflicts to clear"})}
 
-        :else
-        {:type "text" :text (str "Error: " error) :isError true}))
+        ;; Approved - proceed with dispatch
+        :dispatch
+        (let [effective-files (:files preflight)
+              elisp (format "(json-encode (emacs-mcp-swarm-api-dispatch \"%s\" \"%s\" %s))"
+                            (v/escape-elisp-string slave_id)
+                            (v/escape-elisp-string prompt)
+                            (or timeout_ms "nil"))
+              ;; Dispatch should be quick - 5s default timeout
+              {:keys [success result error timed-out]} (ec/eval-elisp-with-timeout elisp 5000)]
+          (cond
+            timed-out
+            {:type "text"
+             :text (json/write-str {:error "Dispatch operation timed out"
+                                    :status "timeout"
+                                    :slave_id slave_id})
+             :isError true}
+
+            success
+            (do
+              ;; Register file claims for successful dispatch
+              (when-let [task-id (try
+                                   (:task-id (json/read-str result :key-fn keyword))
+                                   (catch Exception _ nil))]
+                (when (seq effective-files)
+                  (coord/register-task-claims! task-id slave_id effective-files)))
+              {:type "text" :text result})
+
+            :else
+            {:type "text" :text (str "Error: " error) :isError true}))
+
+        ;; Fallback
+        {:type "text"
+         :text (json/write-str {:error "Unknown pre-flight result"
+                                :preflight preflight})
+         :isError true}))
     {:type "text" :text "emacs-mcp-swarm addon not loaded." :isError true}))
 
 (defn handle-swarm-status
@@ -810,14 +860,17 @@
     :handler handle-swarm-spawn}
 
    {:name "swarm_dispatch"
-    :description "Send a prompt to a slave Claude instance. Returns a task_id for tracking."
+    :description "Send a prompt to a slave Claude instance. Runs pre-flight conflict checks. Returns task_id, or queues task if file conflicts detected."
     :inputSchema {:type "object"
                   :properties {"slave_id" {:type "string"
                                            :description "ID of the slave to send prompt to"}
                                "prompt" {:type "string"
                                          :description "The prompt/task to send to the slave"}
                                "timeout_ms" {:type "integer"
-                                             :description "Optional timeout in milliseconds"}}
+                                             :description "Optional timeout in milliseconds"}
+                               "files" {:type "array"
+                                        :items {:type "string"}
+                                        :description "Explicit list of files this task will modify (optional, extracted from prompt if not provided)"}}
                   :required ["slave_id" "prompt"]}
     :handler handle-swarm-dispatch}
 
@@ -906,4 +959,20 @@
                                "cleanup_dry_run" {:type "boolean"
                                                   :description "If auto_cleanup, whether to actually kill orphans (default: false)"}}
                   :required []}
-    :handler handle-resource-guard}])
+    :handler handle-resource-guard}
+
+   {:name "swarm_coordinator_status"
+    :description "Get hivemind coordinator status including task queue, file claims, and logic database stats."
+    :inputSchema {:type "object" :properties {}}
+    :handler (fn [_]
+               {:type "text"
+                :text (json/write-str (coord/coordinator-status))})}
+
+   {:name "swarm_process_queue"
+    :description "Process queued tasks - dispatch any tasks whose file conflicts have cleared."
+    :inputSchema {:type "object" :properties {}}
+    :handler (fn [_]
+               (let [ready (coord/process-queue!)]
+                 {:type "text"
+                  :text (json/write-str {:processed (count ready)
+                                         :tasks (mapv #(select-keys % [:id :slave-id]) ready)})}))}])
