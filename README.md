@@ -85,18 +85,97 @@ No more re-explaining your codebase. No more lost context.
 
 ---
 
-## Quick Start
+## Prerequisites
 
-### 1. Install
+| Requirement | Version | Install Guide |
+|-------------|---------|---------------|
+| **Emacs** | 28.1+ | [gnu.org/software/emacs](https://www.gnu.org/software/emacs/) |
+| **Claude Code CLI** | Latest | [claude.ai/download](https://claude.ai/download) |
+| **Java** | 17+ | `sudo apt install openjdk-17-jdk` |
+| **Clojure CLI** | 1.11+ | [clojure.org/guides/install_clojure](https://clojure.org/guides/install_clojure) |
+
+**Optional (for semantic search):**
+- [Ollama](https://ollama.ai) - local embeddings
+- [Docker](https://docker.com) - for Chroma vector DB
+
+---
+
+## Installation
+
+Choose your setup:
+
+### Option A: Lightweight via bb-mcp (Recommended)
+
+**[bb-mcp](https://github.com/BuddhiLW/bb-mcp)** is a Babashka wrapper that uses ~50MB RAM vs ~500MB for direct JVM. Multiple Claude instances share one Emacs connection.
+
+```bash
+# Install bb-mcp (includes emacs-mcp as dependency)
+git clone https://github.com/BuddhiLW/bb-mcp.git
+cd bb-mcp
+
+# Follow bb-mcp setup instructions
+# It will connect to emacs-mcp running on port 7910
+```
+
+See [bb-mcp README](https://github.com/BuddhiLW/bb-mcp) for complete setup.
+
+### Option B: Direct Clojure (Full Control)
+
+#### Step 1: Clone & Install Dependencies
 
 ```bash
 git clone https://github.com/BuddhiLW/emacs-mcp.git
 cd emacs-mcp
+clojure -P  # Download all dependencies (may take a minute)
 ```
 
-### 2. Configure Claude Code
+#### Step 2: Configure Emacs
 
-Add to `~/.claude.json`:
+Add to your Emacs config (`~/.emacs.d/init.el` or Doom: `~/.doom.d/config.el`):
+
+```elisp
+;; Add emacs-mcp to load path
+(add-to-list 'load-path "/path/to/emacs-mcp/elisp")
+(add-to-list 'load-path "/path/to/emacs-mcp/elisp/addons")
+
+;; Load core
+(require 'emacs-mcp)
+(emacs-mcp-mode 1)
+
+;; Load addons you want (all optional)
+(require 'emacs-mcp-magit nil t)      ;; Git integration
+(require 'emacs-mcp-projectile nil t) ;; Project navigation
+(require 'emacs-mcp-cider nil t)      ;; Clojure REPL
+(require 'emacs-mcp-swarm nil t)      ;; Multi-agent support
+
+;; REQUIRED: Start Emacs server for emacsclient
+(server-start)
+```
+
+#### Step 3: Start Emacs Daemon
+
+```bash
+# Start Emacs in daemon mode
+emacs --daemon
+
+# Verify it's running
+emacsclient -e '(emacs-version)'
+# Should print your Emacs version
+```
+
+#### Step 4: Register with Claude Code
+
+```bash
+# Automatic registration
+claude mcp add emacs-mcp --scope user -- \
+  clojure -X:mcp :project-dir '"/path/to/your/project"'
+
+# Verify registration
+claude mcp list
+# Should show: emacs-mcp
+```
+
+**Or manually** add to `~/.claude.json`:
 
 ```json
 {
@@ -110,24 +189,100 @@ Add to `~/.claude.json`:
 }
 ```
 
-### 3. Enable in Emacs
-
-```elisp
-;; In init.el
-(add-to-list 'load-path "/path/to/emacs-mcp/elisp")
-(require 'emacs-mcp)
-(emacs-mcp-mode 1)
-(server-start)  ; Required for emacsclient
-```
-
-### 4. (Optional) Enable Semantic Search
+#### Step 5: Verify Installation
 
 ```bash
-# Local embeddings via Ollama
+# Start Claude Code
+claude
+
+# Test Emacs connection
+> Check if Emacs is available using emacs_status
+
+# Expected response:
+# {:emacs-available true, :server-running true, ...}
+```
+
+---
+
+## Optional: Enable Semantic Search
+
+For vector-based memory search (find by meaning, not just keywords):
+
+```bash
+# 1. Install Ollama and pull embedding model
 ollama pull nomic-embed-text
 
-# Vector database via Docker
+# 2. Start Chroma vector database
+cd /path/to/emacs-mcp
 docker compose up -d
+
+# 3. Verify Chroma is running
+curl http://localhost:8000/api/v1/heartbeat
+# Should return: {"nanosecond heartbeat": ...}
+```
+
+Without semantic search, memory still works with keyword/tag queries.
+
+---
+
+## Troubleshooting
+
+### "Cannot connect to Emacs server"
+
+```bash
+# Check if Emacs daemon is running
+pgrep -f "emacs --daemon"
+
+# If not, start it
+emacs --daemon
+
+# Check server socket exists
+ls /run/user/$(id -u)/emacs/server
+# or
+ls /tmp/emacs$(id -u)/server
+```
+
+### "clojure: command not found"
+
+Install Clojure CLI:
+```bash
+# Linux
+curl -L -O https://github.com/clojure/brew-install/releases/latest/download/linux-install.sh
+chmod +x linux-install.sh
+sudo ./linux-install.sh
+
+# macOS
+brew install clojure/tools/clojure
+```
+
+### "MCP server failed to start"
+
+```bash
+# Download dependencies first
+cd /path/to/emacs-mcp
+clojure -P
+
+# Test server starts manually
+clojure -X:mcp
+# Should print: "Starting emacs-mcp server..."
+# Ctrl+C to stop
+```
+
+### "emacs-mcp.el not found"
+
+Verify your load-path in Emacs:
+```elisp
+M-x eval-expression RET
+(member "/path/to/emacs-mcp/elisp" load-path)
+;; Should return non-nil
+```
+
+### Memory not persisting
+
+Check memory directory exists:
+```bash
+ls ~/.emacs-mcp/memory/
+# Should contain .json files after first use
 ```
 
 ---
@@ -146,8 +301,9 @@ docker compose up -d
 │  │              emacs-mcp (Clojure)                    │   │
 │  │                                                     │   │
 │  │  Memory ──► JSON + Chroma (semantic)               │   │
-│  │  Channel ──► Unix socket (push events)             │   │
+│  │  Channel ──► TCP:9999 (push events)                │   │
 │  │  Swarm ──► Parallel Claude instances               │   │
+│  │  Hivemind ──► Agent coordination                   │   │
 │  └─────────────────────────────────────────────────────┘   │
 │                           │                                 │
 │                     emacsclient                             │
@@ -202,8 +358,10 @@ docker compose up -d
 | `swarm_collect` | Get task result |
 | `swarm_broadcast` | Send to all agents |
 | `swarm_status` | View all agents and tasks |
+| `hivemind_shout` | Broadcast to coordinator |
+| `hivemind_ask` | Request human decision |
 
-**Presets:** tdd, code-review, docs, clarity, security
+**Presets:** tdd, code-review, docs, clarity, security, hivemind
 
 </details>
 
@@ -273,7 +431,15 @@ LLMs need exactly what Lisp provides: homoiconicity, runtime metaprogramming, da
 | [Tool Reference](docs/TOOLS.md) | Complete tool documentation |
 | [Addon Guide](docs/addon-development.md) | Create custom addons |
 | [Architecture](docs/PROJECT_SUMMARY.md) | Technical deep-dive |
+| [Hivemind Demo](docs/DEMO_LING_DIALOGUE.md) | Multi-agent philosophical dialogue |
 | [Contributing](docs/CONTRIBUTING.md) | How to contribute |
+
+---
+
+## Related Projects
+
+- **[bb-mcp](https://github.com/BuddhiLW/bb-mcp)** - Lightweight Babashka MCP wrapper (~50MB vs ~500MB)
+- **[clojure-mcp](https://github.com/BuddhiLW/clojure-mcp)** - Standalone Clojure MCP tools
 
 ---
 
