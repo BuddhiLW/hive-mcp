@@ -346,6 +346,12 @@
     (reset! server-state nil)
     (log/info "Server stopped")))
 
+(defn connected?
+  "Check if channel server is running and has connected clients."
+  []
+  (when-let [{:keys [running clients]} @server-state]
+    (and @running (pos? (count @clients)))))
+
 (defn broadcast!
   "Send message to all connected clients."
   [msg]

@@ -89,6 +89,7 @@ and enables auto-loading for feature-triggered addons."
 (require 'emacs-mcp-api)
 (require 'emacs-mcp-addons)
 (require 'emacs-mcp-channel)
+(require 'emacs-mcp-hivemind)
 
 ;; Forward declaration for byte-compiler
 (declare-function emacs-mcp-addons-setup "emacs-mcp-addons")
