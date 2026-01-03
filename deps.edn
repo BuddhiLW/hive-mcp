@@ -14,7 +14,7 @@
         nrepl/bencode {:mvn/version "1.2.0"}
 
         ;; Logic programming for swarm hivemind coordination
-        org.clojure/core.logic {:mvn/version "1.1.0"}
+        org.clojure/core.logic {:mvn/version "1.1.1"}
 
         ;; Logging - Timbre with SLF4J bridge
         com.taoensso/timbre {:mvn/version "6.8.0"}

@@ -12,6 +12,7 @@
             [emacs-mcp.emacsclient :as ec]
             [emacs-mcp.validation :as v]
             [emacs-mcp.swarm.coordinator :as coord]
+            [emacs-mcp.swarm.hive :as hive]
             [clojure.data.json :as json]
             [clojure.java.shell :as shell]
             [clojure.string :as str]
@@ -186,17 +187,24 @@
 (defn handle-swarm-dispatch
   "Dispatch a prompt to a slave.
    Runs pre-flight conflict checks before dispatch.
+   Optionally injects hive knowledge context into prompt.
    Uses timeout to prevent MCP blocking.
 
    Parameters:
    - slave_id: Target slave for dispatch
    - prompt: The prompt/task to send
    - timeout_ms: Optional timeout in milliseconds
-   - files: Optional explicit list of files task will modify"
-  [{:keys [slave_id prompt timeout_ms files]}]
+   - files: Optional explicit list of files task will modify
+   - inject_hive: If true, inject hive knowledge context (conventions, decisions)"
+  [{:keys [slave_id prompt timeout_ms files inject_hive]}]
   (if (swarm-addon-available?)
-    ;; Pre-flight check: detect conflicts before dispatch
-    (let [preflight (coord/dispatch-or-queue!
+    ;; Optionally wrap prompt with hive knowledge context
+    (let [{:keys [prompt context-injected?] :as wrapped}
+          (if inject_hive
+            (hive/wrap-prompt-with-context prompt {:conventions 10 :decisions 5})
+            {:prompt prompt :context-injected? false})
+          ;; Pre-flight check: detect conflicts before dispatch
+          preflight (coord/dispatch-or-queue!
                      {:slave-id slave_id
                       :prompt prompt
                       :files files
@@ -219,6 +227,7 @@
                                 :queue_position (:position preflight)
                                 :conflicts (:conflicts preflight)
                                 :slave_id slave_id
+                                :hive_context_injected context-injected?
                                 :message "Task queued - waiting for file conflicts to clear"})}
 
         ;; Approved - proceed with dispatch
@@ -246,7 +255,10 @@
                                    (catch Exception _ nil))]
                 (when (seq effective-files)
                   (coord/register-task-claims! task-id slave_id effective-files)))
-              {:type "text" :text result})
+              ;; Merge hive injection info into result
+              (let [result-map (try (json/read-str result :key-fn keyword) (catch Exception _ {}))
+                    enhanced (assoc result-map :hive_context_injected context-injected?)]
+                {:type "text" :text (json/write-str enhanced)}))
 
             :else
             {:type "text" :text (str "Error: " error) :isError true}))
@@ -870,7 +882,9 @@
                                              :description "Optional timeout in milliseconds"}
                                "files" {:type "array"
                                         :items {:type "string"}
-                                        :description "Explicit list of files this task will modify (optional, extracted from prompt if not provided)"}}
+                                        :description "Explicit list of files this task will modify (optional, extracted from prompt if not provided)"}
+                               "inject_hive" {:type "boolean"
+                                              :description "If true, inject hive knowledge (conventions, decisions) into prompt. Enables collective learning across sessions."}}
                   :required ["slave_id" "prompt"]}
     :handler handle-swarm-dispatch}
 
@@ -975,4 +989,11 @@
                (let [ready (coord/process-queue!)]
                  {:type "text"
                   :text (json/write-str {:processed (count ready)
-                                         :tasks (mapv #(select-keys % [:id :slave-id]) ready)})}))}])
+                                         :tasks (mapv #(select-keys % [:id :slave-id]) ready)})}))}
+
+   {:name "swarm_hive_stats"
+    :description "Get statistics about available hive knowledge (conventions, decisions, notes). Use to understand what collective knowledge will be injected when inject_hive is enabled."
+    :inputSchema {:type "object" :properties {}}
+    :handler (fn [_]
+               {:type "text"
+                :text (json/write-str (hive/get-hive-stats))})}])
