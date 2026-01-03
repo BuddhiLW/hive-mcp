@@ -501,10 +501,11 @@ Returns structured result with:
                              (mapconcat #'symbol-name stored ", ")
                              expired-count)))))
 
-(defun emacs-mcp-workflow-catchup ()
+(defun emacs-mcp-workflow-catchup (&optional _args)
   "Execute the catchup workflow - restore context from memory.
 Queries session notes, decisions, and conventions with project scope.
-Returns structured context for display."
+Returns structured context for display.
+ARGS is unused but accepted for workflow handler compatibility."
   (interactive)
   (let* ((project-name (emacs-mcp-memory--get-project-name))
          (applicable-scopes (emacs-mcp-memory--applicable-scope-tags)))
