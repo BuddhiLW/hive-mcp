@@ -7,6 +7,7 @@
             [emacs-mcp.telemetry :as telemetry]
             [emacs-mcp.validation :as v]
             [clojure.data.json :as json]
+            [clojure.string :as str]
             [taoensso.timbre :as log]))
 
 ;; =============================================================================
@@ -183,15 +184,34 @@
         {:type "text" :text (str "Error: " error) :isError true}))
     {:type "text" :text "Error: emacs-mcp.el is not loaded." :isError true}))
 
+(defn- clj->elisp
+  "Convert Clojure value to elisp syntax string.
+   Maps become plists, vectors become lists, keywords become :keyword."
+  [v]
+  (cond
+    (nil? v) "nil"
+    (keyword? v) (str ":" (name v))
+    (string? v) (pr-str v)
+    (number? v) (str v)
+    (boolean? v) (if v "t" "nil")
+    (vector? v) (str "'(" (str/join " " (map clj->elisp v)) ")")
+    (sequential? v) (str "'(" (str/join " " (map clj->elisp v)) ")")
+    (map? v) (str "(list "
+                  (str/join " " (mapcat (fn [[k val]]
+                                          [(clj->elisp k) (clj->elisp val)])
+                                        v))
+                  ")")
+    :else (pr-str (str v))))
+
 (defn handle-mcp-run-workflow
   "Run a user-defined workflow."
   [{:keys [name args]}]
   (log/info "mcp-run-workflow:" name)
   (if (emacs-mcp-el-available?)
     (let [elisp (if args
-                  (format "(json-encode (emacs-mcp-api-run-workflow %s '%s))"
+                  (format "(json-encode (emacs-mcp-api-run-workflow %s %s))"
                           (pr-str name)
-                          (pr-str args))
+                          (clj->elisp args))
                   (format "(json-encode (emacs-mcp-api-run-workflow %s))"
                           (pr-str name)))
           {:keys [success result error]} (ec/eval-elisp elisp)]
