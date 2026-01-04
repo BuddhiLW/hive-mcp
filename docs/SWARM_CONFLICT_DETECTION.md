@@ -134,22 +134,34 @@ This keeps the logic database in sync with actual swarm state.
 
 ## The Concurrency Pattern
 
-This architecture implements **Pessimistic Concurrency Control** with characteristics of:
+**What architectural pattern does this "claim"-based system follow?**
 
-### Advisory Locking
-- Like Unix `flock()` — cooperative, not enforced
-- Agents choose to respect the coordinator
-- Malicious/buggy agents could bypass (but why would they?)
+| Pattern | How it applies |
+|---------|----------------|
+| **Pessimistic Locking** | Assumes conflicts *will* happen, blocks *before* the operation rather than detecting conflicts after |
+| **Advisory Locks** | Like Unix `flock()` — the lock is cooperative, agents *could* ignore it but choose to respect it |
+| **Lease/Claim pattern** | Agent acquires a "lease" on files, releases when done — similar to distributed lease coordination |
+| **Pre-flight Check** | Validates constraints before dispatch (like airline check-in before boarding) |
 
-### Lease-Based Coordination
-- Claims are "leases" on files
-- Released when task completes or fails
-- No timeout-based expiry (events drive release)
+**Key difference from mutex:** A mutex is kernel-enforced and blocking. This is:
 
-### Non-Blocking Queue
-- Conflicts don't block — they queue
-- When conflict clears, queued task becomes ready
-- Multiple tasks can wait for same file
+- **Coordinator-mediated** — logic database tracks claims, not kernel
+- **Non-blocking** — conflicting tasks get *queued*, not blocked
+- **Relational** — uses core.logic to reason about claims, dependencies, cycles
+
+The queue-on-conflict behavior is closer to **Optimistic Scheduling with Pessimistic Detection**:
+- *Optimistic* that the conflict will clear (task gets queued for retry)
+- *Pessimistic* in preventing simultaneous access
+
+### Lease Lifecycle
+
+| Phase | Behavior |
+|-------|----------|
+| **Acquire** | Agent claims files before editing |
+| **Hold** | Conflicting requests get queued, not blocked |
+| **Release** | Task completes/fails → claims released → queue processed |
+
+No timeout-based expiry — events drive the lifecycle.
 
 ```
 Timeline:
