@@ -608,7 +608,23 @@ ARGS is unused but accepted for workflow handler compatibility."
                            :active-decisions decisions
                            :conventions conventions
                            :snippet-previews snippets-meta
-                           :expiring-entries expiring)))))
+                           :expiring-entries expiring)
+            :session-guidance "## Session Guidance (Progressive Crystallization)
+
+As you work, proactively store insights using `mcp_memory_add` with:
+- type: 'note' or 'decision'
+- duration: 'ephemeral'
+- tags: include session tag and 'session-progress'
+
+These ephemeral entries will be reviewed and crystallized at wrap time.
+
+**Capture proactively:**
+- Key decisions and their rationale
+- Discoveries about the codebase  
+- Problems encountered and solutions
+- Ideas for future improvements
+
+When completing kanban tasks, move them to 'done' - the system will automatically create progress notes."))))
 
 ;;; Built-in Example Workflows
 

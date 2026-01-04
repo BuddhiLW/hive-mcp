@@ -6,6 +6,7 @@
             [emacs-mcp.emacsclient :as ec]
             [emacs-mcp.telemetry :as telemetry]
             [emacs-mcp.validation :as v]
+            [emacs-mcp.crystal.hooks :as crystal-hooks]
             [clojure.data.json :as json]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
@@ -222,19 +223,62 @@
 
 (defn handle-wrap-gather
   "Gather session data for wrap workflow without storing.
-   Returns gathered notes, commits, kanban activity for confirmation."
+   
+   Uses progressive crystallization to harvest:
+   - Session progress notes (from kanban completions)
+   - Completed tasks (ephemeral notes tagged session-progress)
+   - Git commits since session start
+   - Recall patterns (for smart promotion)
+   
+   Returns gathered data for confirmation before crystallization."
   [_params]
-  (log/info "wrap-gather")
-  (if (emacs-mcp-el-available?)
-    (let [elisp "(json-encode (emacs-mcp-api-wrap-gather))"
-          {:keys [success result error]} (ec/eval-elisp elisp)]
-      (if success
-        (try
-          {:type "text" :text result}
-          (catch Exception e
-            {:type "text" :text (str "Parse error: " (.getMessage e)) :isError true}))
-        {:type "text" :text (str "Error: " (or error "Failed to gather session data")) :isError true}))
-    {:type "text" :text "Error: emacs-mcp.el is not loaded." :isError true}))
+  (log/info "wrap-gather with crystal harvesting")
+  (try
+    ;; Use crystal hooks for comprehensive harvesting
+    (let [harvested (crystal-hooks/harvest-all)
+          ;; Also get elisp-side data for completeness
+          elisp-result (when (emacs-mcp-el-available?)
+                         (let [{:keys [success result]}
+                               (ec/eval-elisp "(json-encode (emacs-mcp-api-wrap-gather))")]
+                           (when success
+                             (try (json/read-str result :key-fn keyword)
+                                  (catch Exception _ nil)))))
+          ;; Merge both sources
+          combined {:crystal harvested
+                    :elisp elisp-result
+                    :session (:session harvested)
+                    :summary (merge (:summary harvested)
+                                    {:has-elisp-data (some? elisp-result)})}]
+      {:type "text"
+       :text (json/write-str combined)})
+    (catch Exception e
+      (log/error e "wrap-gather failed")
+      {:type "text"
+       :text (json/write-str {:error (.getMessage e)
+                              :fallback "Use elisp-only gather"})
+       :isError true})))
+
+(defn handle-wrap-crystallize
+  "Crystallize session data into long-term memory.
+   
+   Takes harvested data (from wrap-gather) and:
+   1. Creates session summary (short-term duration)
+   2. Promotes entries that meet score threshold
+   3. Flushes recall buffer
+   
+   Call after wrap-gather when ready to persist."
+  [_params]
+  (log/info "wrap-crystallize")
+  (try
+    (let [harvested (crystal-hooks/harvest-all)
+          result (crystal-hooks/crystallize-session harvested)]
+      {:type "text"
+       :text (json/write-str result)})
+    (catch Exception e
+      (log/error e "wrap-crystallize failed")
+      {:type "text"
+       :text (json/write-str {:error (.getMessage e)})
+       :isError true})))
 
 (defn handle-mcp-watch-buffer
   "Get recent content from a buffer for monitoring (e.g., *Messages*)."
@@ -412,6 +456,13 @@
                   :properties {}
                   :required []}
     :handler handle-wrap-gather}
+
+   {:name "wrap_crystallize"
+    :description "Crystallize session data into long-term memory. Creates session summary, promotes entries meeting score threshold, and flushes recall buffer. Call after wrap_gather to persist."
+    :inputSchema {:type "object"
+                  :properties {}
+                  :required []}
+    :handler handle-wrap-crystallize}
 
    {:name "mcp_watch_buffer"
     :description "Get recent content from a buffer for monitoring. Useful for watching *Messages*, *Warnings*, *Compile-Log*, etc. Returns the last N lines."

@@ -79,6 +79,8 @@ No more re-explaining your codebase. No more lost context.
 ;; File claims prevent conflicts between agents
 ```
 
+**Conflict Detection:** *Pessimistic Concurrency Control* with *Advisory Locking* — agents claim files before editing, conflicts get queued (not blocked), core.logic reasons about dependencies and deadlocks. See [SWARM_CONFLICT_DETECTION.md](docs/SWARM_CONFLICT_DETECTION.md).
+
 ### 4. Full Emacs Integration
 
 50+ MCP tools for buffer management, git (Magit), projects (Projectile), Clojure (CIDER), and org-mode. Claude controls your editor, not just reads files.
@@ -431,6 +433,7 @@ LLMs need exactly what Lisp provides: homoiconicity, runtime metaprogramming, da
 | [Tool Reference](docs/TOOLS.md) | Complete tool documentation |
 | [Addon Guide](docs/addon-development.md) | Create custom addons |
 | [Architecture](docs/PROJECT_SUMMARY.md) | Technical deep-dive |
+| [Conflict Detection](docs/SWARM_CONFLICT_DETECTION.md) | Logic-based agent coordination |
 | [Hivemind Demo](docs/DEMO_LING_DIALOGUE.md) | Multi-agent philosophical dialogue |
 | [Contributing](docs/CONTRIBUTING.md) | How to contribute |
 

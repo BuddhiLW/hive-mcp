@@ -984,6 +984,35 @@ Looks for the prompt followed by Claude's response marker (●)."
             ;; Check if there's a response marker after it
             (search-forward "●" nil t)))))))
 
+(defun emacs-mcp-swarm--wait-for-ready (buffer &optional timeout-secs)
+  "Wait until Claude CLI prompt marker appears in BUFFER.
+TIMEOUT-SECS defaults to 10 seconds.
+Returns t when ready, nil on timeout.
+
+This function blocks using `sit-for' loop, checking for the prompt marker
+`emacs-mcp-swarm-prompt-marker' (default \"❯\") which indicates Claude CLI
+is ready to receive input."
+  (let* ((timeout (or timeout-secs 10))
+         (start-time (float-time))
+         (check-interval 0.2)
+         (ready nil))
+    (while (and (not ready)
+                (< (- (float-time) start-time) timeout)
+                (buffer-live-p buffer))
+      (with-current-buffer buffer
+        (save-excursion
+          (goto-char (point-max))
+          ;; Search backwards for prompt marker in last 500 chars
+          (let ((search-start (max (point-min) (- (point-max) 500))))
+            (goto-char (point-max))
+            (when (search-backward emacs-mcp-swarm-prompt-marker search-start t)
+              (setq ready t)))))
+      (unless ready
+        (sit-for check-interval)))
+    (when ready
+      (message "[swarm] Claude CLI ready in buffer %s" (buffer-name buffer)))
+    ready))
+
 (defun emacs-mcp-swarm--send-to-terminal (buffer text term-type)
   "Send TEXT to terminal BUFFER using TERM-TYPE backend.
 Returns the point-max before sending for verification.
@@ -1111,17 +1140,31 @@ Returns task-id."
     ;; Send prompt to slave with verification and retry
     (let ((target-buffer buffer)
           (term-type (or (plist-get slave :terminal) emacs-mcp-swarm-terminal))
-          (prompt-text prompt))
-      ;; Small initial delay to ensure terminal is ready
-      (run-at-time 0.1 nil
-                   (lambda ()
-                     (when (buffer-live-p target-buffer)
-                       (condition-case err
-                           (emacs-mcp-swarm--send-with-retry
-                            target-buffer prompt-text term-type)
-                         (error
-                          (message "[swarm] Dispatch error for %s: %s"
-                                   task-id (error-message-string err))))))))
+          (prompt-text prompt)
+          (the-task-id task-id))
+      ;; Wait for Claude CLI to be ready (check for prompt marker "❯")
+      ;; This prevents the first-message dispatch issue where text pastes
+      ;; but Return isn't processed because Claude CLI isn't ready yet
+      (if (emacs-mcp-swarm--wait-for-ready target-buffer 10)
+          ;; Claude CLI is ready, send immediately
+          (condition-case err
+              (emacs-mcp-swarm--send-with-retry
+               target-buffer prompt-text term-type)
+            (error
+             (message "[swarm] Dispatch error for %s: %s"
+                      the-task-id (error-message-string err))))
+        ;; Timeout waiting for readiness - log warning but try anyway
+        (message "[swarm] Warning: Timeout waiting for Claude CLI ready in %s, attempting send anyway"
+                 slave-id)
+        (run-at-time 0.5 nil
+                     (lambda ()
+                       (when (buffer-live-p target-buffer)
+                         (condition-case err
+                             (emacs-mcp-swarm--send-with-retry
+                              target-buffer prompt-text term-type)
+                           (error
+                            (message "[swarm] Dispatch error for %s: %s"
+                                     the-task-id (error-message-string err)))))))))
 
     (when (called-interactively-p 'any)
       (message "Dispatched task %s to %s" task-id slave-id))

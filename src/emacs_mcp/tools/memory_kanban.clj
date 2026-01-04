@@ -7,9 +7,11 @@
    - duration: 'short-term' (7 days)
    - content: {:task-type 'kanban' :title ... :status ...}
    
-   Moving to 'done' DELETES from memory."
+   Moving to 'done' DELETES from memory (after creating progress note)."
   (:require [emacs-mcp.emacsclient :as ec]
             [emacs-mcp.validation :as v]
+            [emacs-mcp.crystal.hooks :as crystal-hooks]
+            [clojure.data.json :as json]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
 
@@ -43,18 +45,48 @@
       {:type "text" :text (str "Error: " error) :isError true})))
 
 (defn handle-mem-kanban-move
-  "Move task to new status. Deletes if 'done'."
+  "Move task to new status. When moving to 'done':
+   1. Fetches the task entry first
+   2. Calls crystal hook to create progress note
+   3. Then deletes the kanban entry"
   [{:keys [task_id new_status]}]
   (let [valid-statuses #{"todo" "doing" "review" "done"}]
     (if-not (valid-statuses new_status)
       {:type "text" :text (str "Invalid status: " new_status ". Valid: todo, doing, review, done") :isError true}
-      (let [elisp (format "(json-encode (emacs-mcp-api-kanban-move %s %s))"
-                          (str "\"" (v/escape-elisp-string task_id) "\"")
-                          (str "\"" (v/escape-elisp-string new_status) "\""))
-            {:keys [success result error]} (ec/eval-elisp elisp)]
-        (if success
-          {:type "text" :text result}
-          {:type "text" :text (str "Error: " error) :isError true})))))
+      (if (= new_status "done")
+        ;; Special handling for DONE: call crystal hook before deletion
+        (let [;; 1. Fetch the entry before deletion
+              get-elisp (format "(json-encode (emacs-mcp-memory-get %s))"
+                                (str "\"" (v/escape-elisp-string task_id) "\""))
+              {:keys [success result error]} (ec/eval-elisp get-elisp)]
+          (if-not success
+            {:type "text" :text (str "Error fetching task: " error) :isError true}
+            (let [;; 2. Parse the entry and extract task data
+                  entry (try (json/read-str result :key-fn keyword) (catch Exception _ nil))
+                  task-data (when entry (crystal-hooks/extract-task-from-kanban-entry entry))]
+              ;; 3. Call crystal hook to create progress note
+              (when task-data
+                (log/info "Calling crystal hook for completed kanban task:" task_id)
+                (try
+                  (crystal-hooks/on-kanban-done task-data)
+                  (catch Exception e
+                    (log/warn "Crystal hook failed (non-fatal):" (.getMessage e)))))
+              ;; 4. Proceed with move (which deletes for 'done')
+              (let [move-elisp (format "(json-encode (emacs-mcp-api-kanban-move %s %s))"
+                                       (str "\"" (v/escape-elisp-string task_id) "\"")
+                                       (str "\"" (v/escape-elisp-string new_status) "\""))
+                    {:keys [success result error]} (ec/eval-elisp move-elisp)]
+                (if success
+                  {:type "text" :text result}
+                  {:type "text" :text (str "Error: " error) :isError true})))))
+        ;; Normal status change (not done)
+        (let [elisp (format "(json-encode (emacs-mcp-api-kanban-move %s %s))"
+                            (str "\"" (v/escape-elisp-string task_id) "\"")
+                            (str "\"" (v/escape-elisp-string new_status) "\""))
+              {:keys [success result error]} (ec/eval-elisp elisp)]
+          (if success
+            {:type "text" :text result}
+            {:type "text" :text (str "Error: " error) :isError true}))))))
 
 (defn handle-mem-kanban-stats
   "Get kanban statistics by status."
