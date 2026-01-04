@@ -38,7 +38,7 @@
   :group 'emacs-mcp
   :prefix "emacs-mcp-channel-")
 
-(defcustom emacs-mcp-channel-type 'tcp
+(defcustom emacs-mcp-channel-type 'unix
   "Channel transport type."
   :type '(choice (const :tag "Unix socket" unix)
                  (const :tag "TCP" tcp))
@@ -54,10 +54,8 @@
   :type 'string
   :group 'emacs-mcp-channel)
 
-(defcustom emacs-mcp-channel-port
-  (string-to-number (or (getenv "EMACS_MCP_CHANNEL_PORT") "9998"))
-  "Port for TCP channel.
-Can be set via EMACS_MCP_CHANNEL_PORT environment variable."
+(defcustom emacs-mcp-channel-port 9999
+  "Port for TCP channel."
   :type 'integer
   :group 'emacs-mcp-channel)
 
@@ -94,14 +92,9 @@ Can be set via EMACS_MCP_CHANNEL_PORT environment variable."
 ;;;; Bencode Helpers
 
 (defun emacs-mcp-channel--bencode-available-p ()
-  "Check if CIDER's bencode is available for encoding."
+  "Check if CIDER's bencode is available."
   (and (require 'nrepl-client nil t)
        (fboundp 'nrepl-bencode)))
-
-(defun emacs-mcp-channel--bdecode-available-p ()
-  "Check if CIDER's bencode decode is available."
-  (and (require 'nrepl-client nil t)
-       (fboundp 'nrepl-bdecode-string)))
 
 (defun emacs-mcp-channel--alist-to-nrepl-dict (alist)
   "Convert ALIST to nrepl-dict format for bencode encoding."
@@ -121,7 +114,7 @@ MSG should be an alist like \\='((\"type\" . \"event\"))."
 
 (defun emacs-mcp-channel--decode (str)
   "Decode bencode STR to plist/alist."
-  (if (emacs-mcp-channel--bdecode-available-p)
+  (if (emacs-mcp-channel--bencode-available-p)
       (car (nrepl-bdecode-string str))
     ;; Fallback: simple bencode parser
     (emacs-mcp-channel--bdecode-fallback str)))
@@ -246,11 +239,7 @@ Returns t if a message was decoded, nil otherwise."
 ;;;; Event Dispatch
 
 (defun emacs-mcp-channel--dispatch (msg)
-  "Dispatch MSG to registered handlers.
-All messages are stored in event history for retrieval."
-  ;; Always store in history
-  (emacs-mcp-channel--store-event msg)
-  ;; Then dispatch to type-specific handlers
+  "Dispatch MSG to registered handlers."
   (let* ((type-str (or (cdr (assoc "type" msg))
                        (cdr (assoc 'type msg))))
          (type (when type-str
@@ -386,93 +375,6 @@ If HANDLER is nil, remove all handlers for EVENT-TYPE."
   (dolist (type '(:task-completed :task-failed :prompt-shown
                   :state-changed :slave-spawned :slave-killed))
     (emacs-mcp-channel-on type handler)))
-
-;;;; Event History & Retrieval
-
-(defvar emacs-mcp-channel--recent-events nil
-  "Ring buffer of recent events received through the channel.
-Each entry is (TIMESTAMP . EVENT-ALIST).")
-
-(defcustom emacs-mcp-channel-event-history-size 100
-  "Maximum number of events to keep in history."
-  :type 'integer
-  :group 'emacs-mcp-channel)
-
-(defun emacs-mcp-channel--store-event (event)
-  "Store EVENT in recent events history."
-  (push (cons (float-time) event) emacs-mcp-channel--recent-events)
-  ;; Trim to max size
-  (when (> (length emacs-mcp-channel--recent-events)
-           emacs-mcp-channel-event-history-size)
-    (setq emacs-mcp-channel--recent-events
-          (seq-take emacs-mcp-channel--recent-events
-                    emacs-mcp-channel-event-history-size))))
-
-;;;###autoload
-(defun emacs-mcp-channel-get-recent-events (&optional n type-filter)
-  "Get the N most recent events, optionally filtered by TYPE-FILTER.
-N defaults to 10. TYPE-FILTER is a keyword like :task-completed."
-  (let ((events (if type-filter
-                    (seq-filter
-                     (lambda (entry)
-                       (let* ((event (cdr entry))
-                              (type-str (or (cdr (assoc "type" event))
-                                            (cdr (assoc 'type event)))))
-                         (and type-str
-                              (string= (substring (symbol-name type-filter) 1)
-                                       type-str))))
-                     emacs-mcp-channel--recent-events)
-                  emacs-mcp-channel--recent-events)))
-    (seq-take events (or n 10))))
-
-;;;###autoload
-(defun emacs-mcp-channel-clear-history ()
-  "Clear the event history."
-  (interactive)
-  (setq emacs-mcp-channel--recent-events nil))
-
-;;;; Auto-connect Support
-
-(defcustom emacs-mcp-channel-auto-connect t
-  "If non-nil, automatically connect when emacs-mcp loads.
-Set to t to enable auto-connect on startup."
-  :type 'boolean
-  :group 'emacs-mcp-channel)
-
-(defcustom emacs-mcp-channel-auto-connect-delay 2.0
-  "Seconds to wait before auto-connecting.
-Allows MCP server to start first."
-  :type 'number
-  :group 'emacs-mcp-channel)
-
-(defvar emacs-mcp-channel--auto-connect-timer nil
-  "Timer for delayed auto-connect.")
-
-;;;###autoload
-(defun emacs-mcp-channel-setup-auto-connect ()
-  "Schedule auto-connect if enabled.
-Call this from emacs-mcp.el initialization."
-  (when emacs-mcp-channel-auto-connect
-    (setq emacs-mcp-channel--auto-connect-timer
-          (run-with-timer emacs-mcp-channel-auto-connect-delay nil
-                          #'emacs-mcp-channel-connect))))
-
-;;;; Default Event Handlers
-
-(defun emacs-mcp-channel--default-handler (event)
-  "Default handler that stores EVENT in history."
-  (emacs-mcp-channel--store-event event))
-
-(defun emacs-mcp-channel-register-default-handlers ()
-  "Register default handlers for common event types.
-These handlers store events in history for later retrieval."
-  (dolist (type '(:task-completed :task-failed :prompt-shown
-                  :state-changed :slave-spawned :slave-killed
-                  :hivemind-hello :hivemind-test :emacs-pong))
-    (emacs-mcp-channel-on type #'emacs-mcp-channel--default-handler)))
-
-;; Register default handlers on load
-(emacs-mcp-channel-register-default-handlers)
 
 (provide 'emacs-mcp-channel)
 ;;; emacs-mcp-channel.el ends here
