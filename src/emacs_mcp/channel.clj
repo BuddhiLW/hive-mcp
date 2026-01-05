@@ -331,6 +331,12 @@
     (reset! server-state nil)
     (log/info "Server stopped")))
 
+(defn server-connected?
+  "Check if the channel server is running and has clients."
+  []
+  (boolean (and @server-state
+                (some-> @server-state :clients deref seq))))
+
 (defn broadcast!
   "Send message to all connected clients."
   [msg]
@@ -360,6 +366,14 @@
     (publish! event)
     ;; Broadcast to connected Emacs clients
     (broadcast! event)))
+
+;; =============================================================================
+;; MCP Tool Registry
+;; =============================================================================
+
+(def channel-tools
+  "Channel tools for MCP - currently infrastructure-only, no user-facing tools."
+  [])
 
 (comment
   ;; Development REPL examples
