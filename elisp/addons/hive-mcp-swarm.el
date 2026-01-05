@@ -5,7 +5,7 @@
 ;; URL: https://github.com/BuddhiLW/hive-mcp
 ;; Version: 0.1.0
 ;; Package-Requires: ((emacs "28.1"))
-;; Optional-Requires: vterm OR eat (one terminal emulator required)
+;; Optional-Requires: claude-code-ide (recommended), vterm, or eat
 ;; Keywords: tools, ai, claude, orchestration, parallel
 ;; SPDX-License-Identifier: MIT
 
@@ -15,14 +15,17 @@
 ;;
 ;; Enables a Master Claude to spawn and control multiple Slave Claude
 ;; instances for parallel task execution.  Each slave runs in a terminal
-;; buffer (vterm or eat) and can be configured with presets (system
-;; prompts loaded from markdown files).
+;; buffer and can be configured with presets (system prompts loaded from
+;; markdown files).
 ;;
-;; Terminal choice:
-;;   - vterm (recommended): Native terminal, reliable input handling
-;;   - eat (experimental): Pure Emacs Lisp, may have input submission issues
+;; Terminal backend choice:
+;;   - claude-code-ide (recommended): Uses claude-code-ide.el's terminal
+;;     abstraction with optimized timing and anti-flicker support.  Most
+;;     reliable for command submission.
+;;   - vterm: Native terminal, reliable input handling.
+;;   - eat (experimental): Pure Emacs Lisp, may have input submission issues.
 ;;
-;; Set via: (setq hive-mcp-swarm-terminal 'vterm)  ; default
+;; Set via: (setq hive-mcp-swarm-terminal 'claude-code-ide)  ; default
 ;;
 ;; Architecture:
 ;;
@@ -80,6 +83,14 @@
 (declare-function eat-exec "eat")
 (declare-function eat-term-send-string "eat")
 
+;; Soft dependency on claude-code-ide
+(declare-function claude-code-ide "claude-code-ide")
+(declare-function claude-code-ide--configure-vterm-buffer "claude-code-ide")
+(declare-function claude-code-ide--terminal-send-string "claude-code-ide")
+(declare-function claude-code-ide--terminal-send-return "claude-code-ide")
+(declare-function claude-code-ide-mcp-server-get-session-context "claude-code-ide-mcp-server")
+(defvar claude-code-ide-terminal-backend)
+
 ;;;; Customization:
 
 (defgroup hive-mcp-swarm nil
@@ -106,11 +117,14 @@ Directories are scanned recursively for .md files only."
   :type 'string
   :group 'hive-mcp-swarm)
 
-(defcustom hive-mcp-swarm-terminal 'vterm
+(defcustom hive-mcp-swarm-terminal 'claude-code-ide
   "Terminal emulator to use for slave sessions.
-- `vterm': Use vterm (requires native compilation) - RECOMMENDED
+- `claude-code-ide': Use claude-code-ide.el WebSocket integration - RECOMMENDED
+  Provides MCP integration, robust session management, no terminal quirks.
+- `vterm': Use vterm (requires native compilation) - ALTERNATIVE
 - `eat': Use eat (pure Emacs Lisp) - EXPERIMENTAL, may have input issues"
-  :type '(choice (const :tag "vterm (recommended)" vterm)
+  :type '(choice (const :tag "claude-code-ide (recommended)" claude-code-ide)
+                 (const :tag "vterm (native terminal)" vterm)
                  (const :tag "eat (experimental)" eat))
   :group 'hive-mcp-swarm)
 
@@ -822,6 +836,8 @@ Called async from `hive-mcp-swarm-spawn'.  Updates slave status as work progress
 
     ;; Require terminal emulator (could potentially block on first load)
     (pcase term-backend
+      ('claude-code-ide (unless (require 'claude-code-ide nil t)
+                          (error "Claude-code-ide is required but not available")))
       ('vterm (unless (require 'vterm nil t)
                 (error "Vterm is required but not available")))
       ('eat (unless (require 'eat nil t)
@@ -859,6 +875,36 @@ Called async from `hive-mcp-swarm-spawn'.  Updates slave status as work progress
                                 permission-flag))))
 
       (pcase term-backend
+        ('claude-code-ide
+         ;; Use full claude-code-ide session with MCP WebSocket integration
+         ;; Kill the pre-created buffer since claude-code-ide creates its own
+         (when (buffer-live-p buffer)
+           (kill-buffer buffer))
+         ;; Ensure MCP server is running (starts it if needed)
+         (let* ((port (when (fboundp 'claude-code-ide-mcp-server-ensure-server)
+                        (claude-code-ide-mcp-server-ensure-server)))
+                (_ (unless port
+                     (error "Failed to start MCP server for claude-code-ide backend")))
+                (result (claude-code-ide--create-terminal-session
+                         buffer-name
+                         work-dir
+                         port
+                         nil  ;; continue
+                         nil  ;; resume
+                         slave-id)))
+           (setq buffer (car result))
+           (plist-put slave :buffer buffer)
+           (plist-put slave :process (cdr result))
+           ;; Apply system prompt if present via CLI command after session starts
+           (when system-prompt
+             (let ((prompt-to-send system-prompt))
+               (run-at-time 1.0 nil
+                            (lambda ()
+                              (when (buffer-live-p buffer)
+                                (hive-mcp-swarm--send-to-terminal
+                                 buffer 'claude-code-ide
+                                 (format "/system-prompt %s"
+                                         (shell-quote-argument prompt-to-send))))))))))
         ('vterm
          (with-current-buffer buffer
            (vterm-mode)
@@ -1023,6 +1069,17 @@ Uses `sit-for' after scheduling timer to force event loop processing during MCP 
     (with-current-buffer buffer
       (goto-char (point-max))
       (pcase term-type
+        ('claude-code-ide
+         ;; Use claude-code-ide's robust terminal abstraction
+         ;; These functions handle backend detection internally (vterm/eat agnostic)
+         (if (fboundp 'claude-code-ide--terminal-send-string)
+             (progn
+               (claude-code-ide--terminal-send-string text)
+               (sit-for 0.1)  ;; Required delay per claude-code-ide documentation
+               (claude-code-ide--terminal-send-return)
+               (sit-for 0.05))
+           ;; Fallback if claude-code-ide functions not available
+           (error "claude-code-ide terminal functions not available")))
         ('vterm
          (vterm-send-string text)
          ;; Delay before return to ensure vterm processes the text
@@ -1137,34 +1194,40 @@ Returns task-id."
     (plist-put slave :task-start-point
                (with-current-buffer buffer (point-max)))
 
-    ;; Send prompt to slave with verification and retry
+    ;; Send prompt to slave
     (let ((target-buffer buffer)
           (term-type (or (plist-get slave :terminal) hive-mcp-swarm-terminal))
           (prompt-text prompt)
           (the-task-id task-id))
-      ;; Wait for Claude CLI to be ready (check for prompt marker "❯")
-      ;; This prevents the first-message dispatch issue where text pastes
-      ;; but Return isn't processed because Claude CLI isn't ready yet
-      (if (hive-mcp-swarm--wait-for-ready target-buffer 10)
-          ;; Claude CLI is ready, send immediately
+      ;; claude-code-ide has robust terminal handling - send directly without verification
+      ;; For vterm/eat, use retry logic as they can fail silently
+      (if (eq term-type 'claude-code-ide)
+          ;; claude-code-ide: direct send, no verification needed
           (condition-case err
-              (hive-mcp-swarm--send-with-retry
-               target-buffer prompt-text term-type)
+              (hive-mcp-swarm--send-to-terminal target-buffer prompt-text term-type)
             (error
              (message "[swarm] Dispatch error for %s: %s"
                       the-task-id (error-message-string err))))
-        ;; Timeout waiting for readiness - log warning but try anyway
-        (message "[swarm] Warning: Timeout waiting for Claude CLI ready in %s, attempting send anyway"
-                 slave-id)
-        (run-at-time 0.5 nil
-                     (lambda ()
-                       (when (buffer-live-p target-buffer)
-                         (condition-case err
-                             (hive-mcp-swarm--send-with-retry
-                              target-buffer prompt-text term-type)
-                           (error
-                            (message "[swarm] Dispatch error for %s: %s"
-                                     the-task-id (error-message-string err)))))))))
+        ;; vterm/eat: wait for ready and use retry logic
+        (if (hive-mcp-swarm--wait-for-ready target-buffer 10)
+            (condition-case err
+                (hive-mcp-swarm--send-with-retry
+                 target-buffer prompt-text term-type)
+              (error
+               (message "[swarm] Dispatch error for %s: %s"
+                        the-task-id (error-message-string err))))
+          ;; Timeout waiting for readiness - log warning but try anyway
+          (message "[swarm] Warning: Timeout waiting for Claude CLI ready in %s, attempting send anyway"
+                   slave-id)
+          (run-at-time 0.5 nil
+                       (lambda ()
+                         (when (buffer-live-p target-buffer)
+                           (condition-case err
+                               (hive-mcp-swarm--send-with-retry
+                                target-buffer prompt-text term-type)
+                             (error
+                              (message "[swarm] Dispatch error for %s: %s"
+                                       the-task-id (error-message-string err))))))))))
 
     (when (called-interactively-p 'any)
       (message "Dispatched task %s to %s" task-id slave-id))

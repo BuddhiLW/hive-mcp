@@ -4,19 +4,19 @@ You have access to powerful MCP (Model Context Protocol) tools that are faster a
 
 ## Tool Hierarchy (Use In This Order)
 
-### 1. Emacs MCP (`mcp__emacs-mcp__*`) - PREFERRED
+### 1. Emacs MCP (`mcp__emacs__*`) - PREFERRED
 Use these for ALL Emacs-integrated operations:
 
 | Instead of...          | Use MCP Tool                          |
 |------------------------|---------------------------------------|
-| `Read` file            | `mcp__emacs-mcp__get_buffer_content`  |
-| `Grep` search          | `mcp__emacs-mcp__projectile_search`   |
-| `Glob` find files      | `mcp__emacs-mcp__projectile_files`    |
-| Git status/diff        | `mcp__emacs-mcp__magit_status/diff`   |
-| Git commit/push        | `mcp__emacs-mcp__magit_commit/push`   |
-| Git branches           | `mcp__emacs-mcp__magit_branches`      |
-| Eval elisp             | `mcp__emacs-mcp__eval_elisp`          |
-| Eval Clojure           | `mcp__emacs-mcp__cider_eval_silent`   |
+| `Read` file            | `mcp__emacs__get_buffer_content`  |
+| `Grep` search          | `mcp__emacs__projectile_search`   |
+| `Glob` find files      | `mcp__emacs__projectile_files`    |
+| Git status/diff        | `mcp__emacs__magit_status/diff`   |
+| Git commit/push        | `mcp__emacs__magit_commit/push`   |
+| Git branches           | `mcp__emacs__magit_branches`      |
+| Eval elisp             | `mcp__emacs__eval_elisp`          |
+| Eval Clojure           | `mcp__emacs__cider_eval_silent`   |
 
 ### 2. Claude Context (`mcp__claude-context__*`) - Semantic Search
 For **semantic/conceptual** code search (not just text matching):
@@ -42,9 +42,9 @@ For Clojure file editing and REPL:
 
 ### 4. Memory MCP - Persistent Context
 ```
-mcp__emacs-mcp__mcp_memory_add     - Store notes/decisions/conventions
-mcp__emacs-mcp__mcp_memory_query   - Retrieve with scope filtering
-mcp__emacs-mcp__mcp_memory_search_semantic - Semantic search
+mcp__emacs__mcp_memory_add     - Store notes/decisions/conventions
+mcp__emacs__mcp_memory_query   - Retrieve with scope filtering
+mcp__emacs__mcp_memory_search_semantic - Semantic search
 ```
 
 ## Rules
@@ -67,12 +67,12 @@ mcp__emacs-mcp__mcp_memory_search_semantic - Semantic search
 ## Example Workflow
 
 ```
-1. Check emacs: mcp__emacs-mcp__emacs_status
-2. Get context: mcp__emacs-mcp__mcp_get_context
+1. Check emacs: mcp__emacs__emacs_status
+2. Get context: mcp__emacs__mcp_get_context
 3. Search code: mcp__claude-context__search_code (semantic)
-4. Read file:   mcp__emacs-mcp__get_buffer_content (if open)
+4. Read file:   mcp__emacs__get_buffer_content (if open)
 5. Edit:        mcp__clojure-mcp-emacs__clojure_edit (structural)
-6. Git:         mcp__emacs-mcp__magit_* (status/stage/commit)
+6. Git:         mcp__emacs__magit_* (status/stage/commit)
 ```
 
 ## Anti-Patterns (AVOID)
@@ -84,7 +84,7 @@ Bash(grep -r "pattern" .)  # Use projectile_search instead
 Read("/path/to/file")      # Use get_buffer_content if open
 
 # GOOD - MCP-first approach
-mcp__emacs-mcp__magit_status(directory: "/project")
-mcp__emacs-mcp__projectile_search(pattern: "pattern")
-mcp__emacs-mcp__get_buffer_content(buffer_name: "file.clj")
+mcp__emacs__magit_status(directory: "/project")
+mcp__emacs__projectile_search(pattern: "pattern")
+mcp__emacs__get_buffer_content(buffer_name: "file.clj")
 ```
