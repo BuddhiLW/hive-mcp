@@ -281,6 +281,23 @@
         {:type "text" :text (str "Error: " error) :isError true}))
     {:type "text" :text "Error: hive-mcp.el is not loaded." :isError true}))
 
+(defn handle-mcp-memory-migrate-project
+  "Migrate memory from one project-id to another.
+   Useful after renaming projects or moving to stable .hive-project.edn IDs."
+  [{:keys [old-project-id new-project-id update-scopes]}]
+  (log/info "mcp-memory-migrate-project:" old-project-id "->" new-project-id)
+  (if (hive-mcp-el-available?)
+    (let [update-scopes-str (if update-scopes "t" "nil")
+          elisp (format "(json-encode (hive-mcp-memory-migrate-project %s %s %s))"
+                        (pr-str old-project-id)
+                        (pr-str new-project-id)
+                        update-scopes-str)
+          {:keys [success result error]} (ec/eval-elisp elisp)]
+      (if success
+        {:type "text" :text result}
+        {:type "text" :text (str "Error: " error) :isError true}))
+    {:type "text" :text "Error: hive-mcp.el is not loaded." :isError true}))
+
 ;; =============================================================================
 ;; Tool Definitions
 ;; =============================================================================
@@ -424,4 +441,16 @@
                   :properties {"id" {:type "string"
                                      :description "ID of the memory entry"}}
                   :required ["id"]}
-    :handler handle-mcp-memory-helpfulness-ratio}])
+    :handler handle-mcp-memory-helpfulness-ratio}
+
+   {:name "mcp_memory_migrate_project"
+    :description "Migrate memory from one project-id to another. Use after renaming a project directory or moving to stable .hive-project.edn based IDs. Optionally updates scope tags in entries."
+    :inputSchema {:type "object"
+                  :properties {"old-project-id" {:type "string"
+                                                 :description "Source project ID (e.g., SHA hash or old name)"}
+                               "new-project-id" {:type "string"
+                                                 :description "Target project ID (e.g., stable ID from .hive-project.edn)"}
+                               "update-scopes" {:type "boolean"
+                                                :description "If true, update scope:project:* tags in migrated entries"}}
+                  :required ["old-project-id" "new-project-id"]}
+    :handler handle-mcp-memory-migrate-project}])

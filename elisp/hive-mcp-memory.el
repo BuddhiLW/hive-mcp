@@ -68,13 +68,124 @@
   :type 'symbol
   :group 'hive-mcp-memory)
 
+(defcustom hive-mcp-project-config-file ".hive-project.edn"
+  "Filename for project-specific hive-mcp configuration.
+This file should contain an EDN map with at least :project-id key.
+Example: {:project-id \"my-project\" :aliases [\"old-name\"]}"
+  :type 'string
+  :group 'hive-mcp-memory)
+
 ;;; Internal Variables
 
 (defvar hive-mcp-memory--cache (make-hash-table :test 'equal)
   "In-memory cache of loaded project data.")
 
+(defvar hive-mcp-memory--project-config-cache (make-hash-table :test 'equal)
+  "Cache for project config files. Maps project-root to parsed config.")
+
 (defvar hive-mcp-memory-add-hook nil
   "Hook run after adding memory entry.  Args: TYPE ENTRY PROJECT-ID.")
+
+;;; Project Config Functions
+
+(defun hive-mcp-memory--parse-edn-string (str)
+  "Parse a simple EDN string STR into elisp.
+Supports: strings, keywords, numbers, vectors, maps.
+This is a minimal parser for .hive-project.edn files."
+  (with-temp-buffer
+    (insert str)
+    (goto-char (point-min))
+    (hive-mcp-memory--parse-edn-value)))
+
+(defun hive-mcp-memory--parse-edn-value ()
+  "Parse an EDN value at point."
+  (skip-chars-forward " \t\n\r")
+  (cond
+   ;; String
+   ((looking-at "\"")
+    (let ((start (point)))
+      (forward-char 1)
+      (while (not (looking-at "\""))
+        (if (looking-at "\\\\")
+            (forward-char 2)
+          (forward-char 1)))
+      (forward-char 1)
+      (car (read-from-string (buffer-substring start (point))))))
+   ;; Keyword
+   ((looking-at ":\\([a-zA-Z0-9_-]+\\)")
+    (let ((kw (match-string 1)))
+      (goto-char (match-end 0))
+      (intern (concat ":" kw))))
+   ;; Number
+   ((looking-at "-?[0-9]+\\(\\.[0-9]+\\)?")
+    (let ((num (match-string 0)))
+      (goto-char (match-end 0))
+      (string-to-number num)))
+   ;; Vector
+   ((looking-at "\\[")
+    (forward-char 1)
+    (let (items)
+      (while (not (looking-at "\\]"))
+        (push (hive-mcp-memory--parse-edn-value) items)
+        (skip-chars-forward " \t\n\r,"))
+      (forward-char 1)
+      (nreverse items)))
+   ;; Map
+   ((looking-at "{")
+    (forward-char 1)
+    (let (pairs)
+      (while (not (looking-at "}"))
+        (let ((key (hive-mcp-memory--parse-edn-value))
+              (val (hive-mcp-memory--parse-edn-value)))
+          (push (cons key val) pairs))
+        (skip-chars-forward " \t\n\r,"))
+      (forward-char 1)
+      (nreverse pairs)))
+   ;; nil/true/false
+   ((looking-at "nil") (goto-char (match-end 0)) nil)
+   ((looking-at "true") (goto-char (match-end 0)) t)
+   ((looking-at "false") (goto-char (match-end 0)) nil)
+   ;; Symbol (fallback)
+   ((looking-at "[a-zA-Z][a-zA-Z0-9_-]*")
+    (let ((sym (match-string 0)))
+      (goto-char (match-end 0))
+      (intern sym)))
+   (t nil)))
+
+(defun hive-mcp-memory--read-project-config (&optional project-root)
+  "Read and parse .hive-project.edn from PROJECT-ROOT.
+Returns alist of config values, or nil if file doesn't exist.
+Caches result per project root."
+  (let* ((root (or project-root (hive-mcp-memory--get-project-root)))
+         (cached (gethash root hive-mcp-memory--project-config-cache 'not-found)))
+    (if (not (eq cached 'not-found))
+        cached
+      (let* ((config-path (when root
+                            (expand-file-name hive-mcp-project-config-file root)))
+             (config (when (and config-path (file-exists-p config-path))
+                       (condition-case nil
+                           (hive-mcp-memory--parse-edn-string
+                            (with-temp-buffer
+                              (insert-file-contents config-path)
+                              (buffer-string)))
+                         (error nil)))))
+        (puthash root config hive-mcp-memory--project-config-cache)
+        config))))
+
+(defun hive-mcp-memory--get-stable-project-id (&optional project-root)
+  "Get stable project ID from config file at PROJECT-ROOT.
+Returns the :project-id value from .hive-project.edn, or nil if not found."
+  (when-let* ((config (hive-mcp-memory--read-project-config project-root))
+              (project-id (cdr (assoc :project-id config))))
+    (if (stringp project-id)
+        project-id
+      (symbol-name project-id))))
+
+(defun hive-mcp-memory-clear-config-cache ()
+  "Clear the project config cache.  Call after editing .hive-project.edn."
+  (interactive)
+  (clrhash hive-mcp-memory--project-config-cache)
+  (message "Cleared hive-mcp project config cache"))
 
 ;;; Utility Functions
 
@@ -90,7 +201,19 @@
 
 (defun hive-mcp-memory--project-id (&optional project-root)
   "Return unique ID for PROJECT-ROOT (defaults to current project).
-Uses SHA1 hash of absolute path for filesystem-safe naming."
+Resolution order:
+  1. Stable :project-id from .hive-project.edn (survives renames)
+  2. Fallback: SHA1 hash of absolute path (filesystem-safe)
+Returns \"global\" if not in a project."
+  (let ((root (or project-root (hive-mcp-memory--get-project-root))))
+    (if root
+        (or (hive-mcp-memory--get-stable-project-id root)
+            (substring (sha1 (expand-file-name root)) 0 16))
+      "global")))
+
+(defun hive-mcp-memory--project-id-hash (&optional project-root)
+  "Return SHA1 hash ID for PROJECT-ROOT (ignores config).
+Use this for migration when you need the path-based hash."
   (let ((root (or project-root (hive-mcp-memory--get-project-root))))
     (if root
         (substring (sha1 (expand-file-name root)) 0 16)
@@ -720,6 +843,77 @@ Includes notes, conventions, recent decisions, relevant snippets."
         (hive-mcp-memory--file-path pid type)
         data)))
    hive-mcp-memory--cache))
+
+;;; Migration Support
+
+(defun hive-mcp-memory-migrate-project (old-project-id new-project-id &optional update-scopes)
+  "Migrate memory from OLD-PROJECT-ID to NEW-PROJECT-ID.
+If UPDATE-SCOPES is non-nil, also update scope tags in entries.
+Returns a plist with migration statistics.
+
+Use this when:
+- Renaming a project directory (old ID was path-based hash)
+- Consolidating memory from multiple project IDs
+- Moving to stable .hive-project.edn based IDs"
+  (let ((old-dir (hive-mcp-memory--project-dir old-project-id))
+        (new-dir (hive-mcp-memory--project-dir new-project-id))
+        (types '("note" "snippet" "convention" "decision" "conversation"))
+        (migrated 0)
+        (updated-scopes 0)
+        (errors nil))
+    ;; Create new directory if needed
+    (make-directory new-dir t)
+
+    (dolist (type types)
+      (let ((old-file (expand-file-name (format "%s.json" type) old-dir))
+            (new-file (expand-file-name (format "%s.json" type) new-dir)))
+        (when (file-exists-p old-file)
+          (condition-case err
+              (let* ((old-data (hive-mcp-memory--read-json-file old-file))
+                     (existing-data (hive-mcp-memory--read-json-file new-file))
+                     ;; Update scope tags if requested
+                     (processed-data
+                      (if update-scopes
+                          (mapcar
+                           (lambda (entry)
+                             (let* ((tags (plist-get entry :tags))
+                                    (old-scope (format "scope:project:%s" old-project-id))
+                                    (new-scope (format "scope:project:%s" new-project-id))
+                                    (new-tags (mapcar
+                                               (lambda (tag)
+                                                 (if (string= tag old-scope)
+                                                     (progn
+                                                       (cl-incf updated-scopes)
+                                                       new-scope)
+                                                   tag))
+                                               tags)))
+                               (plist-put entry :tags new-tags)))
+                           old-data)
+                        old-data))
+                     ;; Merge with existing (avoid duplicates by ID)
+                     (existing-ids (mapcar (lambda (e) (plist-get e :id)) existing-data))
+                     (new-entries (seq-remove
+                                   (lambda (e) (member (plist-get e :id) existing-ids))
+                                   processed-data))
+                     (merged-data (append existing-data new-entries)))
+                ;; Write merged data
+                (hive-mcp-memory--write-json-file new-file merged-data)
+                (cl-incf migrated (length new-entries)))
+            (error
+             (push (cons type (error-message-string err)) errors))))))
+
+    ;; Clear cache for both projects
+    (dolist (type types)
+      (remhash (hive-mcp-memory--cache-key old-project-id type)
+               hive-mcp-memory--cache)
+      (remhash (hive-mcp-memory--cache-key new-project-id type)
+               hive-mcp-memory--cache))
+
+    (list :migrated migrated
+          :updated-scopes updated-scopes
+          :errors errors
+          :old-project-id old-project-id
+          :new-project-id new-project-id)))
 
 (provide 'hive-mcp-memory)
 ;;; hive-mcp-memory.el ends here
