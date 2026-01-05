@@ -257,7 +257,8 @@
     (do
       (log/warn "Server already running")
       @server-state)
-    (let [accept-fn
+    (let [;; Create server and accept-fn together so we can store the server socket
+          {:keys [server-socket accept-fn]}
           (case type
             :unix
             (let [socket-path (java.nio.file.Path/of path (into-array String []))
@@ -267,28 +268,30 @@
                   server (ServerSocketChannel/open StandardProtocolFamily/UNIX)]
               (.bind server addr)
               (log/info "Unix server listening on" path)
-              (fn []
-                (let [client (.accept server)
-                      ch-state (atom {:channel client
-                                      :in (PushbackInputStream.
-                                           (BufferedInputStream.
-                                            (Channels/newInputStream client)))
-                                      :out (DataOutputStream.
-                                            (BufferedOutputStream.
-                                             (Channels/newOutputStream client)))})]
-                  (->UnixChannel path ch-state))))
+              {:server-socket server
+               :accept-fn (fn []
+                            (let [client (.accept server)
+                                  ch-state (atom {:channel client
+                                                  :in (PushbackInputStream.
+                                                       (BufferedInputStream.
+                                                        (Channels/newInputStream client)))
+                                                  :out (DataOutputStream.
+                                                        (BufferedOutputStream.
+                                                         (Channels/newOutputStream client)))})]
+                              (->UnixChannel path ch-state)))})
 
             :tcp
             (let [server (ServerSocket. ^int port)]
               (log/info "TCP server listening on port" port)
-              (fn []
-                (let [client (.accept server)
-                      ch-state (atom {:socket client
-                                      :in (PushbackInputStream.
-                                           (BufferedInputStream. (.getInputStream client)))
-                                      :out (DataOutputStream.
-                                            (BufferedOutputStream. (.getOutputStream client)))})]
-                  (->TcpChannel "localhost" port ch-state)))))
+              {:server-socket server
+               :accept-fn (fn []
+                            (let [client (.accept server)
+                                  ch-state (atom {:socket client
+                                                  :in (PushbackInputStream.
+                                                       (BufferedInputStream. (.getInputStream client)))
+                                                  :out (DataOutputStream.
+                                                        (BufferedOutputStream. (.getOutputStream client)))})]
+                              (->TcpChannel "localhost" port ch-state)))}))
 
           clients (atom {})
           running (atom true)
@@ -310,6 +313,7 @@
               {:type type
                :path path
                :port port
+               :server-socket server-socket
                :clients clients
                :running running
                :accept-loop accept-loop})
@@ -318,8 +322,19 @@
 (defn stop-server!
   "Stop the channel server."
   []
-  (when-let [{:keys [running clients path type]} @server-state]
+  (when-let [{:keys [running clients path type server-socket]} @server-state]
     (reset! running false)
+    ;; Close the server socket to unblock the accept loop
+    (when server-socket
+      (try
+        (cond
+          (instance? ServerSocket server-socket)
+          (.close ^ServerSocket server-socket)
+
+          (instance? ServerSocketChannel server-socket)
+          (.close ^ServerSocketChannel server-socket))
+        (catch IOException e
+          (log/warn "Error closing server socket:" (.getMessage e)))))
     ;; Close all client connections
     (doseq [[id ch] @clients]
       (disconnect! ch))

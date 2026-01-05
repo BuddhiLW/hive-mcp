@@ -94,9 +94,10 @@ Must match HIVE_MCP_CHANNEL_PORT env var on the Clojure server (default: 9998)."
 ;;;; Bencode Helpers
 
 (defun hive-mcp-channel--bencode-available-p ()
-  "Check if CIDER's bencode is available."
+  "Check if CIDER's bencode encode AND decode are available."
   (and (require 'nrepl-client nil t)
-       (fboundp 'nrepl-bencode)))
+       (fboundp 'nrepl-bencode)
+       (fboundp 'nrepl-bdecode-string)))
 
 (defun hive-mcp-channel--alist-to-nrepl-dict (alist)
   "Convert ALIST to nrepl-dict format for bencode encoding."
@@ -152,7 +153,8 @@ MSG should be an alist like \\='((\"type\" . \"event\"))."
    (t (error "Cannot bencode: %S" obj))))
 
 (defun hive-mcp-channel--bdecode-fallback (str)
-  "Decode bencode STR (fallback)."
+  "Decode bencode STR (fallback).
+Returns (decoded-value . consumed-bytes)."
   (let ((pos 0))
     (cl-labels
         ((decode-one ()
@@ -190,7 +192,7 @@ MSG should be an alist like \\='((\"type\" . \"event\"))."
                  (cl-incf pos)
                  (nreverse pairs)))
               (t (error "Invalid bencode at pos %d" pos))))))
-      (decode-one))))
+      (cons (decode-one) pos))))
 
 ;;;; Process Filter & Sentinel
 
@@ -211,12 +213,14 @@ _PROC is the process (unused, required by Emacs process API)."
   "Try to decode a complete bencode message from buffer.
 Returns t if a message was decoded, nil otherwise."
   (condition-case nil
-      (let ((start (point))
-            (msg (hive-mcp-channel--decode (buffer-substring (point) (point-max)))))
-        ;; If we get here, decoding succeeded
-        ;; Calculate how much was consumed (approximate by re-encoding)
-        (let ((encoded-len (length (hive-mcp-channel--encode msg))))
-          (delete-region start (+ start encoded-len)))
+      (let* ((start (point))
+             (str (buffer-substring (point) (point-max)))
+             ;; Use fallback decoder which returns (decoded . consumed-bytes)
+             (result (hive-mcp-channel--bdecode-fallback str))
+             (msg (car result))
+             (consumed (cdr result)))
+        ;; Delete consumed bytes from buffer
+        (delete-region start (+ start consumed))
         ;; Dispatch the message
         (hive-mcp-channel--dispatch msg)
         t)
