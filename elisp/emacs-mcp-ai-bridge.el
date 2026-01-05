@@ -234,11 +234,11 @@ LIMIT defaults to 20."
   (and (require 'emacs-mcp-swarm nil t)
        (fboundp 'emacs-mcp-swarm-dispatch)))
 
-(cl-defun emacs-mcp-ai-dispatch-to-swarm (task &key preset slave-id callback source)
+(cl-defun emacs-mcp-ai-dispatch-to-swarm (task &key preset slave-id _callback source)
   "Dispatch TASK to swarm agent.
 PRESET is the agent preset (e.g., \"code-review\").
 SLAVE-ID optionally targets a specific slave.
-CALLBACK is called with result when complete.
+_CALLBACK is reserved for future async result handling.
 SOURCE identifies the calling AI package.
 
 Returns task-id on success, nil on failure."

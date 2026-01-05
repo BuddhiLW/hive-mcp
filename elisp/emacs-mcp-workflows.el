@@ -439,7 +439,8 @@ Returns count of successfully moved tasks."
 
 (defun emacs-mcp-workflow-wrap--gather-session-data ()
   "Auto-gather session data from all available sources.
-Returns plist with :recent-notes, :recent-commits, :kanban-activity, :ai-interactions."
+Returns plist with :recent-notes, :recent-commits,
+:kanban-activity, :ai-interactions."
   (list :recent-notes (emacs-mcp-workflow-wrap--gather-recent-notes)
         :recent-commits (emacs-mcp-workflow-wrap--gather-git-commits)
         :kanban-activity (emacs-mcp-workflow-wrap--gather-kanban-activity)

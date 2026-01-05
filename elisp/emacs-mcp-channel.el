@@ -192,8 +192,9 @@ MSG should be an alist like \\='((\"type\" . \"event\"))."
 
 ;;;; Process Filter & Sentinel
 
-(defun emacs-mcp-channel--filter (proc str)
-  "Process filter for channel PROC receiving STR."
+(defun emacs-mcp-channel--filter (_proc str)
+  "Process filter for channel receiving STR.
+_PROC is the process (unused, required by Emacs process API)."
   (with-current-buffer (or emacs-mcp-channel--buffer
                            (setq emacs-mcp-channel--buffer
                                  (get-buffer-create " *mcp-channel*")))
@@ -219,8 +220,9 @@ Returns t if a message was decoded, nil otherwise."
         t)
     (error nil)))
 
-(defun emacs-mcp-channel--sentinel (proc event)
-  "Sentinel for channel PROC handling EVENT."
+(defun emacs-mcp-channel--sentinel (_proc event)
+  "Sentinel for channel handling EVENT.
+_PROC is the process (unused, required by Emacs process API)."
   (cond
    ((string-match-p "deleted\\|connection broken\\|exited\\|failed" event)
     (message "emacs-mcp-channel: Connection lost: %s" (string-trim event))
@@ -312,7 +314,7 @@ Returns t if a message was decoded, nil otherwise."
 ;;;###autoload
 (defun emacs-mcp-channel-send (msg)
   "Send MSG through the channel.
-MSG should be an alist like '((\"type\" . \"event\") (\"data\" . \"value\")).
+MSG should be an alist like \\='((\"type\" . \"event\") ...).
 If not connected, queues the message for later sending."
   (if (emacs-mcp-channel-connected-p)
       (let ((encoded (emacs-mcp-channel--encode msg)))

@@ -20,6 +20,15 @@
 (require 'project)
 (require 'seq)
 
+;; Compatibility: plistp was added in Emacs 29
+(unless (fboundp 'plistp)
+  (defun plistp (object)
+    "Return non-nil if OBJECT is a plist."
+    (and (listp object)
+         (or (null object)
+             (and (keywordp (car object))
+                  (plistp (cddr object)))))))
+
 ;;; Customization
 
 (defgroup emacs-mcp-memory nil
@@ -477,13 +486,15 @@ If TAGS are provided, they are merged with the existing entry's tags."
 PROJECT-ID specifies the project (defaults to current).
 Returns list of matching entries, most recent first.
 LIMIT caps the number of results.
-DURATION filters by lifespan category (symbol from `emacs-mcp-memory-durations').
-Entries without :duration are treated as `long-term' for backwards compatibility.
+DURATION filters by lifespan category (symbol from
+\=`emacs-mcp-memory-durations').
+Entries without :duration are treated as long-term for
+backwards compatibility.
 SCOPE-FILTER controls scope filtering:
   - nil: apply automatic scope filtering (global + current project)
-  - t or 'all: return all entries regardless of scope
-  - 'global: return only scope:global entries
-  - string: filter by specific scope tag (e.g., \"scope:project:myproj\")"
+  - t or \\='all: return all entries regardless of scope
+  - \\='global: return only scope:global entries
+  - string: filter by specific scope tag"
   (let* ((pid (or project-id (emacs-mcp-memory--project-id)))
          (type-str (if (symbolp type) (symbol-name type) type))
          (data (emacs-mcp-memory--get-data pid type-str))
