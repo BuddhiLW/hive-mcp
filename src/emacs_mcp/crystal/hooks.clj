@@ -116,13 +116,16 @@
 (defn harvest-session-progress
   "Harvest session progress notes for wrap workflow.
    
-   Queries ephemeral notes tagged with session-progress from current session.
+   Queries ephemeral notes from current project - no specific tags required.
+   This captures all ephemeral notes LLMs created during the session,
+   regardless of what tags they used.
    
    Returns: {:notes [...] :count int}"
   []
   (let [session-tag (crystal/session-tag)
-        elisp (format "(json-encode (emacs-mcp-memory-query 'note '(\"session-progress\" %s) 50))"
-                      (pr-str session-tag))
+        ;; Query ephemeral notes with auto scope filtering (current project + global)
+        ;; Args: type, tags, project-id, limit, duration, scope-filter
+        elisp "(json-encode (emacs-mcp-memory-query 'note nil nil 50 'ephemeral nil))"
         {:keys [success result error]} (ec/eval-elisp elisp)]
     (if success
       (let [notes (try (json/read-str result :key-fn keyword)
@@ -137,11 +140,17 @@
 (defn harvest-completed-tasks
   "Harvest completed task progress notes for wrap.
    
-   Returns notes tagged with 'completed-task' from current session."
+   Queries kanban-tagged notes from current project with ephemeral or short-term duration.
+   Captures task completions automatically without requiring specific 'completed-task' tag.
+   
+   Returns: {:tasks [...] :count int}"
   []
-  (let [session-tag (crystal/session-tag)
-        elisp (format "(json-encode (emacs-mcp-memory-query 'note '(\"completed-task\" %s) 50))"
-                      (pr-str session-tag))
+  (let [;; Query kanban-tagged ephemeral notes
+        elisp-ephemeral "(emacs-mcp-memory-query 'note '(\"kanban\") nil 50 'ephemeral nil)"
+        ;; Also query short-term kanban notes (might have been promoted)
+        elisp-short "(emacs-mcp-memory-query 'note '(\"kanban\") nil 50 'short-term nil)"
+        ;; Combine both queries
+        elisp (format "(json-encode (append %s %s))" elisp-ephemeral elisp-short)
         {:keys [success result error]} (ec/eval-elisp elisp)]
     (if success
       (let [tasks (try (json/read-str result :key-fn keyword)

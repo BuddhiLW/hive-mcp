@@ -352,6 +352,54 @@ M-x emacs-mcp-melpazoid-transient
 
 ---
 
+## claude-code-ide
+
+**Purpose**: Swarm orchestration via claude-code-ide.el with hivemind completion tracking.
+
+**Features**:
+- Structured session management (no terminal scraping)
+- Reliable prompt dispatch via claude-code-ide API
+- Task completion tracking via hivemind coordinator
+- Auto-sync from hivemind for completion status
+- Integration with emacs-mcp-swarm presets
+
+**Benefits over vterm-based swarm**:
+- No terminal timing issues or output parsing
+- Structured JSON-RPC communication
+- Lings report completion via hivemind_shout (not terminal markers)
+- Reliable multi-agent coordination
+
+**Config**:
+- `emacs-mcp-cci-default-timeout` - Task timeout in ms (default: 300000)
+- `emacs-mcp-cci-max-lings` - Maximum concurrent lings (default: 10)
+- `emacs-mcp-cci-hivemind-poll-interval` - Hivemind sync interval (default: 5s)
+- `emacs-mcp-cci-auto-sync` - Auto-sync from hivemind (default: t)
+
+**Usage**:
+```elisp
+(require 'emacs-mcp-claude-code-ide)
+(emacs-mcp-claude-code-ide-mode 1)
+
+;; Spawn a ling
+(emacs-mcp-cci-spawn "worker" :presets '("hivemind" "tdd"))
+;; => "ling-worker-123456"
+
+;; Dispatch task (completion via hivemind)
+(emacs-mcp-cci-dispatch "ling-worker-123456" "Run all tests")
+;; => "task-worker-123456-001"
+
+;; Check status
+(emacs-mcp-cci-status)
+;; => (:backend "claude-code-ide" :completion-mechanism "hivemind" ...)
+
+;; Manual sync from hivemind
+(emacs-mcp-cci-sync-from-hivemind)
+```
+
+See [SWARM_BACKENDS.md](SWARM_BACKENDS.md) for detailed comparison of swarm backends.
+
+---
+
 ## org-ai
 
 **Purpose**: Integration with org-ai for AI conversations in org-mode.
