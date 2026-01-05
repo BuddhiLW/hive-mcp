@@ -1,0 +1,15 @@
+2026-01-03T15:32:38.670Z whitehead INFO [emacs-mcp.server:69] - Starting emacs-mcp server: #uuid "6d89b911-9ea9-4bae-8aee-0bceeff3ca73"
+2026-01-03T15:32:38.700Z whitehead INFO [emacs-mcp.chroma:53] - Chroma configured: {:host "localhost", :port 8000, :collection-name "emacs-mcp-memory"}
+2026-01-03T15:32:38.703Z whitehead INFO [emacs-mcp.server:52] - Chroma configured: localhost : 8000
+2026-01-03T15:32:38.992Z whitehead WARN [emacs-mcp.embeddings.ollama:136] - Could not connect to Ollama at http://localhost:11434 - ensure ollama is running
+2026-01-03T15:32:38.993Z whitehead INFO [emacs-mcp.embeddings.ollama:137] - Created Ollama embedder with model: nomic-embed-text dimension: 768
+2026-01-03T15:32:38.994Z whitehead INFO [emacs-mcp.chroma:77] - Embedding provider set: emacs_mcp.embeddings.ollama.OllamaEmbedder
+2026-01-03T15:32:38.995Z whitehead INFO [emacs-mcp.server:57] - Embedding provider initialized: Ollama at http://localhost:11434
+2026-01-03T15:32:38.996Z whitehead WARN [emacs-mcp.server:77] - Channel server failed to start (non-fatal): Address already in use
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [com.github.fzakaria.slf4j.timbre.TimbreServiceProvider@46e4d3b]
+SLF4J(W): Found provider [org.apache.logging.slf4j.SLF4JServiceProvider@516501d4]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [com.github.fzakaria.slf4j.timbre.TimbreServiceProvider@46e4d3b]
+2026-01-03T15:32:39.056Z whitehead DEBUG [io.modelcontext.clojure-sdk.server:113] - {"num-tools":111,"msg":"Registering tools","server-info":{"name":"emacs-mcp","version":"0.1.0"},"line":null}
+2026-01-03T15:32:39.058Z whitehead INFO [io.modelcontext.clojure-sdk.stdio-server:118] - {"msg":"[STDIO SERVER] Starting server...","line":null}

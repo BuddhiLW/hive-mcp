@@ -1,11 +1,11 @@
 #!/bin/bash
-# Start the Emacs MCP server
+# Start the Hive MCP server
 # This script is called by Claude's MCP configuration
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_DIR="${HOME}/.config/emacs-mcp"
+CONFIG_DIR="${HOME}/.config/hive-mcp"
 LOCK_FILE="${CONFIG_DIR}/starting.lock"
 LOG_FILE="${CONFIG_DIR}/server.log"
 
@@ -41,15 +41,15 @@ export CHROMA_PORT="${CHROMA_PORT:-8000}"
 export OLLAMA_HOST="${OLLAMA_HOST:-http://localhost:11434}"
 
 # Channel port for bidirectional Emacs communication
-export EMACS_MCP_CHANNEL_PORT="${EMACS_MCP_CHANNEL_PORT:-9998}"
+export HIVE_MCP_CHANNEL_PORT="${HIVE_MCP_CHANNEL_PORT:-9998}"
 
 # nREPL port - embedded in MCP server for bb-mcp tool forwarding
-export EMACS_MCP_NREPL_PORT="${EMACS_MCP_NREPL_PORT:-7910}"
+export HIVE_MCP_NREPL_PORT="${HIVE_MCP_NREPL_PORT:-7910}"
 
-# Check if a healthy emacs-mcp is already running
+# Check if a healthy hive-mcp is already running
 # (bb-mcp might have spawned one already)
-if timeout 1 bash -c "echo > /dev/tcp/localhost/${EMACS_MCP_NREPL_PORT}" 2>/dev/null; then
-    echo "emacs-mcp already running on port ${EMACS_MCP_NREPL_PORT}" >&2
+if timeout 1 bash -c "echo > /dev/tcp/localhost/${HIVE_MCP_NREPL_PORT}" 2>/dev/null; then
+    echo "hive-mcp already running on port ${HIVE_MCP_NREPL_PORT}" >&2
     # Don't kill it! Just exit - bb-mcp will handle tool forwarding
     # This prevents killing a healthy server spawned by bb-mcp
     rm -f "$LOCK_FILE"
@@ -58,11 +58,11 @@ fi
 
 # Kill any stale processes on our ports before starting
 # Only reached if no healthy server is running
-fuser -k "${EMACS_MCP_CHANNEL_PORT}/tcp" 2>/dev/null || true
-fuser -k "${EMACS_MCP_NREPL_PORT}/tcp" 2>/dev/null || true
+fuser -k "${HIVE_MCP_CHANNEL_PORT}/tcp" 2>/dev/null || true
+fuser -k "${HIVE_MCP_NREPL_PORT}/tcp" 2>/dev/null || true
 
 # Log startup
-echo "=== Starting emacs-mcp at $(date) ===" >> "$LOG_FILE"
+echo "=== Starting hive-mcp at $(date) ===" >> "$LOG_FILE"
 
 # Run the MCP server
 exec clojure -X:mcp
