@@ -67,11 +67,27 @@
       nil)))
 
 (defn decode-msg-from-stream
-  "Decode bencode message from a PushbackInputStream."
+  "Decode bencode message from a PushbackInputStream.
+   Returns:
+   - decoded message map on success
+   - :eof on end of stream (clean disconnect)
+   - nil on recoverable error (continue reading)"
   [^PushbackInputStream in]
   (try
-    (-> (bencode/read-bencode in)
-        bytes->str)
+    ;; Check for EOF before blocking read
+    (let [first-byte (.read in)]
+      (if (= first-byte -1)
+        :eof
+        (do
+          (.unread in first-byte)
+          (-> (bencode/read-bencode in)
+              bytes->str))))
+    (catch java.io.EOFException _
+      (log/debug "Stream EOF reached")
+      :eof)
+    (catch java.net.SocketException e
+      (log/debug "Socket closed:" (.getMessage e))
+      :eof)
     (catch Exception e
       (log/debug "Bencode stream decode error:" (.getMessage e))
       nil)))
@@ -99,7 +115,7 @@
 ;; Unix Domain Socket Transport (Client)
 ;; =============================================================================
 
-(defrecord UnixTransport [path ^:volatile-mutable channel ^:volatile-mutable input-stream]
+(deftype UnixTransport [path ^:volatile-mutable channel ^:volatile-mutable input-stream]
   ITransport
   (connect! [this]
     (try
@@ -157,7 +173,7 @@
 ;; TCP Transport (Client)
 ;; =============================================================================
 
-(defrecord TCPTransport [host port ^:volatile-mutable channel ^:volatile-mutable input-stream]
+(deftype TCPTransport [host port ^:volatile-mutable channel ^:volatile-mutable input-stream]
   ITransport
   (connect! [this]
     (try
@@ -216,23 +232,39 @@
 ;; =============================================================================
 
 (defn- handle-unix-client
-  "Handle a connected Unix client in a separate thread."
+  "Handle a connected Unix client in a separate thread.
+   Properly handles EOF to avoid spinning on closed connections."
   [^SocketChannel client-channel client-id clients on-message running?]
   (log/info "Unix client connected:" client-id)
   (swap! clients assoc client-id client-channel)
   (try
     (let [in (PushbackInputStream.
               (java.nio.channels.Channels/newInputStream client-channel))]
-      (while (and @running? (.isConnected client-channel))
-        (when-let [msg (decode-msg-from-stream in)]
-          (log/debug "Received from" client-id ":" msg)
-          (when on-message
-            (on-message (assoc msg :client-id client-id))))))
+      (loop []
+        (when (and @running? (.isConnected client-channel))
+          (let [msg (decode-msg-from-stream in)]
+            (cond
+              ;; EOF - clean disconnect, exit loop
+              (= msg :eof)
+              (log/debug "Unix client" client-id "sent EOF")
+
+              ;; Valid message - process and continue
+              (some? msg)
+              (do
+                (log/debug "Received from" client-id ":" msg)
+                (when on-message
+                  (on-message (assoc msg :client-id client-id)))
+                (recur))
+
+              ;; nil - recoverable error, continue reading
+              :else
+              (recur))))))
     (catch Exception e
       (when @running?
         (log/debug "Unix client" client-id "disconnected:" (.getMessage e)))))
   (swap! clients dissoc client-id)
-  (.close client-channel)
+  (when (.isOpen client-channel)
+    (.close client-channel))
   (log/info "Unix client disconnected:" client-id))
 
 (defrecord UnixServer [path server-channel clients running? executor]
@@ -280,7 +312,7 @@
   (try
     (Files/deleteIfExists (.toPath (java.io.File. ^String path)))
     (catch Exception _))
-  
+
   (let [addr (UnixDomainSocketAddress/of ^String path)
         server-ch (doto (ServerSocketChannel/open StandardProtocolFamily/UNIX)
                     (.bind addr))
@@ -288,7 +320,7 @@
         running? (atom true)
         executor (Executors/newCachedThreadPool)
         server (->UnixServer path server-ch clients running? executor)]
-    
+
     ;; Accept loop in background thread
     (.submit executor
              ^Runnable
@@ -330,23 +362,39 @@
 ;; =============================================================================
 
 (defn- handle-tcp-client
-  "Handle a connected TCP client in a separate thread."
+  "Handle a connected TCP client in a separate thread.
+   Properly handles EOF to avoid spinning on closed connections."
   [^SocketChannel client-channel client-id clients on-message running?]
   (log/info "TCP client connected:" client-id)
   (swap! clients assoc client-id client-channel)
   (try
     (let [in (PushbackInputStream.
               (java.nio.channels.Channels/newInputStream client-channel))]
-      (while (and @running? (.isConnected client-channel))
-        (when-let [msg (decode-msg-from-stream in)]
-          (log/debug "Received from" client-id ":" msg)
-          (when on-message
-            (on-message (assoc msg :client-id client-id))))))
+      (loop []
+        (when (and @running? (.isConnected client-channel))
+          (let [msg (decode-msg-from-stream in)]
+            (cond
+              ;; EOF - clean disconnect, exit loop
+              (= msg :eof)
+              (log/debug "TCP client" client-id "sent EOF")
+
+              ;; Valid message - process and continue
+              (some? msg)
+              (do
+                (log/debug "Received from" client-id ":" msg)
+                (when on-message
+                  (on-message (assoc msg :client-id client-id)))
+                (recur))
+
+              ;; nil - recoverable error, continue reading
+              :else
+              (recur))))))
     (catch Exception e
       (when @running?
         (log/debug "TCP client" client-id "disconnected:" (.getMessage e)))))
   (swap! clients dissoc client-id)
-  (.close client-channel)
+  (when (.isOpen client-channel)
+    (.close client-channel))
   (log/info "TCP client disconnected:" client-id))
 
 (defrecord TCPServer [port server-channel clients running? executor]
@@ -393,7 +441,7 @@
         running? (atom true)
         executor (Executors/newCachedThreadPool)
         server (->TCPServer port server-ch clients running? executor)]
-    
+
     ;; Accept loop in background thread
     (.submit executor
              ^Runnable
@@ -466,24 +514,24 @@
 
 (comment
   ;; Development REPL examples
-  
+
   ;; Unix server
   (def unix-srv (start-unix-server! {:path "/tmp/test.sock"
-                                      :on-message #(println "Got:" %)}))
+                                     :on-message #(println "Got:" %)}))
   (server-running? unix-srv)
   (stop-server! unix-srv)
-  
+
   ;; Unix client
   (def unix-cl (unix-transport "/tmp/test.sock"))
   (connect! unix-cl)
   (send! unix-cl {:type "ping" :data "hello"})
   (disconnect! unix-cl)
-  
+
   ;; TCP server
   (def tcp-srv (start-tcp-server! {:port 9999
-                                    :on-message #(println "Got:" %)}))
+                                   :on-message #(println "Got:" %)}))
   (stop-server! tcp-srv)
-  
+
   ;; TCP client
   (def tcp-cl (tcp-transport "localhost" 9999))
   (connect! tcp-cl)
