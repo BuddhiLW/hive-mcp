@@ -271,6 +271,24 @@
 
 (defonce tool-registry (atom {}))
 
+(defonce ^:private tools-initialized? (atom false))
+
+(defn ensure-tools-registered!
+  "Lazily initialize tool registry on first use.
+   This allows delegate! to work from REPL without manual registration."
+  []
+  (when (and (empty? @tool-registry)
+             (not @tools-initialized?))
+    (reset! tools-initialized? true)
+    (try
+      (log/info "Auto-registering tools for agent delegation...")
+      (require 'hive-mcp.tools)
+      (let [tools-var (resolve 'hive-mcp.tools/tools)]
+        (when tools-var
+          (register-tools! @tools-var)))
+      (catch Exception e
+        (log/warn "Failed to auto-register tools:" (ex-message e))))))
+
 (defn register-tools!
   "Register tools for agent use. Takes a seq of tool maps with :name and :handler."
   [tools]
@@ -406,13 +424,16 @@
                   _ (log/info "Agent executing" (count calls) "tool calls:" tool-names)
                   _ (emit! :agent-step {:step step-count :phase :executing-tools :tools tool-names})
                   tool-results (execute-tool-calls agent-id calls permissions)
-                  ;; Add assistant message with tool_calls (arguments as object, not string)
+                  ;; Add assistant message with tool_calls 
+                  ;; OpenAI format requires arguments as JSON string, not object
                   assistant-msg {:role "assistant"
                                  :tool_calls (mapv (fn [{:keys [id name arguments]}]
                                                      {:id id
                                                       :type "function"
                                                       :function {:name name
-                                                                 :arguments arguments}})
+                                                                 :arguments (if (string? arguments)
+                                                                              arguments
+                                                                              (json/write-str arguments))}})
                                                    calls)}
                   new-messages (vec (concat messages [assistant-msg] tool-results))]
               (recur new-messages
@@ -469,6 +490,9 @@
          permissions #{}
          trace false}
     :as opts}]
+;; Ensure tools are registered (lazy init for REPL usage)
+  (ensure-tools-registered!)
+
   (when-not task
     (throw (ex-info "Task is required" {:opts opts})))
 
