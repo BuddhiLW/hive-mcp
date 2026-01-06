@@ -223,42 +223,54 @@
    Returns {:status :completed|:max_steps|:error
             :result \"final text response\"
             :steps [{:type :text|:tool_calls ...} ...]
-            :tool_calls_made N}"
-  [{:keys [backend task tools permissions max-steps agent-id]
+            :tool_calls_made N}
+   
+   When trace? is true, emits progress events via channel for monitoring."
+  [{:keys [backend task tools permissions max-steps agent-id trace?]
     :or {max-steps 15
          permissions #{}
+         trace? false
          agent-id (str "agent-" (System/currentTimeMillis))}}]
   (let [tool-schemas (get-tool-schemas tools)
         initial-messages [{:role "system"
                            :content "You are a helpful coding assistant. Use tools to complete the task. Be concise."}
                           {:role "user"
-                           :content task}]]
+                           :content task}]
+        emit! (fn [event-type data]
+                (when trace?
+                  (channel/emit-event! event-type (assoc data :agent-id agent-id))))]
     (loop [messages initial-messages
            steps []
            tool-calls-made 0
            step-count 0]
       (if (>= step-count max-steps)
-        {:status :max_steps
-         :result (str "Reached max steps (" max-steps ")")
-         :steps steps
-         :tool_calls_made tool-calls-made}
+        (do
+          (emit! :agent-max-steps {:step step-count :max max-steps})
+          {:status :max_steps
+           :result (str "Reached max steps (" max-steps ")")
+           :steps steps
+           :tool_calls_made tool-calls-made})
 
         (let [_ (log/debug "Agent step" step-count "- calling" (model-name backend))
+              _ (emit! :agent-step {:step step-count :phase :calling-llm})
               response (chat backend messages tool-schemas)]
 
           (case (:type response)
             ;; Text response = task complete
             :text
-            {:status :completed
-             :result (:content response)
-             :steps (conj steps response)
-             :tool_calls_made tool-calls-made}
+            (do
+              (emit! :agent-completed {:step step-count :tool-calls-made tool-calls-made})
+              {:status :completed
+               :result (:content response)
+               :steps (conj steps response)
+               :tool_calls_made tool-calls-made})
 
             ;; Tool calls = execute and continue
             :tool_calls
             (let [calls (:calls response)
-                  _ (log/info "Agent executing" (count calls) "tool calls:"
-                              (mapv :name calls))
+                  tool-names (mapv :name calls)
+                  _ (log/info "Agent executing" (count calls) "tool calls:" tool-names)
+                  _ (emit! :agent-step {:step step-count :phase :executing-tools :tools tool-names})
                   tool-results (execute-tool-calls agent-id calls permissions)
                   ;; Add assistant message with tool_calls (arguments as object, not string)
                   assistant-msg {:role "assistant"
@@ -275,10 +287,12 @@
                      (inc step-count)))
 
             ;; Unknown response type
-            {:status :error
-             :result (str "Unknown response type: " (:type response))
-             :steps steps
-             :tool_calls_made tool-calls-made}))))))
+            (do
+              (emit! :agent-error {:step step-count :error (str "Unknown response: " (:type response))})
+              {:status :error
+               :result (str "Unknown response type: " (:type response))
+               :steps steps
+               :tool_calls_made tool-calls-made})))))))
 
 ;;; ============================================================
 ;;; Public API
@@ -294,9 +308,16 @@
      :tools - List of tool names to allow (nil = all registered)
      :permissions - Set of permissions (:auto-approve skips human checks)
      :max-steps - Maximum tool-use iterations (default: 15)
-     :trace - If true, emit progress events via channel
+     :trace - If true, emit progress events via channel for monitoring
    
-   Returns result map with :status, :result, :steps, :tool_calls_made"
+   Returns result map with :status, :result, :steps, :tool_calls_made
+   
+   Progress events (when trace=true):
+     :agent-started - Task begins
+     :agent-step - Each LLM call or tool execution
+     :agent-completed - Task finished
+     :agent-max-steps - Hit iteration limit
+     :agent-error - Something went wrong"
   [{:keys [model host task tools permissions max-steps trace]
     :or {model "devstral-small:24b"
          host "http://localhost:11434"
@@ -319,9 +340,8 @@
                                    :tools tools
                                    :permissions permissions
                                    :max-steps max-steps
-                                   :agent-id agent-id})]
-        (when trace
-          (channel/emit-event! :agent-completed (assoc result :agent-id agent-id)))
+                                   :agent-id agent-id
+                                   :trace? trace})]
         result)
 
       (catch Exception e
