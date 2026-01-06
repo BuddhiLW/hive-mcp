@@ -5,7 +5,7 @@
    while giving them access to hive-mcp tools.
    
    Architecture:
-   - LLMBackend protocol for pluggable model backends
+   - LLMBackend protocol for pluggable model backends (see agent.protocol)
    - Tool-use loop: send → execute tool calls → append results → repeat
    - Permission gates via hivemind.ask! for dangerous operations
    - Max steps guardrail to prevent runaway loops
@@ -15,7 +15,8 @@
                  :task \"Implement the foo function in src/bar.clj\"
                  :tools [:read_file :file_edit :grep :glob_files]
                  :max_steps 10})"
-  (:require [hive-mcp.tools.core :refer [mcp-success mcp-error mcp-json]]
+  (:require [hive-mcp.agent.protocol :as proto]
+            [hive-mcp.tools.core :refer [mcp-success mcp-error mcp-json]]
             [hive-mcp.hivemind :as hivemind]
             [hive-mcp.channel :as channel]
             [clojure.data.json :as json]
@@ -29,13 +30,11 @@
 ;;; LLMBackend Protocol
 ;;; ============================================================
 
-(defprotocol LLMBackend
-  "Protocol for LLM backends that support tool calling."
-  (chat [this messages tools]
-    "Send messages to the model with available tools.
-     Returns {:type :text :content \"...\"} or {:type :tool_calls :calls [...]}
-     where each call is {:id \"...\" :name \"tool_name\" :arguments {...}}")
-  (model-name [this] "Return the model identifier string."))
+;; LLMBackend protocol is defined in hive-mcp.agent.protocol
+;; Import it here for convenience
+(def LLMBackend proto/LLMBackend)
+(def chat proto/chat)
+(def model-name proto/model-name)
 
 ;;; ============================================================
 ;;; HTTP Client (shared)
@@ -106,7 +105,7 @@
       {:type :text :content ""})))
 
 (defrecord OllamaBackend [host model]
-  LLMBackend
+  proto/LLMBackend
   (chat [_ messages tools]
     (let [ollama-tools (when (seq tools)
                          (ollama-tools->openai-format tools))

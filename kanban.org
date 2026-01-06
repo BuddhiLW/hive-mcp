@@ -282,13 +282,15 @@ PR #15 + #23 merged. Beamer and Reveal.js support with C4 diagram integration.
 :AGENT:    emacs-126582
 :SESSION:  20260101-215247
 :END:
-** TODO CLARITY-C: Extract terminal-backend protocol (OCP)
+** DONE CLARITY-C: Extract terminal-backend protocol (OCP)
 :PROPERTIES:
 :ID:       a8b0bb42-a24d-41cf-8891-d3e48d08666f
 :CREATED:  2026-01-01 21:52
 :DESCRIPTION: Replace pcase vterm/eat dispatching with composable protocol. Create terminal-backend abstraction with send-string, send-return methods. Enable adding new terminals without modifying swarm.el core.
 :AGENT:    emacs-126582
 :SESSION:  20260101-215247
+:UPDATED:  2026-01-06 08:33
+:LAST_AGENT: emacs-110067
 :END:
 ** TODO CLARITY-L: Separate API transformation from domain logic
 :PROPERTIES:
@@ -322,21 +324,25 @@ PR #15 + #23 merged. Beamer and Reveal.js support with C4 diagram integration.
 :AGENT:    emacs-126582
 :SESSION:  20260101-215301
 :END:
-** TODO CLARITY-Y: Graceful degradation for missing backends
+** IN-PROGRESS CLARITY-Y: Graceful degradation for missing backends
 :PROPERTIES:
 :ID:       b3b100e7-c0be-410c-8c5b-d6650f0f498f
 :CREATED:  2026-01-01 21:53
 :DESCRIPTION: Swarm fails hard if vterm/eat missing. Memory fails if file unwritable. Add fallback strategies: swarm could use shell-mode, memory could use temp storage. Feature flags for optional features.
 :AGENT:    emacs-126582
 :SESSION:  20260101-215301
+:UPDATED:  2026-01-06 08:33
+:LAST_AGENT: emacs-110067
 :END:
-** TODO SRP: Split swarm.el into focused modules
+** DONE SRP: Split swarm.el into focused modules
 :PROPERTIES:
 :ID:       81aa470e-3400-4b3d-9aa8-4cb772bec2f5
 :CREATED:  2026-01-01 21:53
 :DESCRIPTION: swarm.el (1180 lines) does too much. Split into: swarm-core.el (spawn/kill), swarm-dispatch.el (send/collect), swarm-presets.el (preset loading), swarm-auto-approve.el (approval watcher). Each module single responsibility.
 :AGENT:    emacs-126582
 :SESSION:  20260101-215301
+:UPDATED:  2026-01-06 08:33
+:LAST_AGENT: emacs-110067
 :END:
 ** TODO DDD: Create Value Objects for domain primitives
 :PROPERTIES:
