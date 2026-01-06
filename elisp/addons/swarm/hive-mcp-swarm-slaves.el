@@ -39,10 +39,15 @@
 (declare-function claude-code-ide--create-terminal-session "claude-code-ide")
 (declare-function claude-code-ide-mcp-server-ensure-server "claude-code-ide-mcp-server")
 
+;; Ollama backend via hive-mcp-ellama
+(declare-function hive-mcp-ellama-swarm-spawn "hive-mcp-ellama")
+(declare-function hive-mcp-ellama-swarm-dispatch "hive-mcp-ellama")
+
 ;; Dependencies on sibling modules
 (declare-function hive-mcp-swarm-terminal-send "hive-mcp-swarm-terminal")
 (declare-function hive-mcp-swarm-presets-build-system-prompt "hive-mcp-swarm-presets")
 (declare-function hive-mcp-swarm-presets-role-to-presets "hive-mcp-swarm-presets")
+(declare-function hive-mcp-swarm-presets-role-to-tier "hive-mcp-swarm-presets")
 (declare-function hive-mcp-swarm-prompts-clear-slave "hive-mcp-swarm-prompts")
 (declare-function hive-mcp-swarm-events-emit-slave-spawned "hive-mcp-swarm-events")
 (declare-function hive-mcp-swarm-events-emit-slave-killed "hive-mcp-swarm-events")
@@ -150,13 +155,20 @@ Kill some slaves with `hive-mcp-swarm-kill' before spawning more."
 
 ;;;; Spawn Functions:
 
-(cl-defun hive-mcp-swarm-slaves-spawn (name &key presets cwd role terminal)
+(cl-defun hive-mcp-swarm-slaves-spawn (name &key presets cwd role terminal backend model)
   "Spawn a new Claude slave with NAME - FULLY ASYNC.
 
 PRESETS is a list of preset names to apply (e.g., \\='(\"tdd\" \"clarity\")).
 CWD is the working directory (defaults to current project root).
-ROLE is a predefined role that maps to presets.
+ROLE is a predefined role that maps to presets AND tier (backend/model).
 TERMINAL overrides `hive-mcp-swarm-terminal' for this spawn.
+BACKEND explicitly sets the backend (claude-code-ide, vterm, eat, ollama).
+MODEL sets the model for ollama backend (devstral, devstral-small, deepseek-r1:7b).
+
+When ROLE is specified without explicit BACKEND/MODEL, uses tier mapping
+from `hive-mcp-swarm-tier-mapping' for two-tier orchestration:
+- Premium tier (claude-code-ide): coordination, review, architecture
+- Free tier (ollama): implementation, testing, documentation
 
 Returns the slave-id IMMEDIATELY.  The actual spawn happens async.
 Poll the slave's :status to check progress: spawning -> starting -> idle."
@@ -170,13 +182,22 @@ Poll the slave's :status to check progress: spawning -> starting -> idle."
   (hive-mcp-swarm-slaves-check-rate-limit)
   (hive-mcp-swarm-slaves-check-limit)
 
-  ;; Resolve role to presets if provided
-  (when (and role (not presets))
-    (setq presets (hive-mcp-swarm-presets-role-to-presets role)))
+  ;; Resolve role to presets and tier if provided
+  (when role
+    (unless presets
+      (setq presets (hive-mcp-swarm-presets-role-to-presets role)))
+    ;; Apply tier mapping for backend/model if not explicitly set
+    (when-let* ((tier (hive-mcp-swarm-presets-role-to-tier role)))
+      (unless backend
+        (setq backend (plist-get tier :backend)))
+      (unless model
+        (setq model (plist-get tier :model)))))
 
   (let* ((slave-id (hive-mcp-swarm-slaves-generate-id name))
          (work-dir (or cwd (hive-mcp-swarm-slaves--project-root) default-directory))
-         (term-backend (or terminal hive-mcp-swarm-terminal))
+         ;; Backend priority: explicit backend > terminal arg > default terminal
+         ;; This allows tier mapping to set backend via role
+         (term-backend (or backend terminal hive-mcp-swarm-terminal))
          (parent-id (or (getenv "CLAUDE_SWARM_SLAVE_ID") "master"))
          (spawn-depth (1+ hive-mcp-swarm--current-depth)))
 
@@ -189,6 +210,8 @@ Poll the slave's :status to check progress: spawning -> starting -> idle."
                    :status 'spawning  ; Not starting yet - we return immediately
                    :buffer nil        ; Buffer created async
                    :terminal term-backend
+                   :backend term-backend  ; Track actual backend used
+                   :model model           ; Track model for ollama backend
                    :cwd work-dir
                    :depth spawn-depth
                    :parent-id parent-id
@@ -248,7 +271,9 @@ WORK-DIR is the working directory, TERM-BACKEND the terminal type."
       ('vterm (unless (require 'vterm nil t)
                 (error "Vterm is required but not available")))
       ('eat (unless (require 'eat nil t)
-              (error "Eat is required but not available"))))
+              (error "Eat is required but not available")))
+      ('ollama (unless (require 'hive-mcp-ellama nil t)
+                 (error "hive-mcp-ellama is required but not available"))))
 
     ;; Update status to starting
     (plist-put slave :status 'starting)
@@ -332,7 +357,23 @@ WORK-DIR is the working directory, TERM-BACKEND the terminal type."
                           (with-current-buffer buffer
                             (when (and (boundp 'eat-terminal) eat-terminal)
                               (eat-term-send-string eat-terminal claude-cmd)
-                              (eat-term-send-string eat-terminal "\r"))))))))))
+                              (eat-term-send-string eat-terminal "\r")))))))
+        ('ollama
+         ;; Ollama backend uses hive-mcp-ellama for local LLM inference
+         ;; No terminal buffer needed - uses async elisp callbacks
+         (when (buffer-live-p buffer)
+           (kill-buffer buffer))
+         ;; Get model from slave metadata or use default
+         (let ((model (or (plist-get slave :model)
+                          (bound-and-true-p hive-mcp-ellama-default-model)
+                          "devstral")))
+           ;; Spawn via ellama addon
+           (hive-mcp-ellama-swarm-spawn slave-id name model)
+           ;; Store model in slave record
+           (plist-put slave :model model)
+           (plist-put slave :backend 'ollama)
+           ;; Mark as idle immediately since no terminal startup
+           (plist-put slave :status 'idle)))))
 
   ;; Log completion
   (message "[swarm] Spawned %s buffer created" slave-id)

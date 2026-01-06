@@ -276,6 +276,41 @@ Each entry is (ROLE . PRESETS-LIST)."
   :type '(alist :key-type string :value-type (repeat string))
   :group 'hive-mcp-swarm-presets)
 
+(defcustom hive-mcp-swarm-tier-mapping
+  '(("coordinator" . (:backend claude-code-ide))
+    ("reviewer" . (:backend claude-code-ide))
+    ("architect" . (:backend claude-code-ide))
+    ("implementer" . (:backend ollama :model "devstral"))
+    ("tester" . (:backend ollama :model "devstral-small"))
+    ("fixer" . (:backend ollama :model "deepseek-r1:7b"))
+    ("documenter" . (:backend ollama :model "devstral-small"))
+    ("refactorer" . (:backend ollama :model "devstral"))
+    ("worker" . (:backend ollama :model "devstral"))
+    ("ling" . (:backend ollama :model "devstral-small"))
+    ("researcher" . (:backend claude-code-ide)))
+  "Two-tier mapping of roles to backend and model.
+
+This enables cost-effective swarm orchestration:
+- Claude (premium): coordination, review, architecture decisions
+- Ollama (free): implementation, testing, documentation
+
+Backend options:
+- `claude-code-ide': Claude Code via terminal (premium, high quality)
+- `ollama': Local Ollama via hive-mcp-ellama (free, good enough)
+
+Models for ollama backend:
+- devstral: Best quality coding (Mistral's dev model)
+- devstral-small: Fast, good enough for simple tasks
+- deepseek-r1:7b: Reasoning tasks with chain-of-thought"
+  :type '(alist :key-type string
+                :value-type (plist :key-type symbol :value-type sexp))
+  :group 'hive-mcp-swarm-presets)
+
+(defun hive-mcp-swarm-presets-role-to-tier (role)
+  "Get tier configuration for ROLE.
+Returns plist with :backend and optionally :model, or nil for default."
+  (cdr (assoc role hive-mcp-swarm-tier-mapping)))
+
 (defun hive-mcp-swarm-presets-role-to-presets (role)
   "Convert ROLE to list of preset names."
   (or (cdr (assoc role hive-mcp-swarm-presets-role-mapping))
