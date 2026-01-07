@@ -81,6 +81,11 @@
   []
   (some? @embedding-provider))
 
+(defn get-embedding-provider
+  "Get the current embedding provider. Returns nil if not configured."
+  []
+  @embedding-provider)
+
 ;;; ============================================================
 ;;; Mock Embedding Provider (for testing)
 ;;; ============================================================

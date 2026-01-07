@@ -31,6 +31,7 @@
             [hive-mcp.tools.core :refer [mcp-success mcp-error mcp-json]]
             [hive-mcp.hivemind :as hivemind]
             [hive-mcp.channel :as channel]
+            [hive-mcp.permissions :as permissions]
             [clojure.data.json :as json]
             [clojure.string :as str]
             [taoensso.timbre :as log])
@@ -360,16 +361,23 @@
               (str "Error: " (:error result)))})
 
 (defn- execute-tool-calls
-  "Execute a batch of tool calls, respecting permissions."
+  "Execute a batch of tool calls, using tiered permissions."
   [agent-id tool-calls permissions]
   (mapv (fn [{:keys [id name arguments]}]
-          (let [approved? (or (not (requires-approval? name permissions))
-                              (request-approval! agent-id name arguments))]
-            (if approved?
-              (let [result (execute-tool name arguments)]
-                (format-tool-result id name result))
+          (let [;; Check if auto-approve permission is set
+                skip-check? (contains? (set permissions) :auto-approve)
+                ;; Get permission tier and escalate if needed
+                result (if skip-check?
+                         {:approved true :tier :bypass :reviewer :auto}
+                         (permissions/escalate! agent-id name arguments))]
+            (if (:approved result)
+              (let [exec-result (execute-tool name arguments)]
+                (format-tool-result id name exec-result))
               (format-tool-result id name
-                                  {:success false :error "Rejected by human"}))))
+                                  {:success false
+                                   :error (format "Rejected by %s: %s"
+                                                  (clojure.core/name (:reviewer result))
+                                                  (:reason result "No reason"))}))))
         tool-calls))
 
 (defn run-tool-loop
@@ -382,7 +390,7 @@
    
    When trace? is true, emits progress events via channel for monitoring."
   [{:keys [backend task tools permissions max-steps agent-id trace?]
-    :or {max-steps 15
+    :or {max-steps 50
          permissions #{}
          trace? false
          agent-id (str "agent-" (System/currentTimeMillis))}}]
@@ -460,7 +468,7 @@
   "Delegate a task to a local or cloud model with tool access.
    
    Options:
-     :backend   - Backend type: :ollama (default) or :openrouter
+     :backend   - Backend type: :openrouter (default) or :ollama
      :model     - Model name (backend-specific)
      :preset    - Swarm preset for auto model selection (OpenRouter)
      :task-type - For OpenRouter: :coding, :coding-alt, :arch, :docs
@@ -469,31 +477,31 @@
      :task      - Task description (required)
      :tools     - List of tool names to allow (nil = all registered)
      :permissions - Set of permissions (:auto-approve skips human checks)
-     :max-steps - Maximum tool-use iterations (default: 15)
+     :max-steps - Maximum tool-use iterations (default: 50)
      :trace     - If true, emit progress events via channel for monitoring
    
    Returns result map with :status, :result, :steps, :tool_calls_made
    
    Examples:
-     ;; Ollama (local)
-     (delegate! {:task \"Fix the bug\" :model \"devstral-small:24b\"})
-     
-     ;; OpenRouter with preset (auto model selection)
-     (delegate! {:backend :openrouter :preset \"tdd\" :task \"Write tests\"})
+     ;; OpenRouter with preset (auto model selection) - DEFAULT
+     (delegate! {:preset \"tdd\" :task \"Write tests\"})
      
      ;; OpenRouter with task type
-     (delegate! {:backend :openrouter :task-type :arch :task \"Review design\"})
+     (delegate! {:task-type :arch :task \"Review design\"})
      
      ;; OpenRouter with explicit model
-     (delegate! {:backend :openrouter :model \"mistralai/devstral-2512:free\" :task \"...\"})"
+     (delegate! {:model \"mistralai/devstral-2512:free\" :task \"...\"})
+     
+     ;; Ollama (local)
+     (delegate! {:backend :ollama :task \"Fix the bug\" :model \"devstral-small:24b\"})"
   [{:keys [backend model host task preset task-type api-key tools permissions max-steps trace]
-    :or {backend :ollama
+    :or {backend :openrouter
          host "http://localhost:11434"
-         max-steps 15
+         max-steps 50
          permissions #{}
          trace false}
     :as opts}]
-;; Ensure tools are registered (lazy init for REPL usage)
+  ;; Ensure tools are registered (lazy init for REPL usage)
   (ensure-tools-registered!)
 
   (when-not task
@@ -508,8 +516,11 @@
                                                             :preset preset
                                                             :task-type (or task-type :coding)
                                                             :api-key api-key})
-                           ;; Default to ollama
-                           (ollama-backend {:host host :model (or effective-model "devstral-small:24b")}))
+                           ;; Default to openrouter
+                           (openrouter-backend {:model effective-model
+                                                :preset preset
+                                                :task-type (or task-type :coding)
+                                                :api-key api-key}))
         agent-id (str "delegate-" (System/currentTimeMillis))]
 
     (when trace
@@ -546,7 +557,7 @@
   "MCP handler for agent.delegate tool."
   [{:keys [backend model task preset task_type api_key tools permissions max_steps trace]}]
   (try
-    (let [result (delegate! {:backend (keyword (or backend "ollama"))
+    (let [result (delegate! {:backend (keyword (or backend "openrouter"))
                              :model model
                              :preset preset
                              :task-type (when task_type (keyword task_type))
@@ -554,7 +565,7 @@
                              :task task
                              :tools (when tools (set tools))
                              :permissions (set (map keyword (or permissions [])))
-                             :max-steps (or max_steps 15)
+                             :max-steps (or max_steps 50)
                              :trace (boolean trace)})]
       (mcp-json result))
     (catch Exception e
