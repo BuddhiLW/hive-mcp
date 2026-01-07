@@ -35,6 +35,34 @@
   pending-swarm-prompts
   (atom {}))
 
+;; Ling result tracking for coordinator review
+(defonce ling-results (atom {}))
+
+(defn record-ling-result!
+  "Record ling completion for coordinator review."
+  [agent-id result]
+  (swap! ling-results assoc agent-id
+         {:result result
+          :timestamp (System/currentTimeMillis)
+          :reviewed? false}))
+
+(defn get-pending-ling-results
+  "Get ling results awaiting coordinator review."
+  []
+  (->> @ling-results
+       (filter (fn [[_ v]] (not (:reviewed? v))))
+       (into {})))
+
+(defn mark-ling-reviewed!
+  "Mark a ling result as reviewed by coordinator."
+  [agent-id]
+  (swap! ling-results assoc-in [agent-id :reviewed?] true))
+
+(defn clear-ling-results!
+  "Clear all ling results (e.g., at session end)."
+  []
+  (reset! ling-results {}))
+
 (defn add-swarm-prompt!
   "Add a permission prompt from a swarm slave.
    Called by sync.clj when :prompt-shown event received from Emacs."

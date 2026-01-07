@@ -57,16 +57,22 @@
   ;; Configurable via MCP tools from Elisp.
   ;;
   ;; Preset categories:
-  ;;   :coding - Implementation, testing, bug fixing
-  ;;   :arch   - Architecture, design, review, planning
-  ;;   :docs   - Documentation, explanations
+  ;;   :coding     - Implementation, testing, bug fixing
+  ;;   :coding-alt - Alternative coding model (refactoring, exploration)
+  ;;   :arch       - Architecture, design, review, planning
+  ;;   :docs       - Documentation, explanations
   (atom {;; Implementation-focused
          "tdd" :coding
          "tester" :coding
          "fixer" :coding
          "refactorer" :coding
          "ling" :coding
+         "ling-worker" :coding
+         "ling-tdd" :coding
+         "ling-fix" :coding
          "minimal" :coding
+         ;; Alternative coding (refactoring, exploration)
+         "ling-refactor" :coding-alt
          ;; Architecture/design-focused
          "reviewer" :arch
          "clarity" :arch
@@ -80,7 +86,8 @@
          "mcp-first" :arch
          "ling-pattern" :arch
          ;; Documentation-focused
-         "documenter" :docs}))
+         "documenter" :docs
+         "ling-docs" :docs}))
 
 (defn preset->task-type
   "Get the task type for a preset name. Returns :coding as default."

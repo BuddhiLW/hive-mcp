@@ -9,6 +9,7 @@
             [hive-mcp.swarm.sync :as sync]
             [hive-mcp.embeddings.ollama :as ollama]
             [hive-mcp.agent :as agent]
+            [hive-mcp.transport.websocket :as ws]
             [nrepl.server :as nrepl-server]
             [taoensso.timbre :as log])
   (:gen-class))
@@ -102,6 +103,16 @@
         (log/warn "Embedded nREPL failed to start (non-fatal):" (.getMessage e))
         nil))))
 
+(defn start-websocket-server!
+  "Start WebSocket MCP server if HIVE_MCP_WEBSOCKET=true."
+  []
+  (when (= "true" (System/getenv "HIVE_MCP_WEBSOCKET"))
+    (let [port (some-> (System/getenv "HIVE_MCP_WS_PORT") parse-long)
+          project-dir (System/getenv "HIVE_MCP_PROJECT_DIR")]
+      (log/info "Starting WebSocket MCP server" {:port port :project-dir project-dir})
+      (ws/start-server! {:port port
+                         :project-dir project-dir}))))
+
 (defn start!
   "Start the MCP server."
   [& _args]
@@ -110,6 +121,8 @@
     ;; Start embedded nREPL FIRST - bb-mcp needs this to forward tool calls
     ;; This MUST run in the same JVM as channel server for hivemind to work
     (start-embedded-nrepl!)
+    ;; Start WebSocket server if enabled
+    (start-websocket-server!)
     ;; Initialize embedding provider for semantic search (fails gracefully)
     (init-embedding-provider!)
     ;; Register tools for agent delegation (allows local models to use MCP tools)

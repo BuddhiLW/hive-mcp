@@ -560,6 +560,82 @@
     (catch Exception e
       (mcp-error (str "Delegation failed: " (ex-message e))))))
 
+(defn prepare-ling-context
+  "Prepare context for ling delegation by gathering catchup data."
+  []
+  (try
+    (let [;; Get catchup tool handler
+          catchup-handler (get @tool-registry "mcp_get_context")
+          context (when catchup-handler
+                    (catchup-handler {}))]
+      (if (and context (:text context))
+        (let [parsed (json/read-str (:text context) :key-fn keyword)]
+          {:conventions (get-in parsed [:memory :conventions] [])
+           :decisions (get-in parsed [:memory :decisions] [])
+           :snippets (get-in parsed [:memory :snippets] [])
+           :project (get parsed :project {})})
+        {}))
+    (catch Exception e
+      (log/warn e "Failed to gather ling context")
+      {})))
+
+(defn delegate-ling!
+  "Delegate a task to a ling (token-optimized leaf agent).
+   
+   Automatically:
+   - Injects catchup context (conventions, decisions, snippets)
+   - Uses ling-worker preset for OpenRouter
+   - Records results to hivemind for review
+   
+   Options:
+     :task      - Task description (required)
+     :files     - List of files the ling will modify
+     :preset    - Override preset (default: ling-worker)
+     :trace     - Enable progress events (default: true)
+   
+   Returns result map with :status, :result, :agent-id"
+  [{:keys [task files preset trace]
+    :or {preset "ling-worker"
+         trace true}}]
+  (let [context (prepare-ling-context)
+        context-str (when (seq context)
+                      (str "## Project Context\n"
+                           (when (seq (:conventions context))
+                             (str "### Conventions\n"
+                                  (str/join "\n" (map :content (:conventions context)))
+                                  "\n\n"))
+                           (when (seq (:decisions context))
+                             (str "### Decisions\n"
+                                  (str/join "\n" (map :content (:decisions context)))
+                                  "\n\n"))))
+        augmented-task (str context-str "## Task\n" task
+                            (when (seq files)
+                              (str "\n\n## Files to modify\n"
+                                   (str/join "\n" (map #(str "- " %) files)))))
+        agent-id (str "ling-" (System/currentTimeMillis))
+        result (delegate! {:backend :openrouter
+                           :preset preset
+                           :task augmented-task
+                           :trace trace})]
+    ;; Record result for coordinator review
+    (hivemind/record-ling-result! agent-id
+                                  {:task task
+                                   :files files
+                                   :result result
+                                   :timestamp (System/currentTimeMillis)})
+    (assoc result :agent-id agent-id)))
+
+(defn handle-delegate-ling
+  "MCP tool handler for delegate_ling."
+  [{:keys [task files preset trace]}]
+  (if (str/blank? task)
+    (mcp-error "Task is required")
+    (let [result (delegate-ling! {:task task
+                                  :files files
+                                  :preset (or preset "ling-worker")
+                                  :trace (if (nil? trace) true trace)})]
+      (mcp-json result))))
+
 (def tools
   [{:name "agent_delegate"
     :description "Delegate a task to a local LLM (Ollama) or cloud LLM (OpenRouter) with MCP tool access. The delegated model runs a tool-use loop until task completion. Use for implementation tasks to conserve coordinator context."
@@ -590,6 +666,21 @@
                                         :description "Emit progress events via channel"}}
                   :required ["task"]}
     :handler handle-agent-delegate}
+
+   {:name "delegate_ling"
+    :description "Delegate a task to a ling (token-optimized leaf agent). Lings use OpenRouter free-tier models and receive catchup context automatically. Use for file mutations to save coordinator tokens."
+    :inputSchema {:type "object"
+                  :properties {:task {:type "string"
+                                      :description "Task description for the ling"}
+                               :files {:type "array"
+                                       :items {:type "string"}
+                                       :description "List of files the ling will modify"}
+                               :preset {:type "string"
+                                        :description "Preset to use (default: ling-worker)"}
+                               :trace {:type "boolean"
+                                       :description "Enable progress events (default: true)"}}
+                  :required ["task"]}
+    :handler handle-delegate-ling}
 
    ;; OpenRouter model configuration
    {:name "openrouter_list_models"
