@@ -330,6 +330,12 @@
   "Tools that require human approval before execution."
   #{"file_write" "file_edit" "clojure_edit" "bash" "magit_commit" "magit_push"})
 
+(def ^:private drone-allowed-tools
+  "Safe tools for drone agents. Drones cannot write files directly - they must use propose_diff."
+  ["read_file" "grep" "glob_files" "clojure_eval" "clojure_inspect_project"
+   "magit_status" "magit_diff" "magit_log" "magit_branches"
+   "propose_diff" "hivemind_shout"])
+
 (defn- requires-approval?
   "Check if a tool call requires human approval."
   [tool-name permissions]
@@ -571,8 +577,8 @@
     (catch Exception e
       (mcp-error (str "Delegation failed: " (ex-message e))))))
 
-(defn prepare-ling-context
-  "Prepare context for ling delegation by gathering catchup data."
+(defn prepare-drone-context
+  "Prepare context for drone delegation by gathering catchup data."
   []
   (try
     (let [;; Get catchup tool handler
@@ -590,12 +596,12 @@
       (log/warn e "Failed to gather ling context")
       {})))
 
-(defn delegate-ling!
-  "Delegate a task to a ling (token-optimized leaf agent).
+(defn delegate-drone!
+  "Delegate a task to a drone (token-optimized leaf agent).
    
    Automatically:
    - Injects catchup context (conventions, decisions, snippets)
-   - Uses ling-worker preset for OpenRouter
+   - Uses drone-worker preset for OpenRouter
    - Records results to hivemind for review
    
    Options:
@@ -606,9 +612,9 @@
    
    Returns result map with :status, :result, :agent-id"
   [{:keys [task files preset trace]
-    :or {preset "ling-worker"
+    :or {preset "drone-worker"
          trace true}}]
-  (let [context (prepare-ling-context)
+  (let [context (prepare-drone-context)
         context-str (when (seq context)
                       (str "## Project Context\n"
                            (when (seq (:conventions context))
@@ -623,10 +629,11 @@
                             (when (seq files)
                               (str "\n\n## Files to modify\n"
                                    (str/join "\n" (map #(str "- " %) files)))))
-        agent-id (str "ling-" (System/currentTimeMillis))
+        agent-id (str "drone-" (System/currentTimeMillis))
         result (delegate! {:backend :openrouter
                            :preset preset
                            :task augmented-task
+                           :tools drone-allowed-tools
                            :trace trace})]
     ;; Record result for coordinator review
     (hivemind/record-ling-result! agent-id
@@ -636,15 +643,15 @@
                                    :timestamp (System/currentTimeMillis)})
     (assoc result :agent-id agent-id)))
 
-(defn handle-delegate-ling
-  "MCP tool handler for delegate_ling."
+(defn handle-delegate-drone
+  "MCP tool handler for delegate_drone."
   [{:keys [task files preset trace]}]
   (if (str/blank? task)
     (mcp-error "Task is required")
-    (let [result (delegate-ling! {:task task
-                                  :files files
-                                  :preset (or preset "ling-worker")
-                                  :trace (if (nil? trace) true trace)})]
+    (let [result (delegate-drone! {:task task
+                                   :files files
+                                   :preset (or preset "drone-worker")
+                                   :trace (if (nil? trace) true trace)})]
       (mcp-json result))))
 
 (def tools
@@ -678,20 +685,20 @@
                   :required ["task"]}
     :handler handle-agent-delegate}
 
-   {:name "delegate_ling"
-    :description "Delegate a task to a ling (token-optimized leaf agent). Lings use OpenRouter free-tier models and receive catchup context automatically. Use for file mutations to save coordinator tokens."
+   {:name "delegate_drone"
+    :description "Delegate a task to a drone (token-optimized leaf agent). Drones use OpenRouter free-tier models and receive catchup context automatically. Use for file mutations to save coordinator tokens."
     :inputSchema {:type "object"
                   :properties {:task {:type "string"
-                                      :description "Task description for the ling"}
+                                      :description "Task description for the drone"}
                                :files {:type "array"
                                        :items {:type "string"}
-                                       :description "List of files the ling will modify"}
+                                       :description "List of files the drone will modify"}
                                :preset {:type "string"
-                                        :description "Preset to use (default: ling-worker)"}
+                                        :description "Preset to use (default: drone-worker)"}
                                :trace {:type "boolean"
                                        :description "Enable progress events (default: true)"}}
                   :required ["task"]}
-    :handler handle-delegate-ling}
+    :handler handle-delegate-drone}
 
    ;; OpenRouter model configuration
    {:name "openrouter_list_models"

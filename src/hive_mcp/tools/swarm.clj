@@ -20,6 +20,33 @@
             [taoensso.timbre :as log]))
 
 ;; ============================================================
+;; Lings Registry - Track spawned lings for easy lookup
+;; ============================================================
+
+(defonce lings-registry
+  ;; Atom tracking spawned lings: {slave-id {:name, :presets, :cwd, :spawned-at}}
+  (atom {}))
+
+(defn register-ling!
+  "Register a spawned ling in the registry."
+  [slave-id {:keys [name presets cwd]}]
+  (swap! lings-registry assoc slave-id
+         {:name name
+          :presets presets
+          :cwd cwd
+          :spawned-at (System/currentTimeMillis)}))
+
+(defn unregister-ling!
+  "Remove a ling from the registry."
+  [slave-id]
+  (swap! lings-registry dissoc slave-id))
+
+(defn get-available-lings
+  "Get all registered lings."
+  []
+  @lings-registry)
+
+;; ============================================================
 ;; Swarm Management Tools
 ;; ============================================================
 
@@ -64,7 +91,8 @@
 
 (defn handle-swarm-spawn
   "Spawn a new Claude slave instance.
-   Uses timeout to prevent MCP blocking."
+   Uses timeout to prevent MCP blocking.
+   Registers successful spawns in lings-registry for easy lookup."
   [{:keys [name presets cwd role terminal]}]
   (if (swarm-addon-available?)
     (let [presets-str (when (seq presets)
@@ -85,7 +113,15 @@
          :isError true}
 
         success
-        {:type "text" :text result}
+        (do
+          ;; Parse result to extract slave_id and register
+          (try
+            (let [parsed (json/read-str result :key-fn keyword)]
+              (when-let [slave-id (or (:slave_id parsed) (:slave-id parsed))]
+                (register-ling! slave-id {:name name :presets presets :cwd cwd})))
+            (catch Exception e
+              (log/warn "Failed to parse spawn result for registry:" (ex-message e))))
+          {:type "text" :text result})
 
         :else
         {:type "text" :text (str "Error: " error) :isError true}))
@@ -195,8 +231,8 @@
    PHASE 2 OPTIMIZATION: Check event journal first for sub-100ms detection.
    If event not in journal, falls back to elisp polling with exponential backoff.
 
-   Note: emacsclient returns a quoted string, and json-encode creates another
-   layer of JSON, so we need to parse twice to get the actual data."
+   Note: emacsclient returns a quoted string which unwrap-emacs-string handles.
+   We only need ONE json/read-str to parse the actual JSON from elisp."
   [{:keys [task_id timeout_ms]}]
   (if (swarm-addon-available?)
     (let [timeout (or timeout_ms 300000) ; default 5 minutes
@@ -255,16 +291,15 @@
                   (not success)
                   {:type "text" :text (str "Error: " error) :isError true}
 
-                  ;; Parse the result - need TWO parses:
-                  ;; 1. First parse: emacsclient quotes the output -> get inner JSON string
-                  ;; 2. Second parse: parse the actual JSON object
+                  ;; Parse the result - SINGLE parse since unwrap-emacs-string
+                  ;; already handles the emacsclient quote layer
                   :else
-                  (let [;; First parse: unwrap emacsclient quotes
-                        json-str (try (json/read-str result) (catch Exception _ nil))
-                        ;; Second parse: parse the actual JSON from elisp
-                        parsed (when (string? json-str)
-                                 (try (json/read-str json-str :key-fn keyword)
-                                      (catch Exception _ nil)))
+                  (let [;; Single parse: result is already the JSON string
+                        parsed (try (json/read-str result :key-fn keyword)
+                                    (catch Exception e
+                                      (log/warn "Failed to parse collect result:" result
+                                                "Error:" (.getMessage e))
+                                      nil))
                         status (:status parsed)]
                     (cond
                       ;; Parse failed - log and return error
@@ -274,13 +309,12 @@
                                               :status "error"
                                               :error "Failed to parse elisp response"
                                               :raw_result result
-                                              :first_parse json-str
                                               :elapsed_ms elapsed})
                        :isError true}
 
-                      ;; Task complete or failed - return the inner JSON directly
+                      ;; Task complete or failed - return result
                       (contains? #{"completed" "timeout" "error"} status)
-                      {:type "text" :text json-str}
+                      {:type "text" :text (json/write-str parsed)}
 
                       ;; Still polling and within timeout - wait and retry
                       (and (= status "polling") (< elapsed timeout))
@@ -321,7 +355,8 @@
 
 (defn handle-swarm-kill
   "Kill a slave or all slaves.
-   Uses short timeout (3s) as kill should be fast."
+   Uses short timeout (3s) as kill should be fast.
+   Removes killed lings from registry."
   [{:keys [slave_id]}]
   (if (swarm-addon-available?)
     (let [elisp (if (= slave_id "all")
@@ -338,11 +373,32 @@
          :isError true}
 
         success
-        {:type "text" :text result}
+        (do
+          ;; Unregister from lings registry
+          (if (= slave_id "all")
+            (reset! lings-registry {})
+            (unregister-ling! slave_id))
+          {:type "text" :text result})
 
         :else
         {:type "text" :text (str "Error: " error) :isError true}))
     {:type "text" :text "hive-mcp-swarm addon not loaded." :isError true}))
+
+(defn handle-lings-available
+  "List all available lings (spawned slaves) with their metadata.
+   Returns lings from registry, no Emacs call needed."
+  [_]
+  (let [lings (get-available-lings)
+        formatted (into {}
+                        (map (fn [[id info]]
+                               [id (assoc info
+                                          :age-minutes (quot (- (System/currentTimeMillis)
+                                                                (:spawned-at info))
+                                                             60000))])
+                             lings))]
+    {:type "text"
+     :text (json/write-str {:count (count lings)
+                            :lings formatted})}))
 
 (defn handle-swarm-broadcast
   "Broadcast a prompt to all slaves.
@@ -528,6 +584,11 @@
                                            :description "ID of slave to kill, or \"all\" to kill all slaves"}}
                   :required ["slave_id"]}
     :handler handle-swarm-kill}
+
+   {:name "lings_available"
+    :description "List all available lings (spawned slaves) with metadata. Use this to find ling IDs without having to remember them. Returns name, presets, cwd, and age for each ling."
+    :inputSchema {:type "object" :properties {}}
+    :handler handle-lings-available}
 
    {:name "swarm_broadcast"
     :description "Send the same prompt to all active slaves simultaneously."
