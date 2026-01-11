@@ -20,6 +20,9 @@
         ;; Logic programming for swarm hivemind coordination
         org.clojure/core.logic {:mvn/version "1.1.1"}
 
+        ;; Datascript for in-memory graph storage (GraphStore backend)
+        datascript/datascript {:mvn/version "1.7.3"}
+
         ;; Logging - Timbre with SLF4J bridge
         com.taoensso/timbre {:mvn/version "6.8.0"}
         com.fzakaria/slf4j-timbre {:mvn/version "0.4.1"}
