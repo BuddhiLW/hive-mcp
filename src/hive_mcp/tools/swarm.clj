@@ -14,6 +14,7 @@
             [hive-mcp.emacsclient :as ec]
             [hive-mcp.validation :as v]
             [hive-mcp.swarm.coordinator :as coord]
+            [hive-mcp.hivemind :as hivemind]
             [clojure.data.json :as json]
             [clojure.java.shell :as shell]
             [clojure.string :as str]
@@ -45,6 +46,44 @@
   "Get all registered lings."
   []
   @lings-registry)
+
+;; ============================================================
+;; State Sync: Query slave working status from hivemind events
+;; ============================================================
+
+(defn get-slave-working-status
+  "Get the working status of a slave based on hivemind events.
+
+   Maps hivemind event types to swarm working status:
+   - :started, :progress -> \"working\"
+   - :completed, :error -> \"idle\"
+   - :blocked -> \"blocked\"
+   - nil (not registered) -> nil
+
+   agent-id: The slave/agent ID to query"
+  [agent-id]
+  (when-let [agent (get @hivemind/agent-registry agent-id)]
+    (let [status (:status agent)]
+      (case status
+        (:started :progress) "working"
+        :completed "idle"
+        :error "idle"
+        :blocked "blocked"
+        ;; Default to idle for unknown states
+        "idle"))))
+
+(defn get-unified-swarm-status
+  "Get unified swarm status merging hivemind state with lings registry.
+
+   Returns a map of slave-id -> {:name, :presets, :cwd, :working-status, ...}
+   The :working-status field reflects the current state from hivemind events."
+  []
+  (let [lings @lings-registry]
+    (into {}
+          (map (fn [[slave-id info]]
+                 (let [working-status (get-slave-working-status slave-id)]
+                   [slave-id (assoc info :working-status (or working-status "idle"))]))
+               lings))))
 
 ;; ============================================================
 ;; Swarm Management Tools
@@ -202,6 +241,12 @@
          :isError true}))
     {:type "text" :text "hive-mcp-swarm addon not loaded." :isError true}))
 
+;; TODO: SMELLY CODE - Needs SOLID/DDD/CLARITY refactoring
+;; Issues:
+;; - Violates SRP: parsing, merging, error handling mixed together
+;; - Violates DIP: directly calls elisp instead of using abstraction
+;; - Dual state: elisp hash table + Clojure hivemind registry (should be single source)
+;; - Consider: pure merge function, separate elisp adapter, unified state store
 (defn handle-swarm-status
   "Get swarm status including all slaves and their states.
    Uses timeout to prevent MCP blocking."
@@ -219,7 +264,25 @@
          :isError true}
 
         success
-        {:type "text" :text result}
+        (try
+          (let [parsed (json/read-str result :key-fn keyword)
+                slaves-detail (:slaves-detail parsed)
+                ;; Merge hivemind state into each slave's status
+                merged-slaves (when (seq slaves-detail)
+                                (mapv (fn [slave]
+                                        (if-let [slave-id (:slave-id slave)]
+                                          (if-let [hivemind-status (get-slave-working-status slave-id)]
+                                            (assoc slave :status (keyword hivemind-status))
+                                            slave)
+                                          slave))
+                                      slaves-detail))
+                merged-parsed (if merged-slaves
+                                (assoc parsed :slaves-detail merged-slaves)
+                                parsed)]
+            {:type "text" :text (json/write-str merged-parsed)})
+          (catch Exception e
+            (log/warn "Failed to merge hivemind status:" (.getMessage e))
+            {:type "text" :text result}))
 
         :else
         {:type "text" :text (str "Error: " error) :isError true}))
