@@ -59,7 +59,7 @@ Requires the MCP server to be running with Chroma configured."
   :type 'integer
   :group 'hive-mcp-swarm-presets)
 
-(defcustom hive-mcp-swarm-default-presets '("ling" "mcp-first")
+(defcustom hive-mcp-swarm-default-presets '("ling" "mcp-first" "hivemind")
   "Default presets applied to all spawned swarm slaves.
 These presets are merged with any explicit presets passed to spawn.
 Explicit presets take priority (listed first in system prompt).

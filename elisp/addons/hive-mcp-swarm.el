@@ -81,6 +81,7 @@
 (require 'hive-mcp-swarm-terminal)
 (require 'hive-mcp-swarm-slaves)
 (require 'hive-mcp-swarm-tasks)
+(require 'hive-mcp-swarm-hooks)
 
 ;; Soft dependency on channel for push events
 (declare-function hive-mcp-channel-connected-p "hive-mcp-channel")
@@ -284,6 +285,57 @@ This alerts the human even when running master Claude in a terminal."
 (defalias 'hive-mcp-swarm--emit-state-changed 'hive-mcp-swarm-events-emit-state-changed)
 (defalias 'hive-mcp-swarm--emit-slave-spawned 'hive-mcp-swarm-events-emit-slave-spawned)
 (defalias 'hive-mcp-swarm--emit-slave-killed 'hive-mcp-swarm-events-emit-slave-killed)
+
+;;;; Hivemind State Sync Handler:
+;; Updates swarm slave state based on hivemind shout events.
+;; Event-to-state mapping:
+;; - hivemind-started → slave_status: working
+;; - hivemind-progress → no state change (maintains working)
+;; - hivemind-completed → slave_status: idle, increment tasks-completed
+;; - hivemind-error → slave_status: idle, increment tasks-failed
+;; - hivemind-blocked → slave_status: blocked
+
+(defun hive-mcp-swarm--sync-state-from-hivemind (event-data)
+  "Sync swarm slave state from hivemind EVENT-DATA.
+Called via hooks when hivemind receives shout events.
+Maps agent-id to slave-id and updates status accordingly."
+  (let* ((agent-id (plist-get event-data :agent-id))
+         (event-type (plist-get event-data :event-type))
+         (slave (gethash agent-id hive-mcp-swarm--slaves)))
+    (when slave
+      (let ((old-status (plist-get slave :status)))
+        (pcase event-type
+          ;; Started -> working
+          ((or "hivemind-started" ":hivemind-started")
+           (plist-put slave :status 'working)
+           (plist-put slave :current-task (plist-get event-data :task)))
+
+          ;; Progress -> maintain working status
+          ((or "hivemind-progress" ":hivemind-progress")
+           (plist-put slave :status 'working))
+
+          ;; Completed -> idle, increment completed count
+          ((or "hivemind-completed" ":hivemind-completed")
+           (plist-put slave :status 'idle)
+           (plist-put slave :current-task nil)
+           (plist-put slave :tasks-completed
+                      (1+ (or (plist-get slave :tasks-completed) 0))))
+
+          ;; Error -> idle, increment failed count
+          ((or "hivemind-error" ":hivemind-error")
+           (plist-put slave :status 'idle)
+           (plist-put slave :current-task nil)
+           (plist-put slave :tasks-failed
+                      (1+ (or (plist-get slave :tasks-failed) 0))))
+
+          ;; Blocked -> blocked status
+          ((or "hivemind-blocked" ":hivemind-blocked")
+           (plist-put slave :status 'blocked)))
+
+        ;; Emit state change event if status changed
+        (let ((new-status (plist-get slave :status)))
+          (unless (eq old-status new-status)
+            (hive-mcp-swarm--emit-state-changed agent-id old-status new-status)))))))
 
 ;;;; Auto-Approve Watcher:
 ;; Delegated to hive-mcp-swarm-prompts module for centralized prompt handling.
@@ -607,9 +659,12 @@ Returns result plist indicating success or failure."
                       (format-time-string "%Y%m%d")
                       (random 65535)))
         ;; Initialize modules
+        (hive-mcp-swarm-hooks-init)
         (hive-mcp-swarm-events-init hive-mcp-swarm--session-id)
         (hive-mcp-swarm-presets-init)
         (hive-mcp-swarm-prompts-init)
+        ;; Register hivemind state sync hooks
+        (hive-mcp-swarm--register-hivemind-sync-hooks)
         ;; Start watcher if enabled
         (when hive-mcp-swarm-auto-approve
           (hive-mcp-swarm-start-auto-approve))
@@ -619,12 +674,30 @@ Returns result plist indicating success or failure."
     ;; Shutdown
     (hive-mcp-swarm-stop-auto-approve)
     (hive-mcp-swarm-kill-all)
+    ;; Unregister hivemind sync hooks
+    (hive-mcp-swarm--unregister-hivemind-sync-hooks)
+    ;; Shutdown modules
+    (hive-mcp-swarm-hooks-shutdown)
     (hive-mcp-swarm-prompts-shutdown)
     (hive-mcp-swarm-presets-shutdown)
     (hive-mcp-swarm-events-shutdown)
     (message "hive-mcp-swarm disabled")))
 
 ;;;; Addon Lifecycle:
+
+(defun hive-mcp-swarm--register-hivemind-sync-hooks ()
+  "Register sync handler with all hivemind event types."
+  (dolist (event-type '(:hivemind-started :hivemind-progress
+                        :hivemind-completed :hivemind-error
+                        :hivemind-blocked))
+    (hive-mcp-swarm-hooks-register event-type #'hive-mcp-swarm--sync-state-from-hivemind)))
+
+(defun hive-mcp-swarm--unregister-hivemind-sync-hooks ()
+  "Unregister sync handler from all hivemind event types."
+  (dolist (event-type '(:hivemind-started :hivemind-progress
+                        :hivemind-completed :hivemind-error
+                        :hivemind-blocked))
+    (hive-mcp-swarm-hooks-unregister event-type #'hive-mcp-swarm--sync-state-from-hivemind)))
 
 (defun hive-mcp-swarm--addon-init ()
   "Initialize swarm addon."
@@ -633,9 +706,12 @@ Returns result plist indicating success or failure."
                 (format-time-string "%Y%m%d")
                 (random 65535)))
   ;; Initialize modules
+  (hive-mcp-swarm-hooks-init)
   (hive-mcp-swarm-events-init hive-mcp-swarm--session-id)
   (hive-mcp-swarm-presets-init)
   (hive-mcp-swarm-prompts-init)
+  ;; Register hivemind state sync hooks
+  (hive-mcp-swarm--register-hivemind-sync-hooks)
   ;; Start watcher if enabled
   (when hive-mcp-swarm-auto-approve
     (hive-mcp-swarm-start-auto-approve)))
@@ -644,7 +720,10 @@ Returns result plist indicating success or failure."
   "Shutdown swarm addon - kill all slaves."
   (hive-mcp-swarm-stop-auto-approve)
   (hive-mcp-swarm-kill-all)
+  ;; Unregister hivemind sync hooks
+  (hive-mcp-swarm--unregister-hivemind-sync-hooks)
   ;; Shutdown modules
+  (hive-mcp-swarm-hooks-shutdown)
   (hive-mcp-swarm-prompts-shutdown)
   (hive-mcp-swarm-presets-shutdown)
   (hive-mcp-swarm-events-shutdown)

@@ -62,13 +62,32 @@ Must match HIVE_MCP_CHANNEL_PORT env var on the Clojure server (default: 9998)."
   :group 'hive-mcp-channel)
 
 (defcustom hive-mcp-channel-reconnect-interval 5.0
-  "Seconds between reconnection attempts."
+  "Base seconds between reconnection attempts.
+With exponential backoff, actual interval = base * 2^(attempt-1), capped at max."
+  :type 'number
+  :group 'hive-mcp-channel)
+
+(defcustom hive-mcp-channel-max-reconnect-interval 120.0
+  "Maximum seconds between reconnection attempts (caps exponential backoff)."
   :type 'number
   :group 'hive-mcp-channel)
 
 (defcustom hive-mcp-channel-max-reconnects 10
-  "Maximum reconnection attempts (0 = unlimited)."
+  "Maximum reconnection attempts (0 = unlimited).
+After exhausting attempts, enters graceful degradation mode."
   :type 'integer
+  :group 'hive-mcp-channel)
+
+(defcustom hive-mcp-channel-auto-connect t
+  "Whether to auto-connect at Emacs startup.
+Connection is non-blocking and fails gracefully if server unavailable."
+  :type 'boolean
+  :group 'hive-mcp-channel)
+
+(defcustom hive-mcp-channel-startup-delay 2.0
+  "Seconds to wait after Emacs startup before attempting connection.
+Allows other init to complete first."
+  :type 'number
   :group 'hive-mcp-channel)
 
 ;;;; Internal State
@@ -90,6 +109,11 @@ Must match HIVE_MCP_CHANNEL_PORT env var on the Clojure server (default: 9998)."
 
 (defvar hive-mcp-channel--message-queue nil
   "Queue of messages pending send (when disconnected).")
+
+(defvar hive-mcp-channel--degraded-mode nil
+  "Non-nil when in graceful degradation mode (server unavailable).
+In this mode, messages are queued silently without reconnect attempts.
+Reset by calling `hive-mcp-channel-connect' manually.")
 
 ;;;; Bencode Helpers
 
@@ -231,15 +255,24 @@ Returns t if a message was decoded, nil otherwise."
 _PROC is the process (unused, required by Emacs process API)."
   (cond
    ((string-match-p "deleted\\|connection broken\\|exited\\|failed" event)
-    (message "hive-mcp-channel: Connection lost: %s" (string-trim event))
     (setq hive-mcp-channel--process nil)
-    (when (and hive-mcp-channel-reconnect-interval
-               (or (= 0 hive-mcp-channel-max-reconnects)
-                   (< hive-mcp-channel--reconnect-count hive-mcp-channel-max-reconnects)))
-      (hive-mcp-channel--schedule-reconnect)))
+    (cond
+     ;; Already in degraded mode - stay silent
+     (hive-mcp-channel--degraded-mode
+      nil)
+     ;; Exhausted reconnect attempts - enter graceful degradation
+     ((and (> hive-mcp-channel-max-reconnects 0)
+           (>= hive-mcp-channel--reconnect-count hive-mcp-channel-max-reconnects))
+      (setq hive-mcp-channel--degraded-mode t)
+      (message "hive-mcp-channel: Entering graceful degradation mode (server unavailable). Messages queued. Call M-x hive-mcp-channel-connect to retry."))
+     ;; Schedule reconnect with exponential backoff
+     (hive-mcp-channel-reconnect-interval
+      (message "hive-mcp-channel: Connection lost: %s" (string-trim event))
+      (hive-mcp-channel--schedule-reconnect))))
    ((string-match-p "open" event)
     (message "hive-mcp-channel: Connected")
-    (setq hive-mcp-channel--reconnect-count 0)
+    (setq hive-mcp-channel--reconnect-count 0
+          hive-mcp-channel--degraded-mode nil)  ; Exit degraded mode on successful connect
     ;; Flush queued messages
     (while hive-mcp-channel--message-queue
       (hive-mcp-channel-send (pop hive-mcp-channel--message-queue))))))
@@ -348,16 +381,27 @@ If HANDLER is nil, remove all handlers for EVENT-TYPE."
 
 ;;;; Reconnection
 
+(defun hive-mcp-channel--calculate-backoff ()
+  "Calculate reconnect interval with exponential backoff.
+Returns base * 2^(attempt-1), capped at max-reconnect-interval."
+  (let ((interval (* hive-mcp-channel-reconnect-interval
+                     (expt 2 (max 0 (1- hive-mcp-channel--reconnect-count))))))
+    (min interval hive-mcp-channel-max-reconnect-interval)))
+
 (defun hive-mcp-channel--schedule-reconnect ()
-  "Schedule a reconnection attempt."
+  "Schedule a reconnection attempt with exponential backoff."
   (hive-mcp-channel--cancel-reconnect)
   (cl-incf hive-mcp-channel--reconnect-count)
-  (message "hive-mcp-channel: Reconnecting in %.1fs (attempt %d)..."
-           hive-mcp-channel-reconnect-interval
-           hive-mcp-channel--reconnect-count)
-  (setq hive-mcp-channel--reconnect-timer
-        (run-with-timer hive-mcp-channel-reconnect-interval nil
-                        #'hive-mcp-channel-connect)))
+  (let ((interval (hive-mcp-channel--calculate-backoff)))
+    (message "hive-mcp-channel: Reconnecting in %.1fs (attempt %d/%s)..."
+             interval
+             hive-mcp-channel--reconnect-count
+             (if (= 0 hive-mcp-channel-max-reconnects)
+                 "unlimited"
+               (number-to-string hive-mcp-channel-max-reconnects)))
+    (setq hive-mcp-channel--reconnect-timer
+          (run-with-timer interval nil
+                          #'hive-mcp-channel-connect))))
 
 (defun hive-mcp-channel--cancel-reconnect ()
   "Cancel pending reconnection."
@@ -383,6 +427,65 @@ If HANDLER is nil, remove all handlers for EVENT-TYPE."
   (dolist (type '(:task-completed :task-failed :prompt-shown
                   :state-changed :slave-spawned :slave-killed))
     (hive-mcp-channel-on type handler)))
+
+;;;; Startup & Auto-heal
+
+(defun hive-mcp-channel--startup-connect ()
+  "Attempt connection at startup (non-blocking, graceful failure).
+This is called via `emacs-startup-hook' with a delay.
+Follows CLARITY: Yield safe failure."
+  (when hive-mcp-channel-auto-connect
+    (condition-case err
+        (progn
+          (setq hive-mcp-channel--degraded-mode nil
+                hive-mcp-channel--reconnect-count 0)
+          (hive-mcp-channel-connect))
+      (error
+       ;; Graceful degradation: server not available at startup is OK
+       (setq hive-mcp-channel--degraded-mode t)
+       (message "hive-mcp-channel: Server not available at startup (graceful degradation). Will auto-heal when server appears.")))))
+
+;;;###autoload
+(defun hive-mcp-channel-setup ()
+  "Set up channel auto-connection at startup.
+Call this from your init file, or it will be called automatically
+when the package loads."
+  (when hive-mcp-channel-auto-connect
+    ;; Use timer to avoid blocking Emacs startup
+    (run-with-timer hive-mcp-channel-startup-delay nil
+                    #'hive-mcp-channel--startup-connect)))
+
+;;;###autoload
+(defun hive-mcp-channel-degraded-p ()
+  "Return t if in graceful degradation mode."
+  hive-mcp-channel--degraded-mode)
+
+;;;###autoload
+(defun hive-mcp-channel-status ()
+  "Return a status alist for the channel connection."
+  (interactive)
+  (let ((status `((connected . ,(hive-mcp-channel-connected-p))
+                  (degraded . ,hive-mcp-channel--degraded-mode)
+                  (reconnect-count . ,hive-mcp-channel--reconnect-count)
+                  (queued-messages . ,(length hive-mcp-channel--message-queue))
+                  (type . ,hive-mcp-channel-type))))
+    (when (called-interactively-p 'any)
+      (message "hive-mcp-channel: %s"
+               (if (hive-mcp-channel-connected-p)
+                   "Connected"
+                 (if hive-mcp-channel--degraded-mode
+                     (format "Degraded (%d queued)"
+                             (length hive-mcp-channel--message-queue))
+                   (format "Disconnected (attempt %d)"
+                           hive-mcp-channel--reconnect-count)))))
+    status))
+
+;; Auto-setup when package loads (after Emacs startup)
+(if after-init-time
+    ;; Already started - setup now
+    (hive-mcp-channel-setup)
+  ;; Not yet started - setup after init
+  (add-hook 'emacs-startup-hook #'hive-mcp-channel-setup))
 
 (provide 'hive-mcp-channel)
 ;;; hive-mcp-channel.el ends here

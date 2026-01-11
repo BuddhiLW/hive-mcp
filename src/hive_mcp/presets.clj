@@ -41,11 +41,11 @@
 
 (def ^:private category-keywords
   "Keywords to auto-detect preset category from content."
-  {"testing"      #"(?i)test|TDD|red.?green|assertion|mock"
-   "coding"       #"(?i)SOLID|clean.?code|refactor|DRY|KISS"
+  {"testing" #"(?i)test|TDD|red.?green|assertion|mock"
+   "coding" #"(?i)SOLID|clean.?code|refactor|DRY|KISS"
    "architecture" #"(?i)DDD|domain|layer|boundary|aggregate"
    "coordination" #"(?i)hivemind|swarm|spawn|coordinate|master"
-   "workflow"     #"(?i)workflow|task|step|process|pipeline"})
+   "workflow" #"(?i)workflow|task|step|process|pipeline"})
 
 ;;; ============================================================
 ;;; Collection Management
@@ -58,7 +58,7 @@
   []
   (if-let [coll @collection-cache]
     coll
-    (let [provider (deref #'chroma/embedding-provider)]
+    (let [provider (chroma/get-embedding-provider)]
       (when-not provider
         (throw (ex-info "Embedding provider not configured. Call chroma/set-embedding-provider! first."
                         {:type :no-embedding-provider})))
@@ -169,7 +169,7 @@
   (when-not (chroma/embedding-configured?)
     (throw (ex-info "Embedding provider not configured" {:type :no-embedding-provider})))
   (let [coll (get-or-create-collection)
-        provider (deref #'chroma/embedding-provider)
+        provider (chroma/get-embedding-provider)
         doc-text (preset-to-document preset)
         embedding (chroma/embed-text provider doc-text)]
     @(chroma-api/add coll [{:id id
@@ -191,7 +191,7 @@
   (when-not (chroma/embedding-configured?)
     (throw (ex-info "Embedding provider not configured" {:type :no-embedding-provider})))
   (let [coll (get-or-create-collection)
-        provider (deref #'chroma/embedding-provider)
+        provider (chroma/get-embedding-provider)
         docs (mapv preset-to-document presets)
         embeddings (chroma/embed-batch provider docs)
         records (mapv (fn [preset doc emb]
@@ -248,7 +248,7 @@
   (when-not (chroma/embedding-configured?)
     (throw (ex-info "Embedding provider not configured" {:type :no-embedding-provider})))
   (let [coll (get-or-create-collection)
-        provider (deref #'chroma/embedding-provider)
+        provider (chroma/get-embedding-provider)
         query-embedding (chroma/embed-text provider query-text)
         where-clause (when category {:category category})
         results @(chroma-api/query coll query-embedding

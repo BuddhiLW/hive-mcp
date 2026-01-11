@@ -20,6 +20,10 @@
 ;;; Code:
 
 (require 'hive-mcp-channel)
+(require 'hive-mcp-channel-ws)
+
+;; Soft dependency on swarm hooks (for state sync)
+(declare-function hive-mcp-swarm-hooks-dispatch "hive-mcp-swarm-hooks")
 
 ;;; Customization
 
@@ -49,13 +53,20 @@
 ;;; Event Handlers
 
 (defun hive-mcp-hivemind--handle-shout (event)
-  "Handle a hivemind shout EVENT from an agent."
-  (let* ((agent-id (cdr (assoc "agent-id" event)))
-         (data (cdr (assoc "data" event)))
-         (event-type (cdr (assoc "type" event)))
-         (timestamp (cdr (assoc "timestamp" event)))
-         (task (cdr (assoc "task" data)))
-         (message (cdr (assoc "message" data))))
+  "Handle a hivemind shout EVENT from an agent.
+EVENT may have symbol keys (from WebSocket JSON) or string keys (from bencode)."
+  (let* ((agent-id (or (alist-get 'agent-id event)
+                       (cdr (assoc "agent-id" event))))
+         (data (or (alist-get 'data event)
+                   (cdr (assoc "data" event))))
+         (event-type (or (alist-get 'type event)
+                         (cdr (assoc "type" event))))
+         (timestamp (or (alist-get 'timestamp event)
+                        (cdr (assoc "timestamp" event))))
+         (task (or (alist-get 'task data)
+                   (cdr (assoc "task" data))))
+         (message (or (alist-get 'message data)
+                      (cdr (assoc "message" data)))))
     ;; Update agent registry
     (puthash agent-id
              (list :status event-type
@@ -67,14 +78,29 @@
     (hive-mcp-hivemind--log event-type agent-id (or message task))
     ;; Notify if important
     (when (member (intern event-type) hive-mcp-hivemind-notify-events)
-      (hive-mcp-hivemind--notify agent-id event-type message))))
+      (hive-mcp-hivemind--notify agent-id event-type message))
+    ;; Dispatch to hooks for state sync (if hooks module is loaded)
+    (when (fboundp 'hive-mcp-swarm-hooks-dispatch)
+      (hive-mcp-swarm-hooks-dispatch
+       (intern (concat ":" event-type))
+       (list :agent-id agent-id
+             :event-type event-type
+             :task task
+             :message message
+             :data data
+             :timestamp (or timestamp (float-time)))))))
 
 (defun hive-mcp-hivemind--handle-ask (event)
-  "Handle a hivemind ask EVENT requiring human response."
-  (let* ((ask-id (cdr (assoc "ask-id" event)))
-         (agent-id (cdr (assoc "agent-id" event)))
-         (question (cdr (assoc "question" event)))
-         (options (cdr (assoc "options" event))))
+  "Handle a hivemind ask EVENT requiring human response.
+EVENT may have symbol keys (from WebSocket JSON) or string keys (from bencode)."
+  (let* ((ask-id (or (alist-get 'ask-id event)
+                     (cdr (assoc "ask-id" event))))
+         (agent-id (or (alist-get 'agent-id event)
+                       (cdr (assoc "agent-id" event))))
+         (question (or (alist-get 'question event)
+                       (cdr (assoc "question" event))))
+         (options (or (alist-get 'options event)
+                      (cdr (assoc "options" event)))))
     ;; Store pending ask
     (push (list :ask-id ask-id
                 :agent-id agent-id
@@ -155,12 +181,19 @@ Sends the response to the Clojure side via channel."
                     (completing-read (format "%s: " (plist-get ask :question)) options)
                   (read-string (format "%s: " (plist-get ask :question))))))
      (list (plist-get ask :ask-id) resp)))
-  ;; Send response via channel
-  (hive-mcp-channel-send
-   `(("type" . "hivemind-response")
-     ("ask-id" . ,ask-id)
-     ("decision" . ,response)
-     ("by" . "human")))
+  ;; Send response via WebSocket channel (primary)
+  (if (hive-mcp-channel-ws-connected-p)
+      (hive-mcp-channel-ws-send
+       `((type . "hivemind-response")
+         (ask-id . ,ask-id)
+         (decision . ,response)
+         (by . "human")))
+    ;; Fallback to old bencode channel
+    (hive-mcp-channel-send
+     `(("type" . "hivemind-response")
+       ("ask-id" . ,ask-id)
+       ("decision" . ,response)
+       ("by" . "human"))))
   ;; Remove from pending
   (setq hive-mcp-hivemind--pending-asks
         (seq-remove (lambda (a) (string= (plist-get a :ask-id) ask-id))
@@ -185,11 +218,16 @@ Sends the response to the Clojure side via channel."
 
 (defun hive-mcp-hivemind-register-handlers ()
   "Register hivemind event handlers with the channel."
-  ;; Shout events (progress, completed, error, blocked, started)
+  ;; Register with WebSocket channel (primary - recommended)
+  ;; WebSocket uses string event types like "hivemind-progress"
+  (dolist (type '("hivemind-progress" "hivemind-completed" "hivemind-error"
+                  "hivemind-blocked" "hivemind-started"))
+    (hive-mcp-channel-ws-on type #'hive-mcp-hivemind--handle-shout))
+  (hive-mcp-channel-ws-on "hivemind-ask" #'hive-mcp-hivemind--handle-ask)
+  ;; Also register with old bencode channel for backwards compatibility
   (dolist (type '(:hivemind-progress :hivemind-completed :hivemind-error
                   :hivemind-blocked :hivemind-started))
     (hive-mcp-channel-on type #'hive-mcp-hivemind--handle-shout))
-  ;; Ask events
   (hive-mcp-channel-on :hivemind-ask #'hive-mcp-hivemind--handle-ask))
 
 ;; Register on load

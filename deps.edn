@@ -33,7 +33,14 @@
         {:local/root "clojure-chroma-client"}
 
         ;; for openrouter integration 
-        clj-http/clj-http {:mvn/version "3.13.1"}}
+        clj-http/clj-http {:mvn/version "3.13.1"}
+
+        ;; D-Bus client for native desktop notifications
+        com.lambdaisland/dbus-client {:mvn/version "0.2.15"}
+
+        ;; Development - hot reload and tracing
+        org.clojure/tools.trace {:mvn/version "0.9.0"}
+        io.github.tonsky/clj-reload {:mvn/version "1.0.0"}}
 
  :aliases
  {:mcp

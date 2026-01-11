@@ -1,18 +1,20 @@
 (ns hive-mcp.hivemind
   "Hivemind coordination tools for swarm agents.
-   
+
    Provides event-driven communication between agents and the coordinator,
    replacing file-based polling with instant push notifications.
-   
+
    Tools:
    - hivemind_shout: Broadcast status/progress to coordinator
    - hivemind_ask: Request human decision (blocks until response)
    - hivemind_status: Get current hivemind state (includes pending prompts)
    - hivemind_messages: Get recent messages from specific agent
-   
+
    Architecture: Pure push via channel.clj, accumulated state via atoms.
    Coordinator queries get-status when ready - no polling loops needed."
   (:require [hive-mcp.channel :as channel]
+            [hive-mcp.channel.websocket :as ws]
+            [hive-mcp.channel.piggyback :as piggyback]
             [clojure.core.async :as async :refer [<!! >!! chan timeout alt!!]]
             [clojure.data.json :as json]
             [taoensso.timbre :as log]))
@@ -29,11 +31,60 @@
   agent-registry
   (atom {}))
 
+;; =============================================================================
+;; Piggyback Message Source Registration (DIP)
+;; =============================================================================
+
+(defn- all-hivemind-messages
+  "Provide all hivemind messages to piggyback module.
+   Returns flat seq of {:agent-id :event-type :message :timestamp}."
+  []
+  (mapcat (fn [[agent-id {:keys [messages]}]]
+            (for [{:keys [event-type message timestamp]} messages]
+              {:agent-id agent-id
+               :event-type event-type
+               :message message
+               :timestamp timestamp}))
+          @agent-registry))
+
+;; Register this namespace as the message source for piggyback (DIP)
+(piggyback/register-message-source! all-hivemind-messages)
+
+;; =============================================================================
+
 (defonce ^{:doc "Map of slave-id -> {:prompt :timestamp :session-id}
                  Permission prompts pushed from Emacs swarm slaves.
                  These are distinct from asks (agent-initiated questions)."}
   pending-swarm-prompts
   (atom {}))
+
+;; Ling result tracking for coordinator review
+(defonce ling-results (atom {}))
+
+(defn record-ling-result!
+  "Record ling completion for coordinator review."
+  [agent-id result]
+  (swap! ling-results assoc agent-id
+         {:result result
+          :timestamp (System/currentTimeMillis)
+          :reviewed? false}))
+
+(defn get-pending-ling-results
+  "Get ling results awaiting coordinator review."
+  []
+  (->> @ling-results
+       (filter (fn [[_ v]] (not (:reviewed? v))))
+       (into {})))
+
+(defn mark-ling-reviewed!
+  "Mark a ling result as reviewed by coordinator."
+  [agent-id]
+  (swap! ling-results assoc-in [agent-id :reviewed?] true))
+
+(defn clear-ling-results!
+  "Clear all ling results (e.g., at session end)."
+  []
+  (reset! ling-results {}))
 
 (defn add-swarm-prompt!
   "Add a permission prompt from a swarm slave.
@@ -69,6 +120,7 @@
    data: map with event details
    
    Stores up to 10 recent messages per agent for retrieval via hivemind_status.
+   Broadcasts via WebSocket (Aleph) for reliable push delivery.
    Returns true if broadcast succeeded."
   [agent-id event-type data]
   (let [now (System/currentTimeMillis)
@@ -90,7 +142,10 @@
                 :last-seen now
                 :current-task (:task data)
                 :messages new-messages})))
-    ;; Broadcast to Emacs
+    ;; Broadcast to Emacs via WebSocket (primary - reliable)
+    (when (ws/connected?)
+      (ws/emit! (:type event) (dissoc event :type)))
+    ;; Also broadcast via old channel (for backwards compat)
     (channel/broadcast! event)
     (log/info "Hivemind shout:" agent-id event-type)
     true))
@@ -154,7 +209,8 @@
    - :agents - map of agent-id -> status
    - :pending-asks - list of unanswered questions (agent-initiated)
    - :pending-swarm-prompts - list of permission prompts from slaves (push notifications)
-   - :channel-connected - whether Emacs is connected"
+   - :channel-connected - whether Emacs is connected (legacy bencode channel)
+   - :ws-connected - whether WebSocket channel is connected (preferred)"
   []
   {:agents @agent-registry
    :pending-asks (mapv (fn [[id {:keys [question options agent-id]}]]
@@ -170,7 +226,9 @@
                                    :session-id session-id
                                    :received-at received-at})
                                 @pending-swarm-prompts)
-   :channel-connected (channel/server-connected?)})
+   :channel-connected (channel/server-connected?)
+   :ws-connected (ws/connected?)
+   :ws-clients (ws/client-count)})
 
 (defn get-agent-messages
   "Get recent messages from a specific agent.
@@ -205,10 +263,12 @@ USE THIS to report:
 - Errors: (hivemind_shout :error {:task \"..\" :error \"..\"})
 - Blocked: (hivemind_shout :blocked {:task \"..\" :reason \"need input\"})
 
-The coordinator sees all shouts in real-time."
+The coordinator sees all shouts in real-time.
+
+NOTE: agent_id is auto-detected from CLAUDE_SWARM_SLAVE_ID env var if not provided."
     :inputSchema {:type "object"
                   :properties {"agent_id" {:type "string"
-                                           :description "Your agent identifier"}
+                                           :description "Your agent identifier (auto-detected from CLAUDE_SWARM_SLAVE_ID if omitted)"}
                                "event_type" {:type "string"
                                              :enum ["progress" "completed" "error" "blocked" "started"]
                                              :description "Type of event"}
@@ -218,11 +278,15 @@ The coordinator sees all shouts in real-time."
                                           :description "Status message"}
                                "data" {:type "object"
                                        :description "Additional event data"}}
-                  :required ["agent_id" "event_type"]}
+                  :required ["event_type"]}
     :handler (fn [{:keys [agent_id event_type task message data]}]
-               (shout! agent_id (keyword event_type)
-                       (merge {:task task :message message} data))
-               {:type "text" :text (json/write-str {:success true})})}
+               (let [effective-id (or agent_id
+                                      (System/getenv "CLAUDE_SWARM_SLAVE_ID")
+                                      "unknown-agent")]
+                 (shout! effective-id (keyword event_type)
+                         (merge {:task task :message message} data))
+                 {:type "text" :text (json/write-str {:success true
+                                                      :agent_id effective-id})}))}
 
    {:name "hivemind_ask"
     :description "Request a decision from the human coordinator.
@@ -234,10 +298,12 @@ USE THIS when you need human approval or guidance:
 
 BLOCKS until human responds (up to timeout).
 
-Example: hivemind_ask('Should I delete these 50 files?', ['yes', 'no', 'show me first'])"
+Example: hivemind_ask('Should I delete these 50 files?', ['yes', 'no', 'show me first'])
+
+NOTE: agent_id is auto-detected from CLAUDE_SWARM_SLAVE_ID env var if not provided."
     :inputSchema {:type "object"
                   :properties {"agent_id" {:type "string"
-                                           :description "Your agent identifier"}
+                                           :description "Your agent identifier (auto-detected from CLAUDE_SWARM_SLAVE_ID if omitted)"}
                                "question" {:type "string"
                                            :description "What decision do you need?"}
                                "options" {:type "array"
@@ -245,9 +311,12 @@ Example: hivemind_ask('Should I delete these 50 files?', ['yes', 'no', 'show me 
                                           :description "Available options (or omit for free-form)"}
                                "timeout_ms" {:type "integer"
                                              :description "Timeout in ms (default 300000 = 5 min)"}}
-                  :required ["agent_id" "question"]}
+                  :required ["question"]}
     :handler (fn [{:keys [agent_id question options timeout_ms]}]
-               (let [result (ask! agent_id question options
+               (let [effective-id (or agent_id
+                                      (System/getenv "CLAUDE_SWARM_SLAVE_ID")
+                                      "unknown-agent")
+                     result (ask! effective-id question options
                                   :timeout-ms (or timeout_ms 300000))]
                  {:type "text"
                   :text (json/write-str

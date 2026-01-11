@@ -566,66 +566,69 @@ Returns structured result with:
                              (mapconcat #'symbol-name stored ", ")
                              expired-count)))))
 
+(defun hive-mcp-workflow-catchup--entry-to-meta (entry &optional preview-len)
+  "Convert ENTRY to metadata-only format as alist for proper JSON serialization.
+Returns alist with id, type, preview (PREVIEW-LEN chars, default 80), tags."
+  (let* ((content (plist-get entry :content))
+         (preview-length (or preview-len 80))
+         ;; Handle both string and structured content
+         (content-str (if (stringp content)
+                          content
+                        (format "%s" content)))
+         (entry-type (plist-get entry :type))
+         (type-str (if (symbolp entry-type)
+                       (symbol-name entry-type)
+                     (format "%s" entry-type))))
+    `(("id" . ,(plist-get entry :id))
+      ("type" . ,type-str)
+      ("preview" . ,(truncate-string-to-width content-str preview-length))
+      ("tags" . ,(vconcat (plist-get entry :tags))))))
+
 (defun hive-mcp-workflow-catchup (&optional _args)
-  "Execute the catchup workflow - restore context from memory.
-Queries session notes, decisions, and conventions with project scope.
-Returns structured context for display.
+  "Execute optimized catchup workflow - restore context from memory.
+Returns metadata-only format (~1.5k tokens vs ~10k for full content).
+Use `mcp_memory_get_full` to fetch specific entries by ID when needed.
 ARGS is unused but accepted for workflow handler compatibility."
   (interactive)
   (let* ((project-name (hive-mcp-memory--get-project-name))
-         (applicable-scopes (hive-mcp-memory--applicable-scope-tags)))
-    
-    ;; Query each type with scope filtering
-    (let ((session-notes (hive-mcp-memory-query 'note '("session-summary") nil 3 nil nil))
-          (decisions (hive-mcp-memory-query 'decision nil nil 10 nil nil))
-          (conventions (hive-mcp-memory-query 'convention nil nil 10 nil nil))
-          (snippets-meta (seq-take 
-                          (mapcar (lambda (e) 
-                                    (list :id (plist-get e :id)
-                                          :preview (truncate-string-to-width 
-                                                    (or (plist-get e :content) "") 60)))
-                                  (hive-mcp-memory-query 'snippet nil nil 5 nil nil))
-                          5))
-          (expiring (hive-mcp-memory-query-expiring 7))
-          (git-branch (string-trim 
-                       (shell-command-to-string "git rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'none'")))
-          (uncommitted (not (string-empty-p 
-                             (shell-command-to-string "git status --porcelain 2>/dev/null"))))
-          (last-commit (string-trim
-                        (shell-command-to-string "git log -1 --format='%h - %s' 2>/dev/null || echo 'none'"))))
-      
-      (list :success t
-            :project project-name
-            :scopes applicable-scopes
-            :git (list :branch git-branch
-                       :uncommitted uncommitted  
-                       :last-commit last-commit)
-            :memory (list :session-notes (length session-notes)
-                          :decisions (length decisions)
-                          :conventions (length conventions)
-                          :snippets-available (length snippets-meta)
-                          :expiring-soon (length expiring))
-            :context (list :recent-sessions session-notes
-                           :active-decisions decisions
-                           :conventions conventions
-                           :snippet-previews snippets-meta
-                           :expiring-entries expiring)
-            :session-guidance "## Session Guidance (Progressive Crystallization)
+         (applicable-scopes (hive-mcp-memory--applicable-scope-tags))
+         ;; Query raw data
+         (session-notes-raw (hive-mcp-memory-query 'note '("session-summary") nil 3 nil nil))
+         (decisions-raw (hive-mcp-memory-query 'decision nil nil 10 nil nil))
+         (conventions-raw (hive-mcp-memory-query 'convention nil nil 10 nil nil))
+         (snippets-raw (hive-mcp-memory-query 'snippet nil nil 5 nil nil))
+         (expiring-raw (seq-take (hive-mcp-memory-query-expiring 7) 5))
+         ;; Convert to metadata-only format (vconcat for JSON array serialization)
+         (session-meta (vconcat (mapcar #'hive-mcp-workflow-catchup--entry-to-meta session-notes-raw)))
+         (decisions-meta (vconcat (mapcar #'hive-mcp-workflow-catchup--entry-to-meta decisions-raw)))
+         (conventions-meta (vconcat (mapcar #'hive-mcp-workflow-catchup--entry-to-meta conventions-raw)))
+         (snippets-meta (vconcat (mapcar (lambda (e) (hive-mcp-workflow-catchup--entry-to-meta e 60)) snippets-raw)))
+         (expiring-meta (vconcat (mapcar #'hive-mcp-workflow-catchup--entry-to-meta expiring-raw)))
+         ;; Git info (unchanged)
+         (git-branch (string-trim
+                      (shell-command-to-string "git rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'none'")))
+         (uncommitted (not (string-empty-p
+                            (shell-command-to-string "git status --porcelain 2>/dev/null"))))
+         (last-commit (string-trim
+                       (shell-command-to-string "git log -1 --format='%h - %s' 2>/dev/null || echo 'none'"))))
 
-As you work, proactively store insights using `mcp_memory_add` with:
-- type: 'note' or 'decision'
-- duration: 'ephemeral'
-- tags: include session tag and 'session-progress'
-
-These ephemeral entries will be reviewed and crystallized at wrap time.
-
-**Capture proactively:**
-- Key decisions and their rationale
-- Discoveries about the codebase  
-- Problems encountered and solutions
-- Ideas for future improvements
-
-When completing kanban tasks, move them to 'done' - the system will automatically create progress notes."))))
+    (list :success t
+          :project project-name
+          :scopes applicable-scopes
+          :git (list :branch git-branch
+                     :uncommitted uncommitted
+                     :last-commit last-commit)
+          :counts (list :sessions (length session-meta)
+                        :decisions (length decisions-meta)
+                        :conventions (length conventions-meta)
+                        :snippets (length snippets-meta)
+                        :expiring (length expiring-meta))
+          :context (list :sessions session-meta
+                         :decisions decisions-meta
+                         :conventions conventions-meta
+                         :snippets snippets-meta
+                         :expiring expiring-meta)
+          :hint "Use mcp_memory_get_full with ID to fetch full content")))
 
 ;;; Built-in Example Workflows
 

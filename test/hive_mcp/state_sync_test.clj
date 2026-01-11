@@ -1,0 +1,179 @@
+(ns hive-mcp.state-sync-test
+  "TDD tests for hivemind <-> swarm state synchronization.
+
+   Problem: When a ling calls `hivemind_shout :completed`, the `swarm_status`
+   should show that slave as 'idle', not 'working'. Currently these are
+   disconnected state stores.
+
+   CLARITY: Telemetry first - verify state flows correctly between systems.
+   DDD: Testing the domain invariant that agent state is consistent."
+  (:require [clojure.test :refer [deftest testing is use-fixtures]]
+            [hive-mcp.hivemind :as hivemind]
+            [hive-mcp.tools.swarm :as swarm]))
+
+;; =============================================================================
+;; Test Fixtures - Reset state between tests
+;; =============================================================================
+
+(defn reset-state-fixture [f]
+  (reset! hivemind/agent-registry {})
+  (reset! swarm/lings-registry {})
+  (f)
+  (reset! hivemind/agent-registry {})
+  (reset! swarm/lings-registry {}))
+
+(use-fixtures :each reset-state-fixture)
+
+;; =============================================================================
+;; Core Requirement: Agent-ID to Slave-ID Mapping
+;; =============================================================================
+
+(deftest test-agent-id-maps-to-slave-id
+  (testing "Agent ID from hivemind_shout should map to slave ID in swarm_status"
+    ;; Given: A ling is registered in the swarm registry
+    (swarm/register-ling! "slave-abc-123" {:name "test-ling" :presets [] :cwd "/tmp"})
+
+    ;; When: The ling shouts with its agent_id (which should match slave_id)
+    (hivemind/shout! "slave-abc-123" :started {:task "Test task" :message "Starting"})
+
+    ;; Then: The hivemind agent registry should contain this agent
+    (is (contains? @hivemind/agent-registry "slave-abc-123")
+        "Agent should be registered in hivemind after shout")))
+
+;; =============================================================================
+;; State Sync: Started Event -> Working Status
+;; =============================================================================
+
+(deftest test-started-event-sets-working-status
+  (testing "When hivemind receives :started event, slave status should be 'working'"
+    ;; Given: A registered ling
+    (swarm/register-ling! "slave-worker-1" {:name "worker" :presets [] :cwd "/tmp"})
+
+    ;; When: The ling shouts :started
+    (hivemind/shout! "slave-worker-1" :started {:task "Processing data" :message "Beginning work"})
+
+    ;; Then: The agent registry should show status as :started
+    (let [agent-status (get-in @hivemind/agent-registry ["slave-worker-1" :status])]
+      (is (= :started agent-status)
+          "Agent status should be :started after started event"))
+
+    ;; AND: A hypothetical get-slave-status function should return "working"
+    ;; This is the FAILING part - this function doesn't exist yet
+    (is (= "working" (swarm/get-slave-working-status "slave-worker-1"))
+        "Slave should be marked as 'working' after :started event")))
+
+(deftest test-progress-event-maintains-working-status
+  (testing "When hivemind receives :progress event, slave should remain 'working'"
+    ;; Given: A ling that has started
+    (swarm/register-ling! "slave-worker-2" {:name "worker2" :presets [] :cwd "/tmp"})
+    (hivemind/shout! "slave-worker-2" :started {:task "Long task" :message "Starting"})
+
+    ;; When: The ling reports progress
+    (hivemind/shout! "slave-worker-2" :progress {:task "Long task" :message "50% complete"})
+
+    ;; Then: Slave should still be "working"
+    (is (= "working" (swarm/get-slave-working-status "slave-worker-2"))
+        "Slave should remain 'working' during progress updates")))
+
+;; =============================================================================
+;; State Sync: Completed Event -> Idle Status
+;; =============================================================================
+
+(deftest test-completed-event-sets-idle-status
+  (testing "When hivemind receives :completed event, slave status should be 'idle'"
+    ;; Given: A ling that is currently working
+    (swarm/register-ling! "slave-finisher-1" {:name "finisher" :presets [] :cwd "/tmp"})
+    (hivemind/shout! "slave-finisher-1" :started {:task "Quick task" :message "Starting"})
+
+    ;; When: The ling shouts :completed
+    (hivemind/shout! "slave-finisher-1" :completed {:task "Quick task" :message "Done!" :result "success"})
+
+    ;; Then: The agent registry should show status as :completed
+    (let [agent-status (get-in @hivemind/agent-registry ["slave-finisher-1" :status])]
+      (is (= :completed agent-status)
+          "Agent status should be :completed after completed event"))
+
+    ;; AND: The slave should now be "idle" (ready for new work)
+    ;; This is the KEY FAILING test - swarm_status should reflect this
+    (is (= "idle" (swarm/get-slave-working-status "slave-finisher-1"))
+        "Slave should be marked as 'idle' after :completed event")))
+
+(deftest test-error-event-sets-idle-status
+  (testing "When hivemind receives :error event, slave status should be 'idle'"
+    ;; Given: A working ling
+    (swarm/register-ling! "slave-error-1" {:name "error-prone" :presets [] :cwd "/tmp"})
+    (hivemind/shout! "slave-error-1" :started {:task "Risky task" :message "Attempting"})
+
+    ;; When: The ling reports an error
+    (hivemind/shout! "slave-error-1" :error {:task "Risky task" :error "Failed to complete"})
+
+    ;; Then: Slave should be idle (available for retry/new work)
+    (is (= "idle" (swarm/get-slave-working-status "slave-error-1"))
+        "Slave should be 'idle' after error (available for new work)")))
+
+;; =============================================================================
+;; State Sync: Blocked Event -> Blocked Status
+;; =============================================================================
+
+(deftest test-blocked-event-sets-blocked-status
+  (testing "When hivemind receives :blocked event, slave status should be 'blocked'"
+    ;; Given: A working ling
+    (swarm/register-ling! "slave-blocked-1" {:name "blocker" :presets [] :cwd "/tmp"})
+    (hivemind/shout! "slave-blocked-1" :started {:task "Dependent task" :message "Starting"})
+
+    ;; When: The ling reports being blocked
+    (hivemind/shout! "slave-blocked-1" :blocked {:task "Dependent task" :reason "Waiting for input"})
+
+    ;; Then: Slave should be marked as blocked
+    (is (= "blocked" (swarm/get-slave-working-status "slave-blocked-1"))
+        "Slave should be 'blocked' when waiting for input")))
+
+;; =============================================================================
+;; Integration: swarm_status reflects hivemind state
+;; =============================================================================
+
+(deftest test-swarm-status-reflects-hivemind-events
+  (testing "swarm_status response should include working status from hivemind events"
+    ;; Given: Multiple lings in various states
+    (swarm/register-ling! "ling-a" {:name "a" :presets [] :cwd "/tmp"})
+    (swarm/register-ling! "ling-b" {:name "b" :presets [] :cwd "/tmp"})
+    (swarm/register-ling! "ling-c" {:name "c" :presets [] :cwd "/tmp"})
+
+    ;; And: They report different states
+    (hivemind/shout! "ling-a" :started {:task "Task A" :message "Working"})
+    (hivemind/shout! "ling-b" :completed {:task "Task B" :message "Done"})
+    ;; ling-c hasn't reported anything (should be idle/unknown)
+
+    ;; When: We get the unified status
+    ;; This function should merge hivemind state into swarm status
+    (let [status (swarm/get-unified-swarm-status)]
+      ;; Then: Each ling should have correct working status
+      (is (= "working" (get-in status ["ling-a" :working-status]))
+          "ling-a should be working")
+      (is (= "idle" (get-in status ["ling-b" :working-status]))
+          "ling-b should be idle after completion")
+      (is (= "idle" (get-in status ["ling-c" :working-status]))
+          "ling-c should be idle (no activity reported)"))))
+
+;; =============================================================================
+;; Edge Cases
+;; =============================================================================
+
+(deftest test-unknown-agent-returns-nil
+  (testing "Querying status for unregistered agent returns nil"
+    (is (nil? (swarm/get-slave-working-status "nonexistent-slave"))
+        "Unknown slave should return nil status")))
+
+(deftest test-multiple-events-use-latest-status
+  (testing "Multiple events for same agent use the latest status"
+    (swarm/register-ling! "slave-multi" {:name "multi" :presets [] :cwd "/tmp"})
+
+    ;; Rapid state changes
+    (hivemind/shout! "slave-multi" :started {:task "T1" :message "Start"})
+    (hivemind/shout! "slave-multi" :progress {:task "T1" :message "Progress"})
+    (hivemind/shout! "slave-multi" :completed {:task "T1" :message "Done"})
+    (hivemind/shout! "slave-multi" :started {:task "T2" :message "New task"})
+
+    ;; Latest state should win
+    (is (= "working" (swarm/get-slave-working-status "slave-multi"))
+        "Latest :started event should set status to working")))

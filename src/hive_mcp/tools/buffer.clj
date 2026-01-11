@@ -6,7 +6,7 @@
             [hive-mcp.emacsclient :as ec]
             [hive-mcp.telemetry :as telemetry]
             [hive-mcp.validation :as v]
-            [hive-mcp.crystal.hooks :as crystal-hooks]
+            [hive-mcp.chroma :as chroma]
             [clojure.data.json :as json]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
@@ -162,17 +162,24 @@
                             :message "hive-mcp.el is not loaded. Run (require 'hive-mcp) and (hive-mcp-mode 1) in Emacs."})}))
 
 (defn handle-mcp-notify
-  "Show notification to user in Emacs."
+  "Show notification to user via desktop notification AND Emacs echo-area.
+   Desktop notification ensures visibility even when Emacs is not focused."
   [{:keys [message type]}]
   (log/info "mcp-notify:" message)
-  (let [type-str (or type "info")
-        elisp (format "(hive-mcp-api-notify %s %s)"
-                      (pr-str message)
-                      (pr-str type-str))
-        {:keys [success error]} (ec/eval-elisp elisp)]
-    (if success
-      {:type "text" :text "Notification sent"}
-      {:type "text" :text (str "Error: " error) :isError true})))
+  (let [type-str (or type "info")]
+    ;; Send desktop notification (primary - catches attention)
+    (require 'hive-mcp.notify)
+    ((resolve 'hive-mcp.notify/notify!) {:summary "Hive-MCP"
+                                         :body message
+                                         :type type-str})
+    ;; Also send to Emacs echo-area (secondary - visible if Emacs focused)
+    (let [elisp (format "(hive-mcp-api-notify %s %s)"
+                        (pr-str message)
+                        (pr-str type-str))
+          {:keys [success error]} (ec/eval-elisp elisp)]
+      (if success
+        {:type "text" :text "Notification sent"}
+        {:type "text" :text (str "Desktop sent, Emacs error: " error)}))))
 
 (defn handle-mcp-list-workflows
   "List available workflows."
@@ -204,81 +211,183 @@
                   ")")
     :else (pr-str (str v))))
 
+;; =============================================================================
+;; Native Catchup Implementation (Chroma-based)
+;; =============================================================================
+
+(defn- get-current-project-id
+  "Get current project ID from Emacs, or 'global' if not in a project."
+  []
+  (try
+    (let [{:keys [success result]} (ec/eval-elisp "(hive-mcp-memory--project-id)")]
+      (if (and success result (not= result "nil"))
+        (str/replace result #"\"" "")
+        "global"))
+    (catch Exception _
+      "global")))
+
+(defn- get-current-project-name
+  "Get current project name from Emacs."
+  []
+  (try
+    (let [{:keys [success result]} (ec/eval-elisp "(hive-mcp-memory--get-project-name)")]
+      (if (and success result (not= result "nil"))
+        (str/replace result #"\"" "")
+        nil))
+    (catch Exception _
+      nil)))
+
+(defn- entry->catchup-meta
+  "Convert a Chroma entry to catchup metadata format.
+   Returns map with :id, :type, :preview, :tags."
+  [entry preview-len]
+  (let [content (:content entry)
+        content-str (if (string? content)
+                      content
+                      (str content))
+        preview (subs content-str 0 (min (count content-str) (or preview-len 80)))]
+    {:id (:id entry)
+     :type (name (or (:type entry) "note"))
+     :preview preview
+     :tags (vec (or (:tags entry) []))}))
+
+(defn- matches-project-scope?
+  "Check if entry matches project scope (project + global).
+   Matches both project-name and project-id for robustness since
+   wrap stores with project-name but we may query with project-id."
+  [entry project-name project-id]
+  (let [tags (set (or (:tags entry) []))
+        name-scope (when project-name (str "scope:project:" project-name))
+        id-scope (when project-id (str "scope:project:" project-id))]
+    (or (and name-scope (contains? tags name-scope))
+        (and id-scope (contains? tags id-scope))
+        (contains? tags "scope:global"))))
+
+(defn- query-scoped-entries
+  "Query Chroma entries filtered by project scope.
+   Uses both project-name and project-id for scope matching."
+  [entry-type tags project-name project-id limit]
+  (when (chroma/embedding-configured?)
+    (let [;; Query with over-fetch to allow for filtering
+          entries (chroma/query-entries :type entry-type
+                                        :limit (* (or limit 20) 5))
+          ;; Filter by scope (matches name, id, or global)
+          scoped (filter #(matches-project-scope? % project-name project-id) entries)
+          ;; Filter by tags if provided
+          tag-filtered (if (seq tags)
+                         (filter (fn [entry]
+                                   (let [entry-tags (set (:tags entry))]
+                                     (every? #(contains? entry-tags %) tags)))
+                                 scoped)
+                         scoped)]
+      (take (or limit 20) tag-filtered))))
+
+(defn- handle-native-catchup
+  "Native Clojure catchup implementation that queries Chroma directly.
+   Returns structured catchup data with proper project scoping.
+   Uses both project-name and project-id for scope matching to ensure
+   compatibility with wrap workflow (which stores using project-name)."
+  [_args]
+  (log/info "native-catchup: querying Chroma with project scope")
+  (if-not (chroma/embedding-configured?)
+    {:type "text"
+     :text (json/write-str {:success false
+                            :error "Chroma not configured"
+                            :message "Memory query requires Chroma with embedding provider"})
+     :isError true}
+    (try
+      (let [project-id (get-current-project-id)
+            project-name (get-current-project-name)
+            ;; Include both name and id scopes for display
+            scopes (cond-> ["scope:global"]
+                     project-name (conj (str "scope:project:" project-name))
+                     (and project-id (not= project-id project-name))
+                     (conj (str "scope:project:" project-id)))
+
+            ;; Query each type from Chroma with scope filtering (pass both name and id)
+            sessions (query-scoped-entries "note" ["session-summary"] project-name project-id 3)
+            decisions (query-scoped-entries "decision" nil project-name project-id 10)
+            conventions (query-scoped-entries "convention" nil project-name project-id 10)
+            snippets (query-scoped-entries "snippet" nil project-name project-id 5)
+
+            ;; Query expiring entries (all types, filter later)
+            all-expiring (chroma/query-entries :limit 50)
+            expiring (->> all-expiring
+                          (filter #(matches-project-scope? % project-name project-id))
+                          (filter (fn [e]
+                                    (when-let [exp (:expires e)]
+                                      (let [exp-time (try (java.time.ZonedDateTime/parse exp)
+                                                          (catch Exception _ nil))
+                                            now (java.time.ZonedDateTime/now)
+                                            week-later (.plusDays now 7)]
+                                        (and exp-time
+                                             (.isBefore exp-time week-later))))))
+                          (take 5))
+
+            ;; Get git info from Emacs
+            git-info (try
+                       (let [{:keys [success result]}
+                             (ec/eval-elisp
+                              "(json-encode
+                                (list :branch (string-trim (shell-command-to-string \"git rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'none'\"))
+                                      :uncommitted (not (string-empty-p (shell-command-to-string \"git status --porcelain 2>/dev/null\")))
+                                      :last-commit (string-trim (shell-command-to-string \"git log -1 --format='%h - %s' 2>/dev/null || echo 'none'\"))))")]
+                         (when success
+                           (json/read-str result :key-fn keyword)))
+                       (catch Exception _ {:branch "unknown" :uncommitted false :last-commit "unknown"}))
+
+            ;; Convert to metadata format
+            sessions-meta (mapv #(entry->catchup-meta % 80) sessions)
+            decisions-meta (mapv #(entry->catchup-meta % 80) decisions)
+            conventions-meta (mapv #(entry->catchup-meta % 80) conventions)
+            snippets-meta (mapv #(entry->catchup-meta % 60) snippets)
+            expiring-meta (mapv #(entry->catchup-meta % 80) expiring)]
+
+        {:type "text"
+         :text (json/write-str
+                {:success true
+                 :project (or project-name project-id "global")
+                 :scopes scopes
+                 :git git-info
+                 :counts {:sessions (count sessions-meta)
+                          :decisions (count decisions-meta)
+                          :conventions (count conventions-meta)
+                          :snippets (count snippets-meta)
+                          :expiring (count expiring-meta)}
+                 :context {:sessions sessions-meta
+                           :decisions decisions-meta
+                           :conventions conventions-meta
+                           :snippets snippets-meta
+                           :expiring expiring-meta}
+                 :hint "Use mcp_memory_get_full with ID to fetch full content"})})
+      (catch Exception e
+        (log/error e "native-catchup failed")
+        {:type "text"
+         :text (json/write-str {:success false
+                                :error (.getMessage e)})
+         :isError true}))))
+
 (defn handle-mcp-run-workflow
-  "Run a user-defined workflow."
+  "Run a user-defined workflow.
+   Special-cases 'catchup' to use native Clojure implementation for Chroma access."
   [{:keys [name args]}]
   (log/info "mcp-run-workflow:" name)
-  (if (hive-mcp-el-available?)
-    (let [elisp (if args
-                  (format "(json-encode (hive-mcp-api-run-workflow %s %s))"
-                          (pr-str name)
-                          (clj->elisp args))
-                  (format "(json-encode (hive-mcp-api-run-workflow %s))"
-                          (pr-str name)))
-          {:keys [success result error]} (ec/eval-elisp elisp)]
-      (if success
-        {:type "text" :text result}
-        {:type "text" :text (str "Error: " error) :isError true}))
-    {:type "text" :text "Error: hive-mcp.el is not loaded." :isError true}))
-
-(defn handle-wrap-gather
-  "Gather session data for wrap workflow without storing.
-   
-   Uses progressive crystallization to harvest:
-   - Session progress notes (from kanban completions)
-   - Completed tasks (ephemeral notes tagged session-progress)
-   - Git commits since session start
-   - Recall patterns (for smart promotion)
-   
-   Returns gathered data for confirmation before crystallization."
-  [_params]
-  (log/info "wrap-gather with crystal harvesting")
-  (try
-    ;; Use crystal hooks for comprehensive harvesting
-    (let [harvested (crystal-hooks/harvest-all)
-          ;; Also get elisp-side data for completeness
-          elisp-result (when (hive-mcp-el-available?)
-                         (let [{:keys [success result]}
-                               (ec/eval-elisp "(json-encode (hive-mcp-api-wrap-gather))")]
-                           (when success
-                             (try (json/read-str result :key-fn keyword)
-                                  (catch Exception _ nil)))))
-          ;; Merge both sources
-          combined {:crystal harvested
-                    :elisp elisp-result
-                    :session (:session harvested)
-                    :summary (merge (:summary harvested)
-                                    {:has-elisp-data (some? elisp-result)})}]
-      {:type "text"
-       :text (json/write-str combined)})
-    (catch Exception e
-      (log/error e "wrap-gather failed")
-      {:type "text"
-       :text (json/write-str {:error (.getMessage e)
-                              :fallback "Use elisp-only gather"})
-       :isError true})))
-
-(defn handle-wrap-crystallize
-  "Crystallize session data into long-term memory.
-   
-   Takes harvested data (from wrap-gather) and:
-   1. Creates session summary (short-term duration)
-   2. Promotes entries that meet score threshold
-   3. Flushes recall buffer
-   
-   Call after wrap-gather when ready to persist."
-  [_params]
-  (log/info "wrap-crystallize")
-  (try
-    (let [harvested (crystal-hooks/harvest-all)
-          result (crystal-hooks/crystallize-session harvested)]
-      {:type "text"
-       :text (json/write-str result)})
-    (catch Exception e
-      (log/error e "wrap-crystallize failed")
-      {:type "text"
-       :text (json/write-str {:error (.getMessage e)})
-       :isError true})))
+  ;; Special handling for catchup - use native Clojure implementation
+  (if (= name "catchup")
+    (handle-native-catchup args)
+    ;; All other workflows go through elisp
+    (if (hive-mcp-el-available?)
+      (let [elisp (if args
+                    (format "(json-encode (hive-mcp-api-run-workflow %s %s))"
+                            (pr-str name)
+                            (clj->elisp args))
+                    (format "(json-encode (hive-mcp-api-run-workflow %s))"
+                            (pr-str name)))
+            {:keys [success result error]} (ec/eval-elisp elisp)]
+        (if success
+          {:type "text" :text result}
+          {:type "text" :text (str "Error: " error) :isError true}))
+      {:type "text" :text "Error: hive-mcp.el is not loaded." :isError true})))
 
 (defn handle-mcp-watch-buffer
   "Get recent content from a buffer for monitoring (e.g., *Messages*)."
@@ -449,20 +558,6 @@
                                        :description "Optional arguments to pass to the workflow"}}
                   :required ["name"]}
     :handler handle-mcp-run-workflow}
-
-   {:name "wrap_gather"
-    :description "Gather session data for wrap workflow. Returns recent notes, git commits, kanban activity without storing. Use before wrap to preview/confirm data."
-    :inputSchema {:type "object"
-                  :properties {}
-                  :required []}
-    :handler handle-wrap-gather}
-
-   {:name "wrap_crystallize"
-    :description "Crystallize session data into long-term memory. Creates session summary, promotes entries meeting score threshold, and flushes recall buffer. Call after wrap_gather to persist."
-    :inputSchema {:type "object"
-                  :properties {}
-                  :required []}
-    :handler handle-wrap-crystallize}
 
    {:name "mcp_watch_buffer"
     :description "Get recent content from a buffer for monitoring. Useful for watching *Messages*, *Warnings*, *Compile-Log*, etc. Returns the last N lines."

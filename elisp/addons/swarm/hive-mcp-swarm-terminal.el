@@ -164,13 +164,16 @@ Routes to hive-mcp-ellama for actual inference."
 (defun hive-mcp-swarm-terminal--send-claude-code-ide (buffer text)
   "Send TEXT via claude-code-ide abstraction.
 Uses synchronous sit-for like claude-code-ide-send-prompt does.
-Blocking is OK for individual slaves since they're isolated."
+Blocking is OK for individual slaves since they're isolated.
+Delay scales with text length to allow vterm to process large pastes."
   (with-current-buffer buffer
     (if (fboundp 'claude-code-ide--terminal-send-string)
-        (progn
+        (let* ((text-lines (length (split-string text "\n")))
+               ;; Base delay + 0.01s per line, max 2s
+               (paste-delay (min 2.0 (+ 0.1 (* 0.01 text-lines)))))
           (claude-code-ide--terminal-send-string text)
-          ;; Use sit-for like claude-code-ide-send-prompt - this works reliably
-          (sit-for 0.1)
+          ;; Adaptive delay based on text size
+          (sit-for paste-delay)
           (when (fboundp 'claude-code-ide--terminal-send-return)
             (claude-code-ide--terminal-send-return)))
       (error "claude-code-ide terminal functions not available"))))

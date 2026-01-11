@@ -383,6 +383,82 @@ Implementation: Add to presets.el TDD template: "Before committing, run M-x byte
 :AGENT:    emacs-14302
 :SESSION:  20260102-200244
 :END:
+** DONE Fix no-polling piggyback delivery to coordinator
+:PROPERTIES:
+:ID:       4065fb07-d039-4c98-a6d7-ea4b0774bdef
+:CREATED:  2026-01-10 22:27
+:DESCRIPTION: COMPLETED: Fixed bb-mcp forwarding to use wrapped handler from server-context-atom instead of raw tools/tools handler. Now coordinator receives ---HIVEMIND--- markers with ling messages in every tool response. Files: bb-mcp/src/bb_mcp/tools/emacs/dynamic.clj, hive-mcp/src/hive_mcp/server.clj
+:AGENT:    emacs-378780
+:SESSION:  20260110-222738
+:UPDATED:  2026-01-10 22:27
+:LAST_AGENT: emacs-378780
+:END:
+** TODO [SRP] Decompose make-tool into composable wrappers
+:PROPERTIES:
+:ID:       d8e983d8-ddd8-405b-85f2-ac963f940715
+:CREATED:  2026-01-10 22:28
+:DESCRIPTION: make-tool in server.clj has deep let nesting doing: normalization, piggyback retrieval, content transformation, response building. Refactor to composable functions: (-> tool-def wrap-normalize wrap-piggyback wrap-for-sdk). Each wrapper single responsibility. Use TDD to pin existing behavior first.
+:AGENT:    emacs-378780
+:SESSION:  20260110-222804
+:END:
+** TODO [SPEC] Add clojure.spec for tool response contracts
+:PROPERTIES:
+:ID:       7fc4dbcd-dc90-4e0f-a7d4-851bde8b669f
+:CREATED:  2026-01-10 22:28
+:DESCRIPTION: Define specs for: ::content-item (keys :type :text), ::tool-response (keys :content), ::piggyback-message (keys :a :e :m), ::hivemind-block. Add instrumentation at bb-mcp/hive-mcp boundary. Catches type mismatches at runtime with clear error messages.
+:AGENT:    emacs-378780
+:SESSION:  20260110-222804
+:END:
+** TODO [DDD] Define domain entities for hivemind messaging
+:PROPERTIES:
+:ID:       8e89921b-93f0-42f8-82e7-08bd8ed3e537
+:CREATED:  2026-01-10 22:28
+:DESCRIPTION: Create proper domain records: (defrecord HivemindMessage [agent-id event-type message timestamp]), (defrecord PiggybackEnvelope [messages cursor-ts]). Replace raw maps with typed entities. Encapsulate validation in constructors.
+:AGENT:    emacs-378780
+:SESSION:  20260110-222805
+:END:
+** IN-PROGRESS [TDD] Pin existing piggyback behavior with tests
+:PROPERTIES:
+:ID:       6c667917-ee98-4593-ac0c-6d4b32d3edd3
+:CREATED:  2026-01-10 22:28
+:DESCRIPTION: Before refactoring, add comprehensive tests: test-piggyback-attached-to-response, test-piggyback-consumed-after-read, test-piggyback-fifo-ordering, test-per-agent-cursors, test-empty-piggyback-no-markers. These become regression guards for refactor.
+:AGENT:    emacs-378780
+:SESSION:  20260110-222805
+:UPDATED:  2026-01-10 22:35
+:LAST_AGENT: emacs-378780
+:END:
+** TODO [SRP] Decompose make-tool into composable wrappers
+:PROPERTIES:
+:ID:       1c887985-29d3-443a-8a35-fc0e4681a9c8
+:CREATED:  2026-01-10 22:33
+:DESCRIPTION: Split make-tool into: wrap-normalize-content, wrap-with-piggyback, wrap-for-sdk. Each wrapper single responsibility. Compose with -> threading. Reduces deep let nesting, enables testing each wrapper independently.
+:AGENT:    emacs-378780
+:SESSION:  20260110-223346
+:END:
+** TODO [SPEC] Add clojure.spec contracts for tool responses
+:PROPERTIES:
+:ID:       9996ea51-abbf-4e1e-8c50-e0737ec93408
+:CREATED:  2026-01-10 22:33
+:DESCRIPTION: Define specs: ::content-item (keys :type :text), ::tool-response (keys :content), ::piggyback-message (keys :a :e :m), ::hivemind-section. Use s/fdef for make-tool, get-hivemind-piggyback. Enable instrumentation in tests.
+:AGENT:    emacs-378780
+:SESSION:  20260110-223346
+:END:
+** TODO [DDD] Extract piggyback as domain aggregate
+:PROPERTIES:
+:ID:       54177dcd-29e5-417c-b445-8eef07f26a91
+:CREATED:  2026-01-10 22:33
+:DESCRIPTION: Piggyback is a domain concept spanning hivemind, channel, server. Create piggyback namespace as aggregate root with clear API: append!, consume!, peek. Encapsulate cursor management, FIFO ordering, formatting.
+:AGENT:    emacs-378780
+:SESSION:  20260110-223346
+:END:
+
+
+
+
+
+
+
+
 
 
 

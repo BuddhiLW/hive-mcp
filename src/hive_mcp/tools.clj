@@ -31,6 +31,9 @@
             [hive-mcp.tools.org :as org]
             [hive-mcp.tools.prompt :as prompt]
             [hive-mcp.tools.presets :as presets-tools]
+            [hive-mcp.tools.diff :as diff]
+            [hive-mcp.tools.jvm :as jvm]
+            [hive-mcp.tools.crystal :as crystal]
             [hive-mcp.hivemind :as hivemind]
             [hive-mcp.channel :as channel]
             [hive-mcp.agent :as agent]))
@@ -195,260 +198,74 @@
     {:type "text" :text "Error: hive-mcp.el is not loaded. Run (require 'hive-mcp) and (hive-mcp-mode 1) in Emacs." :isError true}))
 
 (defn handle-mcp-memory-add
-  "Add an entry to project memory.
-   After successful elisp memory add, auto-indexes in Chroma if configured."
-  [{:keys [type content tags duration]}]
-  (log/info "mcp-memory-add:" type)
-  (if (hive-mcp-el-available?)
-    (let [tags-str (if (seq tags) (str "'" (pr-str tags)) "nil")
-          duration-str (if duration (pr-str duration) "nil")
-          elisp (format "(json-encode (hive-mcp-api-memory-add %s %s %s %s))"
-                        (pr-str type)
-                        (pr-str content)
-                        tags-str
-                        duration-str)
-          {:keys [success result error]} (ec/eval-elisp elisp)]
-      (if success
-        (do
-          ;; Try to auto-index in Chroma if configured
-          (when (chroma/embedding-configured?)
-            (try
-              (let [parsed-result (json/read-str result :key-fn keyword)
-                    entry-id (:id parsed-result)]
-                (when entry-id
-                  (chroma/index-memory-entry! {:id entry-id
-                                               :content content
-                                               :type type
-                                               :tags tags})
-                  (log/info "Auto-indexed memory entry in Chroma:" entry-id)))
-              (catch Exception e
-                (log/warn "Failed to auto-index memory entry in Chroma:"
-                          (ex-message e)))))
-          {:type "text" :text result})
-        {:type "text" :text (str "Error: " error) :isError true}))
-    {:type "text" :text "Error: hive-mcp.el is not loaded." :isError true}))
+  "Add an entry to project memory. Delegates to memory module."
+  [params]
+  (memory/handle-mcp-memory-add params))
 
 (defn handle-mcp-memory-query
-  "Query project memory by type with scope filtering.
-  SCOPE controls which memories are returned:
-    - nil/omitted: auto-filter by current project + global
-    - \"all\": return all entries regardless of scope  
-    - \"global\": return only scope:global entries
-    - specific scope tag: filter by that scope"
-  [{:keys [type tags limit duration scope]}]
-  (log/info "mcp-memory-query:" type "scope:" scope)
-  (if (hive-mcp-el-available?)
-    (let [tags-str (if (seq tags) (str "'" (pr-str tags)) "nil")
-          limit-val (or limit 20)
-          duration-str (if duration (pr-str duration) "nil")
-          scope-str (if scope (pr-str scope) "nil")
-          elisp (format "(json-encode (hive-mcp-api-memory-query %s %s %d %s))"
-                        (pr-str type)
-                        tags-str
-                        limit-val
-                        scope-str)
-          {:keys [success result error]} (ec/eval-elisp elisp)]
-      (if success
-        {:type "text" :text result}
-        {:type "text" :text (str "Error: " error) :isError true}))
-    {:type "text" :text "Error: hive-mcp.el is not loaded." :isError true}))
+  "Query project memory by type with scope filtering. Delegates to memory module."
+  [params]
+  (memory/handle-mcp-memory-query params))
 
 (defn handle-mcp-memory-query-metadata
-  "Query project memory by type, returning only metadata (id, type, preview, tags, created).
-  Use this for efficient browsing - returns ~10x fewer tokens than full query.
-  Follow up with mcp_memory_get_full to fetch specific entries.
-  SCOPE controls filtering (see handle-mcp-memory-query for options)."
-  [{:keys [type tags limit scope]}]
-  (log/info "mcp-memory-query-metadata:" type "scope:" scope)
-  (if (hive-mcp-el-available?)
-    (let [tags-str (if (seq tags) (str "'" (pr-str tags)) "nil")
-          limit-val (or limit 20)
-          scope-str (if scope (pr-str scope) "nil")
-          elisp (format "(json-encode (hive-mcp-api-memory-query-metadata %s %s %d %s))"
-                        (pr-str type)
-                        tags-str
-                        limit-val
-                        scope-str)
-          {:keys [success result error]} (ec/eval-elisp elisp)]
-      (if success
-        {:type "text" :text result}
-        {:type "text" :text (str "Error: " error) :isError true}))
-    {:type "text" :text "Error: hive-mcp.el is not loaded." :isError true}))
+  "Query project memory by type, returning only metadata. Delegates to memory module."
+  [params]
+  (memory/handle-mcp-memory-query-metadata params))
 
 (defn handle-mcp-memory-get-full
-  "Get full content of a memory entry by ID.
-  Use after mcp_memory_query_metadata to fetch specific entries."
-  [{:keys [id]}]
-  (log/info "mcp-memory-get-full:" id)
-  (if (hive-mcp-el-available?)
-    (let [elisp (format "(json-encode (hive-mcp-api-memory-get-full %s))"
-                        (pr-str id))
-          {:keys [success result error]} (ec/eval-elisp elisp)]
-      (if success
-        {:type "text" :text result}
-        {:type "text" :text (str "Error: " error) :isError true}))
-    {:type "text" :text "Error: hive-mcp.el is not loaded." :isError true}))
+  "Get full content of a memory entry by ID. Delegates to memory module."
+  [params]
+  (memory/handle-mcp-memory-get-full params))
 
 (defn handle-mcp-memory-search-semantic
-  "Search project memory using semantic similarity (vector search).
-   Requires Chroma to be configured with an embedding provider."
-  [{:keys [query limit type]}]
-  (log/info "mcp-memory-search-semantic:" query)
-  (let [status (chroma/status)]
-    (if-not (:configured? status)
-      {:type "text"
-       :text (json/write-str
-              {:error "Chroma semantic search not configured"
-               :message "To enable semantic search, configure Chroma with an embedding provider. See hive-mcp.chroma namespace."
-               :status status})
-       :isError true}
-      (try
-        (let [results (chroma/search-similar query
-                                             :limit (or limit 10)
-                                             :type type)
-              ;; Format results for user-friendly output
-              formatted (mapv (fn [{:keys [id document metadata distance]}]
-                                {:id id
-                                 :type (get metadata :type)
-                                 :tags (when-let [t (get metadata :tags)]
-                                         (when (not= t "")
-                                           (clojure.string/split t #",")))
-                                 :distance distance
-                                 :preview (when document
-                                            (subs document 0 (min 200 (count document))))})
-                              results)]
-          {:type "text"
-           :text (json/write-str {:results formatted
-                                  :count (count formatted)
-                                  :query query})})
-        (catch Exception e
-          {:type "text"
-           :text (json/write-str {:error (str "Semantic search failed: " (.getMessage e))
-                                  :status status})
-           :isError true})))))
+  "Search project memory using semantic similarity. Delegates to memory module."
+  [params]
+  (memory/handle-mcp-memory-search-semantic params))
 
 (defn handle-mcp-memory-set-duration
-  "Set duration category for a memory entry."
-  [{:keys [id duration]}]
-  (log/info "mcp-memory-set-duration:" id duration)
-  (if (hive-mcp-el-available?)
-    (let [elisp (el/require-and-call-json "hive-mcp-api" "hive-mcp-api-memory-set-duration"
-                                          id duration)
-          {:keys [success result error]} (ec/eval-elisp elisp)]
-      (if success
-        {:type "text" :text result}
-        {:type "text" :text (str "Error: " error) :isError true}))
-    {:type "text" :text "Error: hive-mcp.el is not loaded." :isError true}))
+  "Set duration category for a memory entry. Delegates to memory module."
+  [params]
+  (memory/handle-mcp-memory-set-duration params))
 
 (defn handle-mcp-memory-promote
-  "Promote memory entry to longer duration."
-  [{:keys [id]}]
-  (log/info "mcp-memory-promote:" id)
-  (if (hive-mcp-el-available?)
-    (let [elisp (el/require-and-call-json "hive-mcp-api" "hive-mcp-api-memory-promote" id)
-          {:keys [success result error]} (ec/eval-elisp elisp)]
-      (if success
-        {:type "text" :text result}
-        {:type "text" :text (str "Error: " error) :isError true}))
-    {:type "text" :text "Error: hive-mcp.el is not loaded." :isError true}))
+  "Promote memory entry to longer duration. Delegates to memory module."
+  [params]
+  (memory/handle-mcp-memory-promote params))
 
 (defn handle-mcp-memory-demote
-  "Demote memory entry to shorter duration."
-  [{:keys [id]}]
-  (log/info "mcp-memory-demote:" id)
-  (if (hive-mcp-el-available?)
-    (let [elisp (el/require-and-call-json "hive-mcp-api" "hive-mcp-api-memory-demote" id)
-          {:keys [success result error]} (ec/eval-elisp elisp)]
-      (if success
-        {:type "text" :text result}
-        {:type "text" :text (str "Error: " error) :isError true}))
-    {:type "text" :text "Error: hive-mcp.el is not loaded." :isError true}))
+  "Demote memory entry to shorter duration. Delegates to memory module."
+  [params]
+  (memory/handle-mcp-memory-demote params))
 
 (defn handle-mcp-memory-cleanup-expired
-  "Remove all expired memory entries."
-  [_]
-  (log/info "mcp-memory-cleanup-expired")
-  (if (hive-mcp-el-available?)
-    (let [elisp (el/require-and-call-json "hive-mcp-api" "hive-mcp-api-memory-cleanup-expired")
-          {:keys [success result error]} (ec/eval-elisp elisp)]
-      (if success
-        {:type "text" :text result}
-        {:type "text" :text (str "Error: " error) :isError true}))
-    {:type "text" :text "Error: hive-mcp.el is not loaded." :isError true}))
+  "Remove all expired memory entries. Delegates to memory module."
+  [params]
+  (memory/handle-mcp-memory-cleanup-expired params))
 
 (defn handle-mcp-memory-expiring-soon
-  "List memory entries expiring within N days."
-  [{:keys [days]}]
-  (log/info "mcp-memory-expiring-soon:" (or days 7))
-  (if (hive-mcp-el-available?)
-    (let [days-val (or days 7)
-          elisp (el/require-and-call-json "hive-mcp-api" "hive-mcp-api-memory-expiring-soon" days-val)
-          {:keys [success result error]} (ec/eval-elisp elisp)]
-      (if success
-        {:type "text" :text result}
-        {:type "text" :text (str "Error: " error) :isError true}))
-    {:type "text" :text "Error: hive-mcp.el is not loaded." :isError true}))
+  "List memory entries expiring within N days. Delegates to memory module."
+  [params]
+  (memory/handle-mcp-memory-expiring-soon params))
 
 (defn handle-mcp-memory-log-access
-  "Log access to a memory entry.
-   Increments access-count and updates last-accessed timestamp."
-  [{:keys [id]}]
-  (log/info "mcp-memory-log-access:" id)
-  (if (hive-mcp-el-available?)
-    (let [elisp (el/require-and-call-json "hive-mcp-memory"
-                                          "hive-mcp-memory-log-access"
-                                          id)
-          {:keys [success result error]} (ec/eval-elisp elisp)]
-      (if success
-        {:type "text" :text result}
-        {:type "text" :text (str "Error: " error) :isError true}))
-    {:type "text" :text "Error: hive-mcp.el is not loaded." :isError true}))
+  "Log access to a memory entry. Delegates to memory module."
+  [params]
+  (memory/handle-mcp-memory-log-access params))
 
 (defn handle-mcp-memory-feedback
-  "Submit helpfulness feedback for a memory entry.
-   feedback should be 'helpful' or 'unhelpful'."
-  [{:keys [id feedback]}]
-  (log/info "mcp-memory-feedback:" id feedback)
-  (if (hive-mcp-el-available?)
-    (let [fn-name (case feedback
-                    "helpful" "hive-mcp-memory-mark-helpful"
-                    "unhelpful" "hive-mcp-memory-mark-unhelpful"
-                    (throw (ex-info "Invalid feedback type" {:feedback feedback})))
-          elisp (el/require-and-call-json "hive-mcp-memory" fn-name id)
-          {:keys [success result error]} (ec/eval-elisp elisp)]
-      (if success
-        {:type "text" :text result}
-        {:type "text" :text (str "Error: " error) :isError true}))
-    {:type "text" :text "Error: hive-mcp.el is not loaded." :isError true}))
+  "Submit helpfulness feedback for a memory entry. Delegates to memory module."
+  [params]
+  (memory/handle-mcp-memory-feedback params))
 
 (defn handle-mcp-memory-helpfulness-ratio
-  "Get helpfulness ratio for a memory entry.
-   Returns helpful/(helpful+unhelpful) or null if no feedback."
-  [{:keys [id]}]
-  (log/info "mcp-memory-helpfulness-ratio:" id)
-  (if (hive-mcp-el-available?)
-    (let [elisp (el/require-and-call-json "hive-mcp-memory"
-                                          "hive-mcp-memory-helpfulness-ratio"
-                                          id)
-          {:keys [success result error]} (ec/eval-elisp elisp)]
-      (if success
-        {:type "text" :text result}
-        {:type "text" :text (str "Error: " error) :isError true}))
-    {:type "text" :text "Error: hive-mcp.el is not loaded." :isError true}))
+  "Get helpfulness ratio for a memory entry. Delegates to memory module."
+  [params]
+  (memory/handle-mcp-memory-helpfulness-ratio params))
 
 (defn handle-mcp-memory-check-duplicate
-  "Check if content already exists in memory (duplicate detection)."
-  [{:keys [type content]}]
-  (log/info "mcp-memory-check-duplicate:" type)
-  (if (hive-mcp-el-available?)
-    (let [elisp (el/require-and-call-json "hive-mcp-api"
-                                          "hive-mcp-api-memory-check-duplicate"
-                                          type content)
-          {:keys [success result error]} (ec/eval-elisp elisp)]
-      (if success
-        {:type "text" :text result}
-        {:type "text" :text (str "Error: " error) :isError true}))
-    {:type "text" :text "Error: hive-mcp.el is not loaded." :isError true}))
+  "Check if content already exists in memory. Delegates to memory module."
+  [params]
+  (memory/handle-mcp-memory-check-duplicate params))
 
 (defn handle-mcp-run-workflow
   "Run a user-defined workflow."
@@ -556,259 +373,66 @@
       {:type "text" :text (str "Error: " error) :isError true})))
 
 ;; ============================================================================
-;; CIDER Integration Tools
+;; CIDER Integration Tools - Delegated to hive-mcp.tools.cider
 ;; ============================================================================
 
-(defn handle-cider-status
-  "Get CIDER connection status."
-  [_]
-  (log/info "cider-status")
-  (let [elisp (el/require-and-call-json 'hive-mcp-cider 'hive-mcp-cider-status)
-        {:keys [success result error]} (ec/eval-elisp elisp)]
-    (if success
-      {:type "text" :text result}
-      {:type "text" :text (str "Error: " error) :isError true})))
+(defn handle-cider-status [params]
+  (cider/handle-cider-status params))
 
-(defn handle-cider-eval-silent
-  "Evaluate Clojure code via CIDER silently with telemetry."
-  [params]
-  (try
-    (v/validate-cider-eval-request params)
-    (let [{:keys [code]} params]
-      (telemetry/with-eval-telemetry :cider-silent code nil
-        (let [elisp (el/require-and-call-text 'hive-mcp-cider 'hive-mcp-cider-eval-silent code)
-              {:keys [success result error]} (ec/eval-elisp elisp)]
-          (if success
-            {:type "text" :text result}
-            {:type "text" :text (str "Error: " error) :isError true}))))
-    (catch clojure.lang.ExceptionInfo e
-      (if (= :validation (:type (ex-data e)))
-        (v/wrap-validation-error e)
-        (throw e)))))
+(defn handle-cider-eval-silent [params]
+  (cider/handle-cider-eval-silent params))
 
-(defn handle-cider-eval-explicit
-  "Evaluate Clojure code via CIDER interactively (shows in REPL) with telemetry."
-  [params]
-  (try
-    (v/validate-cider-eval-request params)
-    (let [{:keys [code]} params]
-      (telemetry/with-eval-telemetry :cider-explicit code nil
-        (let [elisp (el/require-and-call-text 'hive-mcp-cider 'hive-mcp-cider-eval-explicit code)
-              {:keys [success result error]} (ec/eval-elisp elisp)]
-          (if success
-            {:type "text" :text result}
-            {:type "text" :text (str "Error: " error) :isError true}))))
-    (catch clojure.lang.ExceptionInfo e
-      (if (= :validation (:type (ex-data e)))
-        (v/wrap-validation-error e)
-        (throw e)))))
+(defn handle-cider-eval-explicit [params]
+  (cider/handle-cider-eval-explicit params))
 
-;; =============================================================================
-;; Multi-Session CIDER Tools
-;; =============================================================================
+(defn handle-cider-spawn-session [params]
+  (cider/handle-cider-spawn-session params))
 
-(defn handle-cider-spawn-session
-  "Spawn a new named CIDER session with its own nREPL server.
-   Useful for parallel agent work where each agent needs isolated REPL."
-  [{:keys [name project_dir agent_id]}]
-  (log/info "cider-spawn-session" {:name name :agent_id agent_id})
-  (let [elisp (el/require-and-call-json 'hive-mcp-cider 'hive-mcp-cider-spawn-session
-                                        name project_dir agent_id)
-        {:keys [success result error]} (ec/eval-elisp elisp)]
-    (if success
-      (mcp-success result)
-      (mcp-error (format "Error: %s" error)))))
+(defn handle-cider-list-sessions [params]
+  (cider/handle-cider-list-sessions params))
 
-(defn handle-cider-list-sessions
-  "List all active CIDER sessions with their status and ports."
-  [_]
-  (log/info "cider-list-sessions")
-  (let [elisp (el/require-and-call-json 'hive-mcp-cider 'hive-mcp-cider-list-sessions)
-        {:keys [success result error]} (ec/eval-elisp elisp)]
-    (if success
-      (mcp-success result)
-      (mcp-error (format "Error: %s" error)))))
+(defn handle-cider-eval-session [params]
+  (cider/handle-cider-eval-session params))
 
-(defn handle-cider-eval-session
-  "Evaluate Clojure code in a specific named CIDER session."
-  [{:keys [session_name code]}]
-  (log/info "cider-eval-session" {:session session_name :code-length (count code)})
-  (let [elisp (el/require-and-call-text 'hive-mcp-cider 'hive-mcp-cider-eval-in-session
-                                        session_name code)
-        {:keys [success result error]} (ec/eval-elisp elisp)]
-    (if success
-      (mcp-success result)
-      (mcp-error (format "Error: %s" error)))))
+(defn handle-cider-kill-session [params]
+  (cider/handle-cider-kill-session params))
 
-(defn handle-cider-kill-session
-  "Kill a specific named CIDER session."
-  [{:keys [session_name]}]
-  (log/info "cider-kill-session" {:session session_name})
-  (let [elisp (el/require-and-call 'hive-mcp-cider 'hive-mcp-cider-kill-session session_name)
-        {:keys [success error]} (ec/eval-elisp elisp)]
-    (if success
-      (mcp-success (format "Session '%s' killed" session_name))
-      (mcp-error (format "Error: %s" error)))))
-
-(defn handle-cider-kill-all-sessions
-  "Kill all CIDER sessions."
-  [_]
-  (log/info "cider-kill-all-sessions")
-  (let [elisp (el/require-and-call 'hive-mcp-cider 'hive-mcp-cider-kill-all-sessions)
-        {:keys [success error]} (ec/eval-elisp elisp)]
-    (if success
-      (mcp-success "All CIDER sessions killed")
-      (mcp-error (format "Error: %s" error)))))
+(defn handle-cider-kill-all-sessions [params]
+  (cider/handle-cider-kill-all-sessions params))
 
 ;; ============================================================
-;; Magit Integration Tools (requires hive-mcp-magit addon)
+;; Magit Integration Tools - Delegations to hive-mcp.tools.magit
 ;; ============================================================
 
-(defn magit-addon-available?
-  "Check if the magit addon is loaded in Emacs."
-  []
-  (let [elisp "(progn
-                (require 'hive-mcp-magit nil t)
-                (if (featurep 'hive-mcp-magit) t nil))"
-        {:keys [success result]} (ec/eval-elisp elisp)]
-    (and success (= result "t"))))
+(defn handle-magit-status [params]
+  (magit/handle-magit-status params))
 
-(defn handle-magit-status
-  "Get comprehensive git repository status via magit addon."
-  [_]
-  (log/info "magit-status")
-  (let [elisp (el/require-and-call-json 'hive-mcp-magit 'hive-mcp-magit-api-status)
-        {:keys [success result error]} (ec/eval-elisp elisp)]
-    (if success
-      {:type "text" :text result}
-      {:type "text" :text (str "Error: " error) :isError true})))
+(defn handle-magit-branches [params]
+  (magit/handle-magit-branches params))
 
-(defn handle-magit-branches
-  "Get branch information including current, upstream, local and remote branches."
-  [_]
-  (log/info "magit-branches")
-  (let [elisp (el/require-and-call-json 'hive-mcp-magit 'hive-mcp-magit-api-branches)
-        {:keys [success result error]} (ec/eval-elisp elisp)]
-    (if success
-      {:type "text" :text result}
-      {:type "text" :text (str "Error: " error) :isError true})))
+(defn handle-magit-log [params]
+  (magit/handle-magit-log params))
 
-(defn handle-magit-log
-  "Get recent commit log."
-  [{:keys [count]}]
-  (log/info "magit-log" {:count count})
-  (let [n (or count 10)
-        elisp (el/require-and-call-json 'hive-mcp-magit 'hive-mcp-magit-api-log n)
-        {:keys [success result error]} (ec/eval-elisp elisp)]
-    (if success
-      {:type "text" :text result}
-      {:type "text" :text (str "Error: " error) :isError true})))
+(defn handle-magit-diff [params]
+  (magit/handle-magit-diff params))
 
-(defn handle-magit-diff
-  "Get diff for staged, unstaged, or all changes."
-  [{:keys [target]}]
-  (log/info "magit-diff" {:target target})
-  (let [target-sym (case target
-                     "staged" 'staged
-                     "unstaged" 'unstaged
-                     "all" 'all
-                     'staged)
-        elisp (el/require-and-call-text 'hive-mcp-magit 'hive-mcp-magit-api-diff target-sym)
-        {:keys [success result error]} (ec/eval-elisp elisp)]
-    (if success
-      {:type "text" :text result}
-      {:type "text" :text (str "Error: " error) :isError true})))
+(defn handle-magit-stage [params]
+  (magit/handle-magit-stage params))
 
-(defn handle-magit-stage
-  "Stage files for commit. Use 'all' to stage all modified files."
-  [{:keys [files]}]
-  (log/info "magit-stage" {:files files})
-  (let [file-arg (if (= files "all") 'all files)
-        elisp (el/require-and-call 'hive-mcp-magit 'hive-mcp-magit-api-stage file-arg)
-        {:keys [success result error]} (ec/eval-elisp elisp)]
-    (if success
-      {:type "text" :text (or result "Staged files")}
-      {:type "text" :text (str "Error: " error) :isError true})))
+(defn handle-magit-commit [params]
+  (magit/handle-magit-commit params))
 
-(defn handle-magit-commit
-  "Create a commit with the given message."
-  [{:keys [message all]}]
-  (log/info "magit-commit" {:message-len (count message) :all all})
-  (let [options (if all "'(:all t)" "nil")
-        elisp (el/format-elisp
-               "(progn
-                  (require 'hive-mcp-magit nil t)
-                  (if (fboundp 'hive-mcp-magit-api-commit)
-                      (hive-mcp-magit-api-commit %s %s)
-                    \"hive-mcp-magit not loaded\"))"
-               (pr-str message) options)
-        {:keys [success result error]} (ec/eval-elisp elisp)]
-    (if success
-      {:type "text" :text result}
-      {:type "text" :text (str "Error: " error) :isError true})))
+(defn handle-magit-push [params]
+  (magit/handle-magit-push params))
 
-(defn handle-magit-push
-  "Push to remote. Optionally set upstream tracking."
-  [{:keys [set_upstream]}]
-  (log/info "magit-push" {:set_upstream set_upstream})
-  (let [options (if set_upstream "'(:set-upstream t)" "nil")
-        elisp (el/format-elisp
-               "(progn
-                  (require 'hive-mcp-magit nil t)
-                  (if (fboundp 'hive-mcp-magit-api-push)
-                      (hive-mcp-magit-api-push %s)
-                    \"hive-mcp-magit not loaded\"))"
-               options)
-        {:keys [success result error]} (ec/eval-elisp elisp)]
-    (if success
-      {:type "text" :text result}
-      {:type "text" :text (str "Error: " error) :isError true})))
+(defn handle-magit-pull [params]
+  (magit/handle-magit-pull params))
 
-(defn handle-magit-pull
-  "Pull from upstream."
-  [_]
-  (log/info "magit-pull")
-  (let [elisp (el/require-and-call-text 'hive-mcp-magit 'hive-mcp-magit-api-pull)
-        {:keys [success result error]} (ec/eval-elisp elisp)]
-    (if success
-      {:type "text" :text result}
-      {:type "text" :text (str "Error: " error) :isError true})))
+(defn handle-magit-fetch [params]
+  (magit/handle-magit-fetch params))
 
-(defn handle-magit-fetch
-  "Fetch from remote(s)."
-  [{:keys [remote]}]
-  (log/info "magit-fetch" {:remote remote})
-  (let [elisp (if remote
-                (el/require-and-call-text 'hive-mcp-magit 'hive-mcp-magit-api-fetch remote)
-                (el/require-and-call-text 'hive-mcp-magit 'hive-mcp-magit-api-fetch))
-        {:keys [success result error]} (ec/eval-elisp elisp)]
-    (if success
-      {:type "text" :text result}
-      {:type "text" :text (str "Error: " error) :isError true})))
-
-(defn handle-magit-feature-branches
-  "Get list of feature/fix/feat branches (for /ship and /ship-pr skills)."
-  [_]
-  (log/info "magit-feature-branches")
-  ;; Complex elisp with client-side filtering - use format-elisp
-  (let [elisp (el/format-elisp
-               "(progn
-                  (require 'hive-mcp-magit nil t)
-                  (if (fboundp 'hive-mcp-magit-api-branches)
-                      (let* ((branches (hive-mcp-magit-api-branches))
-                             (local (plist-get branches :local))
-                             (feature-branches 
-                               (seq-filter 
-                                 (lambda (b) 
-                                   (string-match-p \"^\\\\(feature\\\\|fix\\\\|feat\\\\)/\" b))
-                                 local)))
-                        (json-encode (list :current (plist-get branches :current)
-                                           :feature_branches feature-branches)))
-                    (json-encode (list :error \"hive-mcp-magit not loaded\"))))")
-        {:keys [success result error]} (ec/eval-elisp elisp)]
-    (if success
-      {:type "text" :text result}
-      {:type "text" :text (str "Error: " error) :isError true})))
+(defn handle-magit-feature-branches [params]
+  (magit/handle-magit-feature-branches params))
 
 ;; Projectile Integration Handlers (requires hive-mcp-projectile addon)
 
@@ -1072,328 +696,14 @@
     {:type "text" :text "hive-mcp-swarm addon not loaded." :isError true}))
 
 ;; ============================================================
-;; JVM Process Cleanup (for swarm garbage collection)
+;; JVM Process Cleanup - Delegated to hive-mcp.tools.jvm
 ;; ============================================================
-
-(defn parse-jvm-process-line
-  "Parse a ps output line into a process map."
-  [line]
-  (let [parts (str/split (str/trim line) #"\s+" 5)]
-    (when (>= (count parts) 5)
-      {:pid (first parts)
-       :cpu (second parts)
-       :mem (nth parts 2)
-       :etime (nth parts 3)
-       :cmd (nth parts 4)})))
-
-(defn parse-etime-to-minutes
-  "Parse elapsed time (format: [[DD-]HH:]MM:SS) to minutes."
-  [etime]
-  (try
-    (let [parts (str/split etime #"[-:]")
-          nums (map #(Integer/parseInt %) parts)]
-      (case (count nums)
-        2 (first nums) ; MM:SS -> minutes
-        3 (+ (* 60 (first nums)) (second nums)) ; HH:MM:SS -> minutes
-        4 (+ (* 24 60 (first nums)) (* 60 (second nums)) (nth nums 2)) ; DD-HH:MM:SS
-        0))
-    (catch Exception _ 0)))
-
-(defn find-jvm-processes
-  "Find all JVM processes with their details including parent info."
-  []
-  (try
-    (let [result (shell/sh "ps" "-eo" "pid,ppid,pcpu,pmem,etime,args" "--no-headers")
-          lines (str/split-lines (:out result))
-          jvm-lines (filter #(re-find #"java" %) lines)]
-      (keep (fn [line]
-              (let [parts (str/split (str/trim line) #"\s+" 6)]
-                (when (>= (count parts) 6)
-                  {:pid (nth parts 0)
-                   :ppid (nth parts 1)
-                   :cpu (nth parts 2)
-                   :mem (nth parts 3)
-                   :etime (nth parts 4)
-                   :cmd (nth parts 5)})))
-            jvm-lines))
-    (catch Exception e
-      (log/error "Error finding JVM processes:" (.getMessage e))
-      [])))
-
-(defn get-all-process-parents
-  "Get pid->{:ppid :comm} map for all processes in ONE ps call. Efficient!"
-  []
-  (try
-    (let [result (shell/sh "ps" "-eo" "pid,ppid,comm" "--no-headers")
-          lines (str/split-lines (:out result))]
-      (into {}
-            (keep (fn [line]
-                    (let [parts (str/split (str/trim line) #"\s+" 3)]
-                      (when (= 3 (count parts))
-                        [(first parts) {:ppid (second parts) :comm (nth parts 2)}])))
-                  lines)))
-    (catch Exception _ {})))
-
-(defn enrich-with-parent-info
-  "Enrich process with parent info from pre-fetched map."
-  [proc all-parents]
-  (let [ppid (:ppid proc)
-        parent (get all-parents ppid)
-        parent-alive (boolean parent)
-        parent-comm (:comm parent)
-        is-init (= "1" ppid)
-        is-claude (= "claude" parent-comm)
-        truly-orphaned (or (not parent-alive) is-init)]
-    (assoc proc
-           :parent-alive parent-alive
-           :parent-comm parent-comm
-           :parent-is-claude is-claude
-           :truly-orphaned truly-orphaned)))
-
-(defn get-process-swarm-info
-  "Get swarm environment variables from /proc/<pid>/environ.
-   Returns nil if not a swarm-spawned process, or a map with swarm info."
-  [pid]
-  (try
-    (let [environ-file (str "/proc/" pid "/environ")
-          content (slurp environ-file)
-          ;; environ file has null-separated entries
-          entries (str/split content #"\x00")
-          env-map (into {} (keep #(let [parts (str/split % #"=" 2)]
-                                    (when (= 2 (count parts))
-                                      [(first parts) (second parts)]))
-                                 entries))
-          slave-id (get env-map "CLAUDE_SWARM_SLAVE_ID")
-          master-id (get env-map "CLAUDE_SWARM_MASTER")
-          depth (get env-map "CLAUDE_SWARM_DEPTH")]
-      (when (or slave-id master-id depth)
-        {:swarm-slave-id slave-id
-         :swarm-master-id master-id
-         :swarm-depth (when depth (try (Integer/parseInt depth) (catch Exception _ nil)))}))
-    (catch Exception _
-      ;; Can't read environ (permission denied or process gone)
-      nil)))
-
-(defn classify-jvm-process
-  "Classify a JVM process by type and swarm status (parent info added separately)."
-  [{:keys [cmd pid] :as proc}]
-  (let [swarm-info (get-process-swarm-info pid)
-        proc-type (cond
-                    (re-find #"shadow-cljs|shadow\.cljs" cmd) :shadow-cljs
-                    (re-find #"hive-mcp|hive_mcp" cmd) :hive-mcp
-                    (re-find #"clojure-mcp|clj-mcp" cmd) :clojure-mcp
-                    (re-find #"nrepl" cmd) :nrepl
-                    (re-find #"leiningen" cmd) :leiningen
-                    :else :other)]
-    (-> proc
-        (assoc :type proc-type)
-        (assoc :swarm-spawned (boolean swarm-info))
-        (merge swarm-info))))
 
 (defn handle-jvm-cleanup
   "Find and optionally kill orphaned JVM processes.
-
-   TRUE ORPHAN DETECTION:
-   - Parent process is dead (not running)
-   - Parent is PID 1 (reparented to init/systemd)
-   
-   EFFICIENT: Uses only 2 ps calls total (not O(n) per process).
-   
-   Keeps processes whose parent is a living Claude session."
-  [{:keys [min_age_minutes dry_run keep_types swarm_only true_orphans_only]}]
-  (try
-    (let [min-age (or min_age_minutes 30)
-          dry-run (if (nil? dry_run) true dry_run)
-          keep-types-set (set (or keep_types ["shadow-cljs" "leiningen"]))
-          swarm-only (boolean swarm_only)
-          true-orphans-only (if (nil? true_orphans_only) true true_orphans_only)
-
-          ;; EFFICIENT: Get all parent info in ONE call
-          all-parents (get-all-process-parents)
-
-          ;; Get JVM processes and classify
-          all-procs (find-jvm-processes)
-          classified (->> all-procs
-                          (map classify-jvm-process)
-                          (map #(enrich-with-parent-info % all-parents)))
-
-          ;; Filter to swarm-only if requested
-          working-procs (if swarm-only
-                          (filter :swarm-spawned classified)
-                          classified)
-
-          ;; Swarm statistics
-          swarm-procs (filter :swarm-spawned classified)
-          by-slave (group-by :swarm-slave-id swarm-procs)
-
-          ;; Group by type
-          by-type (group-by :type working-procs)
-
-          ;; Identify orphans based on detection mode
-          identify-orphans (fn [procs]
-                             (map (fn [p]
-                                    (let [age (parse-etime-to-minutes (:etime p))
-                                          protected-type (contains? keep-types-set (name (:type p)))
-                                          truly-orphaned (:truly-orphaned p)
-                                          age-orphaned (>= age min-age)
-                                          is-orphan (cond
-                                                      protected-type false
-                                                      true-orphans-only truly-orphaned
-                                                      :else (and truly-orphaned age-orphaned))
-                                          reason (cond
-                                                   protected-type "protected-type"
-                                                   truly-orphaned (str "truly-orphaned (parent: "
-                                                                       (or (:parent-comm p) "dead") ")")
-                                                   (:parent-is-claude p) (str "managed-by-claude (ppid: "
-                                                                              (:ppid p) ")")
-                                                   :else (str "has-parent: " (:parent-comm p)))]
-                                      (assoc p
-                                             :orphan is-orphan
-                                             :age-minutes age
-                                             :reason reason)))
-                                  procs))
-
-          all-classified (identify-orphans working-procs)
-          orphans (filter :orphan all-classified)
-          managed (filter :parent-is-claude all-classified)
-
-          ;; Kill orphans if not dry run
-          killed-pids (when (and (not dry-run) (seq orphans))
-                        (doseq [{:keys [pid]} orphans]
-                          (try
-                            (shell/sh "kill" pid)
-                            (catch Exception e
-                              (log/warn "Failed to kill PID" pid ":" (.getMessage e)))))
-                        (map :pid orphans))
-
-          summary {:total-jvm-processes (count all-procs)
-                   :by-type (into {} (map (fn [[k v]] [(name k) (count v)]) by-type))
-                   :swarm {:total-swarm-spawned (count swarm-procs)
-                           :by-slave (into {} (map (fn [[k v]]
-                                                     [(or k "unknown")
-                                                      {:count (count v)
-                                                       :pids (map :pid v)}])
-                                                   by-slave))}
-                   :orphan-detection {:mode (if true-orphans-only "true-orphans" "age-based")
-                                      :truly-orphaned-count (count (filter :truly-orphaned all-classified))
-                                      :managed-by-claude (count managed)}
-                   :orphans-found (count orphans)
-                   :orphan-pids (map :pid orphans)
-                   :dry-run dry-run
-                   :swarm-only-mode swarm-only
-                   :killed (if dry-run [] (or killed-pids []))
-                   :min-age-threshold min-age
-                   :details (map #(select-keys % [:pid :ppid :type :etime :orphan :reason :age-minutes
-                                                  :truly-orphaned :parent-alive :parent-comm :parent-is-claude
-                                                  :swarm-spawned :swarm-slave-id :swarm-master-id :swarm-depth])
-                                 all-classified)}]
-
-      (mcp-json summary))
-    (catch Exception e
-      (mcp-error (str "Error during JVM cleanup: " (.getMessage e))))))
-
-(defn get-memory-usage
-  "Get current RAM usage from /proc/meminfo. Returns {:total :used :available :percent-used}."
-  []
-  (try
-    (let [meminfo (slurp "/proc/meminfo")
-          parse-kb (fn [pattern]
-                     (when-let [m (re-find (re-pattern (str pattern ":\\s+(\\d+)")) meminfo)]
-                       (Long/parseLong (second m))))
-          total-kb (parse-kb "MemTotal")
-          available-kb (parse-kb "MemAvailable")
-          used-kb (- total-kb available-kb)
-          percent-used (double (* 100 (/ used-kb total-kb)))]
-      {:total-mb (quot total-kb 1024)
-       :used-mb (quot used-kb 1024)
-       :available-mb (quot available-kb 1024)
-       :percent-used (Math/round percent-used)})
-    (catch Exception e
-      {:error (.getMessage e)})))
-
-(defn handle-resource-guard
-  "Check system resources and automatically clean up orphaned JVMs if memory is high.
-   
-   WORKFLOW:
-   1. Check current RAM usage
-   2. If above threshold (default 80%), run jvm_cleanup automatically
-   3. Re-check memory after cleanup
-   4. Return spawn permission based on final memory state
-   
-   Use this BEFORE spawning new Claude swarm slaves to prevent OOM.
-   
-   Parameters:
-   - ram_threshold: Percentage threshold (default 80)
-   - min_available_mb: Minimum available RAM in MB (default 2048)
-   - auto_cleanup: Whether to auto-run jvm_cleanup when high (default true)
-   - cleanup_dry_run: If auto_cleanup, whether to actually kill (default false)"
-  [{:keys [ram_threshold min_available_mb auto_cleanup cleanup_dry_run]}]
-  (try
-    (let [threshold (or ram_threshold 80)
-          min-available (or min_available_mb 2048)
-          auto-clean (if (nil? auto_cleanup) true auto_cleanup)
-          cleanup-dry (if (nil? cleanup_dry_run) false cleanup_dry_run)
-
-          ;; Initial memory check
-          initial-mem (get-memory-usage)
-
-          _ (when (:error initial-mem)
-              (throw (Exception. (str "Cannot read memory: " (:error initial-mem)))))
-
-          initial-high? (or (>= (:percent-used initial-mem) threshold)
-                            (< (:available-mb initial-mem) min-available))
-
-          ;; Auto cleanup if needed
-          cleanup-result (when (and initial-high? auto-clean)
-                           (log/info "Memory high (" (:percent-used initial-mem) "%), running jvm_cleanup...")
-                           (handle-jvm-cleanup {:dry_run cleanup-dry
-                                                :true_orphans_only true}))
-
-          ;; Parse cleanup result
-          cleanup-data (when cleanup-result
-                         (try
-                           (json/read-str (:text cleanup-result) :key-fn keyword)
-                           (catch Exception _ nil)))
-
-          orphans-killed (when cleanup-data
-                           (count (:killed cleanup-data)))
-
-          ;; Re-check memory after cleanup
-          final-mem (if (and cleanup-data (pos? (or orphans-killed 0)))
-                      (do
-                        (Thread/sleep 500) ;; Wait for processes to fully exit
-                        (get-memory-usage))
-                      initial-mem)
-
-          final-high? (or (>= (:percent-used final-mem) threshold)
-                          (< (:available-mb final-mem) min-available))
-
-          ;; Determine spawn permission
-          can-spawn (not final-high?)
-
-          summary {:can-spawn can-spawn
-                   :memory {:initial initial-mem
-                            :final final-mem
-                            :threshold-percent threshold
-                            :min-available-mb min-available}
-                   :status (cond
-                             (not initial-high?) :healthy
-                             (and initial-high? (not final-high?)) :recovered-after-cleanup
-                             :else :capacity-reached)
-                   :cleanup (when cleanup-data
-                              {:ran true
-                               :dry-run cleanup-dry
-                               :orphans-found (:orphans-found cleanup-data)
-                               :killed (count (:killed cleanup-data))})
-                   :recommendation (cond
-                                     can-spawn "Safe to spawn new processes"
-                                     (not auto-clean) "Memory high - consider enabling auto_cleanup"
-                                     cleanup-dry "Memory high - set cleanup_dry_run=false to actually kill orphans"
-                                     :else "Capacity reached - wait for running tasks to complete")}]
-
-      (mcp-json summary))
-    (catch Exception e
-      (mcp-error (str "Resource guard error: " (.getMessage e))))))
+   Delegates to hive-mcp.tools.jvm module."
+  [params]
+  (jvm/handle-jvm-cleanup params))
 
 ;; ============================================================
 ;; org-clj Native Org-Mode Tools
@@ -1530,11 +840,12 @@
 
 (def tools
   "Aggregated tool definitions from domain-specific modules.
-   
+
    Each module exports its own tools vector following the tool registry pattern.
    This enables Open/Closed Principle - new tools are added to their respective
    modules without modifying this aggregation."
   (vec (concat buffer/tools
+               crystal/tools
                memory/tools
                mem-kanban/tools
                cider/tools
@@ -1545,6 +856,7 @@
                org/tools
                prompt/tools
                presets-tools/tools
+               diff/tools
                hivemind/tools
                channel/channel-tools
                agent/tools)))
