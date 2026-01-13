@@ -73,12 +73,73 @@ clojure -M:dev:test -n hive-mcp.swarm.datascript-test
 | "Check if work was already done" | Broadcast notifies all lings |
 | "Report when task is complete" | DataScript tracks state |
 
-### The 3-Layer Defense Pattern
+### The 4-Layer Defense Pattern
 
-For any critical behavior:
-1. **Layer 1**: Instruct the ling (may work ~70% of time)
-2. **Layer 2**: System detects the condition (terminal introspection, state queries)
-3. **Layer 3**: System enforces the outcome (hooks, auto-actions)
+For any critical behavior, apply multiple layers. Example: **Guaranteed Completion Detection**
+
+| Layer | Mechanism | Reliability | Implementation |
+|-------|-----------|-------------|----------------|
+| **Layer 1** | Instruct the ling | ~70% | Preset says "shout on completion" |
+| **Layer 2** | Terminal introspection | ~90% | Detect idle state + no recent activity |
+| **Layer 3** | Wrapper injection | ~95% | Append "...then shout completion" to dispatch prompt |
+| **Layer 4** | Hook enforcement | 100% | `:task-complete` hook triggers synthetic shout |
+
+**Layer 1: Instruction (Probabilistic)**
+```markdown
+# In ling preset:
+"After completing any task, ALWAYS call hivemind_shout with event_type 'completed'"
+```
+Works when ling follows instructions. Fails silently when forgotten.
+
+**Layer 2: Detection (Heuristic)**
+```clojure
+;; Terminal introspection - detect completion by behavior
+(defn detect-idle? [buffer]
+  (and (no-output-for-seconds buffer 30)
+       (prompt-visible? buffer)
+       (no-pending-tool-calls? buffer)))
+```
+Detects completion even if ling forgot to shout. May have false positives.
+
+**Layer 3: Injection (Structural)**
+```clojure
+;; swarm_dispatch wraps every prompt
+(defn dispatch-with-shout [slave-id prompt]
+  (let [wrapped (str prompt "\n\nAfter completing this task, call hivemind_shout.")]
+    (send-to-slave slave-id wrapped)))
+```
+Adds instruction at dispatch time. Still depends on compliance but increases surface area.
+
+**Layer 4: Enforcement (Architectural)**
+```clojure
+;; hooks/handlers.clj - triggers on channel event, not ling action
+(def builtin-handlers
+  {:task-complete [shout-completion]})
+
+;; sync.clj - fires hook when task-completed event received
+(defn handle-task-completed [event]
+  (ds/complete-task! (:task-id event))
+  (hooks/trigger-hooks :task-complete event))  ;; <-- Guaranteed shout
+```
+System enforces behavior regardless of ling compliance. **This is the guarantee.**
+
+### Defense in Depth
+
+The layers compound:
+- If Layer 1 works → great, ling shouted
+- If Layer 1 fails, Layer 2 detects → system shouts
+- If Layer 2 misses, Layer 3 retries → ling prompted again
+- If all else fails, Layer 4 enforces → hook guarantees outcome
+
+**Cost of each layer:**
+| Layer | Complexity | Token Cost | Reliability Gain |
+|-------|------------|------------|------------------|
+| 1 | Low | 0 | +70% |
+| 2 | Medium | ~100/check | +20% |
+| 3 | Low | ~50/dispatch | +5% |
+| 4 | Medium | 0 | +5% (to 100%) |
+
+Layer 4 is the only one that provides a **guarantee**. Layers 1-3 are optimizations that reduce load on Layer 4
 
 ### Fail-Safe Defaults
 
@@ -92,14 +153,27 @@ For any critical behavior:
 
 ## Implementation Status
 
+### Core Infrastructure
+| Component | File | Status |
+|-----------|------|--------|
+| Hooks system | `hooks.clj`, `handlers.clj` | ✅ Complete |
+| DataScript state | `swarm/datascript.clj` | ✅ Complete |
+| File claims | `ds/has-conflict?` | ✅ Complete |
+| Sync handlers | `sync.clj` | ✅ Complete |
+
+### 4-Layer Completion Detection
 | Layer | Component | Status |
 |-------|-----------|--------|
-| Hooks | `hooks.clj`, `handlers.clj` | Complete |
-| State | `swarm/datascript.clj` | Complete |
-| Claims | `check-file-conflicts` | Complete |
-| Sync | `sync.clj` event handlers | Complete |
-| Broadcast | Behavioral warnings | Designed, pending |
-| Terminal introspection | Idle detection | Designed, pending |
+| Layer 1 | Preset instructions | ✅ Complete (in presets/*.md) |
+| Layer 2 | Terminal introspection | ⏳ Designed, pending |
+| Layer 3 | Dispatch wrapper injection | ⏳ Designed, pending |
+| Layer 4 | Hook enforcement | ⏳ ADR exists, needs wire in sync.clj |
+
+### Coordination Features
+| Feature | Status |
+|---------|--------|
+| Behavioral broadcast (file overlap warnings) | ⏳ Designed, pending |
+| Prompt interception (stuck ling detection) | ⏳ Feature idea documented |
 
 ## The Fractal Insight
 
