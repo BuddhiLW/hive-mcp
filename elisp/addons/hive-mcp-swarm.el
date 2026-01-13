@@ -479,13 +479,15 @@ Otherwise return aggregate status."
            ('idle (cl-incf idle))
            ('working (cl-incf working))
            ('error (cl-incf error-count)))
-         (push (list :slave-id id
-                     :name (plist-get slave :name)
-                     :status (plist-get slave :status)
-                     :depth (plist-get slave :depth)
-                     :parent-id (plist-get slave :parent-id)
-                     :current-task (plist-get slave :current-task)
-                     :tasks-completed (plist-get slave :tasks-completed))
+         ;; Use alist format for proper JSON serialization as objects
+         ;; Plists serialize as arrays, alists serialize as objects
+         (push `((slave-id . ,id)
+                 (name . ,(plist-get slave :name))
+                 (status . ,(symbol-name (or (plist-get slave :status) 'unknown)))
+                 (depth . ,(plist-get slave :depth))
+                 (parent-id . ,(plist-get slave :parent-id))
+                 (current-task . ,(plist-get slave :current-task))
+                 (tasks-completed . ,(plist-get slave :tasks-completed)))
                slaves-detail))
        hive-mcp-swarm--slaves)
 
@@ -504,6 +506,30 @@ Otherwise return aggregate status."
           (message "Swarm: %d slaves (%d idle, %d working), %d tasks"
                    total idle working (hash-table-count hive-mcp-swarm--tasks)))
         status))))
+
+(defun hive-mcp-swarm-list-lings ()
+  "List all lings (spawned slaves) with their metadata.
+Returns a vector of alists suitable for JSON encoding.
+Used by Clojure's query-elisp-lings fallback when registry is empty.
+
+Each ling alist contains:
+- slave-id: Unique identifier
+- name: Display name
+- presets: List of applied presets
+- cwd: Working directory
+- status: Current status (idle/working/error)"
+  (let ((lings '()))
+    (maphash
+     (lambda (id slave)
+       (push `((slave-id . ,id)
+               (name . ,(plist-get slave :name))
+               (presets . ,(or (plist-get slave :presets) []))
+               (cwd . ,(plist-get slave :cwd))
+               (status . ,(symbol-name (or (plist-get slave :status) 'unknown))))
+             lings))
+     hive-mcp-swarm--slaves)
+    ;; Return as vector for consistent JSON array encoding
+    (vconcat (nreverse lings))))
 
 (defun hive-mcp-swarm-show-slave (slave-id)
   "Switch to buffer for SLAVE-ID."

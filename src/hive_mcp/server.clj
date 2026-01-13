@@ -4,6 +4,7 @@
             [io.modelcontext.clojure-sdk.server :as sdk-server]
             [jsonrpc4clj.server :as jsonrpc-server]
             [hive-mcp.tools :as tools]
+            [hive-mcp.tools.swarm :as swarm]
             [hive-mcp.docs :as docs]
             [hive-mcp.chroma :as chroma]
             [hive-mcp.channel :as channel]
@@ -401,6 +402,13 @@
       (log/info "Swarm sync started - logic database will track swarm state")
       (catch Exception e
         (log/warn "Swarm sync failed to start (non-fatal):" (.getMessage e))))
+    ;; Start lings registry sync - keeps Clojure registry in sync with elisp
+    ;; ADR-001: Event-driven sync for lings_available to return accurate counts
+    (try
+      (swarm/start-registry-sync!)
+      (log/info "Lings registry sync started - lings_available will track elisp lings")
+      (catch Exception e
+        (log/warn "Lings registry sync failed to start (non-fatal):" (.getMessage e))))
     ;; Start MCP server - create context ourselves to enable hot-reload
     ;; CLARITY: Telemetry first - expose state for debugging
     (let [spec (assoc emacs-server-spec :server-id server-id)
