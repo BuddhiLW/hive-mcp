@@ -357,20 +357,23 @@ Used by the coordinator to answer agent questions."
 
    {:name "hivemind_messages"
     :description "Get recent messages from a specific agent.
-                  
+
 Returns up to 10 recent shout messages with their payloads.
 Use this to retrieve message content that agents have broadcast."
     :inputSchema {:type "object"
                   :properties {"agent_id" {:type "string"
                                            :description "Agent identifier to get messages from"}}
                   :required ["agent_id"]}
-    :handler (fn [{:keys [agent_id]}]
-               {:type "text"
-                :text (json/write-str
-                       (if-let [messages (get-agent-messages agent_id)]
-                         {:agent_id agent_id :messages messages}
-                         {:error (str "Agent not found: " agent_id)
-                          :available-agents (keys @agent-registry)}))})}])
+    :handler (fn [args]
+               ;; Support both keyword and string keys (MCP may pass either)
+               (let [agent_id (or (:agent_id args)
+                                  (get args "agent_id"))]
+                 {:type "text"
+                  :text (json/write-str
+                         (if-let [messages (get-agent-messages agent_id)]
+                           {:agent_id agent_id :messages messages}
+                           {:error (str "Agent not found: " agent_id)
+                            :available-agents (vec (keys @agent-registry))}))}))}])
 ;; REMOVED: hivemind_listen - polling anti-pattern, use event-driven get-status instead
 
 (defn register-tools!
