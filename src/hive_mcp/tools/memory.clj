@@ -73,7 +73,9 @@
                                        :description "Optional tags for categorization"}
                                "duration" {:type "string"
                                            :enum ["ephemeral" "short" "medium" "long" "permanent"]
-                                           :description "Duration/TTL category (default: long)"}}
+                                           :description "Duration/TTL category (default: long)"}
+                               "directory" {:type "string"
+                                            :description "Working directory to determine project scope (pass your cwd to ensure correct scoping)"}}
                   :required ["type" "content"]}
     :handler handle-mcp-memory-add}
 
@@ -92,7 +94,9 @@
                                            :enum ["ephemeral" "short" "medium" "long" "permanent"]
                                            :description "Filter by duration category"}
                                "scope" {:type "string"
-                                        :description "Scope filter: nil=auto (project+global), 'all'=no filter, 'global'=only global, or specific scope tag"}}
+                                        :description "Scope filter: nil=auto (project+global), 'all'=no filter, 'global'=only global, or specific scope tag"}
+                               "directory" {:type "string"
+                                            :description "Working directory to determine project scope (pass your cwd to ensure correct scoping)"}}
                   :required ["type"]}
     :handler handle-mcp-memory-query}
 
@@ -108,7 +112,9 @@
                                "limit" {:type "integer"
                                         :description "Maximum number of results (default: 20)"}
                                "scope" {:type "string"
-                                        :description "Scope filter: nil=auto (project+global), 'all'=no filter, 'global'=only global, or specific scope tag"}}
+                                        :description "Scope filter: nil=auto (project+global), 'all'=no filter, 'global'=only global, or specific scope tag"}
+                               "directory" {:type "string"
+                                            :description "Working directory to determine project scope (pass your cwd to ensure correct scoping)"}}
                   :required ["type"]}
     :handler handle-mcp-memory-query-metadata}
 

@@ -215,3 +215,32 @@
           (str "Tool " (:name tool) " should have an inputSchema"))
       (is (= "object" (get-in tool [:inputSchema :type]))
           (str "Tool " (:name tool) " inputSchema should be type object")))))
+
+;; ============================================================
+;; Directory Parameter Tests (scope fix)
+;; ============================================================
+
+(deftest memory-crud-tools-have-directory-param-test
+  (testing "mcp_memory_add has directory parameter for correct scoping"
+    (let [add-tool (first (filter #(= (:name %) "mcp_memory_add") memory/tools))
+          props (get-in add-tool [:inputSchema :properties])]
+      (is (contains? props "directory")
+          "mcp_memory_add should have directory property")
+      (is (= "string" (get-in props ["directory" :type]))
+          "directory should be type string")))
+
+  (testing "mcp_memory_query has directory parameter for correct scoping"
+    (let [query-tool (first (filter #(= (:name %) "mcp_memory_query") memory/tools))
+          props (get-in query-tool [:inputSchema :properties])]
+      (is (contains? props "directory")
+          "mcp_memory_query should have directory property")
+      (is (= "string" (get-in props ["directory" :type]))
+          "directory should be type string")))
+
+  (testing "mcp_memory_query_metadata has directory parameter for correct scoping"
+    (let [query-meta-tool (first (filter #(= (:name %) "mcp_memory_query_metadata") memory/tools))
+          props (get-in query-meta-tool [:inputSchema :properties])]
+      (is (contains? props "directory")
+          "mcp_memory_query_metadata should have directory property")
+      (is (= "string" (get-in props ["directory" :type]))
+          "directory should be type string"))))

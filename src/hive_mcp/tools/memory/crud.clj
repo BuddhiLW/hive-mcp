@@ -24,11 +24,14 @@
 
 (defn handle-add
   "Add an entry to project memory (Chroma-only storage).
-   Stores full entry in Chroma with content, metadata, and embedding."
-  [{:keys [type content tags duration]}]
-  (log/info "mcp-memory-add:" type)
+   Stores full entry in Chroma with content, metadata, and embedding.
+
+   When directory is provided, uses that path to determine project scope
+   instead of relying on Emacs's current buffer (fixes /wrap scoping issue)."
+  [{:keys [type content tags duration directory]}]
+  (log/info "mcp-memory-add:" type "directory:" directory)
   (with-chroma
-    (let [project-id (scope/get-current-project-id)
+    (let [project-id (scope/get-current-project-id directory)
           tags-with-scope (scope/inject-project-scope (or tags []) project-id)
           content-hash (chroma/content-hash content)
           duration-str (or duration "long")
@@ -81,11 +84,14 @@
      - nil/omitted: auto-filter by current project + global
      - \"all\": return all entries regardless of scope
      - \"global\": return only scope:global entries
-     - specific scope tag: filter by that scope"
-  [{:keys [type tags limit duration scope]}]
-  (log/info "mcp-memory-query:" type "scope:" scope)
+     - specific scope tag: filter by that scope
+
+   When directory is provided, uses that path to determine project scope
+   instead of relying on Emacs's current buffer (fixes /wrap scoping issue)."
+  [{:keys [type tags limit duration scope directory]}]
+  (log/info "mcp-memory-query:" type "scope:" scope "directory:" directory)
   (with-chroma
-    (let [project-id (scope/get-current-project-id)
+    (let [project-id (scope/get-current-project-id directory)
           limit-val (or limit 20)
           ;; Query from Chroma
           entries (chroma/query-entries :type type
@@ -111,13 +117,16 @@
 (defn handle-query-metadata
   "Query project memory by type, returning only metadata (Chroma-only).
    Returns id, type, preview, tags, created - ~10x fewer tokens than full query.
-   Follow up with mcp_memory_get_full to fetch specific entries."
-  [{:keys [type tags limit scope]}]
-  (log/info "mcp-memory-query-metadata:" type "scope:" scope)
+   Follow up with mcp_memory_get_full to fetch specific entries.
+
+   When directory is provided, uses that path to determine project scope
+   instead of relying on Emacs's current buffer (fixes /wrap scoping issue)."
+  [{:keys [type tags limit scope directory]}]
+  (log/info "mcp-memory-query-metadata:" type "scope:" scope "directory:" directory)
   (with-chroma
-    (let [;; Reuse query logic
+    (let [;; Reuse query logic - pass directory through
           {:keys [text isError]} (handle-query
-                                  {:type type :tags tags :limit limit :scope scope})]
+                                  {:type type :tags tags :limit limit :scope scope :directory directory})]
       (if isError
         {:type "text" :text text :isError true}
         (let [entries (json/read-str text :key-fn keyword)
@@ -143,11 +152,14 @@
 ;; ============================================================
 
 (defn handle-check-duplicate
-  "Check if content already exists in memory (Chroma-only)."
-  [{:keys [type content]}]
-  (log/info "mcp-memory-check-duplicate:" type)
+  "Check if content already exists in memory (Chroma-only).
+
+   When directory is provided, uses that path to determine project scope
+   instead of relying on Emacs's current buffer."
+  [{:keys [type content directory]}]
+  (log/info "mcp-memory-check-duplicate:" type "directory:" directory)
   (with-chroma
-    (let [project-id (scope/get-current-project-id)
+    (let [project-id (scope/get-current-project-id directory)
           hash (chroma/content-hash content)
           existing (chroma/find-duplicate type hash :project-id project-id)]
       {:type "text" :text (json/write-str {:exists (some? existing)
