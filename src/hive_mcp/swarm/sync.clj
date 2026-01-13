@@ -44,10 +44,15 @@
    Event: {:slave-id :name :parent-id :depth}"
   [event]
   (let [slave-id (or (get event "slave-id") (:slave-id event))
-        status :idle]
+        name (or (get event "name") (:name event) slave-id)
+        depth (or (get event "depth") (:depth event) 1)
+        parent-id (or (get event "parent-id") (:parent-id event))]
     (when slave-id
-      (logic/add-slave! slave-id status)
-      (log/debug "Sync: registered slave" slave-id))))
+      (ds/add-slave! slave-id {:status :idle
+                               :name name
+                               :depth depth
+                               :parent parent-id})
+      (log/debug "Sync: registered slave" slave-id "depth:" depth))))
 
 (defn- handle-slave-status
   "Handle slave status change event.
@@ -56,7 +61,7 @@
   (let [slave-id (or (get event "slave-id") (:slave-id event))
         status (keyword (or (get event "status") (:status event)))]
     (when (and slave-id status)
-      (logic/update-slave-status! slave-id status)
+      (ds/update-slave! slave-id {:slave/status status})
       (log/debug "Sync: updated slave status" slave-id "->" status))))
 
 (defn- handle-slave-killed
@@ -65,8 +70,8 @@
   [event]
   (let [slave-id (or (get event "slave-id") (:slave-id event))]
     (when slave-id
-      (logic/release-claims-for-slave! slave-id)
-      (logic/remove-slave! slave-id)
+      ;; ds/remove-slave! handles claim release internally
+      (ds/remove-slave! slave-id)
       (log/debug "Sync: removed slave" slave-id))))
 
 (defn- handle-task-dispatched
@@ -77,11 +82,11 @@
         slave-id (or (get event "slave-id") (:slave-id event))
         files (or (get event "files") (:files event) [])]
     (when (and task-id slave-id)
-      (logic/add-task! task-id slave-id :dispatched)
-      ;; Register file claims
+      ;; Add task with files stored in :task/files
+      (ds/add-task! task-id slave-id {:status :dispatched :files files})
+      ;; Register file claims linked to task
       (doseq [f files]
-        (logic/add-claim! f slave-id)
-        (logic/add-task-file! task-id f))
+        (ds/claim-file! f slave-id task-id))
       (log/debug "Sync: registered task" task-id "with" (count files) "files"))))
 
 (defn- handle-task-completed
@@ -90,8 +95,8 @@
   [event]
   (let [task-id (or (get event "task-id") (:task-id event))]
     (when task-id
-      (logic/update-task-status! task-id :completed)
-      (logic/release-claims-for-task! task-id)
+      ;; ds/complete-task! handles status update, claim release, and slave stats
+      (ds/complete-task! task-id)
       ;; Process queue - some waiting tasks might be ready now
       (let [ready (coord/process-queue!)]
         (when (seq ready)
@@ -104,8 +109,8 @@
   [event]
   (let [task-id (or (get event "task-id") (:task-id event))]
     (when task-id
-      (logic/update-task-status! task-id :error)
-      (logic/release-claims-for-task! task-id)
+      ;; ds/fail-task! handles status update and claim release
+      (ds/fail-task! task-id :error)
       ;; Process queue - claims released
       (coord/process-queue!)
       (log/debug "Sync: task failed" task-id))))
@@ -158,10 +163,10 @@
 
 (defn full-sync-from-emacs!
   "One-time full sync from Emacs swarm state.
-   Call this on startup to bootstrap the logic database."
+   Call this on startup to bootstrap the DataScript database."
   []
   (log/info "Starting full sync from Emacs...")
-  (logic/reset-db!)
+  (ds/reset-conn!)
 
   ;; Get current swarm status from Emacs
   (let [elisp "(json-encode (hive-mcp-swarm-api-status))"
@@ -173,8 +178,12 @@
           (when-let [slaves (:slaves-detail status)]
             (doseq [slave slaves]
               (let [slave-id (:slave-id slave)
-                    slave-status (keyword (:status slave))]
-                (logic/add-slave! slave-id slave-status)
+                    slave-status (keyword (:status slave))
+                    name (or (:name slave) slave-id)
+                    depth (or (:depth slave) 1)]
+                (ds/add-slave! slave-id {:status slave-status
+                                         :name name
+                                         :depth depth})
                 (log/debug "Sync: bootstrapped slave" slave-id slave-status))))
 
           ;; Note: Task claims would need to be tracked by Emacs side
@@ -233,7 +242,7 @@
   []
   {:running (:running @sync-state)
    :subscription-count (count (:subscriptions @sync-state))
-   :db-stats (logic/db-stats)})
+   :db-stats (ds/db-stats)})
 
 (comment
   ;; Development REPL examples
@@ -245,11 +254,11 @@
   (sync-status)
 
   ;; Manual test: simulate events
-  (handle-slave-spawned {:slave-id "test-slave-1"})
+  (handle-slave-spawned {:slave-id "test-slave-1" :name "test" :depth 1})
   (handle-task-dispatched {:task-id "task-1"
                            :slave-id "test-slave-1"
                            :files ["/src/core.clj"]})
-  (logic/dump-db)
+  (ds/dump-db)
 
   ;; Stop sync
   (stop-sync!))
