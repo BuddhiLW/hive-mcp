@@ -1,18 +1,24 @@
 (ns hive-mcp.swarm.sync
-  "Synchronize logic database with Emacs swarm state.
+  "Synchronize DataScript database with Emacs swarm state.
 
    Uses channel.clj event bus to receive state updates from Emacs
-   and keep the logic database in sync for accurate conflict detection.
+   and keep the DataScript database in sync for accurate conflict detection.
 
    Events handled:
-   - :slave-spawned    - Register new slave in logic db
+   - :slave-spawned    - Register new slave in DataScript
    - :slave-status     - Update slave status
    - :slave-killed     - Remove slave and release claims
    - :task-dispatched  - Register task and file claims
    - :task-completed   - Mark task complete, release claims, process queue
    - :task-failed      - Mark task failed, release claims, process queue
-   - :prompt-shown     - Forward permission prompts to hivemind coordinator"
-  (:require [hive-mcp.swarm.logic :as logic]
+   - :prompt-shown     - Forward permission prompts to hivemind coordinator
+
+   Migration Note (ADR-001):
+   - Phase 1: Uses DataScript for swarm state (replacing core.logic pldb)
+   - Phase 2: Elisp queries DataScript via MCP (future)
+   - Phase 3: Single source of truth achieved (future)"
+  (:require [hive-mcp.swarm.datascript :as ds]
+            [hive-mcp.swarm.logic :as logic] ;; Keep for coordinator compatibility
             [hive-mcp.swarm.coordinator :as coord]
             [hive-mcp.channel :as channel]
             [hive-mcp.emacsclient :as ec]
