@@ -1,688 +1,164 @@
 (ns hive-mcp.tools.swarm
   "Swarm management and JVM resource cleanup tools.
 
-   Handles Claude swarm slave spawning, dispatch, and lifecycle management.
-   Also provides JVM process cleanup for garbage collecting orphaned processes.
+   Facade module delegating to focused submodules:
+   - swarm.core      - Shared utilities, addon check
+   - swarm.registry  - Lings registry, event-driven sync
+   - swarm.state     - Hivemind state integration
+   - swarm.lifecycle - Spawn, kill handlers
+   - swarm.dispatch  - Dispatch handler with coordinator
+   - swarm.collect   - Collect handler with push/poll
+   - swarm.status    - Status, lings-available, broadcast, presets
+   - swarm.prompt    - Pending prompts, respond handlers
+   - swarm.channel   - Channel event management
+   - swarm.jvm       - JVM process cleanup
 
-   Push-based updates:
-   When hive-mcp.channel is available, subscribes to swarm events for
-   sub-100ms task completion detection. Falls back to polling if channel
-   not connected."
-  (:require [hive-mcp.tools.swarm.jvm :as jvm]
+   SOLID: Facade pattern - thin delegation to focused modules.
+   CLARITY: L - Layers stay pure (facade separate from implementation)."
+  (:require [hive-mcp.tools.swarm.core :as core]
+            [hive-mcp.tools.swarm.registry :as registry]
+            [hive-mcp.tools.swarm.state :as state]
+            [hive-mcp.tools.swarm.lifecycle :as lifecycle]
+            [hive-mcp.tools.swarm.dispatch :as dispatch]
+            [hive-mcp.tools.swarm.collect :as collect]
+            [hive-mcp.tools.swarm.status :as status]
+            [hive-mcp.tools.swarm.prompt :as prompt]
             [hive-mcp.tools.swarm.channel :as channel]
-            [hive-mcp.channel :as ch]
-            [hive-mcp.emacsclient :as ec]
-            [hive-mcp.validation :as v]
+            [hive-mcp.tools.swarm.jvm :as jvm]
             [hive-mcp.swarm.coordinator :as coord]
-            [hive-mcp.hivemind :as hivemind]
-            [clojure.data.json :as json]
-            [clojure.string :as str]
-            [clojure.core.async :as async :refer [go-loop <!]]
-            [taoensso.timbre :as log]))
+            [clojure.data.json :as json]))
 
 ;; ============================================================
-;; Lings Registry - Track spawned lings for easy lookup
+;; Backward Compatibility: Re-export Registry API
 ;; ============================================================
+;; Tests access these directly from hive-mcp.tools.swarm
 
-(defonce lings-registry
-  ;; Atom tracking spawned lings: {slave-id {:name, :presets, :cwd, :spawned-at}}
-  (atom {}))
+(def lings-registry
+  "Atom tracking spawned lings. Re-exported from registry module."
+  registry/lings-registry)
 
-(defn register-ling!
-  "Register a spawned ling in the registry."
-  [slave-id {:keys [name presets cwd]}]
-  (swap! lings-registry assoc slave-id
-         {:name name
-          :presets presets
-          :cwd cwd
-          :spawned-at (System/currentTimeMillis)}))
+(def register-ling!
+  "Register a spawned ling. Re-exported from registry module."
+  registry/register-ling!)
 
-(defn unregister-ling!
-  "Remove a ling from the registry."
-  [slave-id]
-  (swap! lings-registry dissoc slave-id))
+(def unregister-ling!
+  "Unregister a ling. Re-exported from registry module."
+  registry/unregister-ling!)
 
-(defn get-available-lings
-  "Get all registered lings."
-  []
-  @lings-registry)
+(def get-available-lings
+  "Get all registered lings. Re-exported from registry module."
+  registry/get-available-lings)
 
-;; ============================================================
-;; ADR-001 Phase 2: Event-Driven Registry Sync
-;; ============================================================
-;; Subscribes to channel events from elisp to keep lings-registry in sync.
-;; Events: slave-spawned, slave-killed (from hive-mcp-swarm-events.el)
-;; This replaces manual registration in handle-swarm-spawn.
+(def start-registry-sync!
+  "Start event-driven registry sync. Re-exported from registry module."
+  registry/start-registry-sync!)
 
-(defonce ^:private registry-sync-state
-  (atom {:running false
-         :subscriptions []}))
-
-(defn- handle-ling-registered
-  "Handle slave-spawned event from elisp (registry sync).
-   Event: {:slave-id :name :presets :cwd}
-   Registers the ling in lings-registry."
-  [event]
-  (let [slave-id (or (get event "slave-id") (:slave-id event))
-        name (or (get event "name") (:name event))
-        presets (or (get event "presets") (:presets event) [])
-        cwd (or (get event "cwd") (:cwd event))]
-    (when slave-id
-      (log/info "Registry sync: registering ling" slave-id "via event")
-      (register-ling! slave-id {:name name :presets presets :cwd cwd}))))
-
-(defn- handle-ling-unregistered
-  "Handle slave-killed event from elisp (registry sync).
-   Event: {:slave-id}
-   Unregisters the ling from lings-registry."
-  [event]
-  (let [slave-id (or (get event "slave-id") (:slave-id event))]
-    (when slave-id
-      (log/info "Registry sync: unregistering ling" slave-id "via event")
-      (unregister-ling! slave-id))))
-
-(defn- subscribe-to-registry-event!
-  "Subscribe to a registry sync event type with handler.
-   Returns the subscription channel."
-  [event-type handler]
-  (let [sub-ch (ch/subscribe! event-type)]
-    (go-loop []
-      (when-let [event (<! sub-ch)]
-        (try
-          (handler event)
-          (catch Exception e
-            (log/error "Registry sync handler error for" event-type ":" (.getMessage e))))
-        (recur)))
-    sub-ch))
-
-(defn start-registry-sync!
-  "Start event-driven synchronization of lings-registry.
-   Subscribes to slave-spawned and slave-killed events
-   from elisp channel to keep Clojure registry in sync.
-
-   CLARITY: Yield safe failure - handles channel not available gracefully."
-  []
-  (if (:running @registry-sync-state)
-    (do
-      (log/warn "Registry sync already running")
-      @registry-sync-state)
-    (try
-      (let [subs [(subscribe-to-registry-event! :slave-spawned handle-ling-registered)
-                  (subscribe-to-registry-event! :slave-killed handle-ling-unregistered)]]
-        (reset! registry-sync-state
-                {:running true
-                 :subscriptions subs})
-        (log/info "Registry sync started - 2 event subscriptions active")
-        @registry-sync-state)
-      (catch Exception e
-        (log/warn "Registry sync failed to start (channel may not be available):" (.getMessage e))
-        @registry-sync-state))))
-
-(defn stop-registry-sync!
-  "Stop event-driven registry synchronization."
-  []
-  (when (:running @registry-sync-state)
-    (doseq [sub (:subscriptions @registry-sync-state)]
-      (async/close! sub))
-    (reset! registry-sync-state {:running false :subscriptions []})
-    (log/info "Registry sync stopped")))
+(def stop-registry-sync!
+  "Stop registry sync. Re-exported from registry module."
+  registry/stop-registry-sync!)
 
 ;; ============================================================
-;; State Sync: Query slave working status from hivemind events
+;; Backward Compatibility: Re-export State API
 ;; ============================================================
 
-(defn get-slave-working-status
-  "Get the working status of a slave based on hivemind events.
+(def get-slave-working-status
+  "Get slave working status from hivemind. Re-exported from state module."
+  state/get-slave-working-status)
 
-   Maps hivemind event types to swarm working status:
-   - :started, :progress -> \"working\"
-   - :completed, :error -> \"idle\"
-   - :blocked -> \"blocked\"
-   - nil (not registered) -> nil
-
-   agent-id: The slave/agent ID to query"
-  [agent-id]
-  (when-let [agent (get @hivemind/agent-registry agent-id)]
-    (let [status (:status agent)]
-      (case status
-        (:started :progress) "working"
-        :completed "idle"
-        :error "idle"
-        :blocked "blocked"
-        ;; Default to idle for unknown states
-        "idle"))))
-
-(defn get-unified-swarm-status
-  "Get unified swarm status merging hivemind state with lings registry.
-
-   Returns a map of slave-id -> {:name, :presets, :cwd, :working-status, ...}
-   The :working-status field reflects the current state from hivemind events."
-  []
-  (let [lings @lings-registry]
-    (into {}
-          (map (fn [[slave-id info]]
-                 (let [working-status (get-slave-working-status slave-id)]
-                   [slave-id (assoc info :working-status (or working-status "idle"))]))
-               lings))))
+(def get-unified-swarm-status
+  "Get unified swarm status. Re-exported from state module."
+  state/get-unified-swarm-status)
 
 ;; ============================================================
-;; Swarm Management Tools
+;; Backward Compatibility: Re-export Channel API
 ;; ============================================================
 
-;; ============================================================
-;; Channel Delegation (see hive-mcp.tools.swarm.channel)
-;; ============================================================
+(def start-channel-subscriptions!
+  "Start channel subscriptions. Re-exported from channel module."
+  channel/start-channel-subscriptions!)
 
-(defn start-channel-subscriptions!
-  "Start listening for swarm events via channel.
-   Delegates to hive-mcp.tools.swarm.channel."
-  []
-  (channel/start-channel-subscriptions!))
+(def stop-channel-subscriptions!
+  "Stop channel subscriptions. Re-exported from channel module."
+  channel/stop-channel-subscriptions!)
 
-(defn stop-channel-subscriptions!
-  "Stop all channel subscriptions.
-   Delegates to hive-mcp.tools.swarm.channel."
-  []
-  (channel/stop-channel-subscriptions!))
+(def check-event-journal
+  "Check event journal for task. Re-exported from channel module."
+  channel/check-event-journal)
 
-(defn check-event-journal
-  "Check event journal for task completion.
-   Delegates to hive-mcp.tools.swarm.channel."
-  [task-id]
-  (channel/check-event-journal task-id))
-
-(defn clear-event-journal!
-  "Clear all entries from the event journal.
-   Delegates to hive-mcp.tools.swarm.channel."
-  []
-  (channel/clear-event-journal!))
+(def clear-event-journal!
+  "Clear event journal. Re-exported from channel module."
+  channel/clear-event-journal!)
 
 ;; ============================================================
-;; Swarm Addon Check
+;; Backward Compatibility: Re-export Core API
 ;; ============================================================
 
-(defn swarm-addon-available?
-  "Check if hive-mcp-swarm addon is loaded.
-   Uses short timeout (2s) to fail fast if Emacs is unresponsive."
-  []
-  (let [{:keys [success result timed-out]} (ec/eval-elisp-with-timeout "(featurep 'hive-mcp-swarm)" 2000)]
-    (and success (not timed-out) (= result "t"))))
-
-(defn handle-swarm-spawn
-  "Spawn a new Claude slave instance.
-   Uses timeout to prevent MCP blocking.
-
-   ADR-001 Phase 2: Registration now handled by event-driven sync.
-   The slave-spawned event from elisp triggers register-ling! via
-   channel subscription (see start-registry-sync!)."
-  [{:keys [name presets cwd role terminal]}]
-  (if (swarm-addon-available?)
-    (let [presets-str (when (seq presets)
-                        (format "'(%s)" (clojure.string/join " " (map #(format "\"%s\"" %) presets))))
-          elisp (format "(json-encode (hive-mcp-swarm-api-spawn \"%s\" %s %s %s))"
-                        (v/escape-elisp-string (or name "slave"))
-                        (or presets-str "nil")
-                        (if cwd (format "\"%s\"" (v/escape-elisp-string cwd)) "nil")
-                        (if terminal (format "\"%s\"" terminal) "nil"))
-          ;; Use 10s timeout for spawn as it may take longer
-          {:keys [success result error timed-out]} (ec/eval-elisp-with-timeout elisp 10000)]
-      (cond
-        timed-out
-        {:type "text"
-         :text (json/write-str {:error "Spawn operation timed out"
-                                :status "timeout"
-                                :slave_name name})
-         :isError true}
-
-        success
-        ;; ADR-001 Phase 2: No manual registration here.
-        ;; Registration is handled by event-driven sync when elisp emits
-        ;; slave-spawned event via channel (see start-registry-sync!).
-        {:type "text" :text result}
-
-        :else
-        {:type "text" :text (str "Error: " error) :isError true}))
-    {:type "text" :text "hive-mcp-swarm addon not loaded. Run (require 'hive-mcp-swarm)" :isError true}))
-
-(defn handle-swarm-dispatch
-  "Dispatch a prompt to a slave.
-   Runs pre-flight conflict checks before dispatch.
-   Uses timeout to prevent MCP blocking.
-
-   Parameters:
-   - slave_id: Target slave for dispatch
-   - prompt: The prompt/task to send
-   - timeout_ms: Optional timeout in milliseconds
-   - files: Optional explicit list of files task will modify"
-  [{:keys [slave_id prompt timeout_ms files]}]
-  (if (swarm-addon-available?)
-    ;; Pre-flight check: detect conflicts before dispatch
-    (let [preflight (coord/dispatch-or-queue!
-                     {:slave-id slave_id
-                      :prompt prompt
-                      :files files
-                      :timeout-ms timeout_ms})]
-      (case (:action preflight)
-        ;; Blocked due to circular dependency - cannot proceed
-        :blocked
-        {:type "text"
-         :text (json/write-str {:error "Dispatch blocked: circular dependency detected"
-                                :status "blocked"
-                                :would_deadlock (:would-deadlock preflight)
-                                :slave_id slave_id})
-         :isError true}
-
-        ;; Queued due to file conflicts - will dispatch when conflicts clear
-        :queued
-        {:type "text"
-         :text (json/write-str {:status "queued"
-                                :task_id (:task-id preflight)
-                                :queue_position (:position preflight)
-                                :conflicts (:conflicts preflight)
-                                :slave_id slave_id
-                                :message "Task queued - waiting for file conflicts to clear"})}
-
-        ;; Approved - proceed with dispatch
-        :dispatch
-        (let [effective-files (:files preflight)
-              elisp (format "(json-encode (hive-mcp-swarm-api-dispatch \"%s\" \"%s\" %s))"
-                            (v/escape-elisp-string slave_id)
-                            (v/escape-elisp-string prompt)
-                            (or timeout_ms "nil"))
-              ;; Dispatch should be quick - 5s default timeout
-              {:keys [success result error timed-out]} (ec/eval-elisp-with-timeout elisp 5000)]
-          (cond
-            timed-out
-            {:type "text"
-             :text (json/write-str {:error "Dispatch operation timed out"
-                                    :status "timeout"
-                                    :slave_id slave_id})
-             :isError true}
-
-            success
-            (do
-              ;; Register file claims for successful dispatch
-              (when-let [task-id (try
-                                   (:task-id (json/read-str result :key-fn keyword))
-                                   (catch Exception _ nil))]
-                (when (seq effective-files)
-                  (coord/register-task-claims! task-id slave_id effective-files)))
-              {:type "text" :text result})
-
-            :else
-            {:type "text" :text (str "Error: " error) :isError true}))
-
-        ;; Fallback
-        {:type "text"
-         :text (json/write-str {:error "Unknown pre-flight result"
-                                :preflight preflight})
-         :isError true}))
-    {:type "text" :text "hive-mcp-swarm addon not loaded." :isError true}))
-
-;; TODO: SMELLY CODE - Needs SOLID/DDD/CLARITY refactoring
-;; Issues:
-;; - Violates SRP: parsing, merging, error handling mixed together
-;; - Violates DIP: directly calls elisp instead of using abstraction
-;; - Dual state: elisp hash table + Clojure hivemind registry (should be single source)
-;; - Consider: pure merge function, separate elisp adapter, unified state store
-(defn handle-swarm-status
-  "Get swarm status including all slaves and their states.
-   Uses timeout to prevent MCP blocking."
-  [{:keys [slave_id]}]
-  (if (swarm-addon-available?)
-    (let [elisp (if slave_id
-                  (format "(json-encode (hive-mcp-swarm-status \"%s\"))" slave_id)
-                  "(json-encode (hive-mcp-swarm-api-status))")
-          {:keys [success result error timed-out]} (ec/eval-elisp-with-timeout elisp 5000)]
-      (cond
-        timed-out
-        {:type "text"
-         :text (json/write-str {:error "Status check timed out"
-                                :status "timeout"})
-         :isError true}
-
-        success
-        (try
-          (let [parsed (json/read-str result :key-fn keyword)
-                slaves-detail (:slaves-detail parsed)
-                ;; Merge hivemind state into each slave's status
-                merged-slaves (when (seq slaves-detail)
-                                (mapv (fn [slave]
-                                        (if-let [slave-id (:slave-id slave)]
-                                          (if-let [hivemind-status (get-slave-working-status slave-id)]
-                                            (assoc slave :status (keyword hivemind-status))
-                                            slave)
-                                          slave))
-                                      slaves-detail))
-                merged-parsed (if merged-slaves
-                                (assoc parsed :slaves-detail merged-slaves)
-                                parsed)]
-            {:type "text" :text (json/write-str merged-parsed)})
-          (catch Exception e
-            (log/warn "Failed to merge hivemind status:" (.getMessage e))
-            {:type "text" :text result}))
-
-        :else
-        {:type "text" :text (str "Error: " error) :isError true}))
-    {:type "text" :text "hive-mcp-swarm addon not loaded." :isError true}))
-
-(defn handle-swarm-collect
-  "Collect response from a task with push-first, poll-fallback strategy.
-
-   PHASE 2 OPTIMIZATION: Check event journal first for sub-100ms detection.
-   If event not in journal, falls back to elisp polling with exponential backoff.
-
-   Note: emacsclient returns a quoted string which unwrap-emacs-string handles.
-   We only need ONE json/read-str to parse the actual JSON from elisp."
-  [{:keys [task_id timeout_ms]}]
-  (if (swarm-addon-available?)
-    (let [timeout (or timeout_ms 300000) ; default 5 minutes
-          start-time (System/currentTimeMillis)
-          poll-interval-ms (atom 500) ; start at 500ms
-          max-poll-interval 5000 ; max 5 seconds between polls
-          elisp-timeout 10000] ; 10s timeout per elisp call
-
-      ;; PHASE 2: Check event journal first (push-based, sub-100ms)
-      (if-let [journal-event (check-event-journal task_id)]
-        ;; Event found in journal - return immediately!
-        (let [{:keys [status result error slave-id timestamp]} journal-event]
-          (log/info "Task" task_id "found in event journal (push-based)")
-          {:type "text"
-           :text (json/write-str {:task_id task_id
-                                  :status status
-                                  :result result
-                                  :error error
-                                  :slave_id slave-id
-                                  :via "channel-push"
-                                  :elapsed_ms (- (System/currentTimeMillis) start-time)})})
-
-        ;; Not in journal - fall back to polling
-        (loop []
-          (let [elapsed (- (System/currentTimeMillis) start-time)
-                ;; Check journal again (event might have arrived during poll wait)
-                journal-check (check-event-journal task_id)]
-            (if journal-check
-              ;; Found in journal during poll loop
-              (let [{:keys [status result error slave-id]} journal-check]
-                {:type "text"
-                 :text (json/write-str {:task_id task_id
-                                        :status status
-                                        :result result
-                                        :error error
-                                        :slave_id slave-id
-                                        :via "channel-push-delayed"
-                                        :elapsed_ms elapsed})})
-
-              ;; Still not in journal - poll elisp
-              (let [elisp (format "(json-encode (hive-mcp-swarm-api-collect \"%s\" %s))"
-                                  (v/escape-elisp-string task_id)
-                                  (or timeout_ms "nil"))
-                    {:keys [success result error timed-out]} (ec/eval-elisp-with-timeout elisp elisp-timeout)]
-                (cond
-                  ;; Elisp call timed out
-                  timed-out
-                  {:type "text"
-                   :text (json/write-str {:task_id task_id
-                                          :status "error"
-                                          :error "Elisp evaluation timed out"
-                                          :elapsed_ms elapsed})
-                   :isError true}
-
-                  ;; Elisp call failed
-                  (not success)
-                  {:type "text" :text (str "Error: " error) :isError true}
-
-                  ;; Parse the result - SINGLE parse since unwrap-emacs-string
-                  ;; already handles the emacsclient quote layer
-                  :else
-                  (let [;; Single parse: result is already the JSON string
-                        parsed (try (json/read-str result :key-fn keyword)
-                                    (catch Exception e
-                                      (log/warn "Failed to parse collect result:" result
-                                                "Error:" (.getMessage e))
-                                      nil))
-                        status (:status parsed)]
-                    (cond
-                      ;; Parse failed - log and return error
-                      (nil? parsed)
-                      {:type "text"
-                       :text (json/write-str {:task_id task_id
-                                              :status "error"
-                                              :error "Failed to parse elisp response"
-                                              :raw_result result
-                                              :elapsed_ms elapsed})
-                       :isError true}
-
-                      ;; Task complete or failed - return result
-                      (contains? #{"completed" "timeout" "error"} status)
-                      {:type "text" :text (json/write-str parsed)}
-
-                      ;; Still polling and within timeout - wait and retry
-                      (and (= status "polling") (< elapsed timeout))
-                      (do
-                        (Thread/sleep @poll-interval-ms)
-                        ;; Exponential backoff
-                        (swap! poll-interval-ms #(min max-poll-interval (* % 2)))
-                        (recur))
-
-                      ;; Exceeded our timeout or unknown status
-                      :else
-                      {:type "text"
-                       :text (json/write-str {:task_id task_id
-                                              :status "timeout"
-                                              :error (format "Collection timed out after %dms (status was: %s)" elapsed status)
-                                              :elapsed_ms elapsed})})))))))))
-    {:type "text" :text "hive-mcp-swarm addon not loaded." :isError true}))
-
-(defn handle-swarm-list-presets
-  "List available swarm presets.
-   Uses timeout to prevent MCP blocking."
-  [_]
-  (if (swarm-addon-available?)
-    (let [{:keys [success result error timed-out]} (ec/eval-elisp-with-timeout "(json-encode (hive-mcp-swarm-api-list-presets))" 5000)]
-      (cond
-        timed-out
-        {:type "text"
-         :text (json/write-str {:error "List presets timed out"
-                                :status "timeout"})
-         :isError true}
-
-        success
-        {:type "text" :text result}
-
-        :else
-        {:type "text" :text (str "Error: " error) :isError true}))
-    {:type "text" :text "hive-mcp-swarm addon not loaded." :isError true}))
-
-(defn handle-swarm-kill
-  "Kill a slave or all slaves.
-   Uses short timeout (3s) as kill should be fast.
-   Removes killed lings from registry."
-  [{:keys [slave_id]}]
-  (if (swarm-addon-available?)
-    (let [elisp (if (= slave_id "all")
-                  "(json-encode (hive-mcp-swarm-api-kill-all))"
-                  (format "(json-encode (hive-mcp-swarm-api-kill \"%s\"))"
-                          (v/escape-elisp-string slave_id)))
-          {:keys [success result error timed-out]} (ec/eval-elisp-with-timeout elisp 3000)]
-      (cond
-        timed-out
-        {:type "text"
-         :text (json/write-str {:error "Kill operation timed out"
-                                :status "timeout"
-                                :slave_id slave_id})
-         :isError true}
-
-        success
-        (do
-          ;; Unregister from lings registry
-          (if (= slave_id "all")
-            (reset! lings-registry {})
-            (unregister-ling! slave_id))
-          {:type "text" :text result})
-
-        :else
-        {:type "text" :text (str "Error: " error) :isError true}))
-    {:type "text" :text "hive-mcp-swarm addon not loaded." :isError true}))
+(def swarm-addon-available?
+  "Check if swarm addon is available. Re-exported from core module."
+  core/swarm-addon-available?)
 
 ;; ============================================================
-;; Elisp Fallback Query for Lings (ADR-001 Phase 1 Fix)
+;; Backward Compatibility: Re-export Status Helpers
 ;; ============================================================
 
-(defn query-elisp-lings
-  "Query elisp for list of lings when Clojure registry is empty.
-   Returns parsed lings data or nil on failure.
+(def query-elisp-lings
+  "Query elisp for lings. Re-exported from status module."
+  status/query-elisp-lings)
 
-   This function exists because:
-   - Lings spawned directly via elisp won't be in Clojure registry
-   - Registration at spawn time may fail (JSON parse error)
-   - Provides fallback to ensure lings are always discoverable
-
-   Complexity target: <10 (CLARITY/SCC)"
-  []
-  (when (swarm-addon-available?)
-    (let [{:keys [success result timed-out]}
-          (ec/eval-elisp-with-timeout
-           "(json-encode (hive-mcp-swarm-list-lings))" 3000)]
-      (when (and success (not timed-out))
-        (try
-          (let [parsed (json/read-str result :key-fn keyword)]
-            (when (sequential? parsed)
-              parsed))
-          (catch Exception e
-            (log/debug "Failed to parse elisp lings:" (ex-message e))
-            nil))))))
-
-(defn format-lings-for-response
-  "Format lings data for MCP response.
-   Accepts either registry map or elisp vector format.
-
-   Complexity target: <10 (CLARITY/SCC)"
-  [lings-data]
-  (cond
-    ;; Registry format: {slave-id {:name, :presets, :cwd, :spawned-at}}
-    (map? lings-data)
-    (into {}
-          (map (fn [[id info]]
-                 [id (assoc info
-                            :age-minutes (quot (- (System/currentTimeMillis)
-                                                  (or (:spawned-at info) 0))
-                                               60000))])
-               lings-data))
-
-    ;; Elisp format: [{:slave-id, :name, :presets, :cwd, :status}]
-    (sequential? lings-data)
-    (into {}
-          (map (fn [ling]
-                 [(or (:slave-id ling) (:slave_id ling))
-                  {:name (:name ling)
-                   :presets (:presets ling)
-                   :cwd (:cwd ling)
-                   :status (:status ling)
-                   :age-minutes nil}])  ;; Unknown age for elisp-sourced
-               lings-data))
-
-    :else {}))
-
-(defn handle-lings-available
-  "List all available lings (spawned slaves) with their metadata.
-
-   Strategy (ADR-001 Phase 1):
-   1. First check Clojure registry (fast path)
-   2. If empty, fallback to elisp query (catches direct elisp spawns)
-   3. Return merged/formatted response
-
-   Complexity target: <15 (CLARITY/SCC)"
-  [_]
-  (let [registry-lings (get-available-lings)
-        ;; ADR-001: Fallback to elisp when registry empty
-        lings-data (if (empty? registry-lings)
-                     (or (query-elisp-lings) {})
-                     registry-lings)
-        formatted (format-lings-for-response lings-data)
-        source (if (empty? registry-lings)
-                 (if (seq lings-data) "elisp-fallback" "empty")
-                 "registry")]
-    {:type "text"
-     :text (json/write-str {:count (count formatted)
-                            :lings formatted
-                            :source source})}))
-
-(defn handle-swarm-broadcast
-  "Broadcast a prompt to all slaves.
-   Uses timeout to prevent MCP blocking."
-  [{:keys [prompt]}]
-  (if (swarm-addon-available?)
-    (let [elisp (format "(json-encode (hive-mcp-swarm-broadcast \"%s\"))"
-                        (v/escape-elisp-string prompt))
-          {:keys [success result error timed-out]} (ec/eval-elisp-with-timeout elisp 5000)]
-      (cond
-        timed-out
-        {:type "text"
-         :text (json/write-str {:error "Broadcast operation timed out"
-                                :status "timeout"})
-         :isError true}
-
-        success
-        {:type "text" :text result}
-
-        :else
-        {:type "text" :text (str "Error: " error) :isError true}))
-    {:type "text" :text "hive-mcp-swarm addon not loaded." :isError true}))
-
-(defn handle-swarm-pending-prompts
-  "Get list of pending prompts awaiting human decision.
-   Only relevant when prompt-mode is 'human'."
-  [_]
-  (if (swarm-addon-available?)
-    (let [{:keys [success result error timed-out]}
-          (ec/eval-elisp-with-timeout
-           "(json-encode (hive-mcp-swarm-api-pending-prompts))" 5000)]
-      (cond
-        timed-out
-        {:type "text"
-         :text (json/write-str {:error "Pending prompts check timed out"
-                                :status "timeout"})
-         :isError true}
-
-        success
-        {:type "text" :text result}
-
-        :else
-        {:type "text" :text (str "Error: " error) :isError true}))
-    {:type "text" :text "hive-mcp-swarm addon not loaded." :isError true}))
-
-(defn handle-swarm-respond-prompt
-  "Send a response to a pending prompt from a specific slave.
-   Use this to answer permission prompts when prompt-mode is 'human'."
-  [{:keys [slave_id response]}]
-  (if (swarm-addon-available?)
-    (let [elisp (format "(json-encode (hive-mcp-swarm-api-respond-prompt \"%s\" \"%s\"))"
-                        (v/escape-elisp-string slave_id)
-                        (v/escape-elisp-string response))
-          {:keys [success result error timed-out]}
-          (ec/eval-elisp-with-timeout elisp 5000)]
-      (cond
-        timed-out
-        {:type "text"
-         :text (json/write-str {:error "Respond prompt timed out"
-                                :status "timeout"
-                                :slave_id slave_id})
-         :isError true}
-
-        success
-        {:type "text" :text result}
-
-        :else
-        {:type "text" :text (str "Error: " error) :isError true}))
-    {:type "text" :text "hive-mcp-swarm addon not loaded." :isError true}))
+(def format-lings-for-response
+  "Format lings for response. Re-exported from status module."
+  status/format-lings-for-response)
 
 ;; ============================================================
-;; JVM Process Cleanup (for swarm garbage collection)
+;; Handler Delegation
+;; ============================================================
+
+(def handle-swarm-spawn
+  "Spawn a new slave. Delegated to lifecycle module."
+  lifecycle/handle-swarm-spawn)
+
+(def handle-swarm-kill
+  "Kill a slave. Delegated to lifecycle module."
+  lifecycle/handle-swarm-kill)
+
+(def handle-swarm-dispatch
+  "Dispatch to a slave. Delegated to dispatch module."
+  dispatch/handle-swarm-dispatch)
+
+(def handle-swarm-collect
+  "Collect task result. Delegated to collect module."
+  collect/handle-swarm-collect)
+
+(def handle-swarm-status
+  "Get swarm status. Delegated to status module."
+  status/handle-swarm-status)
+
+(def handle-lings-available
+  "List available lings. Delegated to status module."
+  status/handle-lings-available)
+
+(def handle-swarm-broadcast
+  "Broadcast to all slaves. Delegated to status module."
+  status/handle-swarm-broadcast)
+
+(def handle-swarm-list-presets
+  "List presets. Delegated to status module."
+  status/handle-swarm-list-presets)
+
+(def handle-swarm-pending-prompts
+  "Get pending prompts. Delegated to prompt module."
+  prompt/handle-swarm-pending-prompts)
+
+(def handle-swarm-respond-prompt
+  "Respond to prompt. Delegated to prompt module."
+  prompt/handle-swarm-respond-prompt)
+
+;; ============================================================
+;; JVM Process Cleanup (delegated to jvm module)
 ;; ============================================================
 
 (def parse-jvm-process-line
-  "Parse a ps output line into a process map. Delegated to jvm module."
+  "Parse a ps output line. Delegated to jvm module."
   jvm/parse-jvm-process-line)
 
 (def parse-etime-to-minutes
@@ -702,27 +178,23 @@
   jvm/enrich-with-parent-info)
 
 (def get-process-swarm-info
-  "Get swarm environment variables for a process. Delegated to jvm module."
+  "Get swarm env vars for process. Delegated to jvm module."
   jvm/get-process-swarm-info)
 
 (def classify-jvm-process
-  "Classify a JVM process by type and swarm status. Delegated to jvm module."
+  "Classify JVM process. Delegated to jvm module."
   jvm/classify-jvm-process)
 
 (def handle-jvm-cleanup
-  "Find and optionally kill orphaned JVM processes. Delegated to jvm module."
+  "Handle JVM cleanup. Delegated to jvm module."
   jvm/handle-jvm-cleanup)
-
-;; ============================================================
-;; Resource Guard (Memory-based spawn protection)
-;; ============================================================
 
 (def get-memory-usage
   "Get current RAM usage. Delegated to jvm module."
   jvm/get-memory-usage)
 
 (def handle-resource-guard
-  "Check system resources and cleanup if needed. Delegated to jvm module."
+  "Handle resource guard. Delegated to jvm module."
   jvm/handle-resource-guard)
 
 ;; ============================================================
@@ -730,6 +202,9 @@
 ;; ============================================================
 
 (def tools
+  "MCP tool definitions for swarm management.
+
+   SOLID: ISP - Separate tool schemas for each operation."
   [{:name "swarm_spawn"
     :description "Spawn a new Claude slave instance for parallel task execution. Slaves run in vterm buffers with optional presets (system prompts)."
     :inputSchema {:type "object"
