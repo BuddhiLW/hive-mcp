@@ -8,8 +8,9 @@
    - :log            - Log a message
    - :ds-transact    - Execute DataScript transaction
    - :wrap-notify    - Record ling wrap for coordinator permeation
-   - :channel-publish - Emit event to WebSocket channel (EVENTS-04)
-   - :memory-write   - Add entry to Chroma memory (EVENTS-04)
+   - :channel-publish - Emit event to WebSocket channel (POC-05)
+   - :memory-write   - Add entry to Chroma memory (POC-06)
+   - :dispatch-task  - Dispatch task to swarm slave (POC-07)
    - :report-metrics - Report event system metrics (CLARITY-T: Telemetry)
    - :dispatch       - Chain to another event (event composition)
 
@@ -24,6 +25,7 @@
   (:require [hive-mcp.events.core :as ev]
             [hive-mcp.hivemind :as hivemind]
             [hive-mcp.swarm.datascript :as ds]
+            [hive-mcp.swarm.coordinator :as coordinator]
             [hive-mcp.channel :as channel]
             [hive-mcp.tools.memory.crud :as memory-crud]
             [datascript.core :as d]
@@ -272,16 +274,52 @@
         (log/error "[EVENT] Kanban sync error:" (.getMessage e))))))
 
 ;; =============================================================================
+;; Effect: :dispatch-task (POC-07)
+;; =============================================================================
+
+(defn- handle-dispatch-task
+  "Execute a :dispatch-task effect - dispatch task to swarm slave.
+
+   Routes task through coordinator for conflict checking and queue management.
+   If approved, task proceeds immediately. If conflicts exist, task is queued.
+
+   Expected data shape:
+   {:slave-id \"swarm-worker-123\"
+    :prompt   \"Implement the feature\"
+    :files    [\"src/core.clj\"]}  ; optional, for file claim tracking
+
+   Example:
+   {:dispatch-task {:slave-id \"swarm-ling-1\"
+                    :prompt \"Fix authentication bug\"
+                    :files [\"src/auth.clj\"]}}"
+  [{:keys [slave-id prompt files]}]
+  (when (and slave-id prompt)
+    (try
+      (let [result (coordinator/dispatch-or-queue!
+                    {:slave-id slave-id
+                     :prompt prompt
+                     :files files})]
+        (case (:action result)
+          :dispatch (log/info "[EVENT] Task dispatched to" slave-id)
+          :queued (log/info "[EVENT] Task queued for" slave-id
+                            "- position:" (:position result))
+          :blocked (log/warn "[EVENT] Task blocked for" slave-id
+                             "- reason:" (:reason result)))
+        result)
+      (catch Exception e
+        (log/error "[EVENT] Task dispatch failed:" (.getMessage e))))))
+
+;; =============================================================================
 ;; Registration
 ;; =============================================================================
 
 (defonce ^:private *registered (atom false))
 
 (defn register-effects!
-  "Register all concrete effect handlers.
+  "Register all concrete effect handlers and POC coeffects.
 
    Safe to call multiple times - only registers once.
-   
+
    Effects registered:
    - :shout          - Broadcast to hivemind coordinator
    - :log            - Simple logging
@@ -293,10 +331,42 @@
    - :dispatch       - Chain to another event
    - :git-commit     - Stage files and create git commit (P5-2)
    - :kanban-sync    - Synchronize kanban state (P5-4)
+   - :dispatch-task  - Dispatch task to swarm slave (POC-07)
+
+   Coeffects registered (POC-08/09/10):
+   - :now            - Current timestamp in milliseconds
+   - :agent-context  - Agent ID and current working directory
+   - :db             - DataScript database snapshot
 
    Returns true if effects were registered, false if already registered."
   []
   (when-not @*registered
+    ;; ==========================================================================
+    ;; Coeffects (POC-08/09/10)
+    ;; ==========================================================================
+
+    ;; POC-08: :now coeffect - Current timestamp in milliseconds
+    (ev/reg-cofx :now
+                 (fn [coeffects]
+                   (assoc coeffects :now (System/currentTimeMillis))))
+
+    ;; POC-09: :agent-context coeffect - Agent environment info
+    (ev/reg-cofx :agent-context
+                 (fn [coeffects]
+                   (assoc coeffects :agent-context
+                          {:agent-id (System/getenv "CLAUDE_SWARM_SLAVE_ID")
+                           :cwd (System/getProperty "user.dir")})))
+
+    ;; POC-10: :db-snapshot coeffect - DataScript database snapshot
+    ;; Note: Using :db key as per POC spec (core.clj uses :db-snapshot)
+    (ev/reg-cofx :db-snapshot
+                 (fn [coeffects]
+                   (assoc coeffects :db @(ds/get-conn))))
+
+    ;; ==========================================================================
+    ;; Effects
+    ;; ==========================================================================
+
     ;; :shout - Broadcast to hivemind coordinator
     (ev/reg-fx :shout handle-shout)
 
@@ -327,6 +397,9 @@
     ;; :kanban-sync - Synchronize kanban state (P5-4)
     (ev/reg-fx :kanban-sync handle-kanban-sync)
 
+    ;; :dispatch-task - Dispatch task to swarm slave (POC-07)
+    (ev/reg-fx :dispatch-task handle-dispatch-task)
+
     ;; Register event handlers that produce these effects
     (ev/reg-event :crystal/wrap-notify []
                   (fn [_coeffects event]
@@ -339,7 +412,8 @@
                              :message (str "Wrap notification from " agent-id)}})))
 
     (reset! *registered true)
-    (log/info "[hive-events] Effects registered: :shout :log :ds-transact :wrap-notify :channel-publish :memory-write :report-metrics :dispatch :git-commit :kanban-sync")
+    (log/info "[hive-events] Coeffects registered: :now :agent-context :db-snapshot")
+    (log/info "[hive-events] Effects registered: :shout :log :ds-transact :wrap-notify :channel-publish :memory-write :report-metrics :dispatch :git-commit :kanban-sync :dispatch-task")
     true))
 
 (defn reset-registration!

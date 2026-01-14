@@ -277,9 +277,9 @@
 
 (defn reg-cofx
   "Register a coeffect handler.
-   
+
    Coeffect handlers inject values into the context's :coeffects.
-   
+
    Example:
    ```clojure
    (reg-cofx :now
@@ -288,6 +288,16 @@
    ```"
   [id handler-fn]
   (swap! *cofx-handlers assoc id handler-fn))
+
+(defn get-fx-handler
+  "Get a registered effect handler by id. Primarily for testing."
+  [id]
+  (get @*fx-handlers id))
+
+(defn get-cofx-handler
+  "Get a registered coeffect handler by id. Primarily for testing."
+  [id]
+  (get @*cofx-handlers id))
 
 (defn inject-cofx
   "Create an interceptor that injects a coeffect.
