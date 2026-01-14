@@ -23,6 +23,8 @@
             [hive-mcp.channel :as channel]
             [hive-mcp.emacsclient :as ec]
             [hive-mcp.hivemind :as hivemind]
+            [hive-mcp.hooks :as hooks]
+            [hive-mcp.hooks.handlers :as handlers]
             [clojure.core.async :as async :refer [go-loop <!]]
             [clojure.data.json :as json]
             [taoensso.timbre :as log]))
@@ -34,6 +36,65 @@
 (defonce ^:private sync-state
   (atom {:running false
          :subscriptions []}))
+
+;; Injected hooks registry - set via set-hooks-registry! to avoid cyclic deps
+(defonce ^:private hooks-registry-atom (atom nil))
+
+(defn set-hooks-registry!
+  "Inject the hooks registry from server.clj to avoid cyclic dependency.
+   Called during server initialization."
+  [registry]
+  (reset! hooks-registry-atom registry)
+  (log/info "Sync: hooks registry injected"))
+
+(defn get-hooks-registry
+  "Get the injected hooks registry."
+  []
+  @hooks-registry-atom)
+
+;; =============================================================================
+;; Hook Action Execution (Layer 4 - Architectural Guarantee)
+;; =============================================================================
+
+(defn- execute-shout-action!
+  "Execute a :shout action returned by a hook handler.
+
+   Layer 4 of 4-layer defense-in-depth: If ling forgot to shout,
+   this synthetic shout ensures visibility to the coordinator.
+
+   Action shape: {:action :shout :event-type keyword :message string :data map}"
+  [{:keys [action event-type message data]} slave-id]
+  (when (= action :shout)
+    (let [event-kw (if (keyword? event-type) event-type (keyword event-type))
+          shout-data (merge data {:source "layer4-synthetic" :message message})]
+      (hivemind/shout! slave-id event-kw shout-data)
+      (log/debug "Layer4: Executed synthetic shout for" slave-id "->" event-kw))))
+
+(defn- trigger-task-complete-hooks!
+  "Trigger :task-complete hooks and execute resulting shout actions.
+
+   ARCHITECTURAL GUARANTEE: This function ensures a shout is emitted
+   on task completion, regardless of whether the ling explicitly called
+   hivemind_shout. Part of 4-layer defense-in-depth.
+
+   Returns: Vector of hook results"
+  [task-id slave-id]
+  (when-let [registry (get-hooks-registry)]
+    ;; Build event/context following handlers.clj contract
+    (let [event {:type :task-complete
+                 :task-id task-id}
+          context {:agent-id slave-id
+                   :task-id task-id}
+          ;; Call handlers directly (they expect [event context])
+          handler-result (handlers/shout-completion event context)]
+      ;; Execute the shout action
+      (execute-shout-action! handler-result slave-id)
+      ;; Also trigger any custom hooks registered via the registry
+      ;; These receive just context (single-arg handlers)
+      (let [custom-results (hooks/trigger-hooks registry :task-complete
+                                                (merge event context))]
+        (log/debug "Layer4: Triggered" (count custom-results) "custom hooks")
+        custom-results))))
 
 ;; =============================================================================
 ;; Event Handlers
@@ -91,12 +152,22 @@
 
 (defn- handle-task-completed
   "Handle task completion event.
-   Event: {:task-id :slave-id}"
+   Event: {:task-id :slave-id}
+
+   LAYER 4 INTEGRATION: Triggers :task-complete hooks which emit
+   a synthetic shout. This is the architectural guarantee - completion
+   is always visible to the coordinator regardless of ling behavior."
   [event]
-  (let [task-id (or (get event "task-id") (:task-id event))]
+  (let [task-id (or (get event "task-id") (:task-id event))
+        slave-id (or (get event "slave-id") (:slave-id event))]
     (when task-id
       ;; ds/complete-task! handles status update, claim release, and slave stats
       (ds/complete-task! task-id)
+
+      ;; LAYER 4: Trigger hooks for synthetic shout (architectural guarantee)
+      ;; Even if ling forgot to call hivemind_shout, this ensures visibility
+      (trigger-task-complete-hooks! task-id slave-id)
+
       ;; Process queue - some waiting tasks might be ready now
       (let [ready (coord/process-queue!)]
         (when (seq ready)
