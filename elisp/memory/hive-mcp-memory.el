@@ -56,7 +56,7 @@
 
 (defvaralias 'hive-mcp-memory-directory 'hive-mcp-memory-storage-directory)
 (defvaralias 'hive-mcp-memory-auto-save 'hive-mcp-memory-storage-auto-save)
-(defvaralias 'hive-mcp-memory-duration-days 'hive-mcp-memory-duration-days)
+;; hive-mcp-memory-duration-days - no alias needed (name unchanged in duration module)
 (defvaralias 'hive-mcp-memory-default-duration 'hive-mcp-memory-duration-default)
 (defvaralias 'hive-mcp-memory-add-hook 'hive-mcp-memory-crud-add-hook)
 (defvaralias 'hive-mcp-conversation-max-entries 'hive-mcp-memory-crud-conversation-max)
@@ -122,10 +122,9 @@
 (defalias 'hive-mcp-memory-demote 'hive-mcp-memory-crud-demote)
 
 ;;;; Backward-Compatible Aliases - Query
-
-(defalias 'hive-mcp-memory-query 'hive-mcp-memory-query)
-(defalias 'hive-mcp-memory-query-expiring 'hive-mcp-memory-query-expiring)
-(defalias 'hive-mcp-memory-cleanup-expired 'hive-mcp-memory-cleanup-expired)
+;; hive-mcp-memory-query - no alias needed (name unchanged)
+;; hive-mcp-memory-query-expiring - no alias needed (name unchanged)
+;; hive-mcp-memory-cleanup-expired - no alias needed (name unchanged)
 (defalias 'hive-mcp-memory-log-access 'hive-mcp-memory-query-log-access)
 (defalias 'hive-mcp-memory-mark-helpful 'hive-mcp-memory-query-mark-helpful)
 (defalias 'hive-mcp-memory-mark-unhelpful 'hive-mcp-memory-query-mark-unhelpful)

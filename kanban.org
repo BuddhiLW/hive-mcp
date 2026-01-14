@@ -645,6 +645,49 @@ Implementation: Add to presets.el TDD template: "Before committing, run M-x byte
 :AGENT:    emacs-1918884
 :SESSION:  20260113-210604
 :END:
+** DONE Phase 5: Document Coordinator Auto-Permeate Pattern
+:PROPERTIES:
+:AGENT:    emacs-635546
+:SESSION:  20260114-145812
+:ID:       d2d603ea-f4df-4b0a-8c94-11fb3b6bde31
+:UPDATED:  2026-01-14 14:58
+:LAST_AGENT: emacs-635546
+:END:
+:PROPERTIES:
+:ID:       9292ab0a-e68d-4dbb-9626-2e689d4d9c3a
+:CREATED:  2026-01-14 14:58
+:DESCRIPTION: Document the coordinator auto-permeate pattern for wrap_notify handling.
+
+Deliverables completed:
+1. CLAUDE.md updated with "Crystal Convergence (Auto-Permeate)" section under Hivemind Operations
+2. Permanent convention created (ID: 20260114145804-51cb0a35) with tags: coordinator, wrap_notify, permeate, catchup-priority, permanent
+
+Pattern: When coordinator sees wrap_notify in HIVEMIND piggyback → call mcp_permeate_crystals
+
+Status: DONE
+:END:
+** DONE POC-12: Wire channel bridge to hive-events dispatch
+:PROPERTIES:
+:ID:       14d10ce3-3372-489e-af89-ce041c4424af
+:CREATED:  2026-01-14 15:02
+:DESCRIPTION: Created src/hive_mcp/events/channel_bridge.clj that wires channel events to hive-events dispatch. Features: hook->event transformation (kebab-case to namespaced keywords), subscribe-channel!/unsubscribe-channel! for lifecycle, on-channel-event handler with graceful error handling. TDD verified: 6 tests covering transformation, dispatch, missing handlers, and error cases.
+:AGENT:    emacs-635546
+:SESSION:  20260114-150213
+:UPDATED:  2026-01-14 15:02
+:LAST_AGENT: emacs-635546
+:END:
+** DONE POC-11: Create hook→event bridge
+:PROPERTIES:
+:ID:       2fb7d6d2-ff0d-4ded-bf79-e9d0815ea8b2
+:CREATED:  2026-01-14 15:02
+:DESCRIPTION: Created src/hive_mcp/events/bridge.clj with hook->event multimethod. Transforms legacy hook types (:task-complete, :ling-spawn, :memory-added, etc.) to hive-events vectors ([:task/complete data], [:ling/started data], etc.). TDD verified: 15+ assertions covering all transformations and nil for unknown hooks.
+:AGENT:    emacs-635546
+:SESSION:  20260114-150245
+:UPDATED:  2026-01-14 15:02
+:LAST_AGENT: emacs-635546
+:END:
+
+
 
 
 
