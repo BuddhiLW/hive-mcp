@@ -211,6 +211,67 @@
           (log/error "[EVENT] Dispatch chain failed:" (.getMessage e)))))))
 
 ;; =============================================================================
+;; Effect: :git-commit (P5-2)
+;; =============================================================================
+
+(defn- handle-git-commit
+  "Execute a :git-commit effect - stage files and create commit.
+
+   Stages specified files and creates a git commit with the given message.
+   Uses shell commands via clojure.java.shell.
+
+   Expected data shape:
+   {:files   [\"src/a.clj\" \"src/b.clj\"]
+    :message \"feat: Add new feature\"
+    :task-id \"task-123\"}  ; optional, for logging
+
+   Example:
+   {:git-commit {:files [\"src/core.clj\"]
+                 :message \"fix: Fix the bug\"}}"
+  [{:keys [files message task-id]}]
+  (when (and (seq files) message)
+    (try
+      (let [add-result (apply clojure.java.shell/sh
+                              "git" "add" "--" (vec files))
+            commit-result (clojure.java.shell/sh
+                           "git" "commit" "-m" message)]
+        (if (zero? (:exit commit-result))
+          (log/info "[EVENT] Git commit created:" message
+                    (when task-id (str " (task: " task-id ")")))
+          (log/warn "[EVENT] Git commit failed:" (:err commit-result))))
+      (catch Exception e
+        (log/error "[EVENT] Git commit error:" (.getMessage e))))))
+
+;; =============================================================================
+;; Effect: :kanban-sync (P5-4)
+;; =============================================================================
+
+(defn- handle-kanban-sync
+  "Execute a :kanban-sync effect - synchronize kanban state.
+
+   Syncs kanban tasks between memory and external sources.
+   Currently logs the intent; actual sync uses existing kanban infrastructure.
+
+   Expected data shape:
+   {:project   \"hive-mcp\"
+    :direction :bidirectional | :push | :pull}
+
+   Example:
+   {:kanban-sync {:project \"hive-mcp\"
+                  :direction :bidirectional}}"
+  [{:keys [project direction]}]
+  (when project
+    (try
+      ;; TODO: Wire to actual kanban sync infrastructure
+      ;; For now, emit channel event for Emacs-side sync
+      (channel/emit-event! :kanban-sync {:project project
+                                         :direction (or direction :bidirectional)})
+      (log/info "[EVENT] Kanban sync triggered:" project
+                (str "direction=" (or direction :bidirectional)))
+      (catch Exception e
+        (log/error "[EVENT] Kanban sync error:" (.getMessage e))))))
+
+;; =============================================================================
 ;; Registration
 ;; =============================================================================
 
@@ -230,6 +291,8 @@
    - :memory-write   - Add entry to Chroma memory
    - :report-metrics - Report metrics
    - :dispatch       - Chain to another event
+   - :git-commit     - Stage files and create git commit (P5-2)
+   - :kanban-sync    - Synchronize kanban state (P5-4)
 
    Returns true if effects were registered, false if already registered."
   []
@@ -258,6 +321,12 @@
     ;; :dispatch - Chain events (for :ling/completed -> :session/end)
     (ev/reg-fx :dispatch handle-dispatch)
 
+    ;; :git-commit - Stage files and create git commit (P5-2)
+    (ev/reg-fx :git-commit handle-git-commit)
+
+    ;; :kanban-sync - Synchronize kanban state (P5-4)
+    (ev/reg-fx :kanban-sync handle-kanban-sync)
+
     ;; Register event handlers that produce these effects
     (ev/reg-event :crystal/wrap-notify []
                   (fn [_coeffects event]
@@ -270,7 +339,7 @@
                              :message (str "Wrap notification from " agent-id)}})))
 
     (reset! *registered true)
-    (log/info "[hive-events] Effects registered: :shout :log :ds-transact :wrap-notify :channel-publish :memory-write :report-metrics :dispatch")
+    (log/info "[hive-events] Effects registered: :shout :log :ds-transact :wrap-notify :channel-publish :memory-write :report-metrics :dispatch :git-commit :kanban-sync")
     true))
 
 (defn reset-registration!

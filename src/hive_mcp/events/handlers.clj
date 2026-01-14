@@ -191,6 +191,136 @@
                     :kanban/completed-at (java.util.Date.)}]}))
 
 ;; =============================================================================
+;; Handler: :task/shout-complete (P5-1 - ported from hooks/handlers.clj)
+;; =============================================================================
+
+(defn- handle-task-shout-complete
+  "Handler for :task/shout-complete events.
+   
+   Ported from hooks/handlers.clj shout-completion. Broadcasts task
+   completion via hivemind channel with a human-readable message.
+   
+   Expects event data:
+   {:task-id   \"task-123\"
+    :title     \"Fix the bug\"
+    :agent-id  \"ling-worker-1\"
+    :project   \"hive-mcp\"}
+   
+   Produces effects:
+   - :shout - Broadcast completion to hivemind with message"
+  [_coeffects [_ {:keys [task-id title agent-id project]}]]
+  (let [effective-title (or title task-id "unknown task")
+        effective-agent (or agent-id
+                            (System/getenv "CLAUDE_SWARM_SLAVE_ID")
+                            "unknown")]
+    {:shout {:agent-id effective-agent
+             :event-type :completed
+             :message (str "Task completed: " effective-title)
+             :data {:task-id task-id
+                    :title effective-title
+                    :agent-id effective-agent
+                    :project project}}}))
+
+;; =============================================================================
+;; Handler: :session/wrap (P5-3 - ported from hooks/handlers.clj)
+;; =============================================================================
+
+(defn- handle-session-wrap
+  "Handler for :session/wrap events.
+   
+   Ported from hooks/handlers.clj run-wrap. Triggers the wrap workflow
+   at session end for crystallizing session learnings.
+   
+   Expects event data:
+   {:session-id  \"session-abc\"
+    :project     \"hive-mcp\"
+    :start-time  \"2024-01-01T10:00:00Z\"}
+   
+   Produces effects:
+   - :log          - Log wrap trigger
+   - :run-workflow - Trigger :wrap workflow with params"
+  [coeffects [_ {:keys [session-id project start-time]}]]
+  (let [agent-id (or (get-in coeffects [:agent-context :agent-id])
+                     (System/getenv "CLAUDE_SWARM_SLAVE_ID")
+                     "unknown-agent")
+        effective-session-id (or session-id
+                                 (str "session:" (java.time.LocalDate/now) ":" agent-id))]
+    {:log {:level :info
+           :message (str "Triggering wrap workflow for session: " effective-session-id)}
+     :run-workflow {:workflow :wrap
+                    :params {:session-id effective-session-id
+                             :project project
+                             :start-time start-time}}}))
+
+;; =============================================================================
+;; Handler: :git/commit-modified (P5-2 - ported from hooks/handlers.clj)
+;; =============================================================================
+
+(defn- task-title-or-default
+  "Extract task title or generate default from task-id."
+  [{:keys [title task-id]}]
+  (or title (str "Task " (or task-id "unknown"))))
+
+(defn- handle-git-commit-modified
+  "Handler for :git/commit-modified events.
+   
+   Ported from hooks/handlers.clj commit-if-files-modified.
+   Creates git commit effect if files were modified during task.
+   
+   Expects event data:
+   {:task-id        \"task-123\"
+    :title          \"Add feature\"  ; optional
+    :modified-files [\"src/a.clj\"]}
+   
+   Produces effects:
+   - :log        - Log commit action
+   - :git-commit - Execute git add + commit
+   
+   Returns {} if no files modified (no-op)."
+  [_coeffects [_ {:keys [task-id title modified-files]}]]
+  (if (seq modified-files)
+    (let [task-title (task-title-or-default {:title title :task-id task-id})
+          ;; Generate conventional commit message
+          commit-msg (if (re-find #"(?i)^fix" task-title)
+                       (str "fix: " task-title)
+                       (str "feat: " task-title))]
+      {:log {:level :info
+             :message (str "Git commit for task " task-id ": " (count modified-files) " files")}
+       :git-commit {:files (vec modified-files)
+                    :message commit-msg
+                    :task-id task-id}})
+    ;; No files modified - return empty effects map (no-op)
+    {}))
+
+;; =============================================================================
+;; Handler: :kanban/sync (P5-4 - ported from hooks/handlers.clj)
+;; =============================================================================
+
+(defn- handle-kanban-sync
+  "Handler for :kanban/sync events.
+   
+   Ported from hooks/handlers.clj sync-kanban.
+   Synchronizes kanban state at session end.
+   
+   Expects event data:
+   {:project \"override-project\"}  ; optional, uses coeffects if not provided
+   
+   Coeffects used:
+   - [:agent-context :project] - Project for scoping
+   
+   Produces effects:
+   - :log         - Log sync action
+   - :kanban-sync - Execute bidirectional kanban sync"
+  [coeffects [_ event-data]]
+  (let [project (or (:project event-data)
+                    (get-in coeffects [:agent-context :project])
+                    "unknown-project")]
+    {:log {:level :info
+           :message (str "Kanban sync for project: " project)}
+     :kanban-sync {:project project
+                   :direction :bidirectional}}))
+
+;; =============================================================================
 ;; Registration
 ;; =============================================================================
 
@@ -202,11 +332,15 @@
    Safe to call multiple times - only registers once.
    
    Registers:
-   - :task/complete  - Signal task completion to hivemind
-   - :ling/started   - Ling spawned (EVENTS-03)
-   - :ling/completed - Ling finished (EVENTS-03)
-   - :session/end    - Session ending, auto-wrap (EVENTS-06)
-   - :kanban/done    - Kanban task completed (EVENTS-09)
+   - :task/complete       - Signal task completion to hivemind
+   - :task/shout-complete - Broadcast completion with message (P5-1)
+   - :git/commit-modified - Git commit if files changed (P5-2)
+   - :ling/started        - Ling spawned (EVENTS-03)
+   - :ling/completed      - Ling finished (EVENTS-03)
+   - :session/end         - Session ending, auto-wrap (EVENTS-06)
+   - :session/wrap        - Trigger wrap workflow (P5-3)
+   - :kanban/sync         - Sync kanban at session end (P5-4)
+   - :kanban/done         - Kanban task completed (EVENTS-09)
    
    Returns true if handlers were registered, false if already registered."
   []
@@ -215,6 +349,16 @@
     (ev/reg-event :task/complete
                   [interceptors/debug]
                   handle-task-complete)
+
+    ;; :task/shout-complete - Broadcast with message (P5-1)
+    (ev/reg-event :task/shout-complete
+                  [interceptors/debug]
+                  handle-task-shout-complete)
+
+    ;; :git/commit-modified - Git commit if files changed (P5-2)
+    (ev/reg-event :git/commit-modified
+                  [interceptors/debug]
+                  handle-git-commit-modified)
 
     ;; :ling/started - Register ling in DataScript (EVENTS-03)
     (ev/reg-event :ling/started
@@ -231,13 +375,23 @@
                   [interceptors/debug]
                   handle-session-end)
 
+    ;; :session/wrap - Trigger wrap workflow (P5-3)
+    (ev/reg-event :session/wrap
+                  [interceptors/debug]
+                  handle-session-wrap)
+
+    ;; :kanban/sync - Sync kanban at session end (P5-4)
+    (ev/reg-event :kanban/sync
+                  [interceptors/debug]
+                  handle-kanban-sync)
+
     ;; :kanban/done - Progress note + DataScript (EVENTS-09)
     (ev/reg-event :kanban/done
                   [interceptors/debug]
                   handle-kanban-done)
 
     (reset! *registered true)
-    (println "[hive-events] Handlers registered: :task/complete :ling/started :ling/completed :session/end :kanban/done")
+    (println "[hive-events] Handlers registered: :task/complete :task/shout-complete :git/commit-modified :ling/started :ling/completed :session/end :session/wrap :kanban/sync :kanban/done")
     true))
 
 (defn reset-registration!
