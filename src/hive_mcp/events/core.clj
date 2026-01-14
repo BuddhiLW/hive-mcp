@@ -51,44 +51,62 @@
 
 (def ^:private *metrics
   "Metrics atom tracking event dispatch statistics.
-   
+
    Shape:
-   {:events-dispatched N  ; Total events dispatched
-    :effects-executed  N  ; Total effects successfully executed
-    :errors           N  ; Total effect execution errors
-    :timings         [...]} ; Rolling window of dispatch times (ms)"
+   {:events-dispatched N      ; Total events dispatched
+    :events-by-type    {kw N} ; Count per event-id keyword
+    :effects-executed  N      ; Total effects successfully executed
+    :errors           N       ; Total effect execution errors
+    :timings-by-type  {kw []} ; Rolling window of dispatch times per event type (ms)
+    :timings          [...]}  ; Rolling window of all dispatch times (ms)"
   (atom {:events-dispatched 0
+         :events-by-type {}
          :effects-executed 0
          :errors 0
+         :timings-by-type {}
          :timings []}))
 
 (defn get-metrics
   "Get current metrics snapshot.
-   
+
    Returns map with:
-   - :events-dispatched - Total events dispatched
-   - :effects-executed  - Total effects successfully executed
-   - :errors           - Total effect execution errors
-   - :avg-dispatch-ms  - Average dispatch time (ms)
-   - :timings-count    - Number of timing samples
-   
+   - :events-dispatched  - Total events dispatched
+   - :events-by-type     - Map of event-id -> count
+   - :effects-executed   - Total effects successfully executed
+   - :errors             - Total effect execution errors
+   - :avg-dispatch-ms    - Average dispatch time across all events (ms)
+   - :avg-by-type        - Map of event-id -> average dispatch time (ms)
+   - :timings-count      - Number of timing samples
+   - :timings-by-type    - Map of event-id -> [timing samples]
+
    CLARITY: Telemetry first - observable system."
   []
   (let [m @*metrics
         timings (:timings m)
+        timings-by-type (:timings-by-type m)
         avg-ms (if (seq timings)
                  (/ (reduce + timings) (count timings))
-                 0)]
+                 0)
+        avg-by-type (reduce-kv
+                     (fn [acc event-id event-timings]
+                       (if (seq event-timings)
+                         (assoc acc event-id (/ (reduce + event-timings) (count event-timings)))
+                         acc))
+                     {}
+                     timings-by-type)]
     (assoc m
            :avg-dispatch-ms avg-ms
+           :avg-by-type avg-by-type
            :timings-count (count timings))))
 
 (defn reset-metrics!
   "Reset all metrics counters. For testing."
   []
   (reset! *metrics {:events-dispatched 0
+                    :events-by-type {}
                     :effects-executed 0
                     :errors 0
+                    :timings-by-type {}
                     :timings []}))
 
 ;; =============================================================================
@@ -430,27 +448,43 @@
             context)))
 
 (def metrics
-  "Interceptor that tracks event dispatch metrics.
-   
+  "Interceptor that tracks event dispatch metrics per event type.
+
    Records:
-   - Event count (incremented in :before)
+   - Total event count (incremented in :before)
+   - Per-event-type count (tracked in :events-by-type)
    - Dispatch timing in ms (recorded in :after)
-   
-   Uses a rolling window of 100 timing samples to compute average.
-   
+   - Per-event-type timings (tracked in :timings-by-type)
+
+   Uses a rolling window of 100 timing samples per event type to compute averages.
+
    CLARITY Principle: Telemetry first - observable system behavior."
   (->interceptor
    :id :metrics
    :comment "Tracks event dispatch metrics for observability"
    :before (fn [context]
-             (swap! *metrics update :events-dispatched inc)
-             (assoc-coeffect context :metrics-start-ns (System/nanoTime)))
+             (let [event (get-coeffect context :event)
+                   event-id (when (vector? event) (first event))]
+               (swap! *metrics
+                      (fn [m]
+                        (-> m
+                            (update :events-dispatched inc)
+                            (update-in [:events-by-type event-id] (fnil inc 0)))))
+               (-> context
+                   (assoc-coeffect :metrics-start-ns (System/nanoTime))
+                   (assoc-coeffect :metrics-event-id event-id))))
    :after (fn [context]
             (let [start-ns (get-coeffect context :metrics-start-ns)
+                  event-id (get-coeffect context :metrics-event-id)
                   elapsed-ms (when start-ns
                                (/ (- (System/nanoTime) start-ns) 1000000.0))]
               (when elapsed-ms
-                (swap! *metrics update :timings #(take 100 (conj % elapsed-ms)))))
+                (swap! *metrics
+                       (fn [m]
+                         (-> m
+                             (update :timings #(take 100 (conj % elapsed-ms)))
+                             (update-in [:timings-by-type event-id]
+                                        #(take 100 (conj (or % []) elapsed-ms))))))))
             context)))
 
 (def trim-v
