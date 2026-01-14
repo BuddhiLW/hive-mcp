@@ -1,17 +1,19 @@
 (ns hive-mcp.crystal.hooks
   "Event hooks for progressive crystallization.
-   
+
    Handles:
    - Kanban DONE → session-progress note
    - Memory access → recall tracking
    - Session boundaries → cross-session detection
-   
+   - Session end → auto-wrap crystallization
+
    SOLID: Single responsibility - event handling only.
    DDD: Application service layer."
   (:require [hive-mcp.crystal.core :as crystal]
             [hive-mcp.crystal.recall :as recall]
             [hive-mcp.emacsclient :as ec]
             [hive-mcp.channel :as channel]
+            [hive-mcp.hooks :as hooks]
             [clojure.data.json :as json]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
@@ -205,6 +207,12 @@
 ;; Crystallization Hook
 ;; =============================================================================
 
+(defn- tags->elisp-list
+  "Convert Clojure tags vector to elisp list format.
+   [\"a\" \"b\"] -> '(\"a\" \"b\")"
+  [tags]
+  (str "'(" (str/join " " (map pr-str tags)) ")"))
+
 (defn crystallize-session
   "Crystallize session data into long-term memory.
    
@@ -221,9 +229,11 @@
   (let [summary (crystal/summarize-session-progress
                  (concat progress-notes completed-tasks)
                  git-commits)
-        elisp (format "(hive-mcp-memory-add 'note %s '%s nil 'short-term)"
+        ;; Convert tags to elisp list format
+        elisp-tags (tags->elisp-list (:tags summary))
+        elisp (format "(hive-mcp-memory-add 'note %s %s nil 'short-term)"
                       (pr-str (:content summary))
-                      (pr-str (:tags summary)))
+                      elisp-tags)
         {:keys [success result error]} (ec/eval-elisp elisp)]
     (if success
       (do
@@ -239,6 +249,39 @@
          :session (crystal/session-id)}))))
 
 ;; =============================================================================
+;; Auto-Wrap Session-End Handler
+;; =============================================================================
+
+(defn- on-session-end
+  "Handler for session-end event.
+
+   Automatically crystallizes session data (auto-wrap).
+   Called by JVM shutdown hook via hooks/trigger-hooks.
+
+   ctx: {:reason string :session string}
+
+   Returns: {:success bool :summary-id string}"
+  [ctx]
+  (log/info "Auto-wrap triggered on session-end:" (:reason ctx "shutdown"))
+  (try
+    (let [harvested (harvest-all)
+          result (crystallize-session harvested)]
+      ;; Broadcast wrap completion if channel available
+      (when (channel/server-connected?)
+        (channel/broadcast! {:type "session-ended"
+                             :wrap-completed true
+                             :session (:session result)
+                             :stats (:stats result)}))
+      (log/info "Auto-wrap completed:" (:summary-id result))
+      {:success true
+       :summary-id (:summary-id result)
+       :stats (:stats result)})
+    (catch Exception e
+      (log/error e "Auto-wrap failed on session-end")
+      {:success false
+       :error (.getMessage e)})))
+
+;; =============================================================================
 ;; Hook Registration
 ;; =============================================================================
 
@@ -246,13 +289,19 @@
 
 (defn register-hooks!
   "Register crystal hooks with the event system.
-   
+
    Hooks into:
+   - :session-end for auto-wrap crystallization
    - channel events for task completion
-   - memory query events for recall tracking"
-  []
+   - memory query events for recall tracking
+
+   registry: Hook registry atom from hive-mcp.hooks/create-registry"
+  [registry]
   (when-not @hooks-registered?
     (log/info "Registering crystal hooks")
+    ;; Register auto-wrap handler for session-end
+    (hooks/register-hook registry :session-end on-session-end)
+    (log/info "Registered auto-wrap handler for :session-end")
     ;; Subscribe to task-completed events if channel is available
     (when (channel/server-connected?)
       (try

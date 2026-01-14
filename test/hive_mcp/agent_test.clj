@@ -6,6 +6,7 @@
   (:require [clojure.test :refer :all]
             [clojure.set :as set]
             [hive-mcp.agent]
+            [hive-mcp.agent.drone :as drone]
             [hive-mcp.permissions :as permissions]))
 
 ;; =============================================================================
@@ -38,12 +39,12 @@
 
 (deftest drone-allowed-tools-exists
   (testing "drone-allowed-tools var is defined"
-    (is (some? @#'hive-mcp.agent/drone-allowed-tools)
-        "drone-allowed-tools must be defined")))
+    (is (some? drone/allowed-tools)
+        "drone/allowed-tools must be defined")))
 
 (deftest drone-allowed-tools-contains-expected
   (testing "drone-allowed-tools contains all expected safe tools"
-    (let [actual (set @#'hive-mcp.agent/drone-allowed-tools)]
+    (let [actual (set drone/allowed-tools)]
       (is (= expected-drone-tools actual)
           (str "Mismatch in drone tools. "
                "Missing: " (set/difference expected-drone-tools actual) ", "
@@ -70,7 +71,7 @@
 
 (deftest drone-allowed-tools-excludes-dangerous
   (testing "drone-allowed-tools has no intersection with dangerous tools"
-    (let [allowed (set @#'hive-mcp.agent/drone-allowed-tools)
+    (let [allowed (set drone/allowed-tools)
           overlap (set/intersection allowed expected-dangerous-tools)]
       (is (empty? overlap)
           (str "SECURITY VIOLATION: Drone tools must not include dangerous tools. "
@@ -78,20 +79,20 @@
 
 (deftest drone-cannot-write-files-directly
   (testing "file mutation tools are excluded from drone-allowed-tools"
-    (let [allowed (set @#'hive-mcp.agent/drone-allowed-tools)
+    (let [allowed (set drone/allowed-tools)
           file-mutation-tools #{"file_write" "file_edit" "clojure_edit"}]
       (is (empty? (set/intersection allowed file-mutation-tools))
           "Drones must use propose_diff instead of direct file writes"))))
 
 (deftest drone-cannot-execute-shell
   (testing "bash is excluded from drone-allowed-tools"
-    (let [allowed (set @#'hive-mcp.agent/drone-allowed-tools)]
+    (let [allowed (set drone/allowed-tools)]
       (is (not (contains? allowed "bash"))
           "Drones must not have shell access"))))
 
 (deftest drone-cannot-push-to-git
   (testing "git write operations are excluded from drone-allowed-tools"
-    (let [allowed (set @#'hive-mcp.agent/drone-allowed-tools)
+    (let [allowed (set drone/allowed-tools)
           git-write-tools #{"magit_commit" "magit_push"}]
       (is (empty? (set/intersection allowed git-write-tools))
           "Drones must not be able to commit or push to git"))))
@@ -102,25 +103,25 @@
 
 (deftest drone-can-read-files
   (testing "drone can read files for analysis"
-    (let [allowed (set @#'hive-mcp.agent/drone-allowed-tools)]
+    (let [allowed (set drone/allowed-tools)]
       (is (contains? allowed "read_file")
           "Drones need read_file for code analysis"))))
 
 (deftest drone-can-propose-changes
   (testing "drone can propose diffs for review"
-    (let [allowed (set @#'hive-mcp.agent/drone-allowed-tools)]
+    (let [allowed (set drone/allowed-tools)]
       (is (contains? allowed "propose_diff")
           "Drones must use propose_diff to suggest file changes"))))
 
 (deftest drone-can-communicate
   (testing "drone can communicate via hivemind_shout"
-    (let [allowed (set @#'hive-mcp.agent/drone-allowed-tools)]
+    (let [allowed (set drone/allowed-tools)]
       (is (contains? allowed "hivemind_shout")
           "Drones need hivemind_shout to report progress"))))
 
 (deftest drone-can-inspect-git
   (testing "drone can read git status/history (but not write)"
-    (let [allowed (set @#'hive-mcp.agent/drone-allowed-tools)
+    (let [allowed (set drone/allowed-tools)
           git-read-tools #{"magit_status" "magit_diff" "magit_log" "magit_branches"}]
       (is (set/subset? git-read-tools allowed)
           "Drones need git read access for context"))))

@@ -13,7 +13,6 @@
      (demo/step-5-cleanup!)"
   (:require [hive-mcp.agent.protocol :as proto]
             [hive-mcp.agent.cider :as cider]
-            [hive-mcp.agent :as agent]
             [clojure.pprint :as pp]))
 
 ;;; ============================================================

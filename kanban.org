@@ -6,10 +6,12 @@
 :PROPERTIES:
 :ID: b70720e8-3a52-41ba-a115-964b81369bb5
 :END:
-** TODO Implement bidirectional sync between vibe-kanban and org-kanban
+** DONE Implement bidirectional sync between vibe-kanban and org-kanban
 :PROPERTIES:
 :ID: c75935fb-2f77-49b8-ba0e-2e0db9e4d044
 :VIBE_ID: e54edcbd-3b67-42fd-8ce3-487d22e883fe
+:UPDATED:  2026-01-12 14:45
+:LAST_AGENT: emacs-11246
 :END:
 ** DONE Create projectile addon for emacs-mcp
 CLOSED: [2025-12-30]
@@ -246,7 +248,7 @@ PR #15 + #23 merged. Beamer and Reveal.js support with C4 diagram integration.
 :AGENT: emacs-1035819
 :SESSION: 20260101-182631
 :END:
-** TODO Swarm: bb-mcp integration for lighter JVM
+** DONE Swarm: bb-mcp integration for lighter JVM
 :PROPERTIES:
 :ID: 7948f020-5333-4c1f-8e10-6a7770b7567f
 :CREATED: 2026-01-01 18:26
@@ -274,7 +276,7 @@ PR #15 + #23 merged. Beamer and Reveal.js support with C4 diagram integration.
 :UPDATED:  2026-01-01 21:33
 :LAST_AGENT: emacs-126582
 :END:
-** TODO [EPIC] SOLID+CLARITY+DDD Refactor for elisp
+** DONE [EPIC] SOLID+CLARITY+DDD Refactor for elisp
 :PROPERTIES:
 :ID:       7d2a5b68-1e11-45ba-a336-f0058f74581e
 :CREATED:  2026-01-01 21:52
@@ -451,6 +453,218 @@ Implementation: Add to presets.el TDD template: "Before committing, run M-x byte
 :AGENT:    emacs-378780
 :SESSION:  20260110-223346
 :END:
+** DONE Reconcile crystal/graph.clj with hive_mcp.graph.* modules
+:PROPERTIES:
+:ID:       bc416fd0-7856-4429-a8bf-f8bedd1db4d2
+:CREATED:  2026-01-11 00:35
+:DESCRIPTION: TWO graph implementations exist: crystal/graph.clj (core.logic pldb) and new hive_mcp.graph.* (Datascript). Need to migrate crystal/graph.clj to use GraphStore protocol, extend schema for recall-tracking entities, unify persistence layer.
+:AGENT:    emacs-1640257
+:SESSION:  20260111-003546
+:UPDATED:  2026-01-11 17:39
+:LAST_AGENT: emacs-1303659
+:END:
+** DONE Extend codanna with Clojure + Elisp Tree-sitter support
+:PROPERTIES:
+:ID:       f282c88e-2741-4849-99b0-4ae6dea8aea9
+:CREATED:  2026-01-11 00:35
+:DESCRIPTION: Codanna uses LanguageDefinition trait for extensibility. Tree-sitter crates exist: tree-sitter-clojure (sogaiu), tree-sitter-elisp (Wilfred). Need 6 files per language: mod.rs, parser.rs, behavior.rs, definition.rs, resolution.rs, audit.rs. CLOJURE LIMITATION: Grammar is syntax-only (no defn/defmacro nodes - must match list patterns manually).
+:AGENT:    emacs-1640257
+:SESSION:  20260111-003547
+:UPDATED:  2026-01-11 17:39
+:LAST_AGENT: emacs-1303659
+:END:
+** TODO Implement channel client-side API
+:PROPERTIES:
+:ID:       32d190f4-d4b5-4663-b7ce-fafec277a5ab
+:CREATED:  2026-01-11 00:35
+:DESCRIPTION: Tests exist for unix-channel, tcp-channel, connect!, disconnect!, send!, recv! but functions never implemented. Either implement client API or remove tests permanently. Server-side (start-server!, broadcast!, etc.) works.
+:AGENT:    emacs-1640257
+:SESSION:  20260111-003547
+:END:
+** TODO Fix infra_test.clj - dbus-client var missing
+:PROPERTIES:
+:ID:       f07719dd-6e85-4d5c-b1a9-76ac9fcde266
+:CREATED:  2026-01-11 00:35
+:DESCRIPTION: test/hive_mcp/prompts/infra_test.clj references @#'infra/dbus-client which doesn't exist in the infra namespace. Tests try to reset internal state for D-Bus mocking. Either add the var or remove/fix the tests.
+:AGENT:    emacs-1640257
+:SESSION:  20260111-003547
+:END:
+** DONE Add GraphStore tests to crystal module
+:PROPERTIES:
+:ID:       629ef6a2-5247-4a8b-ad99-19531b4f1f5b
+:CREATED:  2026-01-11 00:35
+:DESCRIPTION: Crystal module (crystal/core.clj, crystal/graph.clj, crystal/recall.clj, crystal/hooks.clj) has no tests. After reconciling with GraphStore, add comprehensive tests. hooks.clj line 233 has incomplete promotion integration TODO.
+:AGENT:    emacs-1640257
+:SESSION:  20260111-003547
+:UPDATED:  2026-01-11 17:39
+:LAST_AGENT: emacs-1303659
+:END:
+** DONE BUG: wrap_crystallize NullPointerException after crystal reconciliation
+:PROPERTIES:
+:ID:       580a709f-519e-48e9-80ad-ddf2918c4aed
+:CREATED:  2026-01-11 17:52
+:DESCRIPTION: wrap_crystallize throws: "Cannot invoke \"java.lang.CharSequence.length()\" because \"this.text\" is null". Likely caused by crystal module migration to Datascript. Need to: 1) Add tests for wrap_gather/wrap_crystallize, 2) Debug the null text field, 3) Ensure all crystal functions handle nil content gracefully.
+:AGENT:    emacs-1303659
+:SESSION:  20260111-175201
+:UPDATED:  2026-01-13 20:24
+:LAST_AGENT: emacs-1918884
+:END:
+** TODO [EPIC] Datascript port for elisp - unified in-memory graph DB
+:PROPERTIES:
+:ID:       1095de3b-5e42-4bef-b846-e81fdf4adc44
+:CREATED:  2026-01-11 18:03
+:DESCRIPTION: Port Datascript concepts to elisp for unified in-memory graph database across Clojure and elisp layers. Benefits: consistent query semantics, transactional updates, reactive UI. Implementation: Either via elisp-native implementation or MCP bridge to Clojure Datascript. Research: cl-lib structures, plists as entities, pattern matching for queries.
+:AGENT:    emacs-1303659
+:SESSION:  20260111-180303
+:END:
+** TODO Fix swarm_status slaves-detail truncation (shows 1 of N lings)
+:PROPERTIES:
+:ID:       e79a1c55-6466-4a07-8568-95f8aa33971f
+:CREATED:  2026-01-11 18:10
+:DESCRIPTION: Priority 1: swarm_status slaves-detail only displays first ling. Need terminal introspection to enumerate all active vterm/eat buffers. Affects hivemind coordination visibility.
+:AGENT:    emacs-1303659
+:SESSION:  20260111-181048
+:END:
+** DONE Add auto-shout on ling task completion
+:PROPERTIES:
+:ID:       e6c253d9-f2d6-46ad-8940-9748ed5332d1
+:CREATED:  2026-01-11 18:10
+:DESCRIPTION: Priority 2: Lings should automatically call hivemind_shout when completing tasks. Options: (1) Inject shout instruction in preset footer, (2) Terminal output pattern detection, (3) MCP response hook. Reduces need for manual status polling.
+:AGENT:    emacs-1303659
+:SESSION:  20260111-181048
+:UPDATED:  2026-01-13 20:48
+:LAST_AGENT: emacs-1918884
+:END:
+** TODO [EPIC] Live ling dashboard for swarm monitoring
+:PROPERTIES:
+:ID:       eaba5cb1-92d6-463d-994e-b118c516bdfd
+:CREATED:  2026-01-11 18:10
+:DESCRIPTION: Priority 3: Real-time dashboard showing all lings with status, current task, last shout. Options: tabulated-list-mode buffer, org-mode table, or separate emacs --daemon=swarm. Part of dedicated daemon architecture epic. Dependencies: fix swarm_status first.
+:AGENT:    emacs-1303659
+:SESSION:  20260111-181048
+:END:
+** TODO Add type safety layer for Clojure↔elisp serialization
+:PROPERTIES:
+:ID:       56b79383-b611-4c21-b9ee-3f97d48de224
+:CREATED:  2026-01-11 18:10
+:DESCRIPTION: Priority 4: Prevent vector/list mismatches at boundaries. Options: (1) Clojure-side elisp serializer, (2) elisp-side defensive converters (ensure-list pattern), (3) JSON schema validation. Related: tags->elisp-list helper in hooks.clj.
+:AGENT:    emacs-1303659
+:SESSION:  20260111-181048
+:END:
+** DONE Fix unresolved symbol in memory.clj:255
+:PROPERTIES:
+:ID:       896fb88e-d8a8-42af-8fe1-febe2264f949
+:CREATED:  2026-01-12 14:38
+:DESCRIPTION: ERROR: Unresolved symbol `entry` at src/hive_mcp/tools/memory.clj:255. This is breaking static analysis and may cause runtime errors.
+:AGENT:    emacs-11246
+:SESSION:  20260112-143808
+:UPDATED:  2026-01-13 20:33
+:LAST_AGENT: emacs-1918884
+:END:
+** DONE Add missing namespace requires (5 files)
+:PROPERTIES:
+:ID:       458a66e5-e00f-4633-88ad-3286d1a735d4
+:CREATED:  2026-01-12 14:38
+:DESCRIPTION: Missing requires detected by kondo: channel/websocket.clj:86 (aleph.netty), chroma.clj:161 (clojure.string), docs.clj:14 (clojure.string), graph/datascript.clj (clojure.string, clojure.set), transport/websocket.clj:77 (aleph.netty)
+:AGENT:    emacs-11246
+:SESSION:  20260112-143809
+:UPDATED:  2026-01-13 20:33
+:LAST_AGENT: emacs-1918884
+:END:
+** TODO Refactor parser.clj - complexity 93
+:PROPERTIES:
+:ID:       b3528173-b7ee-47bb-bee5-9c451eeafc37
+:CREATED:  2026-01-12 14:38
+:DESCRIPTION: org_clj/parser.clj has highest complexity (93) with 496 code lines. Consider extracting parsing strategies into separate modules to reduce cognitive load.
+:AGENT:    emacs-11246
+:SESSION:  20260112-143809
+:END:
+** DONE Deprecate mcp_mem_kanban_* tools, consolidate on mcp_kanban_*
+:PROPERTIES:
+:ID:       508daea1-a6fd-496f-b182-9574bab85d20
+:CREATED:  2026-01-13 20:22
+:DESCRIPTION: Remove or hide mcp_mem_kanban_list/create/move from tool registry. Keep org file as persistence backend only. In-mem kanban is primary interface.
+:AGENT:    emacs-1918884
+:SESSION:  20260113-202237
+:UPDATED:  2026-01-13 21:08
+:LAST_AGENT: emacs-1918884
+:END:
+** DONE Fix wrap/memory scoping to use caller's directory
+:PROPERTIES:
+:ID:       1fb700ad-52ab-47ee-8801-cd0d320280b3
+:CREATED:  2026-01-13 20:33
+:DESCRIPTION: Added directory parameter to mcp_memory_add, mcp_memory_query, mcp_memory_query_metadata. Now memories are tagged with correct project scope based on caller's cwd instead of Emacs buffer. Fixed in crud.clj and memory.clj inputSchemas.
+:AGENT:    emacs-1918884
+:SESSION:  20260113-203351
+:UPDATED:  2026-01-13 20:33
+:LAST_AGENT: emacs-1918884
+:END:
+** DONE BUG: hivemind_messages returns 'Agent not found' for existing agents
+:PROPERTIES:
+:ID:       b7aad491-c9b7-4f4e-b5c9-2d85e6ebdc45
+:CREATED:  2026-01-13 20:35
+:DESCRIPTION: hivemind_messages returns error "Agent not found: coordinator" even when agent exists in available-agents list. Example: querying swarm-fix-kondo-errors-1768347129 fails but it's listed in available-agents. Root cause likely in src/hive_mcp/hivemind.clj message retrieval logic.
+:AGENT:    emacs-1918884
+:SESSION:  20260113-203509
+:UPDATED:  2026-01-13 20:43
+:LAST_AGENT: emacs-1918884
+:END:
+** TODO BUG: hivemind_status shows stale entries for killed lings
+:PROPERTIES:
+:ID:       9871bcf4-0055-45d8-92b2-9bf362dc0ca1
+:CREATED:  2026-01-13 20:40
+:DESCRIPTION: Killed lings remain in hivemind_status agent list. Example: swarm-fix-crystallize-1768346566 was killed but still shows status "progress". Need to clean up agent registry on swarm_kill. Related to lings registry sync.
+:AGENT:    emacs-1918884
+:SESSION:  20260113-204038
+:END:
+** DONE Hook: Auto-collect ling feedback on swarm pain points
+:PROPERTIES:
+:ID:       d07f2c7f-da76-43ac-8840-c7df0c5a04ee
+:CREATED:  2026-01-13 20:51
+:DESCRIPTION: Create hook that prompts lings to report friction/pain points after task completion. Store as memory entries tagged 'ling-feedback', 'dogfood'. Options: (1) Post-task hook asks "any friction?", (2) Preset footer includes feedback instruction, (3) Periodic survey broadcast. Goal: continuous improvement via dogfooding.
+:AGENT:    emacs-1918884
+:SESSION:  20260113-205135
+:UPDATED:  2026-01-13 20:58
+:LAST_AGENT: emacs-1918884
+:END:
+** TODO [Paper] Laws of LLM Dynamics - add as Section 7/8 to arxiv/paper.tex
+:PROPERTIES:
+:ID:       9ec25e31-bae1-4c37-b3b2-70aa8354a6ba
+:CREATED:  2026-01-13 20:59
+:DESCRIPTION: Write up "Laws of LLM Dynamics" derived from hive-mcp development. Either standalone arxiv paper or addendum to existing paper in arxiv/. Laws: (1) Conservation of Compliance, (2) Entropy of Context, (3) Defense in Depth probability stacking, (4) Token Pressure, (5) Observability Bootstraps Reliability. Include empirical data from dogfooding sessions.
+:AGENT:    emacs-1918884
+:SESSION:  20260113-205956
+:UPDATED:  2026-01-13 21:00
+:LAST_AGENT: emacs-1918884
+:END:
+** TODO Refactor swarm/jvm.clj - complexity 50
+:PROPERTIES:
+:ID:       0d8cb638-2549-485a-bb03-6636970a4922
+:CREATED:  2026-01-13 21:06
+:DESCRIPTION: jvm.clj has complexity 50 (target <30). Extract: process detection, orphan identification, cleanup logic into separate modules. Apply TDD/SOLID/CLARITY.
+:AGENT:    emacs-1918884
+:SESSION:  20260113-210604
+:END:
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

@@ -9,7 +9,6 @@
             [hive-mcp.diagrams.adapters.tikz]
             [hive-mcp.diagrams.adapters.mermaid]
             [clojure.java.io :as io]
-            [clojure.string :as str]
             [clojure.edn :as edn]))
 
 ;;; Tool: list-diagram-adapters

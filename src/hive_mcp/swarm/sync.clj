@@ -1,23 +1,31 @@
 (ns hive-mcp.swarm.sync
-  "Synchronize logic database with Emacs swarm state.
+  "Synchronize DataScript database with Emacs swarm state.
 
    Uses channel.clj event bus to receive state updates from Emacs
-   and keep the logic database in sync for accurate conflict detection.
+   and keep the DataScript database in sync for accurate conflict detection.
 
    Events handled:
-   - :slave-spawned    - Register new slave in logic db
+   - :slave-spawned    - Register new slave in DataScript
    - :slave-status     - Update slave status
    - :slave-killed     - Remove slave and release claims
    - :task-dispatched  - Register task and file claims
    - :task-completed   - Mark task complete, release claims, process queue
    - :task-failed      - Mark task failed, release claims, process queue
-   - :prompt-shown     - Forward permission prompts to hivemind coordinator"
-  (:require [hive-mcp.swarm.logic :as logic]
+   - :prompt-shown     - Forward permission prompts to hivemind coordinator
+
+   Migration Note (ADR-001):
+   - Phase 1: Uses DataScript for swarm state (replacing core.logic pldb)
+   - Phase 2: Elisp queries DataScript via MCP (future)
+   - Phase 3: Single source of truth achieved (future)"
+  (:require [hive-mcp.swarm.datascript :as ds]
+            [hive-mcp.swarm.logic :as logic] ;; Keep for coordinator compatibility
             [hive-mcp.swarm.coordinator :as coord]
             [hive-mcp.channel :as channel]
             [hive-mcp.emacsclient :as ec]
             [hive-mcp.hivemind :as hivemind]
-            [clojure.core.async :as async :refer [go go-loop <!]]
+            [hive-mcp.hooks :as hooks]
+            [hive-mcp.hooks.handlers :as handlers]
+            [clojure.core.async :as async :refer [go-loop <!]]
             [clojure.data.json :as json]
             [taoensso.timbre :as log]))
 
@@ -29,6 +37,65 @@
   (atom {:running false
          :subscriptions []}))
 
+;; Injected hooks registry - set via set-hooks-registry! to avoid cyclic deps
+(defonce ^:private hooks-registry-atom (atom nil))
+
+(defn set-hooks-registry!
+  "Inject the hooks registry from server.clj to avoid cyclic dependency.
+   Called during server initialization."
+  [registry]
+  (reset! hooks-registry-atom registry)
+  (log/info "Sync: hooks registry injected"))
+
+(defn get-hooks-registry
+  "Get the injected hooks registry."
+  []
+  @hooks-registry-atom)
+
+;; =============================================================================
+;; Hook Action Execution (Layer 4 - Architectural Guarantee)
+;; =============================================================================
+
+(defn- execute-shout-action!
+  "Execute a :shout action returned by a hook handler.
+
+   Layer 4 of 4-layer convergence pattern: If ling forgot to shout,
+   this synthetic shout ensures visibility to the coordinator.
+
+   Action shape: {:action :shout :event-type keyword :message string :data map}"
+  [{:keys [action event-type message data]} slave-id]
+  (when (= action :shout)
+    (let [event-kw (if (keyword? event-type) event-type (keyword event-type))
+          shout-data (merge data {:source "layer4-synthetic" :message message})]
+      (hivemind/shout! slave-id event-kw shout-data)
+      (log/debug "Layer4: Executed synthetic shout for" slave-id "->" event-kw))))
+
+(defn- trigger-task-complete-hooks!
+  "Trigger :task-complete hooks and execute resulting shout actions.
+
+   ARCHITECTURAL GUARANTEE: This function ensures a shout is emitted
+   on task completion, regardless of whether the ling explicitly called
+   hivemind_shout. Part of 4-layer convergence pattern.
+
+   Returns: Vector of hook results"
+  [task-id slave-id]
+  (when-let [registry (get-hooks-registry)]
+    ;; Build event/context following handlers.clj contract
+    (let [event {:type :task-complete
+                 :task-id task-id}
+          context {:agent-id slave-id
+                   :task-id task-id}
+          ;; Call handlers directly (they expect [event context])
+          handler-result (handlers/shout-completion event context)]
+      ;; Execute the shout action
+      (execute-shout-action! handler-result slave-id)
+      ;; Also trigger any custom hooks registered via the registry
+      ;; These receive just context (single-arg handlers)
+      (let [custom-results (hooks/trigger-hooks registry :task-complete
+                                                (merge event context))]
+        (log/debug "Layer4: Triggered" (count custom-results) "custom hooks")
+        custom-results))))
+
 ;; =============================================================================
 ;; Event Handlers
 ;; =============================================================================
@@ -38,10 +105,15 @@
    Event: {:slave-id :name :parent-id :depth}"
   [event]
   (let [slave-id (or (get event "slave-id") (:slave-id event))
-        status :idle]
+        name (or (get event "name") (:name event) slave-id)
+        depth (or (get event "depth") (:depth event) 1)
+        parent-id (or (get event "parent-id") (:parent-id event))]
     (when slave-id
-      (logic/add-slave! slave-id status)
-      (log/debug "Sync: registered slave" slave-id))))
+      (ds/add-slave! slave-id {:status :idle
+                               :name name
+                               :depth depth
+                               :parent parent-id})
+      (log/debug "Sync: registered slave" slave-id "depth:" depth))))
 
 (defn- handle-slave-status
   "Handle slave status change event.
@@ -50,7 +122,7 @@
   (let [slave-id (or (get event "slave-id") (:slave-id event))
         status (keyword (or (get event "status") (:status event)))]
     (when (and slave-id status)
-      (logic/update-slave-status! slave-id status)
+      (ds/update-slave! slave-id {:slave/status status})
       (log/debug "Sync: updated slave status" slave-id "->" status))))
 
 (defn- handle-slave-killed
@@ -59,8 +131,8 @@
   [event]
   (let [slave-id (or (get event "slave-id") (:slave-id event))]
     (when slave-id
-      (logic/release-claims-for-slave! slave-id)
-      (logic/remove-slave! slave-id)
+      ;; ds/remove-slave! handles claim release internally
+      (ds/remove-slave! slave-id)
       (log/debug "Sync: removed slave" slave-id))))
 
 (defn- handle-task-dispatched
@@ -71,21 +143,31 @@
         slave-id (or (get event "slave-id") (:slave-id event))
         files (or (get event "files") (:files event) [])]
     (when (and task-id slave-id)
-      (logic/add-task! task-id slave-id :dispatched)
-      ;; Register file claims
+      ;; Add task with files stored in :task/files
+      (ds/add-task! task-id slave-id {:status :dispatched :files files})
+      ;; Register file claims linked to task
       (doseq [f files]
-        (logic/add-claim! f slave-id)
-        (logic/add-task-file! task-id f))
+        (ds/claim-file! f slave-id task-id))
       (log/debug "Sync: registered task" task-id "with" (count files) "files"))))
 
 (defn- handle-task-completed
   "Handle task completion event.
-   Event: {:task-id :slave-id}"
+   Event: {:task-id :slave-id}
+
+   LAYER 4 INTEGRATION: Triggers :task-complete hooks which emit
+   a synthetic shout. This is the architectural guarantee - completion
+   is always visible to the coordinator regardless of ling behavior."
   [event]
-  (let [task-id (or (get event "task-id") (:task-id event))]
+  (let [task-id (or (get event "task-id") (:task-id event))
+        slave-id (or (get event "slave-id") (:slave-id event))]
     (when task-id
-      (logic/update-task-status! task-id :completed)
-      (logic/release-claims-for-task! task-id)
+      ;; ds/complete-task! handles status update, claim release, and slave stats
+      (ds/complete-task! task-id)
+
+      ;; LAYER 4: Trigger hooks for synthetic shout (architectural guarantee)
+      ;; Even if ling forgot to call hivemind_shout, this ensures visibility
+      (trigger-task-complete-hooks! task-id slave-id)
+
       ;; Process queue - some waiting tasks might be ready now
       (let [ready (coord/process-queue!)]
         (when (seq ready)
@@ -98,8 +180,8 @@
   [event]
   (let [task-id (or (get event "task-id") (:task-id event))]
     (when task-id
-      (logic/update-task-status! task-id :error)
-      (logic/release-claims-for-task! task-id)
+      ;; ds/fail-task! handles status update and claim release
+      (ds/fail-task! task-id :error)
       ;; Process queue - claims released
       (coord/process-queue!)
       (log/debug "Sync: task failed" task-id))))
@@ -152,10 +234,10 @@
 
 (defn full-sync-from-emacs!
   "One-time full sync from Emacs swarm state.
-   Call this on startup to bootstrap the logic database."
+   Call this on startup to bootstrap the DataScript database."
   []
   (log/info "Starting full sync from Emacs...")
-  (logic/reset-db!)
+  (ds/reset-conn!)
 
   ;; Get current swarm status from Emacs
   (let [elisp "(json-encode (hive-mcp-swarm-api-status))"
@@ -167,8 +249,12 @@
           (when-let [slaves (:slaves-detail status)]
             (doseq [slave slaves]
               (let [slave-id (:slave-id slave)
-                    slave-status (keyword (:status slave))]
-                (logic/add-slave! slave-id slave-status)
+                    slave-status (keyword (:status slave))
+                    name (or (:name slave) slave-id)
+                    depth (or (:depth slave) 1)]
+                (ds/add-slave! slave-id {:status slave-status
+                                         :name name
+                                         :depth depth})
                 (log/debug "Sync: bootstrapped slave" slave-id slave-status))))
 
           ;; Note: Task claims would need to be tracked by Emacs side
@@ -227,7 +313,7 @@
   []
   {:running (:running @sync-state)
    :subscription-count (count (:subscriptions @sync-state))
-   :db-stats (logic/db-stats)})
+   :db-stats (ds/db-stats)})
 
 (comment
   ;; Development REPL examples
@@ -239,11 +325,11 @@
   (sync-status)
 
   ;; Manual test: simulate events
-  (handle-slave-spawned {:slave-id "test-slave-1"})
+  (handle-slave-spawned {:slave-id "test-slave-1" :name "test" :depth 1})
   (handle-task-dispatched {:task-id "task-1"
                            :slave-id "test-slave-1"
                            :files ["/src/core.clj"]})
-  (logic/dump-db)
+  (ds/dump-db)
 
   ;; Stop sync
   (stop-sync!))

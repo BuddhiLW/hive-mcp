@@ -234,8 +234,8 @@ Poll the slave's :status to check progress: spawning -> starting -> idle."
              spawn-depth
              parent-id)
 
-    ;; Emit slave-spawned event via channel
-    (hive-mcp-swarm-events-emit-slave-spawned slave-id name presets)
+    ;; Emit slave-spawned event via channel (ADR-001 Phase 2: include cwd for registry sync)
+    (hive-mcp-swarm-events-emit-slave-spawned slave-id name presets work-dir)
 
     ;; FULLY ASYNC: Defer ALL work to timer so we return IMMEDIATELY
     (run-with-timer

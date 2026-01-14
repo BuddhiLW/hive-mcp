@@ -4,6 +4,10 @@
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.string :as str]
             [hive-mcp.tools :as tools]
+            [hive-mcp.tools.cider :as cider]
+            [hive-mcp.tools.kanban :as kanban]
+            [hive-mcp.tools.swarm :as swarm]
+            [hive-mcp.tools.org :as org]
             [hive-mcp.org-clj.parser :as parser]
             [hive-mcp.org-clj.render :as render]
             [hive-mcp.prompt-capture :as pc]))
@@ -35,7 +39,7 @@
 
 (deftest ^:integration test-cider-eval-returns-result
   (testing "BUG #2: cider-eval-silent should return evaluation result, not feature name"
-    (let [result (tools/handle-cider-eval-silent {:code "(+ 1 2 3)"})]
+    (let [result (cider/handle-cider-eval-silent {:code "(+ 1 2 3)"})]
       (is (map? result) "Should return a map")
       (is (contains? result :text) "Should have :text key")
       ;; This test pins down the bug - previously returned "hive-mcp-cider"
@@ -99,7 +103,7 @@
     (let [start (System/currentTimeMillis)
           ;; Use a timeout wrapper
           result (deref
-                  (future (tools/handle-mcp-kanban-status {}))
+                  (future (kanban/handle-mcp-kanban-status {}))
                   5000 ; 5 second timeout
                   {:timeout true})]
       (is (not (:timeout result))
@@ -117,7 +121,7 @@
 
 (deftest ^:integration test-swarm-status-clean-json
   (testing "BUG #6: swarm-status should return clean JSON, not double-encoded"
-    (let [result (tools/handle-swarm-status {})]
+    (let [result (swarm/handle-swarm-status {})]
       (is (map? result) "Should return a map")
       (when-let [text (get-in result [:content 0 :text])]
         ;; Check for double-encoding signs
@@ -174,7 +178,7 @@
     (let [result (deref
                   (future
                     (try
-                      (tools/handle-cider-eval-silent {:code "(+ 1 1)"})
+                      (cider/handle-cider-eval-silent {:code "(+ 1 1)"})
                       (catch Exception e
                         {:error (.getMessage e)})))
                   10000 ; 10 second timeout - should be plenty
@@ -192,7 +196,7 @@
 (deftest test-org-kanban-native-stats-match-array
   (testing "BUG #10: org_kanban_native_status stats should match by_status arrays"
     (let [test-file "/home/lages/dotfiles/gitthings/hive-mcp/kanban.org"
-          result (tools/handle-org-kanban-native-status {:file_path test-file})]
+          result (org/handle-org-kanban-native-status {:file_path test-file})]
       (when-not (:isError result)
         (let [parsed (clojure.data.json/read-str (:text result) :key-fn keyword)
               stats (:stats parsed)

@@ -1,247 +1,184 @@
 (ns hive-mcp.prompts.infra-test
-  "Pinning tests for D-Bus notification infrastructure.
+  "Tests for prompts/infra notification adapters.
    
    Tests verify:
-   - notify! calls D-Bus with correct parameters
-   - Graceful degradation when D-Bus unavailable
-   - Specialized notification functions (permission-request, blocked, completed)
+   - Specialized notification functions delegate correctly to hive-mcp.notify
+   - Correct notification types, urgency levels, and content formatting
+   - Channel emission functions work correctly
    
-   Uses with-redefs to mock lambdaisland/dbus-client for isolated unit testing."
+   Following ISP (Interface Segregation Principle):
+   Tests verify PUBLIC API behavior, not implementation details."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [hive-mcp.prompts.infra :as infra]
-            [lambdaisland.dbus.client :as dbus]))
+            [hive-mcp.notify :as notify]
+            [hive-mcp.channel :as channel]))
 
 ;; =============================================================================
 ;; Test Fixtures & Helpers
 ;; =============================================================================
 
-(def ^:dynamic *dbus-calls* nil)
+(def ^:dynamic *notify-calls* nil)
+(def ^:dynamic *channel-calls* nil)
 
-(defn capture-dbus-calls-fixture
-  "Fixture to capture D-Bus calls for verification."
+(defn capture-calls-fixture
+  "Fixture to capture notify and channel calls for verification."
   [f]
-  (binding [*dbus-calls* (atom [])]
+  (binding [*notify-calls* (atom [])
+            *channel-calls* (atom [])]
     (f)))
 
-(use-fixtures :each capture-dbus-calls-fixture)
+(use-fixtures :each capture-calls-fixture)
 
-(defn mock-write-message
-  "Mock D-Bus write-message that captures calls and returns success."
-  [_client msg]
-  (when *dbus-calls*
-    (swap! *dbus-calls* conj msg))
-  ;; Return a realized promise with notification ID
-  (delay {:id 12345}))
+(defn mock-notify!
+  "Mock notify! that captures calls and returns success."
+  [opts]
+  (when *notify-calls*
+    (swap! *notify-calls* conj opts))
+  true)
 
-(defn mock-init-client!
-  "Mock D-Bus init-client! that returns a fake client."
-  [_sock _handler]
-  {:mock-client true})
-
-(defn mock-session-sock
-  "Mock session-sock that returns fake socket path."
-  []
-  "/run/user/1000/bus")
+(defn mock-channel-emit!
+  "Mock channel emit that captures calls."
+  [event-type data]
+  (when *channel-calls*
+    (swap! *channel-calls* conj {:event-type event-type :data data}))
+  true)
 
 ;; =============================================================================
-;; Test: notify! Function
-;; =============================================================================
-
-(deftest test-notify!-sends-correct-dbus-message
-  (testing "notify! sends correct D-Bus message structure"
-    (with-redefs [dbus/session-sock mock-session-sock
-                  dbus/init-client! mock-init-client!
-                  dbus/write-message mock-write-message]
-      ;; Reset the client to force re-initialization
-      (reset! @#'infra/dbus-client nil)
-
-      (infra/notify! "Test Title" "Test Body")
-
-      (is (= 1 (count @*dbus-calls*)))
-      (let [msg (first @*dbus-calls*)
-            headers (:headers msg)
-            body (:body msg)]
-        ;; Verify D-Bus method call structure
-        (is (= :method-call (:type msg)))
-        (is (= "/org/freedesktop/Notifications" (:path headers)))
-        (is (= "Notify" (:member headers)))
-        (is (= "org.freedesktop.Notifications" (:interface headers)))
-        (is (= "org.freedesktop.Notifications" (:destination headers)))
-
-        ;; Verify body parameters (per freedesktop spec)
-        (is (= "hive-mcp" (nth body 0))) ; app_name
-        (is (= 0 (nth body 1))) ; replaces_id
-        (is (= "" (nth body 2))) ; app_icon
-        (is (= "Test Title" (nth body 3))) ; summary
-        (is (= "Test Body" (nth body 4))) ; body
-        (is (= [] (nth body 5))) ; actions
-        (is (= {"urgency" 1} (nth body 6))) ; hints (default urgency)
-        (is (= -1 (nth body 7))))))) ; timeout
-
-(deftest test-notify!-with-custom-options
-  (testing "notify! accepts custom urgency, app-name, icon, timeout"
-    (with-redefs [dbus/session-sock mock-session-sock
-                  dbus/init-client! mock-init-client!
-                  dbus/write-message mock-write-message]
-      (reset! @#'infra/dbus-client nil)
-
-      (infra/notify! "Alert" "Critical message"
-                     :urgency 2
-                     :app-name "my-app"
-                     :icon "/path/to/icon.png"
-                     :timeout 5000)
-
-      (is (= 1 (count @*dbus-calls*)))
-      (let [body (:body (first @*dbus-calls*))]
-        (is (= "my-app" (nth body 0))) ; custom app_name
-        (is (= "/path/to/icon.png" (nth body 2))) ; custom icon
-        (is (= {"urgency" 2} (nth body 6))) ; critical urgency
-        (is (= 5000 (nth body 7))))))) ; custom timeout
-
-(deftest test-notify!-dbus-unavailable-returns-nil
-  (testing "notify! returns nil gracefully when D-Bus unavailable"
-    (with-redefs [dbus/session-sock (fn [] (throw (Exception. "No D-Bus session")))
-                  dbus/init-client! (fn [_ _] (throw (Exception. "Connection refused")))]
-      (reset! @#'infra/dbus-client nil)
-
-      (is (nil? (infra/notify! "Title" "Body"))))))
-
-(deftest test-notify!-write-error-returns-nil
-  (testing "notify! returns nil when D-Bus write fails"
-    (with-redefs [dbus/session-sock mock-session-sock
-                  dbus/init-client! mock-init-client!
-                  dbus/write-message (fn [_ _] (throw (Exception. "Write failed")))]
-      (reset! @#'infra/dbus-client nil)
-
-      (is (nil? (infra/notify! "Title" "Body"))))))
-
-(deftest test-notify!-reuses-client
-  (testing "notify! reuses existing D-Bus client"
-    (let [init-count (atom 0)]
-      (with-redefs [dbus/session-sock mock-session-sock
-                    dbus/init-client! (fn [_ _]
-                                        (swap! init-count inc)
-                                        {:mock-client true})
-                    dbus/write-message mock-write-message]
-        (reset! @#'infra/dbus-client nil)
-
-        ;; Send multiple notifications
-        (infra/notify! "First" "Message")
-        (infra/notify! "Second" "Message")
-        (infra/notify! "Third" "Message")
-
-        ;; Client should only be initialized once
-        (is (= 1 @init-count))
-        (is (= 3 (count @*dbus-calls*)))))))
-
-;; =============================================================================
-;; Test: Specialized Notification Functions
+;; Test: notify-permission-request!
 ;; =============================================================================
 
 (deftest test-notify-permission-request!
-  (testing "notify-permission-request! sends critical notification"
-    (with-redefs [dbus/session-sock mock-session-sock
-                  dbus/init-client! mock-init-client!
-                  dbus/write-message mock-write-message]
-      (reset! @#'infra/dbus-client nil)
-
+  (testing "notify-permission-request! sends critical notification with correct format"
+    (with-redefs [notify/notify! mock-notify!]
       (infra/notify-permission-request! "agent-123" "file_edit" "Edit src/core.clj")
 
-      (is (= 1 (count @*dbus-calls*)))
-      (let [body (:body (first @*dbus-calls*))]
-        ;; Should have lock emoji in title
-        (is (clojure.string/includes? (nth body 3) "🔐"))
-        (is (clojure.string/includes? (nth body 3) "file_edit"))
+      (is (= 1 (count @*notify-calls*)))
+      (let [opts (first @*notify-calls*)]
+        ;; Should have lock emoji and tool name in summary
+        (is (clojure.string/includes? (:summary opts) "🔐"))
+        (is (clojure.string/includes? (:summary opts) "file_edit"))
         ;; Body should include agent and summary
-        (is (clojure.string/includes? (nth body 4) "agent-123"))
-        (is (clojure.string/includes? (nth body 4) "Edit src/core.clj"))
-        ;; Critical urgency (2)
-        (is (= {"urgency" 2} (nth body 6)))
-        ;; Never expire (0)
-        (is (= 0 (nth body 7)))))))
+        (is (clojure.string/includes? (:body opts) "agent-123"))
+        (is (clojure.string/includes? (:body opts) "Edit src/core.clj"))
+        ;; Critical type (error)
+        (is (= "error" (:type opts)))
+        ;; Never auto-dismiss (timeout 0)
+        (is (= 0 (:timeout opts)))))))
+
+;; =============================================================================
+;; Test: notify-agent-blocked!
+;; =============================================================================
 
 (deftest test-notify-agent-blocked!
-  (testing "notify-agent-blocked! sends normal urgency notification"
-    (with-redefs [dbus/session-sock mock-session-sock
-                  dbus/init-client! mock-init-client!
-                  dbus/write-message mock-write-message]
-      (reset! @#'infra/dbus-client nil)
-
+  (testing "notify-agent-blocked! sends warning notification"
+    (with-redefs [notify/notify! mock-notify!]
       (infra/notify-agent-blocked! "agent-456" "Waiting for user input")
 
-      (is (= 1 (count @*dbus-calls*)))
-      (let [body (:body (first @*dbus-calls*))]
-        ;; Should have pause emoji in title
-        (is (clojure.string/includes? (nth body 3) "⏸️"))
-        (is (clojure.string/includes? (nth body 3) "agent-456"))
-        ;; Body should include reason
-        (is (= "Waiting for user input" (nth body 4)))
-        ;; Normal urgency (1)
-        (is (= {"urgency" 1} (nth body 6)))))))
+      (is (= 1 (count @*notify-calls*)))
+      (let [opts (first @*notify-calls*)]
+        ;; Should have pause emoji in summary
+        (is (clojure.string/includes? (:summary opts) "⏸️"))
+        (is (clojure.string/includes? (:summary opts) "agent-456"))
+        ;; Body should be the reason
+        (is (= "Waiting for user input" (:body opts)))
+        ;; Warning type
+        (is (= "warning" (:type opts)))))))
+
+;; =============================================================================
+;; Test: notify-agent-completed!
+;; =============================================================================
 
 (deftest test-notify-agent-completed!
-  (testing "notify-agent-completed! sends low urgency notification"
-    (with-redefs [dbus/session-sock mock-session-sock
-                  dbus/init-client! mock-init-client!
-                  dbus/write-message mock-write-message]
-      (reset! @#'infra/dbus-client nil)
-
+  (testing "notify-agent-completed! sends info notification"
+    (with-redefs [notify/notify! mock-notify!]
       (infra/notify-agent-completed! "agent-789" "Tests passed: 42/42")
 
-      (is (= 1 (count @*dbus-calls*)))
-      (let [body (:body (first @*dbus-calls*))]
-        ;; Should have checkmark emoji in title
-        (is (clojure.string/includes? (nth body 3) "✅"))
-        (is (clojure.string/includes? (nth body 3) "agent-789"))
-        ;; Body should include summary
-        (is (= "Tests passed: 42/42" (nth body 4)))
-        ;; Low urgency (0)
-        (is (= {"urgency" 0} (nth body 6)))))))
+      (is (= 1 (count @*notify-calls*)))
+      (let [opts (first @*notify-calls*)]
+        ;; Should have checkmark emoji in summary
+        (is (clojure.string/includes? (:summary opts) "✅"))
+        (is (clojure.string/includes? (:summary opts) "agent-789"))
+        ;; Body should be the task summary
+        (is (= "Tests passed: 42/42" (:body opts)))
+        ;; Info type
+        (is (= "info" (:type opts)))))))
+
+;; =============================================================================
+;; Test: Channel Emission
+;; =============================================================================
+
+(deftest test-emit-prompt-pending!
+  (testing "emit-prompt-pending! emits correct event structure"
+    (with-redefs [channel/emit-event! mock-channel-emit!]
+      (infra/emit-prompt-pending! {:id "prompt-1"
+                                   :agent-id "agent-123"
+                                   :question "Delete file?"
+                                   :options ["yes" "no"]
+                                   :created-at 1234567890})
+
+      (is (= 1 (count @*channel-calls*)))
+      (let [{:keys [event-type data]} (first @*channel-calls*)]
+        (is (= :prompt-pending event-type))
+        (is (= "prompt-1" (:prompt-id data)))
+        (is (= "agent-123" (:agent-id data)))
+        (is (= "Delete file?" (:question data)))
+        (is (= ["yes" "no"] (:options data)))
+        (is (= 1234567890 (:created-at data)))))))
+
+(deftest test-emit-prompt-resolved!
+  (testing "emit-prompt-resolved! emits correct event structure"
+    (with-redefs [channel/emit-event! mock-channel-emit!]
+      (infra/emit-prompt-resolved! {:id "prompt-2"
+                                    :agent-id "agent-456"
+                                    :response "yes"
+                                    :status :approved
+                                    :resolved-at 1234567899})
+
+      (is (= 1 (count @*channel-calls*)))
+      (let [{:keys [event-type data]} (first @*channel-calls*)]
+        (is (= :prompt-resolved event-type))
+        (is (= "prompt-2" (:prompt-id data)))
+        (is (= "agent-456" (:agent-id data)))
+        (is (= "yes" (:response data)))
+        (is (= :approved (:status data)))
+        (is (= 1234567899 (:resolved-at data)))))))
+
+(deftest test-emit-prompt-expired!
+  (testing "emit-prompt-expired! emits correct event structure"
+    (with-redefs [channel/emit-event! mock-channel-emit!]
+      (infra/emit-prompt-expired! {:id "prompt-3"
+                                   :agent-id "agent-789"
+                                   :resolved-at 1234567900})
+
+      (is (= 1 (count @*channel-calls*)))
+      (let [{:keys [event-type data]} (first @*channel-calls*)]
+        (is (= :prompt-expired event-type))
+        (is (= "prompt-3" (:prompt-id data)))
+        (is (= "agent-789" (:agent-id data)))
+        (is (= 1234567900 (:resolved-at data)))))))
 
 ;; =============================================================================
 ;; Test: Edge Cases
 ;; =============================================================================
 
-(deftest test-notify!-with-special-characters
-  (testing "notify! handles special characters in title/body"
-    (with-redefs [dbus/session-sock mock-session-sock
-                  dbus/init-client! mock-init-client!
-                  dbus/write-message mock-write-message]
-      (reset! @#'infra/dbus-client nil)
+(deftest test-notify-with-special-characters
+  (testing "notification functions handle special characters"
+    (with-redefs [notify/notify! mock-notify!]
+      (infra/notify-permission-request!
+       "agent<>123"
+       "file_edit"
+       "Edit \"core.clj\" & <test>.clj")
 
-      (infra/notify! "Title with <html> & \"quotes\""
-                     "Body with\nnewlines\tand\ttabs")
+      (is (= 1 (count @*notify-calls*)))
+      (let [opts (first @*notify-calls*)]
+        (is (clojure.string/includes? (:body opts) "agent<>123"))
+        (is (clojure.string/includes? (:body opts) "Edit \"core.clj\" & <test>.clj"))))))
 
-      (is (= 1 (count @*dbus-calls*)))
-      (let [body (:body (first @*dbus-calls*))]
-        (is (= "Title with <html> & \"quotes\"" (nth body 3)))
-        (is (= "Body with\nnewlines\tand\ttabs" (nth body 4)))))))
+(deftest test-notify-with-multiline-content
+  (testing "notification functions handle multiline content"
+    (with-redefs [notify/notify! mock-notify!]
+      (infra/notify-agent-blocked! "agent-1" "Line 1\nLine 2\nLine 3")
 
-(deftest test-notify!-with-empty-body
-  (testing "notify! handles empty body"
-    (with-redefs [dbus/session-sock mock-session-sock
-                  dbus/init-client! mock-init-client!
-                  dbus/write-message mock-write-message]
-      (reset! @#'infra/dbus-client nil)
-
-      (infra/notify! "Title Only" "")
-
-      (is (= 1 (count @*dbus-calls*)))
-      (let [body (:body (first @*dbus-calls*))]
-        (is (= "Title Only" (nth body 3)))
-        (is (= "" (nth body 4)))))))
-
-(deftest test-notify!-urgency-boundaries
-  (testing "notify! accepts all valid urgency levels"
-    (with-redefs [dbus/session-sock mock-session-sock
-                  dbus/init-client! mock-init-client!
-                  dbus/write-message mock-write-message]
-      (reset! @#'infra/dbus-client nil)
-
-      ;; Test each urgency level
-      (doseq [urgency [0 1 2]]
-        (infra/notify! "Test" "Body" :urgency urgency))
-
-      (is (= 3 (count @*dbus-calls*)))
-      (is (= [0 1 2]
-             (map #(get-in % [:body 6 "urgency"]) @*dbus-calls*))))))
+      (is (= 1 (count @*notify-calls*)))
+      (let [opts (first @*notify-calls*)]
+        (is (= "Line 1\nLine 2\nLine 3" (:body opts)))))))

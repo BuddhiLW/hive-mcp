@@ -4,3 +4,6 @@
 [submodule "mcp-clojure-sdk"]
 	path = mcp-clojure-sdk
 	url = https://github.com/BuddhiLW/mcp-clojure-sdk.git
+[submodule "hive-events"]
+	path = hive-events
+	url = /home/lages/dotfiles/gitthings/hive-events

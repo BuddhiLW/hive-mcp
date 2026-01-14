@@ -8,8 +8,7 @@
   (:require [hive-mcp.diagrams.core :as diagrams]
             [clojure.java.shell :refer [sh]]
             [clojure.java.io :as io]
-            [clojure.string :as str]
-            [clojure.edn :as edn]))
+            [clojure.string :as str]))
 
 ;;; Configuration
 

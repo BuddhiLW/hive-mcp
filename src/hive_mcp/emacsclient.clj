@@ -2,8 +2,7 @@
   "Shell wrapper for emacsclient communication with running Emacs."
   (:require [clojure.java.shell :refer [sh]]
             [clojure.string :as str]
-            [taoensso.timbre :as log])
-  (:import [java.util.concurrent TimeoutException]))
+            [taoensso.timbre :as log]))
 
 (def ^:dynamic *emacsclient-path*
   "Path to emacsclient binary."

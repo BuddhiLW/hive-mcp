@@ -9,9 +9,7 @@
    - :graphviz  - Direct GraphViz/DOT
    
    Each adapter implements the DiagramAdapter protocol."
-  (:require [clojure.edn :as edn]
-            [clojure.java.io :as io]
-            [clojure.string :as str]))
+  (:require [clojure.string :as str]))
 
 ;;; Protocol Definition
 

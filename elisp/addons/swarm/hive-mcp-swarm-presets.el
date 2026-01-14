@@ -72,6 +72,58 @@ Set to nil to disable default presets."
 (defvar hive-mcp-swarm-presets--cache nil
   "Cache of loaded presets (name -> file-path).")
 
+(defconst hive-mcp-swarm-presets--auto-shout-footer
+  "
+
+---
+
+## MANDATORY: Task Completion Protocol
+
+**CRITICAL**: When you complete your assigned task, you MUST immediately call:
+
+```
+hivemind_shout(event_type: \"completed\", task: \"<your task summary>\", message: \"<brief result summary>\")
+```
+
+This is NON-NEGOTIABLE. The coordinator cannot see your work until you shout completion.
+
+Rules:
+1. NEVER go idle without shouting completion status
+2. If blocked or failed, shout with event_type: \"blocked\" or \"error\"
+3. Include actionable summary in the message field
+4. Shout progress periodically for long tasks: event_type: \"progress\"
+
+Failure to shout completion wastes coordinator context and blocks pipeline progress.
+
+---
+
+## Dogfooding: Report Tool Friction
+
+When you encounter friction, confusion, or pain points with hive-mcp tools:
+
+1. **Log it immediately** via memory (don't wait for task completion):
+```
+mcp_memory_add(
+  type: \"note\",
+  content: \"FRICTION: <tool-name>: <what you tried> -> <what went wrong/was confusing>\",
+  tags: [\"ling-feedback\", \"dogfood\", \"pain-point\"],
+  duration: \"long\"
+)
+```
+
+2. **Examples of reportable friction**:
+   - Tool returned unexpected format
+   - Missing parameter wasn't clear from docs
+   - Had to work around a limitation
+   - Error message was unhelpful
+   - Workflow required too many steps
+   - Tool name/purpose was confusing
+
+3. **Format**: Keep it actionable: `FRICTION: <tool>: tried X, expected Y, got Z`
+
+This feedback improves the swarm tools for all agents."
+  "Footer injected into all presets to ensure lings auto-shout on completion.")
+
 ;;;; File-Based Presets:
 
 (defun hive-mcp-swarm-presets--scan-dir (dir)
@@ -262,13 +314,17 @@ overrides via memory, and file-based fallback."
 
 (defun hive-mcp-swarm-presets-build-system-prompt (presets)
   "Build combined system prompt from list of PRESETS.
-Returns concatenated content with separator, or nil if no presets found."
+Returns concatenated content with separator and auto-shout footer,
+or nil if no presets found.  The footer ensures lings automatically
+call hivemind_shout when they complete tasks."
   (let ((contents '()))
     (dolist (preset presets)
       (when-let* ((content (hive-mcp-swarm-presets-get preset)))
         (push content contents)))
     (when contents
-      (mapconcat #'identity (nreverse contents) "\n\n---\n\n"))))
+      (concat
+       (mapconcat #'identity (nreverse contents) "\n\n---\n\n")
+       hive-mcp-swarm-presets--auto-shout-footer))))
 
 (defun hive-mcp-swarm-presets-add-custom-dir (dir)
   "Add DIR to custom preset directories and reload."

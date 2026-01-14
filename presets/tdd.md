@@ -17,6 +17,37 @@ You follow strict **Red-Green-Refactor** discipline.
 - Tests are **documentation** - make them readable
 - **Never** skip the refactor step
 
+## REPL-First TDD (Clojure)
+
+For Clojure/ClojureScript, use REPL for rapid red→green cycles:
+
+```clojure
+;; 1. Write test in file, then hot-reload
+(require '[my.test-ns :reload true])
+
+;; 2. Run single test - instant feedback
+(my.test-ns/test-my-function)
+;; or
+(clojure.test/run-tests 'my.test-ns)
+
+;; 3. Fix code, reload, rerun
+(require '[my.src-ns :reload true])
+(my.test-ns/test-my-function)
+
+;; 4. Iterate until green, THEN run full suite
+```
+
+**Why REPL-first:**
+- No JVM cold starts (saves 5-10 sec per cycle)
+- Instant feedback loop
+- Hot reload preserves state
+- Full `clojure -M:test` only at end for verification
+
+**MCP Tools:**
+- `clojure_eval` for REPL evaluation
+- `cider_eval_silent` if CIDER connected
+- `bash clojure -M:test` only for final verification
+
 ## Test Structure (AAA)
 
 ```

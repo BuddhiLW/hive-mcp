@@ -15,6 +15,7 @@
             [clojure.string :as str]
             [clojure.data.json :as json]
             [hive-mcp.tools.swarm :as swarm]
+            [hive-mcp.tools.swarm.core :as core]
             [hive-mcp.emacsclient :as ec]
             [hive-mcp.swarm.coordinator :as coord]))
 
@@ -512,3 +513,42 @@
               (str name " must return :isError true on error"))
           (is (str/includes? (:text result) "not loaded")
               (str name " must indicate addon not loaded")))))))
+
+;; =============================================================================
+;; Layer 3: Dispatch Shout Reminder Injection Tests
+;; =============================================================================
+
+(deftest dispatch-injects-shout-reminder-test
+  (testing "Dispatch appends hivemind_shout reminder to all prompts"
+    (let [captured-elisp (atom nil)]
+      (with-redefs [core/swarm-addon-available? (constantly true)
+                    coord/dispatch-or-queue! (constantly {:action :dispatch :files []})
+                    ec/eval-elisp-with-timeout
+                    (fn [elisp _timeout]
+                      ;; Capture the elisp containing the prompt
+                      (reset! captured-elisp elisp)
+                      {:success true :result "{\"task_id\":\"t1\"}" :duration-ms 10 :timed-out false})]
+        (swarm/handle-swarm-dispatch {:slave_id "slave-1"
+                                      :prompt "Run tests please"})
+        ;; Verify the reminder was injected into the prompt
+        (is (str/includes? @captured-elisp "hivemind_shout")
+            "Dispatched prompt must include hivemind_shout reminder")
+        (is (str/includes? @captured-elisp "completed")
+            "Reminder must mention 'completed' event type")))))
+
+(deftest dispatch-reminder-preserves-original-prompt-test
+  (testing "Original prompt content is preserved when reminder is appended"
+    (let [captured-elisp (atom nil)]
+      (with-redefs [core/swarm-addon-available? (constantly true)
+                    coord/dispatch-or-queue! (constantly {:action :dispatch :files []})
+                    ec/eval-elisp-with-timeout
+                    (fn [elisp _timeout]
+                      (reset! captured-elisp elisp)
+                      {:success true :result "{}" :duration-ms 10 :timed-out false})]
+        (swarm/handle-swarm-dispatch {:slave_id "slave-1"
+                                      :prompt "Fix the authentication bug in src/auth.clj"})
+        ;; Verify original prompt is preserved
+        (is (str/includes? @captured-elisp "Fix the authentication bug")
+            "Original prompt content must be preserved")
+        (is (str/includes? @captured-elisp "src/auth.clj")
+            "Original prompt details must be preserved")))))

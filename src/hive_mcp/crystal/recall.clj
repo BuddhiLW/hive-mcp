@@ -10,8 +10,7 @@
    SOLID: Single responsibility - recall tracking only.
    DDD: Bounded context for access patterns."
   (:require [hive-mcp.crystal.core :as crystal]
-            [clojure.string :as str]
-            [taoensso.timbre :as log]))
+            [clojure.string :as str]))
 
 ;; =============================================================================
 ;; Recall Context Detection

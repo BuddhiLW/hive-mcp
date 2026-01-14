@@ -24,16 +24,14 @@
      ;; Server operations
      (def server (start-unix-server! \"/tmp/my.sock\" handler-fn))
      (stop-server! server)"
-  (:require [manifold.stream :as s]
-            [manifold.deferred :as d]
-            [nrepl.bencode :as bencode]
+  (:require [nrepl.bencode :as bencode]
             [taoensso.timbre :as log])
   (:import [java.net UnixDomainSocketAddress StandardProtocolFamily]
            [java.nio ByteBuffer]
-           [java.nio.channels ServerSocketChannel SocketChannel SelectionKey Selector]
+           [java.nio.channels ServerSocketChannel SocketChannel]
            [java.nio.file Files]
            [java.io ByteArrayOutputStream ByteArrayInputStream PushbackInputStream Closeable]
-           [java.util.concurrent Executors Future]))
+           [java.util.concurrent Executors]))
 
 ;; =============================================================================
 ;; Bencode Helpers (shared with channel.clj)

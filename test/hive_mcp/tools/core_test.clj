@@ -7,7 +7,8 @@
    - Piggyback instructions on responses"
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [clojure.data.json :as json]
-            [hive-mcp.tools.core :as core]))
+            [hive-mcp.tools.core :as core]
+            [hive-mcp.channel.piggyback :as piggyback]))
 
 ;; =============================================================================
 ;; Test Fixtures
@@ -16,7 +17,7 @@
 (defn clear-instruction-queues!
   "Clear all instruction queues for test isolation."
   []
-  (reset! core/instruction-queues {}))
+  (reset! piggyback/instruction-queues {}))
 
 (use-fixtures :each (fn [f]
                       (clear-instruction-queues!)
@@ -62,22 +63,22 @@
 (deftest test-push-instruction-single
   (testing "push-instruction! adds instruction to agent queue"
     (core/push-instruction! "ling-1" {:action "pause" :reason "rate limit"})
-    (is (= 1 (count (get @core/instruction-queues "ling-1"))))))
+    (is (= 1 (count (get @piggyback/instruction-queues "ling-1"))))))
 
 (deftest test-push-instruction-multiple
   (testing "push-instruction! accumulates multiple instructions"
     (core/push-instruction! "ling-1" {:action "pause"})
     (core/push-instruction! "ling-1" {:action "resume"})
     (core/push-instruction! "ling-1" {:action "abort"})
-    (is (= 3 (count (get @core/instruction-queues "ling-1"))))))
+    (is (= 3 (count (get @piggyback/instruction-queues "ling-1"))))))
 
 (deftest test-push-instruction-multiple-agents
   (testing "Instructions are isolated per agent"
     (core/push-instruction! "ling-1" {:action "pause"})
     (core/push-instruction! "ling-2" {:action "continue"})
     (core/push-instruction! "ling-1" {:action "resume"})
-    (is (= 2 (count (get @core/instruction-queues "ling-1"))))
-    (is (= 1 (count (get @core/instruction-queues "ling-2"))))))
+    (is (= 2 (count (get @piggyback/instruction-queues "ling-1"))))
+    (is (= 1 (count (get @piggyback/instruction-queues "ling-2"))))))
 
 (deftest test-drain-instructions-returns-all
   (testing "drain-instructions! returns all queued instructions"
@@ -92,7 +93,7 @@
   (testing "drain-instructions! clears the queue after draining"
     (core/push-instruction! "ling-1" {:action "test"})
     (core/drain-instructions! "ling-1")
-    (is (empty? (get @core/instruction-queues "ling-1" [])))))
+    (is (empty? (get @piggyback/instruction-queues "ling-1" [])))))
 
 (deftest test-drain-instructions-empty
   (testing "drain-instructions! returns empty vector for unknown agent"
@@ -104,7 +105,7 @@
     (core/push-instruction! "ling-1" {:action "A"})
     (core/push-instruction! "ling-2" {:action "B"})
     (core/drain-instructions! "ling-1")
-    (is (= 1 (count (get @core/instruction-queues "ling-2"))))))
+    (is (= 1 (count (get @piggyback/instruction-queues "ling-2"))))))
 
 ;; =============================================================================
 ;; Test: Piggyback Instructions in Responses
@@ -116,7 +117,7 @@
     (let [response (core/mcp-success "Hello")]
       (is (nil? (:pending_instructions response)))
       ;; Queue should still have the instruction
-      (is (= 1 (count (get @core/instruction-queues "ling-1")))))))
+      (is (= 1 (count (get @piggyback/instruction-queues "ling-1")))))))
 
 (deftest test-mcp-success-with-agent-id-no-instructions
   (testing "mcp-success with agent-id but no instructions omits pending_instructions"
@@ -137,7 +138,7 @@
   (testing "mcp-success with agent-id drains the instruction queue"
     (core/push-instruction! "ling-1" {:action "test"})
     (core/mcp-success "Done" :agent-id "ling-1")
-    (is (empty? (get @core/instruction-queues "ling-1" [])))))
+    (is (empty? (get @piggyback/instruction-queues "ling-1" [])))))
 
 (deftest test-mcp-json-without-agent-id
   (testing "mcp-json without agent-id has no pending_instructions"
@@ -157,7 +158,7 @@
   (testing "mcp-json with agent-id drains the instruction queue"
     (core/push-instruction! "ling-1" {:action "test"})
     (core/mcp-json {:data "value"} :agent-id "ling-1")
-    (is (empty? (get @core/instruction-queues "ling-1" [])))))
+    (is (empty? (get @piggyback/instruction-queues "ling-1" [])))))
 
 ;; =============================================================================
 ;; Test: Instruction Types (examples of what can be piggybacked)

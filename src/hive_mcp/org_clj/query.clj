@@ -1,7 +1,6 @@
 (ns hive-mcp.org-clj.query
   "Query functions for finding and filtering org headlines."
-  (:require [clojure.string :as str]
-            [clojure.test :refer [deftest is testing]]))
+  (:require [clojure.test :refer [deftest is testing]]))
 
 ;; =============================================================================
 ;; Tree Traversal

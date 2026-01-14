@@ -8,8 +8,7 @@
    
    SOLID: Single responsibility - promotion scoring only.
    DDD: Pure domain functions, no side effects."
-  (:require [clojure.string :as str]
-            [taoensso.timbre :as log]))
+  (:require [clojure.string :as str]))
 
 ;; =============================================================================
 ;; Recall Context Weights
@@ -181,23 +180,47 @@
             (str "priority-" (or priority "medium"))]
      :duration :ephemeral}))
 
+(defn- extract-content-summary
+  "Safely extract a one-line summary from note content.
+   
+   Handles:
+   - String content: takes first line
+   - Map content: extracts :title or stringifies
+   - nil content: returns placeholder"
+  [content]
+  (cond
+    (nil? content) "(no content)"
+    (string? content) (or (first (str/split-lines content)) "(empty)")
+    (map? content) (or (:title content)
+                       (:task-type content)
+                       (str (keys content)))
+    :else (str content)))
+
 (defn summarize-session-progress
   "Summarize multiple progress notes into a session summary.
    
-   notes: seq of progress note maps
-   git-commits: seq of commit strings
+   notes: seq of progress note maps (handles nil, empty, or malformed)
+   git-commits: seq of commit strings (handles nil)
    
    Returns: session summary map suitable for crystallization"
   [notes git-commits]
-  (let [task-count (count (filter #(some #{"completed-task"} (:tags %)) notes))
-        session (session-id)]
+  (let [notes (or notes [])
+        git-commits (or git-commits [])
+        task-count (count (filter #(some #{"completed-task"} (:tags %)) notes))
+        session (session-id)
+        note-summaries (->> notes
+                            (map #(extract-content-summary (:content %)))
+                            (map #(str "- " %))
+                            (str/join "\n"))
+        commit-summaries (->> git-commits
+                              (map #(str "- " %))
+                              (str/join "\n"))]
     {:type :note
      :content (str "## Session Summary: " session "\n\n"
                    "### Completed Tasks: " task-count "\n"
-                   (str/join "\n" (map #(str "- " (first (str/split-lines (:content %))))
-                                       notes))
+                   note-summaries
                    "\n\n### Commits: " (count git-commits) "\n"
-                   (str/join "\n" (map #(str "- " %) git-commits)))
+                   commit-summaries)
      :tags [(session-tag) "session-summary" "wrap-generated"]
      :duration :short}))
 

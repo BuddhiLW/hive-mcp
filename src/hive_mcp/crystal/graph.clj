@@ -1,5 +1,5 @@
 (ns hive-mcp.crystal.graph
-  "Knowledge graph for memory entries using core.logic pldb.
+  "Knowledge graph for memory entries using Datascript GraphStore.
    
    Builds a queryable graph from memory entries, enabling:
    - Session lineage tracking (which session produced which entries)
@@ -11,51 +11,19 @@
    
    SOLID: Single responsibility - graph queries only.
    DDD: Persistence adapter for memory domain."
-  (:require [clojure.core.logic :as l]
-            [clojure.core.logic.pldb :as pldb]
-            [clojure.data.json :as json]
-            [clojure.string :as str]
+  (:require [clojure.data.json :as json]
             [hive-mcp.emacsclient :as ec]
             [hive-mcp.crystal.core :as crystal]
+            [hive-mcp.graph.datascript :as ds]
+            [hive-mcp.graph.schema :as schema]
             [taoensso.timbre :as log]))
 
 ;; =============================================================================
-;; Database Relations (pldb/db-rel)
+;; Database State (Datascript GraphStore)
 ;; =============================================================================
 
-;; Memory entry: basic entry facts
-;; id: unique identifier (UUID string)
-;; type: :note :snippet :convention :decision
-;; duration: :ephemeral :short :medium :long :permanent
-(pldb/db-rel memory-entry ^:index id type duration)
-
-;; Session production: which session created which entry
-;; session-id: date string (e.g., "2026-01-04") or full session tag
-;; entry-id: the memory entry id
-(pldb/db-rel session-produced ^:index session-id ^:index entry-id)
-
-;; Entry references: cross-references between entries
-;; entry-id: the entry that references another
-;; referenced-id: the entry being referenced
-(pldb/db-rel entry-references ^:index entry-id ^:index referenced-id)
-
-;; Entry accessed: recall tracking
-;; entry-id: the entry that was accessed
-;; context: :catchup-structural :wrap-structural :explicit-reference :cross-session :cross-project :user-feedback
-;; count: number of times accessed in this context
-(pldb/db-rel entry-accessed ^:index entry-id context count)
-
-;; Entry tags: for tag-based queries
-;; entry-id: the entry
-;; tag: a tag string
-(pldb/db-rel entry-tag ^:index entry-id ^:index tag)
-
-;; =============================================================================
-;; Database State (Thread-Safe Atom)
-;; =============================================================================
-
-(defonce ^:private graph-db
-  (atom (pldb/db)))
+(defonce ^:private graph-store
+  (delay (ds/make-datascript-store)))
 
 (defonce ^:private last-rebuild
   (atom nil))
@@ -63,19 +31,14 @@
 (defn reset-db!
   "Reset the graph database to empty state."
   []
-  (reset! graph-db (pldb/db))
+  (ds/ds-reset! @graph-store)
   (reset! last-rebuild nil)
   (log/debug "Graph database reset"))
 
 (defn get-db
   "Get current database (for debugging/testing)."
   []
-  @graph-db)
-
-(defmacro with-db
-  "Execute a logic query against the current graph database."
-  [& body]
-  `(pldb/with-db @graph-db ~@body))
+  (ds/db @graph-store))
 
 ;; =============================================================================
 ;; Database Mutation Functions
@@ -89,91 +52,151 @@
    Extracts session from tags and populates all relations."
   [{:keys [id type duration tags recalls] :as entry}]
   (when id
-    ;; Add base entry fact
-    (swap! graph-db pldb/db-fact memory-entry id (keyword type) (keyword duration))
+    ;; Add base memory entry
+    (let [memory-entity (schema/make-memory
+                         {:id id
+                          :type (keyword type)
+                          :duration (keyword duration)})
+          recall-entities (map (fn [{:keys [context count] :or {count 1}}]
+                                 (schema/make-recall
+                                  {:memory [:memory/id id]
+                                   :context (keyword context)
+                                   :count count}))
+                               recalls)]
 
-    ;; Extract and add session production
-    (when-let [session (crystal/extract-session-from-tags tags)]
-      (swap! graph-db pldb/db-fact session-produced session id))
+      ;; Transact all entities
+      (ds/transact! @graph-store [memory-entity])
 
-    ;; Add tags
-    (doseq [tag tags]
-      (swap! graph-db pldb/db-fact entry-tag id tag))
+      ;; Add session if present
+      (when-let [session (crystal/extract-session-from-tags tags)]
+        (ds/transact! @graph-store [{:memory/id id
+                                     :memory/session-id session}]))
 
-    ;; Add recall facts
-    (doseq [{:keys [context count] :or {count 1}} recalls]
-      (swap! graph-db pldb/db-fact entry-accessed id (keyword context) count))
+      ;; Add tags
+      (when (seq tags)
+        (ds/transact! @graph-store (map (fn [tag]
+                                          {:memory/id id
+                                           :memory/tags tag})
+                                        tags)))
 
-    (log/trace "Added entry to graph:" id type duration)))
+      ;; Add recalls
+      (when (seq recall-entities)
+        (ds/transact! @graph-store recall-entities))
+
+      (log/trace "Added entry to graph:" id type duration))))
 
 (defn add-reference!
   "Add a cross-reference between entries."
   [from-entry-id to-entry-id]
-  (swap! graph-db pldb/db-fact entry-references from-entry-id to-entry-id)
-  (log/trace "Added reference:" from-entry-id "->" to-entry-id))
+  ;; Need to look up the target entity ID since :memory/references is a ref
+  (when-let [to-eid (:db/id (ds/ds-entity @graph-store [:memory/id to-entry-id]))]
+    (ds/transact! @graph-store [{:memory/id from-entry-id
+                                 :memory/references to-eid}])
+    (log/trace "Added reference:" from-entry-id "->" to-entry-id)))
 
 (defn remove-entry!
   "Remove an entry and all its relations from the graph."
   [entry-id]
-  ;; Get current entry info
-  (let [entry-info (first (with-db
-                            (l/run 1 [q]
-                                   (l/fresh [t d]
-                                            (memory-entry entry-id t d)
-                                            (l/== q {:type t :duration d})))))
-        sessions (with-db (l/run* [s] (session-produced s entry-id)))
-        tags (with-db (l/run* [t] (entry-tag entry-id t)))
-        accesses (with-db (l/run* [q]
-                                  (l/fresh [ctx cnt]
-                                           (entry-accessed entry-id ctx cnt)
-                                           (l/== q {:context ctx :count cnt}))))
-        refs-from (with-db (l/run* [r] (entry-references entry-id r)))
-        refs-to (with-db (l/run* [r] (entry-references r entry-id)))]
+  ;; Get all facts related to this entry
+  (let [entry-entity (ds/ds-entity @graph-store [:memory/id entry-id])
+        session-facts (ds/query @graph-store
+                                '[:find ?s
+                                  :where
+                                  [?e :memory/id ?id]
+                                  [?e :memory/session-id ?s]]
+                                {:id entry-id})
+        tag-facts (ds/query @graph-store
+                            '[:find ?t
+                              :where
+                              [?e :memory/id ?id]
+                              [?e :memory/tags ?t]]
+                            {:id entry-id})
+        recall-facts (ds/query @graph-store
+                               '[:find ?ctx ?cnt
+                                 :where
+                                 [?r :recall/memory ?id]
+                                 [?r :recall/context ?ctx]
+                                 [?r :recall/count ?cnt]]
+                               {:id entry-id})
+        refs-from (ds/query @graph-store
+                            '[:find ?ref
+                              :where
+                              [?e :memory/id ?id]
+                              [?e :memory/references ?ref]]
+                            {:id entry-id})
+        refs-to (ds/query @graph-store
+                          '[:find ?ref
+                            :where
+                            [?e :memory/references ?id]
+                            [?e :memory/id ?ref]]
+                          {:id entry-id})]
 
     ;; Retract all facts
-    (when entry-info
-      (swap! graph-db pldb/db-retraction memory-entry entry-id
-             (:type entry-info) (:duration entry-info)))
-    (doseq [s sessions]
-      (swap! graph-db pldb/db-retraction session-produced s entry-id))
-    (doseq [t tags]
-      (swap! graph-db pldb/db-retraction entry-tag entry-id t))
-    (doseq [{:keys [context count]} accesses]
-      (swap! graph-db pldb/db-retraction entry-accessed entry-id context count))
-    (doseq [r refs-from]
-      (swap! graph-db pldb/db-retraction entry-references entry-id r))
-    (doseq [r refs-to]
-      (swap! graph-db pldb/db-retraction entry-references r entry-id))
+    (when entry-entity
+      (ds/retract! @graph-store [:memory/id entry-id]))
+
+    ;; Retract session facts
+    (doseq [[session] session-facts]
+      (ds/retract! @graph-store [:memory/id entry-id :memory/session-id session]))
+
+    ;; Retract tag facts
+    (doseq [[tag] tag-facts]
+      (ds/retract! @graph-store [:memory/id entry-id :memory/tags tag]))
+
+    ;; Retract recall facts
+    (doseq [[ctx cnt] recall-facts]
+      (let [recall-id (ffirst (ds/query @graph-store
+                                        '[:find ?r
+                                          :where
+                                          [?r :recall/memory ?id]
+                                          [?r :recall/context ?ctx]
+                                          [?r :recall/count ?cnt]]
+                                        {:id entry-id :ctx ctx :cnt cnt}))]
+        (when recall-id
+          (ds/retract! @graph-store [:recall/id recall-id]))))
+
+    ;; Retract reference facts
+    (doseq [[ref] refs-from]
+      (ds/retract! @graph-store [:memory/id entry-id :memory/references ref]))
+
+    (doseq [[ref] refs-to]
+      (ds/retract! @graph-store [:memory/id ref :memory/references entry-id]))
 
     (log/debug "Removed entry from graph:" entry-id)))
 
 (defn update-entry-duration!
   "Update an entry's duration (e.g., after promotion)."
   [entry-id new-duration]
-  (let [current (first (with-db
-                         (l/run 1 [q]
-                                (l/fresh [t d]
-                                         (memory-entry entry-id t d)
-                                         (l/== q {:type t :duration d})))))]
+  (let [current (ds/ds-entity @graph-store [:memory/id entry-id])]
     (when current
-      (swap! graph-db pldb/db-retraction memory-entry entry-id
-             (:type current) (:duration current))
-      (swap! graph-db pldb/db-fact memory-entry entry-id
-             (:type current) (keyword new-duration))
+      (ds/transact! @graph-store [[:db/retract (:db/id current) :memory/duration (:memory/duration current)]
+                                  [:db/add (:db/id current) :memory/duration (keyword new-duration)]])
       (log/debug "Updated entry duration:" entry-id new-duration))))
 
 (defn log-access!
   "Log an access to an entry with context."
   [entry-id context]
-  ;; Find existing count for this context
-  (let [existing (first (with-db
-                          (l/run 1 [c]
-                                 (entry-accessed entry-id (keyword context) c))))]
-    (when existing
-      (swap! graph-db pldb/db-retraction entry-accessed entry-id (keyword context) existing))
-    (swap! graph-db pldb/db-fact entry-accessed entry-id (keyword context)
-           (inc (or existing 0)))
-    (log/trace "Logged access:" entry-id context)))
+  ;; First lookup the memory entity
+  (when-let [memory-eid (:db/id (ds/ds-entity @graph-store [:memory/id entry-id]))]
+    ;; Find existing recall entity
+    (let [existing (first (ds/query @graph-store
+                                    '[:find ?r ?cnt
+                                      :in $ ?mem ?ctx
+                                      :where
+                                      [?r :recall/memory ?mem]
+                                      [?r :recall/context ?ctx]
+                                      [?r :recall/count ?cnt]]
+                                    {:mem memory-eid :ctx (keyword context)}))]
+      (if existing
+        (let [[recall-id cnt] existing]
+          ;; Update existing recall
+          (ds/transact! @graph-store [{:db/id recall-id :recall/count (inc cnt)}]))
+        ;; Create new recall
+        (ds/transact! @graph-store [(schema/make-recall
+                                     {:memory memory-eid
+                                      :context (keyword context)
+                                      :count 1})]))
+      (log/trace "Logged access:" entry-id context))))
 
 ;; =============================================================================
 ;; Memory Integration - Rebuild from Emacs
@@ -243,41 +266,6 @@
       (rebuild-from-memory!))))
 
 ;; =============================================================================
-;; Core Logic Predicates
-;; =============================================================================
-
-(defn entry-from-sessiono
-  "Goal: succeeds if entry-id was produced in session-id."
-  [session-id entry-id]
-  (session-produced session-id entry-id))
-
-(defn entry-has-tago
-  "Goal: succeeds if entry-id has the given tag."
-  [entry-id tag]
-  (entry-tag entry-id tag))
-
-(defn references-transitively
-  "Goal: succeeds if source reaches target via references (transitive closure)."
-  [source target]
-  (l/conde
-   ;; Direct reference
-   [(entry-references source target)]
-   ;; Transitive reference
-   [(l/fresh [mid]
-             (entry-references source mid)
-             (references-transitively mid target))]))
-
-(defn high-recall-entryo
-  "Goal: succeeds if entry has meaningful recalls (not just structural)."
-  [entry-id]
-  (l/fresh [ctx cnt]
-           (entry-accessed entry-id ctx cnt)
-           (l/!= ctx :catchup-structural)
-           (l/!= ctx :wrap-structural)
-           (l/project [cnt]
-                      (l/== true (> cnt 0)))))
-
-;; =============================================================================
 ;; Query Functions (Public API)
 ;; =============================================================================
 
@@ -288,12 +276,18 @@
    
    Returns: [{:id :type :duration} ...]"
   [session-id]
-  (with-db
-    (l/run* [q]
-            (l/fresh [id type duration]
-                     (session-produced session-id id)
-                     (memory-entry id type duration)
-                     (l/== q {:id id :type type :duration duration})))))
+  (let [results (ds/query @graph-store
+                          '[:find ?id ?type ?duration
+                            :in $ ?session
+                            :where
+                            [?e :memory/id ?id]
+                            [?e :memory/type ?type]
+                            [?e :memory/duration ?duration]
+                            [?e :memory/session-id ?session]]
+                          {:session session-id})]
+    (map (fn [[id type duration]]
+           {:id id :type type :duration duration})
+         results)))
 
 (defn entry-lineage
   "Find all entries that reference a given entry (reverse lookup).
@@ -302,12 +296,19 @@
    
    Returns: [{:id :type :duration} ...] of entries that reference this one"
   [entry-id]
-  (with-db
-    (l/run* [q]
-            (l/fresh [ref-id type duration]
-                     (entry-references ref-id entry-id)
-                     (memory-entry ref-id type duration)
-                     (l/== q {:id ref-id :type type :duration duration})))))
+  (let [results (ds/query @graph-store
+                          '[:find ?src-id ?type ?duration
+                            :in $ ?id
+                            :where
+                            [?target :memory/id ?id]
+                            [?src :memory/references ?target]
+                            [?src :memory/id ?src-id]
+                            [?src :memory/type ?type]
+                            [?src :memory/duration ?duration]]
+                          {:id entry-id})]
+    (map (fn [[src-id type duration]]
+           {:id src-id :type type :duration duration})
+         results)))
 
 (defn entry-references-to
   "Find all entries that a given entry references (forward lookup).
@@ -316,12 +317,19 @@
    
    Returns: [{:id :type :duration} ...]"
   [entry-id]
-  (with-db
-    (l/run* [q]
-            (l/fresh [ref-id type duration]
-                     (entry-references entry-id ref-id)
-                     (memory-entry ref-id type duration)
-                     (l/== q {:id ref-id :type type :duration duration})))))
+  (let [results (ds/query @graph-store
+                          '[:find ?ref-id ?type ?duration
+                            :in $ ?id
+                            :where
+                            [?e :memory/id ?id]
+                            [?e :memory/references ?ref]
+                            [?ref :memory/id ?ref-id]
+                            [?ref :memory/type ?type]
+                            [?ref :memory/duration ?duration]]
+                          {:id entry-id})]
+    (map (fn [[ref-id type duration]]
+           {:id ref-id :type type :duration duration})
+         results)))
 
 (defn entries-by-tag
   "Find all entries with a given tag.
@@ -330,12 +338,18 @@
    
    Returns: [{:id :type :duration} ...]"
   [tag]
-  (with-db
-    (l/run* [q]
-            (l/fresh [id type duration]
-                     (entry-tag id tag)
-                     (memory-entry id type duration)
-                     (l/== q {:id id :type type :duration duration})))))
+  (let [results (ds/query @graph-store
+                          '[:find ?id ?type ?duration
+                            :in $ ?tag
+                            :where
+                            [?e :memory/id ?id]
+                            [?e :memory/type ?type]
+                            [?e :memory/duration ?duration]
+                            [?e :memory/tags ?tag]]
+                          {:tag tag})]
+    (map (fn [[id type duration]]
+           {:id id :type type :duration duration})
+         results)))
 
 (defn entries-by-duration
   "Find all entries with a given duration.
@@ -344,24 +358,37 @@
    
    Returns: [{:id :type} ...]"
   [duration]
-  (with-db
-    (l/run* [q]
-            (l/fresh [id type]
-                     (memory-entry id type (keyword duration))
-                     (l/== q {:id id :type type})))))
+  (let [results (ds/query @graph-store
+                          '[:find ?id ?type
+                            :in $ ?dur
+                            :where
+                            [?e :memory/id ?id]
+                            [?e :memory/type ?type]
+                            [?e :memory/duration ?dur]]
+                          {:dur (keyword duration)})]
+    (map (fn [[id type]]
+           {:id id :type type})
+         results)))
 
 (defn entry-recall-summary
   "Get recall summary for an entry.
-   
-   entry-id: the entry to summarize
-   
+
+   entry-id: the entry to summarize (string memory/id)
+
    Returns: [{:context :count} ...]"
   [entry-id]
-  (with-db
-    (l/run* [q]
-            (l/fresh [ctx cnt]
-                     (entry-accessed entry-id ctx cnt)
-                     (l/== q {:context ctx :count cnt})))))
+  (let [results (ds/query @graph-store
+                          '[:find ?ctx ?cnt
+                            :in $ ?mem-id
+                            :where
+                            [?mem :memory/id ?mem-id]
+                            [?r :recall/memory ?mem]
+                            [?r :recall/context ?ctx]
+                            [?r :recall/count ?cnt]]
+                          {:mem-id entry-id})]
+    (map (fn [[ctx cnt]]
+           {:context ctx :count cnt})
+         results)))
 
 (defn promotion-candidates
   "Find entries that should be promoted based on recall patterns.
@@ -371,86 +398,120 @@
    Returns: [{:id :type :current-duration :next-duration :score} ...]"
   []
   (let [;; Get all non-permanent entries
-        candidates (with-db
-                     (l/run* [q]
-                             (l/fresh [id type duration]
-                                      (memory-entry id type duration)
-                                      (l/!= duration :permanent)
-                                      (l/== q {:id id :type type :duration duration}))))]
-    ;; Calculate promotion scores
-    (->> candidates
-         (map (fn [{:keys [id type duration]}]
-                (let [recalls (entry-recall-summary id)
-                      ;; Convert to format expected by crystal/core
-                      recalls-for-scoring (map (fn [{:keys [context count]}]
-                                                 {:context context :count count})
-                                               recalls)
-                      {:keys [promote? current-score next-duration]}
-                      (crystal/should-promote? {:duration duration
-                                                :recalls recalls-for-scoring})]
-                  (when promote?
-                    {:id id
-                     :type type
-                     :current-duration duration
-                     :next-duration next-duration
-                     :score current-score}))))
-         (filter some?)
-         (sort-by :score >))))
+        candidates (ds/query @graph-store
+                             '[:find ?id ?type ?duration
+                               :where
+                               [?e :memory/id ?id]
+                               [?e :memory/type ?type]
+                               [?e :memory/duration ?duration]
+                               [(not= ?duration :permanent)]])
+
+        ;; Calculate promotion scores
+        scored (->> candidates
+                    (map (fn [[id type duration]]
+                           (let [recalls (entry-recall-summary id)
+                                 ;; Convert to format expected by crystal/core
+                                 recalls-for-scoring (map (fn [{:keys [context count]}]
+                                                            {:context context :count count})
+                                                          recalls)
+                                 {:keys [promote? current-score next-duration]}
+                                 (crystal/should-promote? {:duration duration
+                                                           :recalls recalls-for-scoring})]
+                             (when promote?
+                               {:id id
+                                :type type
+                                :current-duration duration
+                                :next-duration next-duration
+                                :score current-score}))))
+                    (filter some?)
+                    (sort-by :score >))]
+    scored))
 
 (defn orphaned-entries
   "Find entries with no session tag (potentially orphaned).
    
    Returns: [{:id :type :duration} ...]"
   []
-  (let [all-entries (with-db
-                      (l/run* [q]
-                              (l/fresh [id type duration]
-                                       (memory-entry id type duration)
-                                       (l/== q {:id id :type type :duration duration}))))
-        entries-with-sessions (set (with-db (l/run* [id]
-                                                    (l/fresh [session]
-                                                             (session-produced session id)))))]
-    (remove #(contains? entries-with-sessions (:id %)) all-entries)))
+  (let [all-entries (ds/query @graph-store
+                              '[:find ?id ?type ?duration
+                                :where
+                                [?e :memory/id ?id]
+                                [?e :memory/type ?type]
+                                [?e :memory/duration ?duration]])
+        ;; Query returns #{[id] [id2]...} - extract ids into flat set
+        entries-with-sessions (->> (ds/query @graph-store
+                                             '[:find ?id
+                                               :where
+                                               [?e :memory/id ?id]
+                                               [?e :memory/session-id _]])
+                                   (map first)
+                                   set)
+
+        ;; Filter out entries with sessions
+        orphaned (remove (fn [[id _ _]] (contains? entries-with-sessions id)) all-entries)]
+    (map (fn [[id type duration]]
+           {:id id :type type :duration duration})
+         orphaned)))
 
 (defn connected-entries
   "Find entries connected to a root entry via references (both directions).
-   
-   root-id: starting entry
+
+   root-id: starting entry (string memory/id)
    max-depth: maximum traversal depth (default: 3)
-   
+
    Returns: [{:id :type :duration :direction :depth} ...]"
   [root-id & {:keys [max-depth] :or {max-depth 3}}]
   (let [visited (atom #{root-id})
         result (atom [])]
+
     ;; BFS traversal
     (loop [frontier [{:id root-id :depth 0}]]
       (when (and (seq frontier)
                  (< (:depth (first frontier)) max-depth))
         (let [{:keys [id depth]} (first frontier)
-              ;; Find outgoing references
-              outgoing (with-db
-                         (l/run* [ref]
-                                 (entry-references id ref)))
-              ;; Find incoming references
-              incoming (with-db
-                         (l/run* [ref]
-                                 (entry-references ref id)))
+
+              ;; Find outgoing references (entries this one references)
+              outgoing (ds/query @graph-store
+                                 '[:find ?ref-id
+                                   :in $ ?id
+                                   :where
+                                   [?e :memory/id ?id]
+                                   [?e :memory/references ?ref]
+                                   [?ref :memory/id ?ref-id]]
+                                 {:id id})
+
+              ;; Find incoming references (entries that reference this one)
+              incoming (ds/query @graph-store
+                                 '[:find ?src-id
+                                   :in $ ?id
+                                   :where
+                                   [?target :memory/id ?id]
+                                   [?src :memory/references ?target]
+                                   [?src :memory/id ?src-id]]
+                                 {:id id})
+
               ;; Process new nodes
               new-nodes (->> (concat
-                              (map #(hash-map :id % :depth (inc depth) :direction :outgoing) outgoing)
-                              (map #(hash-map :id % :depth (inc depth) :direction :incoming) incoming))
+                              (map #(hash-map :id (first %) :depth (inc depth) :direction :outgoing) outgoing)
+                              (map #(hash-map :id (first %) :depth (inc depth) :direction :incoming) incoming))
                              (remove #(contains? @visited (:id %))))]
+
           ;; Add to results and visited
           (doseq [node new-nodes]
             (swap! visited conj (:id node))
-            (when-let [entry-info (first (with-db
-                                           (l/run 1 [q]
-                                                  (l/fresh [t d]
-                                                           (memory-entry (:id node) t d)
-                                                           (l/== q {:type t :duration d})))))]
-              (swap! result conj (merge node entry-info))))
+            (when-let [entry-info (first (ds/query @graph-store
+                                                   '[:find ?type ?duration
+                                                     :in $ ?id
+                                                     :where
+                                                     [?e :memory/id ?id]
+                                                     [?e :memory/type ?type]
+                                                     [?e :memory/duration ?duration]]
+                                                   {:id (:id node)}))]
+              (swap! result conj (merge node {:type (first entry-info) :duration (second entry-info)}))))
+
           ;; Continue BFS
           (recur (concat (rest frontier) new-nodes)))))
+
     @result))
 
 ;; =============================================================================
@@ -460,56 +521,52 @@
 (defn graph-stats
   "Get statistics about the current graph state."
   []
-  {:entries (count (with-db (l/run* [id]
-                                    (l/fresh [t d]
-                                             (memory-entry id t d)))))
-   :sessions (count (set (with-db (l/run* [s]
-                                          (l/fresh [e]
-                                                   (session-produced s e))))))
-   :references (count (with-db (l/run* [q]
-                                       (l/fresh [a b]
-                                                (entry-references a b)
-                                                (l/== q [a b])))))
-   :access-records (count (with-db (l/run* [q]
-                                           (l/fresh [e c n]
-                                                    (entry-accessed e c n)
-                                                    (l/== q [e c])))))
+  {:entries (count (ds/query @graph-store '[:find ?e :where [?e :memory/id _]]))
+   :sessions (count (set (ds/query @graph-store '[:find ?s :where [?e :memory/session-id ?s]])))
+   :references (count (ds/query @graph-store '[:find ?a ?b :where [?e :memory/id ?a] [?e :memory/references ?b]]))
+   :access-records (count (ds/query @graph-store '[:find ?e ?c :where [?r :recall/memory ?e] [?r :recall/context ?c]]))
    :last-rebuild @last-rebuild})
 
 (defn entries-by-type-stats
   "Get count of entries by type."
   []
-  (let [types [:note :snippet :convention :decision]]
-    (into {}
-          (for [t types]
-            [t (count (with-db
-                        (l/run* [id]
-                                (l/fresh [d]
-                                         (memory-entry id t d)))))]))))
+  (let [types [:note :snippet :convention :decision]
+        counts (into {}
+                     (for [t types]
+                       [t (count (ds/query @graph-store
+                                           '[:find ?id
+                                             :in $ ?type
+                                             :where
+                                             [?e :memory/id ?id]
+                                             [?e :memory/type ?type]]
+                                           {:type t}))]))]
+    counts))
 
 (defn dump-graph
   "Dump the current graph state for debugging."
   []
-  {:entries (with-db
-              (l/run* [q]
-                      (l/fresh [id type duration]
-                               (memory-entry id type duration)
-                               (l/== q {:id id :type type :duration duration}))))
-   :sessions (with-db
-               (l/run* [q]
-                       (l/fresh [s e]
-                                (session-produced s e)
-                                (l/== q {:session s :entry e}))))
-   :references (with-db
-                 (l/run* [q]
-                         (l/fresh [from to]
-                                  (entry-references from to)
-                                  (l/== q {:from from :to to}))))
-   :accesses (take 100 (with-db
-                         (l/run* [q]
-                                 (l/fresh [e c n]
-                                          (entry-accessed e c n)
-                                          (l/== q {:entry e :context c :count n})))))})
+  {:entries (ds/query @graph-store
+                      '[:find ?id ?type ?duration
+                        :where
+                        [?e :memory/id ?id]
+                        [?e :memory/type ?type]
+                        [?e :memory/duration ?duration]])
+   :sessions (ds/query @graph-store
+                       '[:find ?session ?entry
+                         :where
+                         [?e :memory/id ?entry]
+                         [?e :memory/session-id ?session]])
+   :references (ds/query @graph-store
+                         '[:find ?from ?to
+                           :where
+                           [?e :memory/id ?from]
+                           [?e :memory/references ?to]])
+   :accesses (take 100 (ds/query @graph-store
+                                 '[:find ?entry ?context ?count
+                                   :where
+                                   [?r :recall/memory ?entry]
+                                   [?r :recall/context ?context]
+                                   [?r :recall/count ?count]]))})
 
 (comment
   ;; Example usage

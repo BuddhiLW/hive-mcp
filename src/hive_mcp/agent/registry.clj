@@ -11,6 +11,8 @@
 
 (defonce registry (atom {}))
 
+(declare register!)
+
 (defonce ^:private initialized? (atom false))
 
 (defn ensure-registered!

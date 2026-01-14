@@ -50,14 +50,17 @@
   :type '(repeat string)
   :group 'hive-mcp-swarm-prompts)
 
-(defcustom hive-mcp-swarm-prompts-mode 'bypass
+(defcustom hive-mcp-swarm-prompts-mode 'human
   "How to handle permission prompts in slaves.
 - `bypass': Use --permission-mode bypassPermissions (no prompts)
 - `auto': Timer-based auto-approve (legacy behavior)
-- `human': Forward prompts to master for human decision"
+- `human': Forward prompts to master for human decision (default)
+
+Default changed to `human' in v0.7.0 for hivemind prompt forwarding.
+Prompts are forwarded via channel to hivemind for coordinator visibility."
   :type '(choice (const :tag "Bypass permissions (CLI flag)" bypass)
                  (const :tag "Auto-approve (timer)" auto)
-                 (const :tag "Human decision (hooks)" human))
+                 (const :tag "Human decision (hooks, default)" human))
   :group 'hive-mcp-swarm-prompts)
 
 (defcustom hive-mcp-swarm-prompts-notify t

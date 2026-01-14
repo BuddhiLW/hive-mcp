@@ -20,6 +20,9 @@
         ;; Logic programming for swarm hivemind coordination
         org.clojure/core.logic {:mvn/version "1.1.1"}
 
+        ;; Datascript for in-memory graph storage (GraphStore backend)
+        datascript/datascript {:mvn/version "1.7.3"}
+
         ;; Logging - Timbre with SLF4J bridge
         com.taoensso/timbre {:mvn/version "6.8.0"}
         com.fzakaria/slf4j-timbre {:mvn/version "0.4.1"}
@@ -40,7 +43,14 @@
 
         ;; Development - hot reload and tracing
         org.clojure/tools.trace {:mvn/version "0.9.0"}
-        io.github.tonsky/clj-reload {:mvn/version "1.0.0"}}
+        io.github.tonsky/clj-reload {:mvn/version "1.0.0"}
+
+        ;; clj-kondo for code analysis (call graphs, linting)
+        clj-kondo/clj-kondo {:mvn/version "2026.01.12"}
+
+        ;; hive-events - re-frame inspired event system for JVM
+        ;; Git submodule for local development
+        io.github.hive/events {:local/root "hive-events"}}
 
  :aliases
  {:mcp
@@ -67,7 +77,9 @@
   :test
   {:extra-paths ["test"]
    :extra-deps {io.github.cognitect-labs/test-runner
-                {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
+                {:git/tag "v0.5.1" :git/sha "dfb30dd"}
+                ;; Generative testing for spec validation
+                org.clojure/test.check {:mvn/version "1.1.1"}}
    :main-opts ["-m" "cognitect.test-runner"]}
 
   ;; CI-friendly: Run only unit tests (excludes tests requiring Emacs)

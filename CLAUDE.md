@@ -146,6 +146,125 @@ M-x hive-mcp-swarm-status
 - Java 17+
 - Optional: Ollama (semantic search), vterm/eat (terminal backends)
 
+## Hivemind Operations
+
+### Token-Tiered Hierarchy
+
+```
+Hivemind (premium Claude) ─── Coordinator, spawns lings, receives shouts
+    │
+    └── Lings (Claude instances) ─── Tactical leads, use delegate_drone
+            │
+            └── Drones (OpenRouter free-tier) ─── Heavy lifting, propose diffs
+```
+
+### Hivemind Coordinator Patterns
+
+**DO:**
+- Spawn lings with presets: `swarm_spawn(name, presets: ["ling", "tdd"])`
+- Trust HIVEMIND piggyback messages (arrive on any MCP tool call)
+- Dispatch tasks with clear instructions, then move on
+- Check results once when task should be complete
+- Keep context minimal - delegate reading/exploration to lings
+
+**DON'T (Anti-patterns):**
+- Poll with `mcp_watch_buffer` (blows up tokens)
+- Call `swarm_collect` in loops
+- Call `delegate_drone` directly (bypasses ling coordination)
+- Read large files as coordinator (delegate to lings)
+- Micromanage - trust the hierarchy
+
+### Ling Communication Protocol
+
+Lings MUST shout progress, not just start/end:
+```
+hivemind_shout(event_type: "progress", task: "...", message: "Step 2/4: ...")
+```
+
+**MCP-First Tools** - Lings use hive-mcp tools instead of raw bash:
+
+| Instead of | Use |
+|------------|-----|
+| `cat file` | `mcp__emacs__read_file` |
+| `grep pattern` | `mcp__emacs__grep` |
+| `git status` | `mcp__emacs__magit_status` |
+| Raw file write | `mcp__emacs__file_write` |
+
+### Spawning Lings
+
+```elisp
+;; From coordinator
+swarm_spawn(name: "task-name", presets: ["ling", "tdd", "clarity"])
+swarm_dispatch(slave_id: "swarm-task-name-...", prompt: "...", files: ["..."])
+```
+
+Lings consult `kanban.org` for task guidance and use `delegate_drone` for implementation work.
+
+## Swarm Trust & Delegation (CRITICAL)
+
+**This section is loaded via /catchup at session start. Trust these patterns immediately.**
+
+### The Trust Problem
+
+Each new session, the coordinator (Claude) takes time to "learn" the swarm architecture. This wastes tokens on:
+- Re-reading architecture docs
+- Hesitant delegation (doing work instead of spawning lings)
+- Over-monitoring (polling buffers instead of trusting shouts)
+
+### Trust Axioms (Follow Immediately)
+
+1. **Spawn First, Don't Do** - For any multi-file task, spawn a ling before reading code yourself
+2. **Shouts Are Truth** - `hivemind_status` and `---HIVEMIND---` messages are authoritative
+3. **TDD Is The Arbiter** - Don't verify ling work manually; tests decide correctness
+4. **Files Are Claimed** - Once dispatched, trust the ling owns those files until completion
+5. **One Check Per Task** - Check ling results ONCE when task should be complete
+
+### Coordinator Session Flow
+
+```
+1. /catchup                     # Load memory, conventions, swarm patterns
+2. Check hivemind_status        # See active lings from previous session
+3. Review kanban                # Get task list
+4. Spawn lings for tasks        # Don't read files yourself
+5. Work on coordinator-only tasks (decisions, architecture)
+6. Check results when lings shout "completed"
+7. /wrap at end                 # Crystallize session
+```
+
+### Token Budget Mental Model
+
+```
+Coordinator budget: EXPENSIVE (Opus 4.5)
+├── Strategic decisions
+├── Spawning/dispatch
+├── Reviewing completed work
+└── Memory operations
+
+Ling budget: MODERATE (Claude instances)
+├── Code reading/exploration
+├── Implementation
+├── Testing
+└── Shouting progress
+
+Drone budget: CHEAP (OpenRouter free-tier)
+├── Bulk file mutations
+└── Repetitive changes
+```
+
+**Coordinator should NEVER:** Read large files, grep codebases, run tests, or do implementation work.
+
+### Quick Reference: When To Spawn
+
+| Task Type | Action |
+|-----------|--------|
+| "Fix bug in X" | Spawn ling with TDD preset |
+| "Add feature Y" | Spawn ling with clarity preset |
+| "Refactor Z" | Spawn ling, files param critical |
+| "Research Q" | Spawn ling with research focus |
+| "Review PR" | Spawn ling with reviewer preset |
+| "Update docs" | Spawn ling with docs preset |
+| "Decide architecture" | Coordinator handles (decision = expensive token justified) |
+
 ## File Conventions
 
 - Module files: `hive-mcp-<module>.el`

@@ -9,6 +9,7 @@
    DDD: Testing the domain invariant that agent state is consistent."
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [hive-mcp.hivemind :as hivemind]
+            [hive-mcp.swarm.datascript :as ds]
             [hive-mcp.tools.swarm :as swarm]))
 
 ;; =============================================================================
@@ -16,9 +17,12 @@
 ;; =============================================================================
 
 (defn reset-state-fixture [f]
+  ;; ADR-002: Reset DataScript as primary registry
+  (ds/reset-conn!)
   (reset! hivemind/agent-registry {})
   (reset! swarm/lings-registry {})
   (f)
+  (ds/reset-conn!)
   (reset! hivemind/agent-registry {})
   (reset! swarm/lings-registry {}))
 

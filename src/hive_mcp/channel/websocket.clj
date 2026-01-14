@@ -9,6 +9,7 @@
      (broadcast! {:type :hivemind-progress :data {...}})
      (stop!)"
   (:require [aleph.http :as http]
+            [aleph.netty :as netty]
             [manifold.stream :as s]
             [manifold.deferred :as d]
             [clojure.data.json :as json]
@@ -83,7 +84,7 @@
       (log/warn "WebSocket channel already running on port" (:port @server-atom))
       (:port @server-atom))
     (let [server (http/start-server ws-handler {:port port})
-          actual-port (aleph.netty/port server)]
+          actual-port (netty/port server)]
       (reset! server-atom {:server server
                            :port actual-port
                            :on-message on-message})

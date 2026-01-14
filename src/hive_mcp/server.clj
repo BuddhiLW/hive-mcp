@@ -4,15 +4,17 @@
             [io.modelcontext.clojure-sdk.server :as sdk-server]
             [jsonrpc4clj.server :as jsonrpc-server]
             [hive-mcp.tools :as tools]
+            [hive-mcp.tools.swarm :as swarm]
             [hive-mcp.docs :as docs]
             [hive-mcp.chroma :as chroma]
             [hive-mcp.channel :as channel]
             [hive-mcp.channel.websocket :as ws-channel]
-            [hive-mcp.hivemind :as hivemind]
             [hive-mcp.swarm.sync :as sync]
             [hive-mcp.embeddings.ollama :as ollama]
             [hive-mcp.agent :as agent]
             [hive-mcp.transport.websocket :as ws]
+            [hive-mcp.hooks :as hooks]
+            [hive-mcp.crystal.hooks :as crystal-hooks]
             [nrepl.server :as nrepl-server]
             [clojure.core.async :as async]
             [taoensso.timbre :as log]
@@ -46,6 +48,13 @@
 ;; Store MCP server context for hot-reload capability
 ;; CLARITY: Telemetry first - expose state for debugging and updates
 (defonce ^:private server-context-atom (atom nil))
+
+;; Global hooks registry for event-driven workflows
+;; CLARITY: Open for extension - allows runtime hook registration
+(defonce ^:private hooks-registry-atom (atom nil))
+
+;; Track if shutdown hook is registered
+(defonce ^:private shutdown-hook-registered? (atom false))
 
 ;; Configure Timbre to write to stderr instead of stdout
 ;; This is CRITICAL for MCP servers - stdout is the JSON-RPC channel
@@ -153,6 +162,23 @@
      :inputSchema inputSchema
      :handler wrapped-handler}))
 
+(defn build-server-spec
+  "Build MCP server spec with capability-based tool filtering.
+
+   MUST be called AFTER init-embedding-provider! to get accurate Chroma status.
+
+   Uses tools/get-filtered-tools for dynamic kanban tool switching:
+   - Chroma available → mcp_mem_kanban_* tools
+   - Chroma unavailable → org_kanban_native_* tools (fallback)"
+  []
+  (let [filtered-tools (tools/get-filtered-tools)]
+    (log/info "Building server spec with" (count filtered-tools) "tools (capability-filtered)")
+    {:name "hive-mcp"
+     :version "0.1.0"
+     :tools (mapv make-tool (concat filtered-tools docs/docs-tools))}))
+
+;; DEPRECATED: Static spec kept for backward compatibility with tests
+;; Prefer build-server-spec for capability-aware tool list
 (def emacs-server-spec
   {:name "hive-mcp"
    :version "0.1.0"
@@ -166,17 +192,21 @@
 
 (defn refresh-tools!
   "Hot-reload all tools in the running server.
-   CLARITY: Open for extension - allows runtime tool updates without restart."
+   CLARITY: Open for extension - allows runtime tool updates without restart.
+
+   Uses capability-based filtering - re-checks Chroma availability
+   to dynamically switch between mem-kanban and org-kanban-native tools."
   []
   (when-let [context @server-context-atom]
     (let [tools-atom (:tools context)
-          new-tools (mapv make-tool (concat tools/tools docs/docs-tools))]
+          filtered-tools (tools/get-filtered-tools)
+          new-tools (mapv make-tool (concat filtered-tools docs/docs-tools))]
       ;; Clear and re-register all tools
       (reset! tools-atom {})
       (doseq [tool new-tools]
         (swap! tools-atom assoc (:name tool) {:tool (dissoc tool :handler)
                                               :handler (:handler tool)}))
-      (log/info "Hot-reloaded" (count new-tools) "tools")
+      (log/info "Hot-reloaded" (count new-tools) "tools (capability-filtered)")
       (count new-tools))))
 
 (defn debug-tool-handler
@@ -295,11 +325,80 @@
                 (recur)))
       (log/info "WebSocket channel auto-heal monitor started"))))
 
+;; =============================================================================
+;; Hooks System Initialization
+;; =============================================================================
+
+(defn get-hooks-registry
+  "Get the global hooks registry for external registration."
+  []
+  @hooks-registry-atom)
+
+(defn- trigger-session-end!
+  "Trigger session-end hooks for auto-wrap.
+   Called by JVM shutdown hook.
+
+   CLARITY: Yield safe failure - errors logged but don't break shutdown."
+  [reason]
+  (log/info "Triggering session-end hooks:" reason)
+  (when-let [registry @hooks-registry-atom]
+    (try
+      (let [ctx {:reason reason
+                 :session (System/currentTimeMillis)
+                 :triggered-by "jvm-shutdown"}
+            results (hooks/trigger-hooks registry :session-end ctx)]
+        (log/info "Session-end hooks completed:" (count results) "handlers executed")
+        results)
+      (catch Exception e
+        (log/error e "Session-end hooks failed (non-fatal)")
+        nil))))
+
+(defn- register-shutdown-hook!
+  "Register JVM shutdown hook to trigger session-end for auto-wrap.
+
+   Only registers once. Safe to call multiple times.
+
+   CLARITY: Yield safe failure - hook errors don't break JVM shutdown."
+  []
+  (when-not @shutdown-hook-registered?
+    (.addShutdownHook
+     (Runtime/getRuntime)
+     (Thread.
+      (fn []
+        (log/info "JVM shutdown detected - running session-end hooks")
+        (trigger-session-end! "jvm-shutdown"))))
+    (reset! shutdown-hook-registered? true)
+    (log/info "JVM shutdown hook registered for auto-wrap")))
+
+(defn init-hooks!
+  "Initialize the hooks system and register crystal hooks.
+
+   Creates global registry, registers crystal hooks (auto-wrap),
+   and sets up JVM shutdown hook.
+
+   Should be called early in server startup."
+  []
+  (when-not @hooks-registry-atom
+    (let [registry (hooks/create-registry)]
+      (reset! hooks-registry-atom registry)
+      (log/info "Global hooks registry created")
+      ;; Inject registry into sync module for Layer 4 hook wiring
+      ;; This enables architectural guarantee of synthetic shouts on task completion
+      (sync/set-hooks-registry! registry)
+      ;; Register crystal hooks (includes auto-wrap on session-end)
+      (crystal-hooks/register-hooks! registry)
+      ;; Register JVM shutdown hook to trigger session-end
+      (register-shutdown-hook!)
+      {:registry registry
+       :hooks-registered true})))
+
 (defn start!
   "Start the MCP server."
   [& _args]
   (let [server-id (random-uuid)]
     (log/info "Starting hive-mcp server:" server-id)
+    ;; Initialize hooks system FIRST - needed for session-end auto-wrap
+    (init-hooks!)
     ;; Start embedded nREPL FIRST - bb-mcp needs this to forward tool calls
     ;; This MUST run in the same JVM as channel server for hivemind to work
     (start-embedded-nrepl!)
@@ -308,8 +407,10 @@
     ;; Initialize embedding provider for semantic search (fails gracefully)
     (init-embedding-provider!)
     ;; Register tools for agent delegation (allows local models to use MCP tools)
-    (agent/register-tools! tools/tools)
-    (log/info "Registered" (count tools/tools) "tools for agent delegation")
+    ;; Uses filtered tools based on Chroma availability
+    (let [filtered-tools (tools/get-filtered-tools)]
+      (agent/register-tools! filtered-tools)
+      (log/info "Registered" (count filtered-tools) "tools for agent delegation (capability-filtered)"))
     ;; Start WebSocket channel with auto-healing (primary - Aleph/Netty based)
     ;; This is the reliable push channel for hivemind events
     (start-ws-channel-with-healing!)
@@ -327,9 +428,18 @@
       (log/info "Swarm sync started - logic database will track swarm state")
       (catch Exception e
         (log/warn "Swarm sync failed to start (non-fatal):" (.getMessage e))))
+    ;; Start lings registry sync - keeps Clojure registry in sync with elisp
+    ;; ADR-001: Event-driven sync for lings_available to return accurate counts
+    (try
+      (swarm/start-registry-sync!)
+      (log/info "Lings registry sync started - lings_available will track elisp lings")
+      (catch Exception e
+        (log/warn "Lings registry sync failed to start (non-fatal):" (.getMessage e))))
     ;; Start MCP server - create context ourselves to enable hot-reload
     ;; CLARITY: Telemetry first - expose state for debugging
-    (let [spec (assoc emacs-server-spec :server-id server-id)
+    ;; NOTE: build-server-spec must be called AFTER init-embedding-provider!
+    ;; to get accurate Chroma availability for capability-based tool switching
+    (let [spec (assoc (build-server-spec) :server-id server-id)
           log-ch (async/chan (async/sliding-buffer 20))
           server (io-server/stdio-server {:log-ch log-ch})
           ;; Create context and store for hot-reload capability

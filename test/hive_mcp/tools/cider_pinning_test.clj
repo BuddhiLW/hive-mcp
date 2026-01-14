@@ -12,7 +12,7 @@
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.string :as str]
             [clojure.data.json :as json]
-            [hive-mcp.tools :as tools]
+            [hive-mcp.tools.cider :as tools]
             [hive-mcp.emacsclient :as ec]))
 
 ;; =============================================================================

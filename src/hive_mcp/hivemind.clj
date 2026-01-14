@@ -15,8 +15,10 @@
   (:require [hive-mcp.channel :as channel]
             [hive-mcp.channel.websocket :as ws]
             [hive-mcp.channel.piggyback :as piggyback]
-            [clojure.core.async :as async :refer [<!! >!! chan timeout alt!!]]
+            [hive-mcp.swarm.datascript :as ds]
+            [clojure.core.async :as async :refer [>!! chan timeout alt!!]]
             [clojure.data.json :as json]
+            [clojure.set :as set]
             [taoensso.timbre :as log]))
 
 ;; =============================================================================
@@ -26,8 +28,17 @@
   pending-asks
   (atom {}))
 
-(defonce ^{:doc "Map of agent-id -> {:status :last-seen :current-task :messages}
-                 Messages is a vector of recent shouts (max 10 per agent)."}
+(defonce ^{:doc "LEGACY: Message history storage. DataScript is source of truth for slave data.
+
+                 ADR-002 AMENDED: This atom stores ONLY message history (ring buffer).
+                 Slave metadata (status, name, presets, cwd) comes from DataScript.
+
+                 Map of agent-id -> {:messages [...] :last-seen timestamp}
+                 Messages is a vector of recent shouts (max 10 per agent).
+
+                 Migration note: This was previously the authoritative agent registry.
+                 Now DataScript (swarm/datascript.clj) is the source of truth for slaves.
+                 This atom persists messages which are hivemind-specific (not swarm state)."}
   agent-registry
   (atom {}))
 
@@ -115,12 +126,17 @@
 
 (defn shout!
   "Broadcast a message to the hivemind coordinator.
-   
+
    event-type: keyword like :progress, :completed, :error, :blocked
    data: map with event details
-   
+
    Stores up to 10 recent messages per agent for retrieval via hivemind_status.
    Broadcasts via WebSocket (Aleph) for reliable push delivery.
+
+   ADR-002 AMENDED: Updates both:
+   - agent-registry atom: message history (hivemind-specific)
+   - DataScript: slave status (source of truth for slave data)
+
    Returns true if broadcast succeeded."
   [agent-id event-type data]
   (let [now (System/currentTimeMillis)
@@ -133,15 +149,18 @@
                :agent-id agent-id
                :timestamp now
                :data data}]
-    ;; Update agent registry with message history (ring buffer, max 10)
+    ;; Update agent-registry with message history ONLY (ring buffer, max 10)
+    ;; Status/metadata now comes from DataScript
     (swap! agent-registry update agent-id
            (fn [agent]
              (let [messages (or (:messages agent) [])
                    new-messages (vec (take-last 10 (conj messages message)))]
-               {:status event-type
-                :last-seen now
-                :current-task (:task data)
-                :messages new-messages})))
+               {:messages new-messages
+                :last-seen now})))
+    ;; Update DataScript status if slave exists there
+    ;; This keeps DataScript in sync with hivemind events
+    (when (ds/get-slave agent-id)
+      (ds/update-slave! agent-id {:slave/status event-type}))
     ;; Broadcast to Emacs via WebSocket (primary - reliable)
     (when (ws/connected?)
       (ws/emit! (:type event) (dissoc event :type)))
@@ -202,17 +221,49 @@
       (log/warn "No pending ask for id:" ask-id)
       false)))
 
+(defn- build-agents-map
+  "Build agents map from DataScript (source of truth) merged with message history.
+
+   ADR-002 AMENDED: DataScript is the source of truth for slave data.
+   Message history comes from agent-registry atom (hivemind-specific).
+
+   Returns map of agent-id -> {:status :name :presets :cwd :messages ...}"
+  []
+  (let [;; Get all slaves from DataScript (source of truth)
+        ds-slaves (ds/get-all-slaves)
+        ;; Get message history from local atom
+        msg-history @agent-registry]
+    ;; Build merged map: DataScript data + messages
+    (reduce
+     (fn [acc slave]
+       (let [slave-id (:slave/id slave)
+             messages (get-in msg-history [slave-id :messages] [])
+             last-seen (get-in msg-history [slave-id :last-seen])]
+         (assoc acc slave-id
+                {:status (:slave/status slave)
+                 :name (:slave/name slave)
+                 :presets (vec (:slave/presets slave))
+                 :cwd (:slave/cwd slave)
+                 :current-task (:slave/current-task slave)
+                 :messages messages
+                 :last-seen last-seen})))
+     {}
+     ds-slaves)))
+
 (defn get-status
   "Get current hivemind status.
-   
+
+   ADR-002 AMENDED: :agents now comes from DataScript (source of truth)
+   merged with message history from agent-registry atom.
+
    Returns map with:
-   - :agents - map of agent-id -> status
+   - :agents - map of agent-id -> status (from DataScript + message history)
    - :pending-asks - list of unanswered questions (agent-initiated)
    - :pending-swarm-prompts - list of permission prompts from slaves (push notifications)
    - :channel-connected - whether Emacs is connected (legacy bencode channel)
    - :ws-connected - whether WebSocket channel is connected (preferred)"
   []
-  {:agents @agent-registry
+  {:agents (build-agents-map)
    :pending-asks (mapv (fn [[id {:keys [question options agent-id]}]]
                          {:ask-id id
                           :agent-id agent-id
@@ -232,15 +283,67 @@
 
 (defn get-agent-messages
   "Get recent messages from a specific agent.
-   
-   Returns vector of messages (up to 10) or nil if agent not found."
+
+   ADR-002 AMENDED: Agent existence is determined by DataScript OR message history.
+   Messages are stored in agent-registry atom (hivemind-specific).
+
+   Returns vector of messages (up to 10), empty vector if agent exists but
+   hasn't shouted, or nil if agent not found in either source."
   [agent-id]
-  (get-in @agent-registry [agent-id :messages]))
+  (let [msg-history-entry (get @agent-registry agent-id)
+        ds-slave (ds/get-slave agent-id)]
+    (cond
+      ;; Has messages in history
+      msg-history-entry (:messages msg-history-entry)
+      ;; Exists in DataScript but no messages yet
+      ds-slave []
+      ;; Not found anywhere
+      :else nil)))
+
+(defn register-agent!
+  "Register an agent in the hivemind registry without requiring a shout.
+
+   Used when agents are spawned - they should be immediately visible
+   in available-agents for hivemind_messages even before they shout.
+
+   ADR-002 AMENDED: Now also ensures agent exists in DataScript (source of truth).
+   If agent already in DataScript, just initializes message history.
+   If not in DataScript, adds it there too (backward compatibility).
+
+   agent-id: Unique identifier (typically slave-id from swarm)
+   metadata: Map with optional :name, :presets, :cwd
+
+   SOLID: SRP - Single responsibility for registration
+   CLARITY: I - Inputs are guarded (handles missing metadata gracefully)"
+  [agent-id metadata]
+  (let [now (System/currentTimeMillis)]
+    ;; Initialize message history (local atom)
+    (swap! agent-registry assoc agent-id
+           {:messages []
+            :last-seen now})
+    ;; Ensure agent exists in DataScript (source of truth)
+    ;; If not already there, add it for backward compatibility
+    ;; Note: Use :idle status as :spawned is not in DataScript's valid statuses
+    (when-not (ds/get-slave agent-id)
+      (ds/add-slave! agent-id {:name (or (:name metadata) agent-id)
+                               :status :idle
+                               :depth 1
+                               :presets (:presets metadata)
+                               :cwd (:cwd metadata)}))
+    (log/info "Agent registered in hivemind:" agent-id)
+    true))
 
 (defn clear-agent!
-  "Remove an agent from the registry (when it terminates)."
+  "Remove an agent from the registry (when it terminates).
+
+   ADR-002 AMENDED: Clears from both:
+   - agent-registry atom (message history)
+   - DataScript (source of truth for slave data)"
   [agent-id]
+  ;; Clear message history
   (swap! agent-registry dissoc agent-id)
+  ;; Clear from DataScript
+  (ds/remove-slave! agent-id)
   (log/info "Agent cleared from hivemind:" agent-id))
 
 ;; =============================================================================
@@ -357,20 +460,33 @@ Used by the coordinator to answer agent questions."
 
    {:name "hivemind_messages"
     :description "Get recent messages from a specific agent.
-                  
+
 Returns up to 10 recent shout messages with their payloads.
 Use this to retrieve message content that agents have broadcast."
     :inputSchema {:type "object"
                   :properties {"agent_id" {:type "string"
                                            :description "Agent identifier to get messages from"}}
                   :required ["agent_id"]}
-    :handler (fn [{:keys [agent_id]}]
-               {:type "text"
-                :text (json/write-str
-                       (if-let [messages (get-agent-messages agent_id)]
-                         {:agent_id agent_id :messages messages}
-                         {:error (str "Agent not found: " agent_id)
-                          :available-agents (keys @agent-registry)}))})}])
+    :handler (fn [args]
+               ;; Support both snake_case and kebab-case keys:
+               ;; - :agent_id (snake_case) - if MCP passes keywords unchanged
+               ;; - :agent-id (kebab-case) - jsonrpc4clj converts "agent_id" -> :agent-id
+               ;; Also support string keys as fallback
+               (let [agent_id (or (:agent_id args)
+                                  (:agent-id args)
+                                  (get args "agent_id")
+                                  (get args "agent-id"))
+                     ;; ADR-002 AMENDED: Available agents = union of DataScript + message history
+                     ;; DataScript is source of truth, but include orphans for backward compat
+                     ds-agents (clojure.core/set (map :slave/id (ds/get-all-slaves)))
+                     msg-agents (clojure.core/set (keys @agent-registry))
+                     available-agents (vec (set/union ds-agents msg-agents))]
+                 {:type "text"
+                  :text (json/write-str
+                         (if-let [messages (get-agent-messages agent_id)]
+                           {:agent_id agent_id :messages messages}
+                           {:error (str "Agent not found: " agent_id)
+                            :available-agents available-agents}))}))}])
 ;; REMOVED: hivemind_listen - polling anti-pattern, use event-driven get-status instead
 
 (defn register-tools!

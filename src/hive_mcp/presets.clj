@@ -27,10 +27,8 @@
      (get-preset \"tdd\")"
   (:require [hive-mcp.chroma :as chroma]
             [clojure-chroma-client.api :as chroma-api]
-            [clojure-chroma-client.config :as chroma-config]
             [clojure.java.io :as io]
             [clojure.string :as str]
-            [clojure.data.json :as json]
             [taoensso.timbre :as log]))
 
 ;;; ============================================================

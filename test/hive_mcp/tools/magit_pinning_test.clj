@@ -10,7 +10,7 @@
    proper MCP response format {:type \"text\" :text ...}."
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.string :as str]
-            [hive-mcp.tools :as tools]
+            [hive-mcp.tools.magit :as tools]
             [hive-mcp.emacsclient :as ec]))
 
 ;; =============================================================================

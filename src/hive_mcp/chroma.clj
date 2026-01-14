@@ -23,8 +23,9 @@
      (search-similar \"find notes about Clojure\" :limit 5)"
   (:require [clojure-chroma-client.api :as chroma]
             [clojure-chroma-client.config :as chroma-config]
-            [taoensso.timbre :as log]
-            [clojure.data.json :as json]))
+            [clojure.data.json :as json]
+            [clojure.string :as str]
+            [taoensso.timbre :as log]))
 
 ;;; ============================================================
 ;;; Configuration
@@ -158,7 +159,7 @@
   "Convert memory entry to searchable document string."
   [{:keys [content type tags]}]
   (str "Type: " type "\n"
-       (when (seq tags) (str "Tags: " (clojure.string/join ", " tags) "\n"))
+       (when (seq tags) (str "Tags: " (str/join ", " tags) "\n"))
        "Content: " (if (string? content)
                      content
                      (json/write-str content))))
@@ -210,7 +211,7 @@
         doc-text (memory-to-document entry)
         embedding (embed-text provider doc-text)
         ;; Chroma metadata only supports scalar values, convert tags to string
-        tags-str (when (seq tags) (clojure.string/join "," tags))
+        tags-str (when (seq tags) (str/join "," tags))
         ;; Serialize content if it's not a string
         content-str (if (string? content) content (json/write-str content))]
     @(chroma/add coll [{:id entry-id
@@ -248,13 +249,13 @@
         {:id (:id entry)
          :type (:type metadata)
          :content (if (and content-str
-                           (or (clojure.string/starts-with? content-str "{")
-                               (clojure.string/starts-with? content-str "[")))
+                           (or (str/starts-with? content-str "{")
+                               (str/starts-with? content-str "[")))
                     (try (json/read-str content-str :key-fn keyword)
                          (catch Exception _ content-str))
                     content-str)
          :tags (when (and tags-str (not (empty? tags-str)))
-                 (clojure.string/split tags-str #","))
+                 (str/split tags-str #","))
          :content-hash (:content-hash metadata)
          :created (:created metadata)
          :updated (:updated metadata)
@@ -298,13 +299,13 @@
                   {:id (:id entry)
                    :type (:type metadata)
                    :content (if (and content-str
-                                     (or (clojure.string/starts-with? content-str "{")
-                                         (clojure.string/starts-with? content-str "[")))
+                                     (or (str/starts-with? content-str "{")
+                                         (str/starts-with? content-str "[")))
                               (try (json/read-str content-str :key-fn keyword)
                                    (catch Exception _ content-str))
                               content-str)
                    :tags (when (and tags-str (not (empty? tags-str)))
-                           (clojure.string/split tags-str #","))
+                           (str/split tags-str #","))
                    :content-hash (:content-hash metadata)
                    :created (:created metadata)
                    :updated (:updated metadata)
@@ -351,9 +352,9 @@
                content
                (json/write-str content))
         normalized (-> text
-                       clojure.string/trim
-                       (clojure.string/replace #"[ \t]+" " ")
-                       (clojure.string/replace #"\n+" "\n"))]
+                       str/trim
+                       (str/replace #"[ \t]+" " ")
+                       (str/replace #"\n+" "\n"))]
     (let [md (java.security.MessageDigest/getInstance "SHA-256")
           hash-bytes (.digest md (.getBytes normalized "UTF-8"))]
       (apply str (map #(format "%02x" %) hash-bytes)))))
@@ -408,7 +409,7 @@
         embeddings (embed-batch provider docs)
         records (mapv (fn [entry doc emb]
                         (let [tags-str (when (seq (:tags entry))
-                                         (clojure.string/join "," (:tags entry)))]
+                                         (str/join "," (:tags entry)))]
                           {:id (:id entry)
                            :embedding emb
                            :document doc
@@ -488,3 +489,22 @@
    :collection (:collection-name @config)
    :host (:host @config)
    :port (:port @config)})
+
+(defn chroma-available?
+  "Check if Chroma is configured AND reachable.
+   Returns true only if:
+   1. Embedding provider is configured
+   2. Chroma server responds to health check
+
+   Used for capability-based tool switching (e.g., mem-kanban vs org-kanban fallback).
+
+   CLARITY: Yield safe failure - returns false on any error, never throws."
+  []
+  (when (embedding-configured?)
+    (try
+      ;; Try to get/create collection as health check
+      (get-or-create-collection)
+      true
+      (catch Exception e
+        (log/debug "Chroma availability check failed:" (.getMessage e))
+        false))))

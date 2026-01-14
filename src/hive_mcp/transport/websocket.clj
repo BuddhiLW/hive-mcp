@@ -1,6 +1,7 @@
 (ns hive-mcp.transport.websocket
   "WebSocket transport for bidirectional MCP communication."
   (:require [aleph.http :as http]
+            [aleph.netty :as netty]
             [manifold.stream :as s]
             [clojure.core.async :as async :refer [chan go-loop <! >!]]
             [clojure.data.json :as json]
@@ -74,7 +75,7 @@
 (defn start-server! [{:keys [port project-dir input-ch output-ch]}]
   (let [handler (ws-handler input-ch output-ch)
         server (http/start-server handler {:port (or port 0)})
-        actual-port (aleph.netty/port server)]
+        actual-port (netty/port server)]
     (create-lockfile! actual-port project-dir)
     (register-shutdown-hook! actual-port)
     (reset! server-atom {:server server :port actual-port})

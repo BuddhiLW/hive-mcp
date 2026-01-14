@@ -1,7 +1,6 @@
 (ns hive-mcp.org-clj.transform
   "Transform functions for modifying org documents immutably."
-  (:require [clojure.string :as str]
-            [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is testing]]
             [hive-mcp.org-clj.query :as query]))
 
 ;; =============================================================================
