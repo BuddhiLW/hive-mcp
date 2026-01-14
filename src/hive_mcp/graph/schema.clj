@@ -88,11 +88,49 @@
 
 (def agent-types
   "Valid agent types in the swarm.
-   
+
    :hivemind - Coordinator/orchestrator agent
    :ling     - Worker agent spawned by hivemind
    :drone    - Lightweight agent for simple tasks"
   #{:hivemind :ling :drone})
+
+;;; -----------------------------------------------------------------------------
+;;; Change Plan Status Types (Enum values)
+;;; -----------------------------------------------------------------------------
+
+(def change-plan-statuses
+  "Valid statuses for change plans (batch drone execution).
+
+   :pending      - Plan created, not yet executing
+   :executing    - Drones actively processing items
+   :complete     - All items completed successfully
+   :partial-fail - Some items failed, others completed"
+  #{:pending :executing :complete :partial-fail})
+
+;;; -----------------------------------------------------------------------------
+;;; Change Item Status Types (Enum values)
+;;; -----------------------------------------------------------------------------
+
+(def change-item-statuses
+  "Valid statuses for individual change items.
+
+   :pending    - Not yet assigned to a drone
+   :dispatched - Assigned to a drone, awaiting completion
+   :completed  - Successfully completed
+   :error      - Failed with error"
+  #{:pending :dispatched :completed :error})
+
+;;; -----------------------------------------------------------------------------
+;;; Wave Status Types (Enum values)
+;;; -----------------------------------------------------------------------------
+
+(def wave-statuses
+  "Valid statuses for execution waves (batch of concurrent drones).
+
+   :running      - Drones actively executing
+   :complete     - All drones completed successfully
+   :partial-fail - Some drones failed"
+  #{:running :complete :partial-fail})
 
 ;;; -----------------------------------------------------------------------------
 ;;; Schema Definition
@@ -198,7 +236,64 @@
    :agent/spawned-by
    {:db/doc "Reference to parent agent (for lings spawned by hivemind)"
     :db/valueType :db.type/ref
-    :db/cardinality :db.cardinality/one}})
+    :db/cardinality :db.cardinality/one}
+
+   ;;; =========================================================================
+   ;;; Change Plan Entity (batch drone execution)
+   ;;; =========================================================================
+   ;;
+   ;; Change plans group related drone tasks for batch execution.
+   ;; A plan can be created first, then executed as waves.
+
+   :change-plan/id
+   {:db/doc "Unique identifier for the change plan (UUID string)"
+    :db/unique :db.unique/identity}
+
+   ;; Note: :change-plan/status, :change-plan/preset, :change-plan/created-at
+   ;; are schemaless (no special constraints needed)
+
+   ;;; =========================================================================
+   ;;; Change Item Entity (individual file mutation task)
+   ;;; =========================================================================
+   ;;
+   ;; Change items are individual file mutation tasks within a plan.
+   ;; Each item targets one file and is assigned to one drone.
+
+   :change-item/id
+   {:db/doc "Unique identifier for the change item (UUID string)"
+    :db/unique :db.unique/identity}
+
+   :change-item/plan
+   {:db/doc "Reference to the parent change plan"
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one}
+
+   :change-item/file
+   {:db/doc "File path this item will modify (indexed for conflict detection)"
+    :db/index true}
+
+   ;; Note: :change-item/task, :change-item/drone-id, :change-item/status,
+   ;; :change-item/error are schemaless
+
+   ;;; =========================================================================
+   ;;; Wave Entity (execution batch)
+   ;;; =========================================================================
+   ;;
+   ;; Waves are execution batches - a set of drones running concurrently.
+   ;; A plan may have multiple waves if items exceed concurrency limits.
+
+   :wave/id
+   {:db/doc "Unique identifier for the wave (UUID string)"
+    :db/unique :db.unique/identity}
+
+   :wave/plan
+   {:db/doc "Reference to the parent change plan"
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one}
+
+   ;; Note: :wave/drone-count, :wave/completed-count, :wave/status
+   ;; are schemaless (no special constraints needed)
+   })
 
 ;;; -----------------------------------------------------------------------------
 ;;; Schema Helpers
@@ -233,6 +328,21 @@
   "Check if context is a valid recall context."
   [ctx]
   (contains? recall-contexts ctx))
+
+(defn valid-change-plan-status?
+  "Check if status is a valid change plan status."
+  [s]
+  (contains? change-plan-statuses s))
+
+(defn valid-change-item-status?
+  "Check if status is a valid change item status."
+  [s]
+  (contains? change-item-statuses s))
+
+(defn valid-wave-status?
+  "Check if status is a valid wave status."
+  [s]
+  (contains? wave-statuses s))
 
 ;;; -----------------------------------------------------------------------------
 ;;; Entity Constructors
@@ -304,7 +414,7 @@
 
 (defn make-recall
   "Create a recall entity map for tracking memory access.
-   
+
    Required: memory (entity ref or lookup ref), context
    Optional: count (default 1)"
   [{:keys [memory context count]}]
@@ -314,3 +424,48 @@
    :recall/context (keyword context)
    :recall/count (or count 1)
    :recall/accessed-at (java.util.Date.)})
+
+(defn make-change-plan
+  "Create a change plan entity map for batch drone execution.
+
+   Required: id
+   Optional: preset (drone preset to use), status (default :pending)"
+  [{:keys [id preset status]}]
+  {:pre [(string? id)
+         (or (nil? status) (valid-change-plan-status? status))]}
+  (cond-> {:change-plan/id id
+           :change-plan/status (or status :pending)
+           :change-plan/created-at (java.util.Date.)}
+    preset (assoc :change-plan/preset preset)))
+
+(defn make-change-item
+  "Create a change item entity map for an individual file mutation task.
+
+   Required: id, plan (ref to change-plan), file (path), task (description)
+   Optional: status (default :pending)"
+  [{:keys [id plan file task status]}]
+  {:pre [(string? id)
+         (some? plan)
+         (string? file)
+         (string? task)
+         (or (nil? status) (valid-change-item-status? status))]}
+  {:change-item/id id
+   :change-item/plan plan
+   :change-item/file file
+   :change-item/task task
+   :change-item/status (or status :pending)})
+
+(defn make-wave
+  "Create a wave entity map for an execution batch.
+
+   Required: id, plan (ref to change-plan)
+   Optional: drone-count (default 0), status (default :running)"
+  [{:keys [id plan drone-count status]}]
+  {:pre [(string? id)
+         (some? plan)
+         (or (nil? status) (valid-wave-status? status))]}
+  {:wave/id id
+   :wave/plan plan
+   :wave/drone-count (or drone-count 0)
+   :wave/completed-count 0
+   :wave/status (or status :running)})
