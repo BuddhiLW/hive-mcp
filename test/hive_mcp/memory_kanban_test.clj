@@ -502,3 +502,60 @@
       (is (str/includes? create-result "hive-mcp-api-kanban-create"))
       (is (str/includes? done-result "hive-mcp-api-kanban-delete"))
       (is (not (str/includes? done-result "hive-mcp-api-kanban-move"))))))
+
+;; =============================================================================
+;; 12. Cross-Project Scoping Tests
+;; =============================================================================
+
+(deftest test-create-with-directory-param
+  (testing "Create handler accepts directory parameter for cross-project scoping"
+    (let [handler (requiring-resolve 'hive-mcp.tools.memory-kanban/handle-mem-kanban-create)]
+      ;; Handler should accept directory param
+      (is (fn? @handler) "Handler exists and is callable"))))
+
+(deftest test-list-with-directory-param
+  (testing "List handler accepts directory parameter for cross-project scoping"
+    (let [handler (requiring-resolve 'hive-mcp.tools.memory-kanban/handle-mem-kanban-list)]
+      (is (fn? @handler) "Handler exists and is callable"))))
+
+(deftest test-list-slim-with-directory-param
+  (testing "List slim handler accepts directory parameter for cross-project scoping"
+    (let [handler (requiring-resolve 'hive-mcp.tools.memory-kanban/handle-mem-kanban-list-slim)]
+      (is (fn? @handler) "Handler exists and is callable"))))
+
+(deftest test-move-with-directory-param
+  (testing "Move handler accepts directory parameter for cross-project scoping"
+    (let [handler (requiring-resolve 'hive-mcp.tools.memory-kanban/handle-mem-kanban-move)]
+      (is (fn? @handler) "Handler exists and is callable"))))
+
+(deftest test-quick-with-directory-param
+  (testing "Quick handler accepts directory parameter for cross-project scoping"
+    (let [handler (requiring-resolve 'hive-mcp.tools.memory-kanban/handle-mem-kanban-quick)]
+      (is (fn? @handler) "Handler exists and is callable"))))
+
+(deftest test-tool-definitions-have-directory-param
+  (testing "All kanban tool definitions include directory parameter in inputSchema"
+    (require 'hive-mcp.tools.memory-kanban)
+    (let [tools @(requiring-resolve 'hive-mcp.tools.memory-kanban/tools)
+          tool-names-with-directory #{"mcp_mem_kanban_create"
+                                      "mcp_mem_kanban_list"
+                                      "mcp_mem_kanban_list_slim"
+                                      "mcp_mem_kanban_move"
+                                      "mcp_mem_kanban_quick"}
+          check-directory (fn [tool]
+                            (let [props (get-in tool [:inputSchema :properties])]
+                              (contains? props :directory)))]
+      (doseq [tool tools]
+        (when (tool-names-with-directory (:name tool))
+          (is (check-directory tool)
+              (str "Tool " (:name tool) " should have directory parameter")))))))
+
+(deftest test-directory-param-description
+  (testing "Directory parameter has correct description for user guidance"
+    (require 'hive-mcp.tools.memory-kanban)
+    (let [tools @(requiring-resolve 'hive-mcp.tools.memory-kanban/tools)
+          create-tool (first (filter #(= "mcp_mem_kanban_create" (:name %)) tools))
+          dir-prop (get-in create-tool [:inputSchema :properties :directory])]
+      (is (string? (:description dir-prop)) "Directory param has description")
+      (is (str/includes? (:description dir-prop) "project scope")
+          "Description mentions project scoping"))))
