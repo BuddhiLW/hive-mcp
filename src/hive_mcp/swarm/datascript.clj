@@ -91,6 +91,10 @@
    :slave/created-at
    {:db/doc "Timestamp when slave was created"}
 
+   :slave/critical-ops
+   {:db/doc "Set of currently active critical operations (:wrap :commit :dispatch)"
+    :db/cardinality :db.cardinality/many}
+
    ;;; =========================================================================
    ;;; Task Entity
    ;;; =========================================================================
@@ -381,6 +385,96 @@
       ;; Then retract entity
       (log/debug "Removing slave:" slave-id)
       (d/transact! c [[:db/retractEntity eid]]))))
+
+;;; =============================================================================
+;;; Critical Operations Guard (Kill Guard - ADR-003)
+;;; =============================================================================
+
+(def critical-op-types
+  "Valid critical operation types that block kill.
+   :wrap    - Session crystallization in progress
+   :commit  - Git commit operation in progress
+   :dispatch - Task dispatch in progress"
+  #{:wrap :commit :dispatch})
+
+(defn enter-critical-op!
+  "Mark a slave as being in a critical operation.
+   Prevents swarm_kill from terminating this slave.
+
+   Arguments:
+     slave-id - Slave entering critical operation
+     op-type  - Type of operation (:wrap :commit :dispatch)
+
+   Returns:
+     Transaction report or nil if slave not found"
+  [slave-id op-type]
+  {:pre [(contains? critical-op-types op-type)]}
+  (let [c (ensure-conn)
+        db @c]
+    (when-let [eid (:db/id (d/entity db [:slave/id slave-id]))]
+      (log/debug "Slave" slave-id "entering critical op:" op-type)
+      (d/transact! c [[:db/add eid :slave/critical-ops op-type]]))))
+
+(defn exit-critical-op!
+  "Mark a slave as having completed a critical operation.
+
+   Arguments:
+     slave-id - Slave exiting critical operation
+     op-type  - Type of operation (:wrap :commit :dispatch)
+
+   Returns:
+     Transaction report or nil if slave not found"
+  [slave-id op-type]
+  {:pre [(contains? critical-op-types op-type)]}
+  (let [c (ensure-conn)
+        db @c]
+    (when-let [eid (:db/id (d/entity db [:slave/id slave-id]))]
+      (log/debug "Slave" slave-id "exiting critical op:" op-type)
+      (d/transact! c [[:db/retract eid :slave/critical-ops op-type]]))))
+
+(defn get-critical-ops
+  "Get current critical operations for a slave.
+
+   Returns:
+     Set of active critical operations, or empty set if none/not found"
+  [slave-id]
+  (let [c (ensure-conn)
+        db @c]
+    (if-let [e (d/entity db [:slave/id slave-id])]
+      (set (or (:slave/critical-ops e) []))
+      #{})))
+
+(defn can-kill?
+  "Check if a slave can be killed safely.
+   Returns false if slave has any critical operations in progress.
+
+   Arguments:
+     slave-id - Slave to check
+
+   Returns:
+     {:can-kill? bool :blocking-ops #{...}}"
+  [slave-id]
+  (let [ops (get-critical-ops slave-id)]
+    (if (empty? ops)
+      {:can-kill? true :blocking-ops #{}}
+      {:can-kill? false :blocking-ops ops})))
+
+(defmacro with-critical-op
+  "Execute body while holding a critical operation guard.
+   Ensures the critical op is properly released even on exception.
+
+   Usage:
+     (with-critical-op slave-id :wrap
+       (do-wrap-stuff))
+
+   CLARITY: Y - Yield safe failure with proper cleanup"
+  [slave-id op-type & body]
+  `(do
+     (enter-critical-op! ~slave-id ~op-type)
+     (try
+       ~@body
+       (finally
+         (exit-critical-op! ~slave-id ~op-type)))))
 
 ;;; =============================================================================
 ;;; Task CRUD Functions

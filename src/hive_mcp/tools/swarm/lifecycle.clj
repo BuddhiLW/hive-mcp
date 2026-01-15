@@ -5,10 +5,14 @@
    The slave-spawned event from elisp triggers register-ling! via
    channel subscription (see registry/start-registry-sync!).
 
+   ADR-003: Kill guard prevents termination during critical operations
+   (wrap, commit, dispatch). Uses datascript critical-ops tracking.
+
    SOLID: SRP - Single responsibility for spawn/kill operations.
    CLARITY: Y - Yield safe failure with timeout handling."
   (:require [hive-mcp.tools.swarm.core :as core]
             [hive-mcp.tools.swarm.registry :as registry]
+            [hive-mcp.swarm.datascript :as ds]
             [hive-mcp.emacsclient :as ec]
             [hive-mcp.validation :as v]
             [clojure.string :as str]))
@@ -62,34 +66,88 @@
 ;; Kill Handler
 ;; ============================================================
 
+(defn- format-blocking-ops
+  "Format blocking operations for error message."
+  [ops]
+  (str/join ", " (map name ops)))
+
+(defn- check-any-critical-ops
+  "Check if any slaves have critical operations blocking kill-all.
+   Returns {:can-kill? bool :blocked-slaves [{:id :ops}...]}"
+  []
+  (let [all-lings (registry/get-available-lings)
+        blocked (->> (keys all-lings)
+                     (map (fn [slave-id]
+                            (let [{:keys [can-kill? blocking-ops]} (ds/can-kill? slave-id)]
+                              (when-not can-kill?
+                                {:id slave-id :ops blocking-ops}))))
+                     (filter some?))]
+    (if (seq blocked)
+      {:can-kill? false :blocked-slaves blocked}
+      {:can-kill? true :blocked-slaves []})))
+
 (defn handle-swarm-kill
   "Kill a slave or all slaves.
    Uses short timeout (3s) as kill should be fast.
    Removes killed lings from registry.
 
+   KILL GUARD (ADR-003): Blocks kill during critical operations.
+   Critical ops: :wrap (session crystallization), :commit (git),
+   :dispatch (task dispatch in progress).
+
    Parameters:
    - slave_id: ID of slave to kill, or \"all\" to kill all
 
    CLARITY: Y - Yield safe failure with timeout handling
+   CLARITY: I - Inputs guarded (critical ops check)
    SOLID: SRP - Only handles kill operation"
   [{:keys [slave_id]}]
   (core/with-swarm
-    (let [elisp (if (= slave_id "all")
-                  "(json-encode (hive-mcp-swarm-api-kill-all))"
-                  (format "(json-encode (hive-mcp-swarm-api-kill \"%s\"))"
-                          (v/escape-elisp-string slave_id)))
-          {:keys [success result error timed-out]} (ec/eval-elisp-with-timeout elisp 3000)]
-      (cond
-        timed-out
-        (core/mcp-timeout-error "Kill operation" :extra-data {:slave_id slave_id})
+    ;; Kill Guard: Check for critical operations before proceeding
+    (if (= slave_id "all")
+      ;; Check all slaves for critical ops
+      (let [{:keys [can-kill? blocked-slaves]} (check-any-critical-ops)]
+        (if can-kill?
+          ;; Safe to kill all
+          (let [elisp "(json-encode (hive-mcp-swarm-api-kill-all))"
+                {:keys [success result error timed-out]} (ec/eval-elisp-with-timeout elisp 3000)]
+            (cond
+              timed-out
+              (core/mcp-timeout-error "Kill operation" :extra-data {:slave_id slave_id})
 
-        success
-        (do
-          ;; Unregister from lings registry
-          (if (= slave_id "all")
-            (registry/clear-registry!)
-            (registry/unregister-ling! slave_id))
-          (core/mcp-success result))
+              success
+              (do
+                (registry/clear-registry!)
+                (core/mcp-success result))
 
-        :else
-        (core/mcp-error (str "Error: " error))))))
+              :else
+              (core/mcp-error (str "Error: " error))))
+          ;; Blocked by critical ops
+          (core/mcp-error
+           (format "KILL BLOCKED: Cannot kill slaves with critical operations in progress. Blocked slaves: %s"
+                   (str/join ", " (map (fn [{:keys [id ops]}]
+                                         (format "%s (%s)" id (format-blocking-ops ops)))
+                                       blocked-slaves))))))
+      ;; Single slave kill
+      (let [{:keys [can-kill? blocking-ops]} (ds/can-kill? slave_id)]
+        (if can-kill?
+          ;; Safe to kill
+          (let [elisp (format "(json-encode (hive-mcp-swarm-api-kill \"%s\"))"
+                              (v/escape-elisp-string slave_id))
+                {:keys [success result error timed-out]} (ec/eval-elisp-with-timeout elisp 3000)]
+            (cond
+              timed-out
+              (core/mcp-timeout-error "Kill operation" :extra-data {:slave_id slave_id})
+
+              success
+              (do
+                (registry/unregister-ling! slave_id)
+                (core/mcp-success result))
+
+              :else
+              (core/mcp-error (str "Error: " error))))
+          ;; Blocked by critical ops
+          (core/mcp-error
+           (format "KILL BLOCKED: Cannot kill slave '%s' - critical operation(s) in progress: %s. Wait for completion or use force if necessary."
+                   slave_id
+                   (format-blocking-ops blocking-ops))))))))

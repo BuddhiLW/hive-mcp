@@ -255,3 +255,111 @@
       (let [completed (ds/get-completed-tasks)]
         (is (= 1 (count completed)))
         (is (= task1-id (:task/id (first completed))))))))
+
+;; =============================================================================
+;; Kill Guard / Critical Operations Tests (ADR-003)
+;; =============================================================================
+
+(deftest enter-critical-op-test
+  (testing "Entering a critical operation adds to set"
+    (let [slave-id (gen-slave-id)]
+      (ds/add-slave! slave-id {:status :idle})
+      (ds/enter-critical-op! slave-id :wrap)
+      (let [ops (ds/get-critical-ops slave-id)]
+        (is (contains? ops :wrap))))))
+
+(deftest exit-critical-op-test
+  (testing "Exiting a critical operation removes from set"
+    (let [slave-id (gen-slave-id)]
+      (ds/add-slave! slave-id {:status :idle})
+      (ds/enter-critical-op! slave-id :wrap)
+      (ds/exit-critical-op! slave-id :wrap)
+      (let [ops (ds/get-critical-ops slave-id)]
+        (is (not (contains? ops :wrap)))))))
+
+(deftest multiple-critical-ops-test
+  (testing "Multiple critical operations can be active"
+    (let [slave-id (gen-slave-id)]
+      (ds/add-slave! slave-id {:status :idle})
+      (ds/enter-critical-op! slave-id :wrap)
+      (ds/enter-critical-op! slave-id :commit)
+      (let [ops (ds/get-critical-ops slave-id)]
+        (is (= #{:wrap :commit} ops))))))
+
+(deftest get-critical-ops-nonexistent-test
+  (testing "Getting critical ops for non-existent slave returns empty set"
+    (is (= #{} (ds/get-critical-ops "nonexistent-slave")))))
+
+(deftest can-kill-when-no-ops-test
+  (testing "can-kill? returns true when no critical ops"
+    (let [slave-id (gen-slave-id)]
+      (ds/add-slave! slave-id {:status :idle})
+      (let [{:keys [can-kill? blocking-ops]} (ds/can-kill? slave-id)]
+        (is can-kill?)
+        (is (empty? blocking-ops))))))
+
+(deftest can-kill-blocked-by-wrap-test
+  (testing "can-kill? returns false when wrap in progress"
+    (let [slave-id (gen-slave-id)]
+      (ds/add-slave! slave-id {:status :idle})
+      (ds/enter-critical-op! slave-id :wrap)
+      (let [{:keys [can-kill? blocking-ops]} (ds/can-kill? slave-id)]
+        (is (not can-kill?))
+        (is (contains? blocking-ops :wrap))))))
+
+(deftest can-kill-blocked-by-commit-test
+  (testing "can-kill? returns false when commit in progress"
+    (let [slave-id (gen-slave-id)]
+      (ds/add-slave! slave-id {:status :idle})
+      (ds/enter-critical-op! slave-id :commit)
+      (let [{:keys [can-kill? blocking-ops]} (ds/can-kill? slave-id)]
+        (is (not can-kill?))
+        (is (contains? blocking-ops :commit))))))
+
+(deftest can-kill-blocked-by-dispatch-test
+  (testing "can-kill? returns false when dispatch in progress"
+    (let [slave-id (gen-slave-id)]
+      (ds/add-slave! slave-id {:status :idle})
+      (ds/enter-critical-op! slave-id :dispatch)
+      (let [{:keys [can-kill? blocking-ops]} (ds/can-kill? slave-id)]
+        (is (not can-kill?))
+        (is (contains? blocking-ops :dispatch))))))
+
+(deftest can-kill-multiple-blocking-ops-test
+  (testing "can-kill? returns all blocking ops"
+    (let [slave-id (gen-slave-id)]
+      (ds/add-slave! slave-id {:status :idle})
+      (ds/enter-critical-op! slave-id :wrap)
+      (ds/enter-critical-op! slave-id :commit)
+      (let [{:keys [can-kill? blocking-ops]} (ds/can-kill? slave-id)]
+        (is (not can-kill?))
+        (is (= #{:wrap :commit} blocking-ops))))))
+
+(deftest can-kill-nonexistent-slave-test
+  (testing "can-kill? returns true for non-existent slave (no ops to block)"
+    (let [{:keys [can-kill? blocking-ops]} (ds/can-kill? "nonexistent")]
+      (is can-kill?)
+      (is (empty? blocking-ops)))))
+
+(deftest with-critical-op-macro-test
+  (testing "with-critical-op macro manages enter/exit correctly"
+    (let [slave-id (gen-slave-id)]
+      (ds/add-slave! slave-id {:status :idle})
+      ;; Before: no ops
+      (is (empty? (ds/get-critical-ops slave-id)))
+      ;; During: op is active
+      (ds/with-critical-op slave-id :wrap
+        (is (contains? (ds/get-critical-ops slave-id) :wrap)))
+      ;; After: op is cleared
+      (is (empty? (ds/get-critical-ops slave-id))))))
+
+(deftest with-critical-op-exception-cleanup-test
+  (testing "with-critical-op cleans up even on exception"
+    (let [slave-id (gen-slave-id)]
+      (ds/add-slave! slave-id {:status :idle})
+      (try
+        (ds/with-critical-op slave-id :commit
+          (throw (ex-info "Simulated error" {})))
+        (catch Exception _))
+      ;; Op should be cleaned up despite exception
+      (is (empty? (ds/get-critical-ops slave-id))))))
