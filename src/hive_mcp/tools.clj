@@ -25,6 +25,8 @@
    [hive-mcp.tools.crystal :as crystal]
    [hive-mcp.tools.hot :as hot]
    [hive-mcp.tools.drone-feedback :as drone-feedback]
+   [hive-mcp.tools.session-complete :as session-complete]
+   [hive-mcp.tools.hive-project :as hive-project]
    [hive-mcp.hivemind :as hivemind]
    [hive-mcp.channel :as channel]
    [hive-mcp.agent :as agent]
@@ -66,6 +68,8 @@
                scc/tools
                hot/tools     ; hot reload coordination tools
                drone-feedback/tools
+               session-complete/tools  ; ling session lifecycle
+               hive-project/tools      ; .hive-project.edn generator
                hivemind/tools
                channel/channel-tools
                agent/tools)))
@@ -126,6 +130,8 @@
                scc/tools
                hot/tools     ; hot reload coordination tools
                drone-feedback/tools
+               session-complete/tools  ; ling session lifecycle
+               hive-project/tools      ; .hive-project.edn generator
                hivemind/tools
                channel/channel-tools
                agent/tools)))
