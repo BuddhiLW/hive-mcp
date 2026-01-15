@@ -65,13 +65,22 @@
    3. Flushes recall buffer
    4. Emits wrap_notify event for hivemind permeation
 
+   Params:
+   - agent-id (optional): Ling's slave-id. IMPORTANT: MCP server runs in separate
+     JVM, so System/getenv reads coordinator's env. Lings MUST pass their slave-id
+     explicitly via this parameter to ensure proper attribution in wrap-queue.
+
    Call after wrap-gather when ready to persist."
-  [_params]
-  (log/info "wrap-crystallize")
+  [{:keys [agent_id] :as _params}]
+  (log/info "wrap-crystallize" (when agent_id (str "agent-id:" agent_id)))
   (try
     (let [harvested (crystal-hooks/harvest-all)
           result (crystal-hooks/crystallize-session harvested)
-          agent-id (or (System/getenv "CLAUDE_SWARM_SLAVE_ID") "coordinator")]
+          ;; Priority: explicit param > env var > fallback
+          ;; Lings should pass agent_id param since MCP server has coordinator's env
+          agent-id (or agent_id
+                       (System/getenv "CLAUDE_SWARM_SLAVE_ID")
+                       "coordinator")]
       ;; Emit wrap_notify via hive-events for Crystal Convergence
       (try
         (ev/dispatch [:crystal/wrap-notify
@@ -129,9 +138,10 @@
     :handler handle-wrap-gather}
 
    {:name "wrap_crystallize"
-    :description "Crystallize session data into long-term memory. Creates session summary, promotes entries meeting score threshold, and flushes recall buffer. Call after wrap_gather to persist."
+    :description "Crystallize session data into long-term memory. Creates session summary, promotes entries meeting score threshold, and flushes recall buffer. Call after wrap_gather to persist. IMPORTANT: Lings MUST pass agent_id param (their CLAUDE_SWARM_SLAVE_ID) since MCP server runs in coordinator's JVM."
     :inputSchema {:type "object"
-                  :properties {}
+                  :properties {:agent_id {:type "string"
+                                          :description "Ling's slave-id (CLAUDE_SWARM_SLAVE_ID env var). Required for proper attribution in wrap-queue since MCP server runs in separate JVM with coordinator's environment."}}
                   :required []}
     :handler handle-wrap-crystallize}
 
