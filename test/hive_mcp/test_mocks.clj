@@ -217,26 +217,128 @@
      ~@body))
 
 ;; =============================================================================
-;; Swarm Mocks (A7 - from swarm_test.clj)
+;; Swarm Mocks (A7 - from swarm_test.clj, swarm_handlers_pinning_test.clj)
 ;; =============================================================================
+
+;; -----------------------------------------------------------------------------
+;; Elisp Timeout Mock Helpers (from swarm_handlers_pinning_test.clj)
+;; -----------------------------------------------------------------------------
+
+(defn mock-elisp-timeout-success
+  "Creates a mock eval-elisp-with-timeout that returns success.
+
+   Usage:
+     (with-redefs [ec/eval-elisp-with-timeout (mock-elisp-timeout-success \"{}\")]
+       ...)"
+  [result]
+  (fn [_elisp _timeout]
+    {:success true :result result :duration-ms 10 :timed-out false}))
+
+(defn mock-elisp-timeout-failure
+  "Creates a mock eval-elisp-with-timeout that returns failure.
+
+   Usage:
+     (with-redefs [ec/eval-elisp-with-timeout (mock-elisp-timeout-failure \"Connection refused\")]
+       ...)"
+  [error]
+  (fn [_elisp _timeout]
+    {:success false :error error :duration-ms 10 :timed-out false}))
+
+(defn mock-elisp-timeout-timed-out
+  "Creates a mock eval-elisp-with-timeout that returns timeout.
+
+   Usage:
+     (with-redefs [ec/eval-elisp-with-timeout (mock-elisp-timeout-timed-out)]
+       ...)"
+  []
+  (fn [_elisp _timeout]
+    {:success false :timed-out true :duration-ms 10000}))
+
+(defn mock-elisp-timeout-conditional
+  "Creates a mock that returns different results based on elisp content.
+
+   Usage:
+     (mock-elisp-timeout-conditional
+       {#\"hive-mcp-swarm-list-lings\" {:success true :result \"[]\"}
+        :default {:success true :result \"t\"}})"
+  [pattern-map]
+  (fn [elisp _timeout]
+    (let [default-result (or (:default pattern-map)
+                             {:success true :result "t" :timed-out false :duration-ms 5})
+          matching (some (fn [[pattern result]]
+                           (when (and (not= pattern :default)
+                                      (re-find pattern elisp))
+                             result))
+                         (dissoc pattern-map :default))]
+      (merge {:duration-ms 10 :timed-out false} (or matching default-result)))))
+
+;; -----------------------------------------------------------------------------
+;; Swarm Mock Macros
+;; -----------------------------------------------------------------------------
 
 (defmacro with-default-swarm-mocks
   "Execute body with common swarm mocks pre-configured.
-   
+
    Options:
    - :addon-available? - whether swarm addon is available (default: true)
    - :elisp-result - result to return from elisp calls (default: \"{}\")
-   
+   - :elisp-fn - custom elisp mock fn (overrides :elisp-result if provided)
+   - :coordinator-result - result from coord/dispatch-or-queue! (default: {:action :dispatch :files []})
+   - :event-journal-result - result from swarm/check-event-journal (default: nil)
+
    Usage:
      (with-default-swarm-mocks {:elisp-result (json/write-str {:slaves-count 2})}
-       (swarm/handle-swarm-status {}))"
-  [{:keys [addon-available? elisp-result]
+       (swarm/handle-swarm-status {}))
+
+     ;; With custom elisp fn for dynamic responses:
+     (with-default-swarm-mocks {:elisp-fn (mock-elisp-timeout-conditional
+                                            {#\"list-lings\" {:success true :result \"[]\"}
+                                             :default {:success true :result \"t\"}})}
+       ...)"
+  [{:keys [addon-available? elisp-result elisp-fn coordinator-result event-journal-result]
     :or {addon-available? true
-         elisp-result "{}"}} & body]
+         elisp-result "{}"
+         coordinator-result {:action :dispatch :files []}
+         event-journal-result nil}} & body]
   `(with-redefs [~'hive-mcp.tools.swarm/swarm-addon-available? (constantly ~addon-available?)
+                 ~'hive-mcp.tools.swarm.core/swarm-addon-available? (constantly ~addon-available?)
+                 ~'hive-mcp.swarm.coordinator/dispatch-or-queue! (constantly ~coordinator-result)
+                 ~'hive-mcp.tools.swarm/check-event-journal (constantly ~event-journal-result)
                  ec/eval-elisp-with-timeout
+                 (if ~elisp-fn
+                   ~elisp-fn
+                   (fn [_elisp# _timeout#]
+                     {:success true :result ~elisp-result :timed-out false :duration-ms 10}))]
+     ~@body))
+
+(defmacro with-swarm-addon-available
+  "Execute body with swarm addon available and custom elisp mock.
+   First call returns addon check success, subsequent calls use provided mock.
+
+   Usage:
+     (with-swarm-addon-available (mock-elisp-timeout-success \"{}\")
+       (swarm/handle-swarm-spawn {:name \"test\"}))"
+  [response-mock & body]
+  `(let [call-count# (atom 0)]
+     (with-redefs [ec/eval-elisp-with-timeout
+                   (fn [elisp# timeout#]
+                     (swap! call-count# inc)
+                     ;; First call is addon check, rest use response mock
+                     (if (= @call-count# 1)
+                       {:success true :result "t" :duration-ms 5 :timed-out false}
+                       (~response-mock elisp# timeout#)))]
+       ~@body)))
+
+(defmacro with-swarm-addon-unavailable
+  "Execute body with swarm addon unavailable.
+
+   Usage:
+     (with-swarm-addon-unavailable
+       (swarm/handle-swarm-spawn {:name \"test\"})) => error response"
+  [& body]
+  `(with-redefs [ec/eval-elisp-with-timeout
                  (fn [_elisp# _timeout#]
-                   {:success true :result ~elisp-result :timed-out false})]
+                   {:success true :result "nil" :duration-ms 5 :timed-out false})]
      ~@body))
 
 ;; =============================================================================
