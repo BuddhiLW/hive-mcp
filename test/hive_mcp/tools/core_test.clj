@@ -289,3 +289,72 @@
                       {:success true :result :ok})]
         (core/call-elisp-safe "(my-elisp-code)")
         (is (= "(my-elisp-code)" @captured-elisp))))))
+
+;; =============================================================================
+;; Test: with-validation Macro
+;; =============================================================================
+
+(defn sample-validator
+  "Sample validator: returns nil if valid, error map if invalid.
+   Validates that :name is present and non-empty."
+  [{:keys [name]}]
+  (cond
+    (nil? name) {:error "Missing required field: name"}
+    (empty? name) {:error "name cannot be empty"}
+    :else nil))
+
+(deftest test-with-validation-valid-params
+  (testing "with-validation executes body when validation passes"
+    (let [result (core/with-validation [{:name "test"} sample-validator]
+                   (core/mcp-success "Body executed"))]
+      (is (= "text" (:type result)))
+      (is (= "Body executed" (:text result)))
+      (is (nil? (:isError result))))))
+
+(deftest test-with-validation-invalid-params-nil
+  (testing "with-validation returns error when param is missing"
+    (let [result (core/with-validation [{} sample-validator]
+                   (core/mcp-success "Should not execute"))]
+      (is (= "text" (:type result)))
+      (let [parsed (json/read-str (:text result) :key-fn keyword)]
+        (is (= "Missing required field: name" (:error parsed)))))))
+
+(deftest test-with-validation-invalid-params-empty
+  (testing "with-validation returns error when param is empty"
+    (let [result (core/with-validation [{:name ""} sample-validator]
+                   (core/mcp-success "Should not execute"))]
+      (is (= "text" (:type result)))
+      (let [parsed (json/read-str (:text result) :key-fn keyword)]
+        (is (= "name cannot be empty" (:error parsed)))))))
+
+(deftest test-with-validation-body-not-executed-on-failure
+  (testing "with-validation does not execute body when validation fails"
+    (let [executed (atom false)]
+      (core/with-validation [{} sample-validator]
+        (reset! executed true)
+        (core/mcp-success "Body"))
+      (is (false? @executed)))))
+
+(deftest test-with-validation-body-returns-value
+  (testing "with-validation returns body result on success"
+    (let [result (core/with-validation [{:name "valid"} sample-validator]
+                   {:custom "response" :data 123})]
+      (is (= {:custom "response" :data 123} result)))))
+
+(deftest test-with-validation-macroexpand
+  (testing "with-validation macro expands correctly"
+    (let [expanded (macroexpand `(core/with-validation [~'params ~'validator]
+                                   (+ 1 2)))]
+      ;; if-let expands to let*, so we check the structure is a valid form
+      (is (seq? expanded))
+      (is (= 'let* (first expanded))))))
+
+(deftest test-with-validation-error-passthrough
+  (testing "with-validation passes validator error directly to mcp-json"
+    ;; Validator that returns a complex error structure
+    (let [complex-validator (fn [_] {:error "complex" :details {:field "x" :code 42}})
+          result (core/with-validation [{:any "params"} complex-validator]
+                   (core/mcp-success "Never"))]
+      (is (= "text" (:type result)))
+      (let [parsed (json/read-str (:text result) :key-fn keyword)]
+        (is (= {:error "complex" :details {:field "x" :code 42}} parsed))))))

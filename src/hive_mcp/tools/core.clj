@@ -162,6 +162,34 @@
           `(mcp-json {:error ~'error})))))
 
 ;; =============================================================================
+;; Validation Wrapper (DRY Pattern)
+;; =============================================================================
+
+(defmacro with-validation
+  "Execute body only if validation passes, else return error response.
+
+   DRYs up the repeated pattern:
+     (if-let [validation-error (validate-params params)]
+       (mcp-json validation-error)
+       (do-actual-work))
+
+   Usage:
+     (with-validation [params validate-fn]
+       (let [result (process params)]
+         (mcp-success result)))
+
+   The validator function should return:
+     - nil if valid
+     - error map (e.g., {:error \"message\"}) if invalid
+
+   CLARITY: I - Inputs are guarded (validation at boundaries)
+   SOLID: DRY - Centralizes validation pattern"
+  [[params validator] & body]
+  `(if-let [errors# (~validator ~params)]
+     (mcp-json errors#)
+     (do ~@body)))
+
+;; =============================================================================
 ;; Hivemind Message Piggyback (delegated to piggyback)
 ;; =============================================================================
 
