@@ -4,17 +4,127 @@
    Provides Clojure REPL operations via CIDER:
    - Status checking and connection info
    - Silent and explicit code evaluation
-   - Multi-session support for parallel agent work"
+   - Multi-session support for parallel agent work
+   - Auto-connect fallback when CIDER is not connected"
   (:require [hive-mcp.tools.core :refer [mcp-success mcp-error]]
             [hive-mcp.emacsclient :as ec]
             [hive-mcp.elisp :as el]
             [hive-mcp.telemetry :as telemetry]
             [hive-mcp.validation :as v]
+            [clojure.data.json :as json]
+            [clojure.string :as str]
             [taoensso.timbre :as log]))
 
 ;; ============================================================
 ;; CIDER Integration Tools (requires hive-mcp-cider addon)
 ;; ============================================================
+
+;; -----------------------------------------------------------------------------
+;; Auto-Connect Fallback Helpers (CLARITY-Y: Yield safe failure)
+;; -----------------------------------------------------------------------------
+
+(defn- cider-not-connected-error?
+  "Check if error indicates CIDER is not connected."
+  [error]
+  (and (string? error)
+       (str/includes? (str/lower-case error) "cider not connected")))
+
+(defn- list-sessions-internal
+  "Internal call to list CIDER sessions. Returns vector of sessions or nil on error."
+  []
+  (let [elisp (el/require-and-call-json 'hive-mcp-cider 'hive-mcp-cider-list-sessions)
+        {:keys [success result]} (ec/eval-elisp elisp)]
+    (when success
+      (try
+        (let [parsed (json/read-str result :key-fn keyword)]
+          (if (vector? parsed) parsed (vec parsed)))
+        (catch Exception _ nil)))))
+
+(defn- spawn-session-internal
+  "Internal call to spawn a new CIDER session. Returns true on success."
+  [session-name]
+  (let [elisp (el/require-and-call-json 'hive-mcp-cider 'hive-mcp-cider-spawn-session
+                                        session-name nil nil)
+        {:keys [success]} (ec/eval-elisp elisp)]
+    success))
+
+(defn- find-connected-session
+  "Find a session with status 'connected'. Returns session name or nil."
+  [sessions]
+  (some (fn [s]
+          (when (= "connected" (:status s))
+            (:name s)))
+        sessions))
+
+(defn- eval-in-session-internal
+  "Internal call to evaluate code in a specific session. Returns {:success :result/:error}."
+  [session-name code]
+  (let [elisp (el/require-and-call-text 'hive-mcp-cider 'hive-mcp-cider-eval-in-session
+                                        session-name code)]
+    (ec/eval-elisp elisp)))
+
+(defn- wait-for-session-ready
+  "Wait briefly for a session to become ready. Returns true if ready, false on timeout."
+  [_session-name max-attempts]
+  (loop [attempt 0]
+    (if (>= attempt max-attempts)
+      false
+      (let [sessions (list-sessions-internal)
+            connected (find-connected-session sessions)]
+        (if connected
+          true
+          (do
+            (Thread/sleep 500)
+            (recur (inc attempt))))))))
+
+(defn- ensure-cider-connected
+  "Ensure CIDER is connected, auto-spawning a session if needed.
+   Returns {:connected true :session name} on success, {:connected false :error msg} on failure."
+  []
+  (log/debug "ensure-cider-connected: checking available sessions")
+  (let [sessions (list-sessions-internal)]
+    (if-let [connected-session (find-connected-session sessions)]
+      ;; Use existing connected session
+      (do
+        (log/info "ensure-cider-connected: using existing session" connected-session)
+        {:connected true :session connected-session})
+      ;; No connected sessions - spawn a new one
+      (do
+        (log/info "ensure-cider-connected: no connected sessions, spawning 'auto'")
+        (if (spawn-session-internal "auto")
+          ;; Wait for session to become ready (up to 5 attempts = 2.5 seconds)
+          (if (wait-for-session-ready "auto" 5)
+            {:connected true :session "auto"}
+            {:connected false :error "Spawned session 'auto' but it didn't become ready in time"})
+          {:connected false :error "Failed to spawn auto session"})))))
+
+(defn- with-auto-connect-retry
+  "Execute eval-fn, and if it fails with 'not connected', attempt auto-connect and retry.
+   eval-fn should be a zero-arg function that performs the evaluation.
+   Returns the result of eval-fn (success or error)."
+  [eval-fn]
+  (let [{:keys [success error] :as first-result} (eval-fn)]
+    (if success
+      first-result
+      (if (cider-not-connected-error? error)
+        ;; Attempt auto-connect
+        (let [{:keys [connected session error]} (ensure-cider-connected)]
+          (if connected
+            (do
+              (log/info "with-auto-connect-retry: auto-connected to session" session)
+              ;; Retry the eval
+              (eval-fn))
+            (do
+              (log/warn "with-auto-connect-retry: auto-connect failed:" error)
+              ;; Return original error enhanced with auto-connect failure info
+              {:success false
+               :error (str "CIDER not connected and auto-connect failed: " error)})))
+        ;; Non-connection error - return as-is
+        first-result))))
+
+;; -----------------------------------------------------------------------------
+;; Status Handler
+;; -----------------------------------------------------------------------------
 
 (defn handle-cider-status
   "Get CIDER connection status."
@@ -27,14 +137,17 @@
       (mcp-error (str "Error: " error)))))
 
 (defn handle-cider-eval-silent
-  "Evaluate Clojure code via CIDER silently with telemetry."
+  "Evaluate Clojure code via CIDER silently with telemetry.
+   Auto-connects to CIDER if not connected (spawns 'auto' session if needed)."
   [params]
   (try
     (v/validate-cider-eval-request params)
     (let [{:keys [code]} params]
       (telemetry/with-eval-telemetry :cider-silent code nil
-        (let [elisp (el/require-and-call-text 'hive-mcp-cider 'hive-mcp-cider-eval-silent code)
-              {:keys [success result error]} (ec/eval-elisp elisp)]
+        (let [eval-fn (fn []
+                        (let [elisp (el/require-and-call-text 'hive-mcp-cider 'hive-mcp-cider-eval-silent code)]
+                          (ec/eval-elisp elisp)))
+              {:keys [success result error]} (with-auto-connect-retry eval-fn)]
           (if success
             (mcp-success result)
             (mcp-error (str "Error: " error))))))
@@ -44,14 +157,17 @@
         (throw e)))))
 
 (defn handle-cider-eval-explicit
-  "Evaluate Clojure code via CIDER interactively (shows in REPL) with telemetry."
+  "Evaluate Clojure code via CIDER interactively (shows in REPL) with telemetry.
+   Auto-connects to CIDER if not connected (spawns 'auto' session if needed)."
   [params]
   (try
     (v/validate-cider-eval-request params)
     (let [{:keys [code]} params]
       (telemetry/with-eval-telemetry :cider-explicit code nil
-        (let [elisp (el/require-and-call-text 'hive-mcp-cider 'hive-mcp-cider-eval-explicit code)
-              {:keys [success result error]} (ec/eval-elisp elisp)]
+        (let [eval-fn (fn []
+                        (let [elisp (el/require-and-call-text 'hive-mcp-cider 'hive-mcp-cider-eval-explicit code)]
+                          (ec/eval-elisp elisp)))
+              {:keys [success result error]} (with-auto-connect-retry eval-fn)]
           (if success
             (mcp-success result)
             (mcp-error (str "Error: " error))))))
