@@ -8,7 +8,42 @@
    - Emacsclient mocks (from tools_duration_test.clj)
    - Evaluator mocks (from resilience_test.clj)
    - Chroma mocks (from tools_duration_test.clj)
-   - Swarm mocks (from swarm_test.clj)"
+   - Swarm mocks (from swarm_test.clj)
+   - Hivemind mocks (from permissions_test.clj)
+   - Hot reload mocks (from hot_test.clj, hot_reload_e2e_test.clj)
+
+   === ADOPTION CANDIDATES ===
+
+   Test files that can benefit from centralized mocks (document only, refactor separately):
+
+   Emacsclient (with-mock-emacsclient):
+   - tools/swarm_handlers_pinning_test.clj (60+ with-redefs)
+   - tools/cider_pinning_test.clj (uses local with-elisp-mock macro)
+   - tools/magit_pinning_test.clj (uses local with-elisp-mock macro)
+   - tools/core_test.clj (7 with-redefs)
+   - tools_duration_test.clj (uses local with-mock-emacsclient)
+
+   Chroma (with-mock-chroma):
+   - tools/memory_pinning_test.clj (40+ with-redefs)
+   - tools_duration_test.clj (uses local with-mock-chroma)
+
+   Swarm (with-default-swarm-mocks):
+   - tools/swarm_handlers_pinning_test.clj (swarm-addon-available? checks)
+   - tools/swarm_test.clj (8+ swarm-addon-available? checks)
+
+   Channel (make-channel-capture):
+   - events/effects_test.clj (channel/emit-event! redefs)
+   - prompts/infra_test.clj (channel/emit-event! redefs)
+
+   Shell (with-mock-shell):
+   - tools/swarm_jvm_pinning_test.clj (15+ shell/sh redefs)
+
+   Hivemind (make-hivemind-ask-approve, make-hivemind-ask-deny):
+   - permissions_test.clj (10+ hivemind/ask! redefs)
+
+   Hot Reload (with-mock-hot-reload):
+   - tools/hot_test.clj (5 hot reload redefs)
+   - hot_reload_e2e_test.clj (6 hot reload redefs)"
   (:require [clojure.string :as str]
             [hive-mcp.emacsclient :as ec]
             [hive-mcp.evaluator :as evaluator]
@@ -250,10 +285,132 @@
 
 (defn mock-shell-failure
   "Creates a mock shell function that returns failure with given error.
-   
+
    Usage:
      (with-mock-shell (mock-shell-failure \"command not found\")
        ...)"
   [error]
   (fn [& _args]
     {:exit 1 :out "" :err error}))
+
+;; =============================================================================
+;; Hivemind Mocks (A7 - from permissions_test.clj)
+;; =============================================================================
+
+(defn make-hivemind-ask-approve
+  "Creates a mock hivemind/ask! that auto-approves (returns first option).
+   Optionally captures calls to an atom.
+
+   Usage:
+     (with-redefs [hivemind/ask! (make-hivemind-ask-approve)]
+       ...)
+
+   With capture:
+     (let [captured (atom [])]
+       (with-redefs [hivemind/ask! (make-hivemind-ask-approve captured)]
+         ...)
+       @captured => [{:agent-id \"...\" :question \"...\" :options [...]}])"
+  ([]
+   (make-hivemind-ask-approve nil))
+  ([capture-atom]
+   (fn [agent-id question options & _]
+     (when capture-atom
+       (swap! capture-atom conj {:agent-id agent-id
+                                 :question question
+                                 :options options}))
+     {:decision (first options) :by "test"})))
+
+(defn make-hivemind-ask-deny
+  "Creates a mock hivemind/ask! that denies (returns second option).
+   Optionally captures calls to an atom.
+
+   Usage:
+     (with-redefs [hivemind/ask! (make-hivemind-ask-deny)]
+       ...)"
+  ([]
+   (make-hivemind-ask-deny nil))
+  ([capture-atom]
+   (fn [agent-id question options & _]
+     (when capture-atom
+       (swap! capture-atom conj {:agent-id agent-id
+                                 :question question
+                                 :options options}))
+     {:decision (second options) :by "test"})))
+
+(defn make-hivemind-shout-capture
+  "Create a mock hivemind/shout! that captures shouts.
+
+   Returns [mock-fn captured-atom].
+
+   Usage:
+     (let [[mock-shout! captured] (make-hivemind-shout-capture)]
+       (with-redefs [hivemind/shout! mock-shout!]
+         (do-something-that-shouts))
+       @captured => [{:agent-id \"...\" :event-type :progress :data {...}}])"
+  []
+  (let [captured (atom [])]
+    [(fn [agent-id event-type data]
+       (swap! captured conj {:agent-id agent-id
+                             :event-type event-type
+                             :data data}))
+     captured]))
+
+;; =============================================================================
+;; Hot Reload Mocks (A7 - from hot_test.clj, hot_reload_e2e_test.clj)
+;; =============================================================================
+
+(defn mock-hot-reload-success
+  "Creates a mock hot-core-reload! that returns success.
+
+   Usage:
+     (with-redefs [hot/hot-core-reload! (mock-hot-reload-success)]
+       ...)"
+  []
+  (fn [] {:success true :reloaded-ns ["test.ns"]}))
+
+(defn mock-hot-reload-failure
+  "Creates a mock hot-core-reload! that returns failure.
+
+   Usage:
+     (with-redefs [hot/hot-core-reload! (mock-hot-reload-failure \"Syntax error\")]
+       ...)"
+  [error-msg]
+  (fn [] {:success false :error error-msg}))
+
+(defn mock-debounce-flush-success
+  "Creates a mock debounce-flush! that returns success.
+
+   Usage:
+     (with-redefs [hot/debounce-flush! (mock-debounce-flush-success)]
+       ...)"
+  []
+  (fn [] {:success true :flushed true}))
+
+(defn mock-watcher-status
+  "Creates a mock watcher-status that returns given status.
+
+   Usage:
+     (with-redefs [hot/watcher-status (mock-watcher-status {:watching? true :paths [\"src\"]})]
+       ...)"
+  [status]
+  (fn [] status))
+
+(defmacro with-mock-hot-reload
+  "Execute body with mocked hot reload functions.
+
+   Options:
+   - :reload-result - result from hot-core-reload! (default: success)
+   - :flush-result - result from debounce-flush! (default: success)
+   - :watcher-status - result from watcher-status (default: {:watching? true})
+
+   Usage:
+     (with-mock-hot-reload {:reload-result {:success true :reloaded-ns [\"my.ns\"]}}
+       (hot/handle-hot-reload {}))"
+  [{:keys [reload-result flush-result watcher-status]
+    :or {reload-result {:success true :reloaded-ns ["test.ns"]}
+         flush-result {:success true :flushed true}
+         watcher-status {:watching? true :paths ["src"]}}} & body]
+  `(with-redefs [~'hive-mcp.hot/hot-core-reload! (fn [] ~reload-result)
+                 ~'hive-mcp.hot/debounce-flush! (fn [] ~flush-result)
+                 ~'hive-mcp.hot/watcher-status (fn [] ~watcher-status)]
+     ~@body))
