@@ -3,15 +3,13 @@
   (:require [io.modelcontext.clojure-sdk.stdio-server :as io-server]
             [io.modelcontext.clojure-sdk.server :as sdk-server]
             [jsonrpc4clj.server :as jsonrpc-server]
-            [hive-mcp.tools :as tools]
+            [hive-mcp.server.routes :as routes]
             [hive-mcp.tools.swarm :as swarm]
-            [hive-mcp.docs :as docs]
             [hive-mcp.chroma :as chroma]
             [hive-mcp.channel :as channel]
             [hive-mcp.channel.websocket :as ws-channel]
             [hive-mcp.swarm.sync :as sync]
             [hive-mcp.embeddings.ollama :as ollama]
-            [hive-mcp.agent :as agent]
             [hive-mcp.transport.websocket :as ws]
             [hive-mcp.hooks :as hooks]
             [hive-mcp.crystal.hooks :as crystal-hooks]
@@ -29,20 +27,8 @@
             [hive-mcp.swarm.logic :as logic])
   (:gen-class))
 
-;; Define specs for tool definitions, responses, and hivemind messages
-(s/def ::tool-def
-  (s/keys :req-un [::name ::description ::inputSchema ::handler]))
-
-(s/def ::name string?)
-(s/def ::description string?)
-(s/def ::inputSchema map?)
-(s/def ::handler fn?)
-
-(s/def ::tool-response
-  (s/keys :req-un [::content]))
-
-(s/def ::content (s/coll-of map?))
-
+;; Specs moved to hive-mcp.server.routes
+;; Hivemind message spec (kept here for validation in server lifecycle)
 (s/def ::hivemind-message
   (s/keys :req-un [::agent-id ::event-type ::message]))
 
@@ -76,120 +62,25 @@
                        (println (force output_)))))}}})
 
 ;; =============================================================================
-;; SRP Helpers for make-tool
+;; Route Delegation (CLARITY-L: Layers stay pure)
+;;
+;; Routing logic extracted to hive-mcp.server.routes for SRP.
+;; This module focuses on server lifecycle only.
+;; Re-exports below maintain backward compatibility.
 ;; =============================================================================
 
-(defn- normalize-content
-  "Normalize handler result to content array.
-   SRP: Single responsibility for content normalization.
-   Handles: sequential (passthrough), map (wrap), other (text wrap)."
-  [result]
-  (cond
-    (sequential? result) (vec result)
-    (map? result) [result]
-    :else [{:type "text" :text (str result)}]))
+;; Re-export for backward compatibility (tests, external consumers)
+(def make-tool
+  "Convert tool definition to SDK format. Delegates to routes module."
+  routes/make-tool)
 
-(defn- find-last-text-idx
-  "Find index of last text-type item in content (searching from end).
-   SRP: Single responsibility for text item location.
-   Returns nil if no text item found."
-  [content]
-  (some (fn [[idx item]]
-          (when (= "text" (:type item)) idx))
-        (map-indexed vector (reverse content))))
+(def extract-agent-id
+  "Extract agent-id from args. Delegates to routes module."
+  routes/extract-agent-id)
 
-(defn- wrap-piggyback
-  "Append piggyback messages to content with HIVEMIND delimiters.
-   SRP: Single responsibility for piggyback embedding.
-   Appends to last text item if exists, otherwise adds new text item.
-
-   Format:
-   ---HIVEMIND---
-   [{:a \"agent-id\" :e \"event-type\" :m \"message\"}]
-   ---/HIVEMIND---"
-  [content piggyback]
-  (if (and piggyback (seq piggyback))
-    (let [piggyback-text (str "\n\n---HIVEMIND---\n"
-                              (pr-str piggyback)
-                              "\n---/HIVEMIND---")]
-      (if-let [last-text-idx (find-last-text-idx content)]
-        (let [actual-idx (- (count content) 1 last-text-idx)
-              last-item (nth content actual-idx)]
-          (assoc content actual-idx
-                 (update last-item :text str piggyback-text)))
-        (conj content {:type "text" :text piggyback-text})))
-    content))
-
-;; =============================================================================
-;; Tool Definition Conversion
-;; =============================================================================
-
-(defn extract-agent-id
-  "Extract agent-id from args map, handling both snake_case and kebab-case keys.
-
-   DRY: Consolidates 4-way fallback pattern for JSON key variation handling.
-   MCP tools may receive agent_id or agent-id in either keyword or string form.
-
-   Returns default if no agent-id found in args."
-  [args default]
-  (or (:agent_id args)
-      (:agent-id args)
-      (get args "agent_id")
-      (get args "agent-id")
-      default))
-
-;; Convert our tool definitions to the SDK format
-;; Wraps handlers to append hivemind piggyback messages to response text
-(s/fdef make-tool
-  :args (s/cat :tool-def ::tool-def)
-  :ret ::tool-response)
-
-(defn make-tool
-  "Convert a tool definition with :handler to SDK format.
-   Wraps handler to attach pending hivemind messages via content embedding.
-
-   Uses SRP helper functions:
-   - normalize-content: converts result to content array
-   - find-last-text-idx: locates last text item
-   - wrap-piggyback: embeds hivemind messages
-
-   Agent ID for piggyback is extracted from args or defaults to 'coordinator'."
-  [{:keys [name description inputSchema handler]}]
-  (let [wrapped-handler (fn [args]
-                          (let [result (handler args)
-                                agent-id (extract-agent-id args "coordinator")
-                                _ (require 'hive-mcp.tools.core)
-                                piggyback ((resolve 'hive-mcp.tools.core/get-hivemind-piggyback) agent-id)
-                                content (normalize-content result)
-                                content-with-piggyback (wrap-piggyback content piggyback)]
-                            {:content content-with-piggyback}))]
-    {:name name
-     :description description
-     :inputSchema inputSchema
-     :handler wrapped-handler}))
-
-(defn build-server-spec
-  "Build MCP server spec with capability-based tool filtering.
-
-   MUST be called AFTER init-embedding-provider! to get accurate Chroma status.
-
-   Uses tools/get-filtered-tools for dynamic kanban tool switching:
-   - Chroma available → mcp_mem_kanban_* tools
-   - Chroma unavailable → org_kanban_native_* tools (fallback)"
-  []
-  (let [filtered-tools (tools/get-filtered-tools)]
-    (log/info "Building server spec with" (count filtered-tools) "tools (capability-filtered)")
-    {:name "hive-mcp"
-     :version "0.1.0"
-     :tools (mapv make-tool (concat filtered-tools docs/docs-tools))}))
-
-;; DEPRECATED: Static spec kept for backward compatibility with tests
-;; Prefer build-server-spec for capability-aware tool list
 (def emacs-server-spec
-  {:name "hive-mcp"
-   :version "0.1.0"
-   ;; hivemind/tools already included in tools/tools aggregation
-   :tools (mapv make-tool (concat tools/tools docs/docs-tools))})
+  "DEPRECATED: Use routes/build-server-spec instead."
+  routes/emacs-server-spec)
 
 (defn get-server-context
   "Get the current MCP server context (for debugging/hot-reload)."
@@ -198,33 +89,15 @@
 
 (defn refresh-tools!
   "Hot-reload all tools in the running server.
-   CLARITY: Open for extension - allows runtime tool updates without restart.
-
-   Uses capability-based filtering - re-checks Chroma availability
-   to dynamically switch between mem-kanban and org-kanban-native tools."
+   Delegates to routes/refresh-tools! with server context atom."
   []
-  (when-let [context @server-context-atom]
-    (let [tools-atom (:tools context)
-          filtered-tools (tools/get-filtered-tools)
-          new-tools (mapv make-tool (concat filtered-tools docs/docs-tools))]
-      ;; Clear and re-register all tools
-      (reset! tools-atom {})
-      (doseq [tool new-tools]
-        (swap! tools-atom assoc (:name tool) {:tool (dissoc tool :handler)
-                                              :handler (:handler tool)}))
-      (log/info "Hot-reloaded" (count new-tools) "tools (capability-filtered)")
-      (count new-tools))))
+  (routes/refresh-tools! server-context-atom))
 
 (defn debug-tool-handler
-  "Get info about a registered tool handler (for debugging)."
+  "Get info about a registered tool handler (for debugging).
+   Delegates to routes/debug-tool-handler with server context atom."
   [tool-name]
-  (when-let [context @server-context-atom]
-    (let [tools-atom (:tools context)
-          tool-entry (get @tools-atom tool-name)]
-      (when tool-entry
-        {:name tool-name
-         :handler-class (str (type (:handler tool-entry)))
-         :tool-keys (keys (:tool tool-entry))}))))
+  (routes/debug-tool-handler server-context-atom tool-name))
 
 (defn init-embedding-provider!
   "Initialize the embedding provider for semantic memory search.
@@ -422,10 +295,8 @@
     ;; Initialize embedding provider for semantic search (fails gracefully)
     (init-embedding-provider!)
     ;; Register tools for agent delegation (allows local models to use MCP tools)
-    ;; Uses filtered tools based on Chroma availability
-    (let [filtered-tools (tools/get-filtered-tools)]
-      (agent/register-tools! filtered-tools)
-      (log/info "Registered" (count filtered-tools) "tools for agent delegation (capability-filtered)"))
+    ;; Delegates to routes module for capability-filtered tools
+    (routes/register-tools-for-delegation!)
     ;; Start WebSocket channel with auto-healing (primary - Aleph/Netty based)
     ;; This is the reliable push channel for hivemind events
     (start-ws-channel-with-healing!)
@@ -472,9 +343,9 @@
         (log/warn "Lings registry sync failed to start (non-fatal):" (.getMessage e))))
     ;; Start MCP server - create context ourselves to enable hot-reload
     ;; CLARITY: Telemetry first - expose state for debugging
-    ;; NOTE: build-server-spec must be called AFTER init-embedding-provider!
+    ;; NOTE: routes/build-server-spec must be called AFTER init-embedding-provider!
     ;; to get accurate Chroma availability for capability-based tool switching
-    (let [spec (assoc (build-server-spec) :server-id server-id)
+    (let [spec (assoc (routes/build-server-spec) :server-id server-id)
           log-ch (async/chan (async/sliding-buffer 20))
           server (io-server/stdio-server {:log-ch log-ch})
           ;; Create context and store for hot-reload capability
