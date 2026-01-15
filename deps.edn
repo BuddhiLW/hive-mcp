@@ -45,6 +45,10 @@
         org.clojure/tools.trace {:mvn/version "0.9.0"}
         io.github.tonsky/clj-reload {:mvn/version "1.0.0"}
 
+        ;; hive-hot dependencies
+        org.clojure/tools.namespace {:mvn/version "1.5.0"}  ;; dependency-aware reload
+        hawk/hawk {:mvn/version "0.2.11"}                   ;; file watcher
+
         ;; clj-kondo for code analysis (call graphs, linting)
         clj-kondo/clj-kondo {:mvn/version "2026.01.12"}
 
