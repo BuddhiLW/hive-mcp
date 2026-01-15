@@ -132,7 +132,7 @@
        (let [test-result (make-request host "/api/tags" nil)]
          (log/info "Connected to Ollama at" host)
          (log/debug "Available models:" (mapv :name (:models test-result))))
-       (catch Exception e
+       (catch Exception _e
          (log/warn "Could not connect to Ollama at" host "- ensure ollama is running")))
      (log/info "Created Ollama embedder with model:" model "dimension:" dimension)
      (->OllamaEmbedder host model dimension))))

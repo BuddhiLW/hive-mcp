@@ -24,8 +24,8 @@
   "Get kanban status including tasks by status, progress, and backend info."
   [_]
   (if (kanban-addon-available?)
-    (let [result (ec/eval-elisp "(json-encode (hive-mcp-kanban-api-status))")]
-      (mcp-success (str result)))
+    (let [_result (ec/eval-elisp "(json-encode (hive-mcp-kanban-api-status))")]
+      (mcp-success (str _result)))
     (mcp-error "hive-mcp-org-kanban addon not loaded. Run (hive-mcp-addon-load 'org-kanban)")))
 
 (defn handle-mcp-kanban-list-tasks
@@ -70,7 +70,7 @@
   [{:keys [task_id new_status]}]
   (if (kanban-addon-available?)
     (let [elisp (format "(hive-mcp-kanban-move-task \"%s\" \"%s\")" task_id new_status)
-          result (ec/eval-elisp elisp)]
+          _result (ec/eval-elisp elisp)]
       (mcp-success (str "Moved task to " new_status)))
     (mcp-error "hive-mcp-org-kanban addon not loaded.")))
 

@@ -195,8 +195,7 @@
 
 (comment
   ;; Run tests
-  (require '[clojure.test :refer [run-tests]])
-  (run-tests)
+  (clojure.test/run-tests)
 
   ;; Example usage
   (write-headline-text {:level 2 :keyword "TODO" :priority "A" :title "My task" :tags ["work"]})

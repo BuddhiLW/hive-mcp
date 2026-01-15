@@ -61,7 +61,7 @@
   "Find an adapter that supports the given diagram type."
   [diagram-type]
   (first
-   (for [[id adapter] @adapters
+   (for [[_id adapter] @adapters
          :when (contains? (supported-types adapter) diagram-type)]
      adapter)))
 
@@ -95,9 +95,8 @@
    - :adapter    - Force specific adapter (default: auto-select)
    - :format     - Output format (:plantuml :tikz :svg :png :pdf)
    - :output-dir - Directory for output files"
-  [spec & {:keys [adapter format output-dir]
-           :or {format :plantuml
-                output-dir "/tmp/diagrams"}}]
+  [spec & {:keys [adapter format _output-dir]
+           :or {format :plantuml}}]
   (let [diagram-type (:type spec)
         adapter-instance (if adapter
                            (get-adapter adapter)

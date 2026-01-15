@@ -188,7 +188,7 @@
 
    If approved, caller should proceed with actual dispatch.
    If queued, task is stored and will be returned by process-queue! when ready."
-  [{:keys [slave-id prompt files timeout-ms] :as task-spec}]
+  [{:keys [_slave-id _prompt files _timeout-ms] :as task-spec}]
   (let [check-result (pre-flight-check task-spec)]
     (cond
       ;; Deadlock - cannot proceed at all

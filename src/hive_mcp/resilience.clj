@@ -322,7 +322,7 @@
   (call [this f]
     (let [{:keys [failure-threshold reset-timeout-ms half-open-max-calls]} (:options this)
           current-state @(:state this)
-          current-failure-count @(:failure-count this)
+          _current-failure-count @(:failure-count this)
           current-last-failure-time @(:last-failure-time this)
           now (System/currentTimeMillis)]
       (case current-state
@@ -375,7 +375,7 @@
 
    Returns:
    Map with :success, :result, and optionally :error"
-  [circuit-breaker evaluator code opts]
+  [circuit-breaker evaluator code _opts]
   (try
     (let [result (call circuit-breaker #(evaluator/eval-code evaluator code))]
       {:success true

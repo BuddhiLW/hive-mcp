@@ -35,7 +35,7 @@
 ;; Injected Handler State
 ;; =============================================================================
 
-(defonce ^:private *memory-write-handler* (atom nil))
+(defonce ^:private memory-write-handler (atom nil))
 
 (defn set-memory-write-handler!
   "Set the handler function for :memory-write effect.
@@ -44,7 +44,7 @@
    Example:
      (set-memory-write-handler! memory-crud/handle-add)"
   [f]
-  (reset! *memory-write-handler* f))
+  (reset! memory-write-handler f))
 
 ;; =============================================================================
 ;; Effect: :shout
@@ -172,7 +172,7 @@
                    :duration \"permanent\"}}"
   [{:keys [type content] :as data}]
   (when (and type content)
-    (if-let [handler @*memory-write-handler*]
+    (if-let [handler @memory-write-handler]
       (try
         (handler data)
         (log/debug "[EVENT] Memory entry created:" type)
@@ -250,8 +250,8 @@
   [{:keys [files message task-id]}]
   (when (and (seq files) message)
     (try
-      (let [add-result (apply shell/sh
-                              "git" "add" "--" (vec files))
+      (let [_add-result (apply shell/sh
+                               "git" "add" "--" (vec files))
             commit-result (shell/sh
                            "git" "commit" "-m" message)]
         (if (zero? (:exit commit-result))

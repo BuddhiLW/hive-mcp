@@ -274,12 +274,12 @@
             handler (if (seq middleware)
                       (apply nrepl-server/default-handler middleware)
                       (nrepl-server/default-handler))
-            server-opts {:port nrepl-port :bind "127.0.0.1" :handler handler}]
-        (let [server (nrepl-server/start-server server-opts)]
-          (reset! nrepl-server-atom server)
-          (log/info "Embedded nREPL started on port" nrepl-port
-                    (if middleware "(with CIDER middleware)" "(basic)"))
-          server))
+            server-opts {:port nrepl-port :bind "127.0.0.1" :handler handler}
+            server (nrepl-server/start-server server-opts)]
+        (reset! nrepl-server-atom server)
+        (log/info "Embedded nREPL started on port" nrepl-port
+                  (if middleware "(with CIDER middleware)" "(basic)"))
+        server)
       (catch Exception e
         (log/warn "Embedded nREPL failed to start (non-fatal):" (.getMessage e))
         nil))))
@@ -316,9 +316,9 @@
               (async/go-loop []
                 (async/<! (async/timeout check-interval-ms))
                 (when-not (ws-channel/connected?)
-                  (log/info "WebSocket channel: no clients, server healthy")
+                  (log/info "WebSocket channel: no clients, server healthy"))
                   ;; Server running but no clients is fine
-                  )
+
                 (when-not (:running? (ws-channel/status))
                   (log/warn "WebSocket channel server died, attempting restart...")
                   (try

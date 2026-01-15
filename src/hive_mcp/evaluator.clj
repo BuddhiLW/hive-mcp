@@ -165,7 +165,7 @@
 (defrecord DirectNreplEvaluator [host port timeout-ms session-id]
   ReplEvaluator
 
-  (eval-code [this code]
+  (eval-code [_this code]
     (log/debug "DirectNreplEvaluator: eval-code on" host ":" port)
     (try
       (let [socket (doto (Socket.)
@@ -230,7 +230,7 @@
          :ns "user"
          :error (str "Error: " (.getMessage e))})))
 
-  (connected? [this]
+  (connected? [_this]
     (try
       (let [socket (doto (Socket.)
                      (.connect (InetSocketAddress. host (int port)) 500)

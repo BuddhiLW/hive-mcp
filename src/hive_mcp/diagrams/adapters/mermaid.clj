@@ -79,7 +79,7 @@
 (defmethod render-element-mermaid :class
   [_ {:keys [id label name methods attributes]}]
   (let [mid (sanitize-id id)
-        text (or label name (clojure.core/name id))
+        _text (or label name (clojure.core/name id))
         method-lines (map #(format "        +%s()" %) (or methods []))
         attr-lines (map #(format "        +%s" %) (or attributes []))]
     (str/join "\n"

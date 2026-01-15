@@ -42,6 +42,20 @@
 (pldb/db-rel task-files ^:index task-id file-path)
 
 ;; =============================================================================
+;; Edit Relations (for drone wave batch computation)
+;; =============================================================================
+
+;; Edit entity: represents a planned file mutation in a wave
+;; edit-id: unique identifier (e.g., "edit-123")
+;; file-path: the file being edited
+;; edit-type: :create :modify :delete
+(pldb/db-rel edit ^:index edit-id file-path edit-type)
+
+;; Edit dependencies: edit-a must complete before edit-b
+;; (typically inferred from file read/write patterns)
+(pldb/db-rel edit-depends ^:index edit-a edit-b)
+
+;; =============================================================================
 ;; Database State (Thread-Safe Atom)
 ;; =============================================================================
 
@@ -172,6 +186,54 @@
   (log/debug "Added dependency:" task-id "depends on" dep-task-id))
 
 ;; =============================================================================
+;; Edit Mutation Functions (for drone wave batching)
+;; =============================================================================
+
+(defn add-edit!
+  "Register an edit for batch computation.
+   edit-type: :create :modify :delete"
+  [edit-id file-path edit-type]
+  (swap! logic-db pldb/db-fact edit edit-id file-path edit-type)
+  (log/debug "Added edit:" edit-id file-path edit-type))
+
+(defn remove-edit!
+  "Remove an edit from the database."
+  [edit-id]
+  (let [edit-info (first (with-db
+                           (l/run 1 [q]
+                                  (l/fresh [file type]
+                                           (edit edit-id file type)
+                                           (l/== q {:file file :type type})))))]
+    (when edit-info
+      (swap! logic-db pldb/db-retraction edit edit-id (:file edit-info) (:type edit-info))))
+  (log/debug "Removed edit:" edit-id))
+
+(defn add-edit-dependency!
+  "Add a dependency: edit-a must complete before edit-b."
+  [edit-a edit-b]
+  (swap! logic-db pldb/db-fact edit-depends edit-a edit-b)
+  (log/debug "Added edit dependency:" edit-a "→" edit-b))
+
+(defn reset-edits!
+  "Clear all edit relations (for cleanup after wave completes)."
+  []
+  (let [all-edits (with-db
+                    (l/run* [q]
+                            (l/fresh [id file type]
+                                     (edit id file type)
+                                     (l/== q {:id id :file file :type type}))))
+        all-deps (with-db
+                   (l/run* [q]
+                           (l/fresh [a b]
+                                    (edit-depends a b)
+                                    (l/== q {:a a :b b}))))]
+    (doseq [{:keys [id file type]} all-edits]
+      (swap! logic-db pldb/db-retraction edit id file type))
+    (doseq [{:keys [a b]} all-deps]
+      (swap! logic-db pldb/db-retraction edit-depends a b))
+    (log/debug "Reset edits:" (count all-edits) "edits," (count all-deps) "dependencies")))
+
+;; =============================================================================
 ;; Core Predicates (Logic Goals)
 ;; =============================================================================
 
@@ -223,6 +285,158 @@
    somehow depends on task-b, so making task-a depend on task-b creates a loop)."
   [task-a task-b]
   (reachable-fromo task-b task-a))
+
+;; =============================================================================
+;; Edit Predicates (for drone wave batching)
+;; =============================================================================
+
+(defn edit-conflicto
+  "Goal: succeeds if two edits conflict (same file, different edit-id).
+   Returns the conflicting file path."
+  [edit-a edit-b file]
+  (l/all
+   (edit edit-a file l/_)
+   (edit edit-b file l/_)
+   (l/!= edit-a edit-b)))
+
+(defn edit-depends-on-o
+  "Goal: succeeds if edit-a must complete before edit-b (direct dependency)."
+  [edit-a edit-b]
+  (edit-depends edit-a edit-b))
+
+(defn edit-reachable-fromo
+  "Goal: succeeds if edit-b is reachable from edit-a via edit-depends.
+   Transitive closure of edit dependencies."
+  [source target]
+  (l/conde
+   [(edit-depends source target)]
+   [(l/fresh [mid]
+             (edit-depends source mid)
+             (edit-reachable-fromo mid target))]))
+
+;; =============================================================================
+;; Batch Computation (Kahn's algorithm with conflict grouping)
+;; =============================================================================
+
+(defn- get-edit-file
+  "Get the file path for an edit-id."
+  [edit-id]
+  (first (with-db
+           (l/run 1 [file]
+                  (l/fresh [type]
+                           (edit edit-id file type))))))
+
+#_{:clj-kondo/ignore [:unused-private-var]}
+(defn- get-edit-dependencies
+  "Get all edits that edit-id depends on."
+  [edit-id]
+  (with-db
+    (l/run* [dep]
+            (edit-depends dep edit-id))))
+
+(defn- get-all-edit-dependencies
+  "Get all edit dependency pairs."
+  []
+  (with-db
+    (l/run* [q]
+            (l/fresh [a b]
+                     (edit-depends a b)
+                     (l/== q [a b])))))
+
+(defn- edits-conflict?
+  "Check if two edits conflict (same file)."
+  [edit-a edit-b]
+  (let [file-a (get-edit-file edit-a)
+        file-b (get-edit-file edit-b)]
+    (and file-a file-b (= file-a file-b))))
+
+(defn- can-add-to-batch?
+  "Check if an edit can be added to a batch (no conflicts with existing batch members)."
+  [edit-id batch]
+  (not (some #(edits-conflict? edit-id %) batch)))
+
+(defn compute-batches
+  "Compute safe parallel batches for edits.
+
+   Returns vector of batches: [[edit-ids-batch-1] [edit-ids-batch-2] ...]
+   - Edits within a batch can run in parallel (no file conflicts)
+   - Batches must run sequentially (dependencies respected)
+
+   Algorithm: Modified Kahn's topological sort with conflict grouping.
+   1. Build in-degree map from edit-depends relation
+   2. Process edits with in-degree 0 (no unsatisfied dependencies)
+   3. Group into batch only if no file conflicts with batch members
+   4. When batch full or no more non-conflicting edits, start new batch
+   5. Decrement in-degree of dependents when batch completes"
+  [edit-ids]
+  (if (empty? edit-ids)
+    []
+    (let [edit-set (set edit-ids)
+          deps (get-all-edit-dependencies)
+          ;; Filter to only deps within our edit set
+          relevant-deps (filter (fn [[a b]] (and (edit-set a) (edit-set b))) deps)
+
+          ;; Build in-degree map
+          initial-in-degree (reduce (fn [m id] (assoc m id 0)) {} edit-ids)
+          in-degree (reduce (fn [m [_ b]] (update m b (fnil inc 0)))
+                            initial-in-degree
+                            relevant-deps)
+
+          ;; Build adjacency list (who depends on whom)
+          adj (reduce (fn [m [a b]] (update m a (fnil conj []) b))
+                      {}
+                      relevant-deps)]
+
+      ;; Kahn's algorithm with conflict grouping
+      (loop [remaining-in-degree in-degree
+             batches []]
+        (if (every? (fn [[_ v]] (pos? v)) remaining-in-degree)
+          ;; All remaining have dependencies - check for cycle or done
+          (if (empty? remaining-in-degree)
+            batches
+            (do
+              (log/warn "Cycle detected in edit dependencies, forcing remaining:"
+                        (keys remaining-in-degree))
+              ;; Force remaining into sequential batches
+              (into batches (mapv vector (keys remaining-in-degree)))))
+
+          ;; Find edits with in-degree 0 (ready to execute)
+          (let [ready (mapv first (filter (fn [[_ v]] (zero? v)) remaining-in-degree))]
+            (if (empty? ready)
+              batches
+              ;; Group ready edits into batches by conflict
+              (let [;; Greedy: add non-conflicting edits to current batch
+                    current-batch (reduce
+                                   (fn [batch edit-id]
+                                     (if (can-add-to-batch? edit-id batch)
+                                       (conj batch edit-id)
+                                       batch))
+                                   []
+                                   ready)
+                    ;; Remove batch members from in-degree map
+                    _batch-set (set current-batch)
+                    new-in-degree (reduce dissoc remaining-in-degree current-batch)
+                    ;; Decrement in-degree of dependents
+                    final-in-degree (reduce
+                                     (fn [m completed-id]
+                                       (reduce (fn [m' dep-id]
+                                                 (if (contains? m' dep-id)
+                                                   (update m' dep-id dec)
+                                                   m'))
+                                               m
+                                               (get adj completed-id [])))
+                                     new-in-degree
+                                     current-batch)]
+                (recur final-in-degree (conj batches current-batch))))))))))
+
+(defn get-all-edits
+  "Get all registered edits. Returns [{:edit-id :file :type} ...]"
+  []
+  (with-db
+    (l/run* [q]
+            (l/fresh [id file type]
+                     (edit id file type)
+                     (l/== q {:edit-id id :file file :type type})))))
 
 ;; =============================================================================
 ;; Query Functions (Public API)

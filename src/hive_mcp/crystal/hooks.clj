@@ -192,16 +192,16 @@
   (let [progress (harvest-session-progress)
         tasks (harvest-completed-tasks)
         commits (harvest-git-commits)
-        _recalls (recall/get-buffered-recalls)]
+        recalls (recall/get-buffered-recalls)]
     {:progress-notes (:notes progress)
      :completed-tasks (:tasks tasks)
      :git-commits (:commits commits)
-     :recalls _recalls
+     :recalls recalls
      :session (crystal/session-id)
      :summary {:progress-count (:count progress)
                :task-count (:count tasks)
                :commit-count (:count commits)
-               :recall-count (count _recalls)}}))
+               :recall-count (count recalls)}}))
 
 ;; =============================================================================
 ;; Crystallization Hook
@@ -222,7 +222,7 @@
    3. Clears ephemeral progress notes
    
    Returns: {:summary-id string :promoted [ids] :cleared [ids]}"
-  [{:keys [progress-notes completed-tasks git-commits recalls] :as harvested}]
+  [{:keys [progress-notes completed-tasks git-commits _recalls] :as harvested}]
   (log/info "Crystallizing session:" (crystal/session-id))
 
   ;; 1. Create session summary

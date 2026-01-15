@@ -253,7 +253,7 @@
 
 (defn headline->entry
   "Convert an org headline back to a prompt entry."
-  [{:keys [properties children title tags] :as headline}]
+  [{:keys [properties children title tags] :as _headline}]
   ;; Children are sub-headlines like *** Prompt, *** What It Accomplishes, etc.
   (let [get-child-content (fn [child-title]
                             (some->> children
@@ -312,7 +312,7 @@
 
 (defn format-confirmation
   "Format a confirmation message for display."
-  [{:keys [id category quality tags prompt accomplishes] :as entry}]
+  [{:keys [id category quality tags prompt accomplishes]}]
   (str "╔══════════════════════════════════════════════════════════════╗\n"
        "║           📝 PROMPT CAPTURED SUCCESSFULLY                    ║\n"
        "╠══════════════════════════════════════════════════════════════╣\n"
@@ -475,7 +475,7 @@
 
 (defn handle-prompt-list
   "MCP tool handler for listing prompts."
-  [{:keys [category quality limit]}]
+  [{:keys [category quality limit] :as _entry}]
   (try
     (let [result (list-prompts {:category (when category (keyword category))
                                 :quality (when quality (keyword quality))

@@ -115,7 +115,7 @@
 
 (deftype UnixTransport [path ^:volatile-mutable channel ^:volatile-mutable input-stream]
   ITransport
-  (connect! [this]
+  (connect! [_this]
     (try
       (let [addr (UnixDomainSocketAddress/of ^String path)
             ch (SocketChannel/open StandardProtocolFamily/UNIX)]
@@ -143,8 +143,8 @@
   (connected? [_]
     (and channel (.isConnected ^SocketChannel channel)))
 
-  (send! [this msg]
-    (when (connected? this)
+  (send! [_this msg]
+    (when (connected? _this)
       (try
         (let [data (encode-msg msg)
               buf (ByteBuffer/wrap data)]
@@ -173,7 +173,7 @@
 
 (deftype TCPTransport [host port ^:volatile-mutable channel ^:volatile-mutable input-stream]
   ITransport
-  (connect! [this]
+  (connect! [_this]
     (try
       (let [ch (SocketChannel/open)
             addr (java.net.InetSocketAddress. ^String host ^int port)]
@@ -201,8 +201,8 @@
   (connected? [_]
     (and channel (.isConnected ^SocketChannel channel)))
 
-  (send! [this msg]
-    (when (connected? this)
+  (send! [_this msg]
+    (when (connected? _this)
       (try
         (let [data (encode-msg msg)
               buf (ByteBuffer/wrap data)]

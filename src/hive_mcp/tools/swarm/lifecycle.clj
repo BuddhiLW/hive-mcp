@@ -34,7 +34,7 @@
 
    CLARITY: I - Inputs validated (name required)
    SOLID: SRP - Only handles spawn, not registration"
-  [{:keys [name presets cwd role terminal]}]
+  [{:keys [name presets cwd _role terminal]}]
   (core/with-swarm
     (let [presets-str (when (seq presets)
                         (format "'(%s)" (str/join " " (map #(format "\"%s\"" %) presets))))

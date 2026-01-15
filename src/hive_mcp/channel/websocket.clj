@@ -51,7 +51,7 @@
                                :else
                                (when-let [msg (try
                                                 (json/read-str raw :key-fn keyword)
-                                                (catch Exception e
+                                                (catch Exception _e
                                                   (log/debug "Non-JSON message:" raw)
                                                   nil))]
                                  (handle-message client-id msg))))

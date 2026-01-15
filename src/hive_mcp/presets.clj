@@ -163,7 +163,7 @@
 (defn index-preset!
   "Index a single preset in Chroma.
    Returns preset ID on success."
-  [{:keys [id name title content category tags source file-path] :as preset}]
+  [{:keys [id name title _content category tags source file-path] :as preset}]
   (when-not (chroma/embedding-configured?)
     (throw (ex-info "Embedding provider not configured" {:type :no-embedding-provider})))
   (let [coll (get-or-create-collection)
@@ -289,7 +289,7 @@
                  (when (not= t "")
                    (str/split t #",")))
          :source (get metadata :source)
-         :content document}))
+         :_content document}))
     (catch Exception e
       (log/debug "Failed to get preset from Chroma:" preset-id (.getMessage e))
       nil)))

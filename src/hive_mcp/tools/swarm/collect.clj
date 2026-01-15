@@ -166,7 +166,7 @@
 
         ;; Not in journal - fall back to polling
         (loop []
-          (let [elapsed (- (System/currentTimeMillis) start-time)
+          (let [_elapsed (- (System/currentTimeMillis) start-time)
                 ;; Check journal again (event might have arrived during poll wait)
                 journal-check (channel/check-event-journal task_id)]
             (if journal-check

@@ -50,7 +50,7 @@
    entry: {:id :type :duration :tags :recalls :created}
    
    Extracts session from tags and populates all relations."
-  [{:keys [id type duration tags recalls] :as entry}]
+  [{:keys [id type duration tags recalls] :as _entry}]
   (when id
     ;; Add base memory entry
     (let [memory-entity (schema/make-memory

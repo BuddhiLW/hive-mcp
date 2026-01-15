@@ -13,7 +13,6 @@
    - CiderBackend: implements LLMBackend protocol via nREPL eval
    - Integrates with existing agent.delegate! flow"
   (:require [hive-mcp.agent.protocol :as proto]
-            [hive-mcp.agent :as agent]
             [hive-mcp.agent.ollama :as ollama]
             [hive-mcp.agent.openrouter :as openrouter]
             [hive-mcp.emacsclient :as ec]
@@ -130,7 +129,7 @@
 (defrecord CiderBackend [session-name port timeout-ms]
   proto/LLMBackend
 
-  (chat [_ messages tools]
+  (chat [_ messages _tools]
     ;; For CiderBackend, we don't call an LLM - we execute Clojure code directly
     ;; The "task" in messages becomes code to evaluate
     ;; This is useful for pure Clojure execution without LLM reasoning
@@ -192,7 +191,7 @@
   ([type] (make-backend type {}))
   ([type opts]
    (case type
-     :ollama (agent/ollama-backend opts)
+     :ollama (ollama/ollama-backend opts)
      :cider (cider-backend opts)
      :openrouter (openrouter/openrouter-backend opts)
      (throw (ex-info "Unknown backend type" {:type type :available [:ollama :cider :openrouter]})))))

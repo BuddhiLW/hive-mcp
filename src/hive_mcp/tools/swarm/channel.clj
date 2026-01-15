@@ -82,8 +82,8 @@
    Note: bencode returns string keys, so we use get instead of keywords."
   [event]
   (let [slave-id (get event "slave-id")
-        prompt (get event "prompt")
-        timestamp (get event "timestamp")]
+        _prompt (get event "prompt")
+        _timestamp (get event "timestamp")]
     (log/info "Channel: prompt-shown from" slave-id)
     ;; For now just log - could add to a prompts journal if needed
     ))

@@ -260,6 +260,7 @@
    should be initialized via hive-mcp.events.handlers/register-handlers!"
   [registry register-fn]
   (println "WARN: register-builtins! is deprecated. Use hive-mcp.events.handlers/register-handlers! instead.")
+  #_:clj-kondo/ignore
   (doseq [[event handlers] builtin-handlers
           handler handlers]
     (register-fn registry event handler)))

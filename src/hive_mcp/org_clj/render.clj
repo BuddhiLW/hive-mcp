@@ -76,7 +76,7 @@
   (render-card [_ task]
     (let [title (or (:title task) "Untitled")
           id (get-in task [:properties :ID] "")
-          short-id (if (> (count id) 8) (subs id 0 8) id)
+          _short-id (if (> (count id) 8) (subs id 0 8) id)
           truncated (if (> (count title) (- column-width 4))
                       (str (subs title 0 (- column-width 7)) "...")
                       title)]
@@ -134,7 +134,7 @@
 
   (render-card [_ task]
     (let [title (or (:title task) "Untitled")
-          id (get-in task [:properties :ID] "")
+          _id (get-in task [:properties :ID] "")
           priority (get-in task [:properties :PRIORITY])]
       (str "  • " title
            (when priority (str " [" priority "]"))

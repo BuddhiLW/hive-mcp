@@ -373,8 +373,8 @@
    - :memory-write - Store each convention (if any)
    - :wrap-notify  - Queue for coordinator permeation
    - :shout        - Broadcast completion to hivemind"
-  [coeffects [_ {:keys [accomplishments decisions conventions in-progress
-                        next-actions completed-tasks project] :as data}]]
+  [coeffects [_ {:keys [accomplishments decisions conventions _in-progress
+                        _next-actions _completed-tasks project] :as data}]]
   (let [agent-id (or (get-in coeffects [:agent-context :agent-id])
                      (System/getenv "CLAUDE_SWARM_SLAVE_ID")
                      "unknown-agent")

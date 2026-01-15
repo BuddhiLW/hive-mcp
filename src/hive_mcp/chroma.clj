@@ -331,10 +331,10 @@
         normalized (-> text
                        str/trim
                        (str/replace #"[ \t]+" " ")
-                       (str/replace #"\n+" "\n"))]
-    (let [md (java.security.MessageDigest/getInstance "SHA-256")
-          hash-bytes (.digest md (.getBytes normalized "UTF-8"))]
-      (apply str (map #(format "%02x" %) hash-bytes)))))
+                       (str/replace #"\n+" "\n"))
+        md (java.security.MessageDigest/getInstance "SHA-256")
+        hash-bytes (.digest md (.getBytes normalized "UTF-8"))]
+    (apply str (map #(format "%02x" %) hash-bytes))))
 
 (defn cleanup-expired!
   "Delete all expired entries from Chroma.

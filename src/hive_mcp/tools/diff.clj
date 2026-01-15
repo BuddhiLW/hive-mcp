@@ -168,7 +168,7 @@
   "Handle propose_diff tool call.
    Stores a proposed diff for review by the hivemind.
    Translates sandbox paths and validates file paths."
-  [{:keys [file_path old_content new_content description drone_id] :as params}]
+  [{:keys [file_path _old_content _new_content _description drone_id] :as params}]
   (log/debug "propose_diff called" {:file file_path :drone drone_id})
   (if-let [error (validate-propose-params params)]
     (do
@@ -244,9 +244,9 @@
       (mcp-error-json (str "Diff not found: " diff_id)))
 
     :else
-    (let [{:keys [file-path old-content new-content] :as diff} (get @pending-diffs diff_id)
+    (let [{:keys [file-path _old-content _new-content] :as _diff} (get @pending-diffs diff_id)
           file-exists? (.exists (io/file file-path))
-          creating-new-file? (and (str/blank? old-content) (not file-exists?))]
+          creating-new-file? (and (str/blank? _old-content) (not file-exists?))]
       (try
         (cond
           ;; Case 1: Creating a new file (old-content empty, file doesn't exist)
@@ -256,7 +256,7 @@
             (let [parent (.getParentFile (io/file file-path))]
               (when (and parent (not (.exists parent)))
                 (.mkdirs parent)))
-            (spit file-path new-content)
+            (spit file-path _new-content)
             (swap! pending-diffs dissoc diff_id)
             (log/info "New file created" {:id diff_id :file file-path})
             (mcp-json {:id diff_id
@@ -276,20 +276,20 @@
           (let [current-content (slurp file-path)]
             (cond
               ;; old-content not found in file
-              (not (str/includes? current-content old-content))
+              (not (str/includes? current-content _old-content))
               (do
                 (log/warn "apply_diff old content not found in file" {:file file-path})
                 (mcp-error-json "Old content not found in file. File may have been modified since diff was proposed."))
 
               ;; Multiple occurrences - ambiguous
-              (> (count (re-seq (re-pattern (java.util.regex.Pattern/quote old-content)) current-content)) 1)
+              (> (count (re-seq (re-pattern (java.util.regex.Pattern/quote _old-content)) current-content)) 1)
               (do
                 (log/warn "apply_diff multiple matches found" {:file file-path})
                 (mcp-error-json "Multiple occurrences of old content found. Cannot apply safely - diff is ambiguous."))
 
               ;; Exactly one match - apply the replacement
               :else
-              (let [updated-content (str/replace-first current-content old-content new-content)]
+              (let [updated-content (str/replace-first current-content _old-content _new-content)]
                 (spit file-path updated-content)
                 (swap! pending-diffs dissoc diff_id)
                 (log/info "Diff applied" {:id diff_id :file file-path})

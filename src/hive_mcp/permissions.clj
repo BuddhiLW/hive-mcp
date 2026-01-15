@@ -137,7 +137,7 @@
 ;; TODO: Implement
 (defn- handle-tier-1
   "Auto-approve for tier-1 (test files, etc)."
-  [agent-id tool-name arguments]
+  [_agent-id _tool-name _arguments]
   {:approved true
    :tier :tier-1
    :reviewer :auto})
@@ -146,7 +146,7 @@
 (defn- handle-tier-2
   "Request coordinator review for tier-2.
    Returns diff preview, coordinator decides."
-  [agent-id tool-name arguments]
+  [_agent-id _tool-name arguments]
   (let [path (extract-path arguments)
         ;; Show content preview for coordinator
         content-preview (when-let [content (or (get arguments "new_string")
@@ -157,10 +157,10 @@
                               content)))
         question (if content-preview
                    (format "TIER-2: Agent %s wants to %s on %s\n\nPreview:\n%s\n\nApprove?"
-                           agent-id tool-name path content-preview)
+                           _agent-id _tool-name path content-preview)
                    (format "TIER-2: Agent %s wants to %s on %s. Approve?"
-                           agent-id tool-name path))
-        response (hivemind/ask! agent-id question ["yes" "no"])]
+                           _agent-id _tool-name path))
+        response (hivemind/ask! _agent-id question ["yes" "no"])]
     {:approved (= "yes" (:decision response))
      :tier :tier-2
      :reviewer :coordinator
@@ -171,7 +171,7 @@
 (defn- handle-tier-3
   "Request human approval for tier-3.
    Blocks until human responds via channel."
-  [agent-id tool-name arguments]
+  [_agent-id _tool-name arguments]
   (let [path (extract-path arguments)
         ;; Format arguments for human review (truncate if too long)
         args-preview (let [code (or (get arguments "code")
@@ -190,15 +190,15 @@
                          (str (subs preview 0 300) "...")
                          preview))
         question (format "TIER-3 APPROVAL REQUIRED\n\nAgent: %s\nTool: %s\nPath: %s\n\nArguments:\n%s\n\nApprove this action?"
-                         agent-id tool-name (or path "N/A") args-preview)]
+                         _agent-id _tool-name (or path "N/A") args-preview)]
     ;; Emit channel event for UI notification
     (channel/emit-event! :approval-request
-                         {:agent-id agent-id
-                          :tool tool-name
+                         {:agent-id _agent-id
+                          :tool _tool-name
                           :arguments arguments
                           :tier :tier-3})
     ;; Block waiting for human decision
-    (let [response (hivemind/ask! agent-id question ["approve" "deny"])]
+    (let [response (hivemind/ask! _agent-id question ["approve" "deny"])]
       {:approved (= "approve" (:decision response))
        :tier :tier-3
        :reviewer :human
