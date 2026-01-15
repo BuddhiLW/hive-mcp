@@ -62,10 +62,14 @@
                 "\n\n")))))
 
 (defn- format-file-contents
-  "Pre-read file contents so drone has exact content for propose_diff."
-  [files]
+  "Pre-read file contents so drone has exact content for propose_diff.
+
+   Arguments:
+     files        - List of file paths to read
+     project-root - Optional project root override (defaults to diff/get-project-root)"
+  [files & [project-root-override]]
   (when (seq files)
-    (let [project-root (or (diff/get-project-root) "")
+    (let [project-root (or project-root-override (diff/get-project-root) "")
           contents (for [f files]
                      (let [abs-path (if (str/starts-with? f "/")
                                       f
@@ -81,11 +85,16 @@
            (str/join "\n" contents)))))
 
 (defn- augment-task
-  "Augment task with context and file contents."
-  [task files]
+  "Augment task with context and file contents.
+
+   Arguments:
+     task         - Task description
+     files        - List of files to include
+     project-root - Optional project root override for path resolution"
+  [task files & [project-root]]
   (let [context (prepare-context)
         context-str (format-context-str context)
-        file-contents-str (format-file-contents files)]
+        file-contents-str (format-file-contents files project-root)]
     (str context-str
          "## Task\n" task
          (when (seq files)
@@ -124,7 +133,7 @@
 
 (defn delegate!
   "Delegate a task to a drone (token-optimized leaf agent).
-   
+
    Automatically:
    - Pre-injects file contents (drone doesn't need to read)
    - Injects catchup context (conventions, decisions, snippets)
@@ -132,22 +141,23 @@
    - Auto-applies any diffs proposed by the drone
    - Records results to hivemind for review
    - Reports status to parent ling (if parent-id provided) for swarm state sync
-   
+
    Options:
      :task      - Task description (required)
      :files     - List of files the drone will modify (contents pre-injected)
      :preset    - Override preset (default: drone-worker)
      :trace     - Enable progress events (default: true)
      :parent-id - Parent ling's slave-id (for swarm status sync)
-   
+     :cwd       - Working directory override for path resolution
+
    Returns result map with :status, :result, :agent-id, :files-modified"
-  [{:keys [task files preset trace parent-id]
+  [{:keys [task files preset trace parent-id cwd]
     :or {preset "drone-worker"
          trace true}}
    delegate-fn]
   (let [effective-parent-id (or parent-id
                                 (System/getenv "CLAUDE_SWARM_SLAVE_ID"))
-        augmented-task (augment-task task files)
+        augmented-task (augment-task task files cwd)
         agent-id (str "drone-" (System/currentTimeMillis))
         diffs-before (set (keys @diff/pending-diffs))]
 

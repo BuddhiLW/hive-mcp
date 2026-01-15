@@ -106,54 +106,59 @@
 
 (defn validate-diff-path
   "Validate a file path for propose_diff.
-   
+
    Drones sometimes hallucinate invalid paths like '/hivemind/controller.clj'.
    This function validates that paths:
    1. Are not suspicious absolute paths (absolute paths must exist)
    2. Don't escape the project directory (no ../../../etc/passwd)
    3. Resolve to valid locations within the project
-   
+
+   Arguments:
+     file-path    - Path to validate
+     project-root - Optional project root override (defaults to get-project-root)
+
    Returns {:valid true :resolved-path \"...\"} or {:valid false :error \"...\"}."
-  [file-path]
-  (let [project-root (get-project-root)
-        file (io/file file-path)]
-    (cond
+  ([file-path] (validate-diff-path file-path nil))
+  ([file-path project-root-override]
+   (let [project-root (or project-root-override (get-project-root))
+         file (io/file file-path)]
+     (cond
       ;; Check 1: Empty or blank path
-      (str/blank? file-path)
-      {:valid false :error "File path cannot be empty"}
+       (str/blank? file-path)
+       {:valid false :error "File path cannot be empty"}
 
       ;; Check 2: Suspicious absolute paths (absolute but doesn't exist)
-      (and (.isAbsolute file)
-           (not (.exists file))
+       (and (.isAbsolute file)
+            (not (.exists file))
            ;; Also reject if the parent directory doesn't exist
            ;; (clear sign of hallucinated path like /hivemind/foo.clj)
-           (not (.exists (.getParentFile file))))
-      {:valid false
-       :error (str "Invalid absolute path: '" file-path "' - "
-                   "neither the file nor its parent directory exists. "
-                   "Use relative paths like 'src/hive_mcp/foo.clj' or ensure the path is valid.")}
+            (not (.exists (.getParentFile file))))
+       {:valid false
+        :error (str "Invalid absolute path: '" file-path "' - "
+                    "neither the file nor its parent directory exists. "
+                    "Use relative paths like 'src/hive_mcp/foo.clj' or ensure the path is valid.")}
 
       ;; Check 3: Path escapes project directory
-      (let [resolved (if (.isAbsolute file)
-                       file
-                       (io/file project-root file-path))
-            canonical-path (.getCanonicalPath resolved)
-            canonical-root (.getCanonicalPath (io/file project-root))]
-        (not (str/starts-with? canonical-path canonical-root)))
-      {:valid false
-       :error (str "Path escapes project directory: '" file-path "' "
-                   "would resolve outside the project root '" project-root "'. "
-                   "All paths must be within the project directory.")}
+       (let [resolved (if (.isAbsolute file)
+                        file
+                        (io/file project-root file-path))
+             canonical-path (.getCanonicalPath resolved)
+             canonical-root (.getCanonicalPath (io/file project-root))]
+         (not (str/starts-with? canonical-path canonical-root)))
+       {:valid false
+        :error (str "Path escapes project directory: '" file-path "' "
+                    "would resolve outside the project root '" project-root "'. "
+                    "All paths must be within the project directory.")}
 
       ;; Check 4: Absolute path that exists - allow it
-      (.isAbsolute file)
-      {:valid true :resolved-path (.getCanonicalPath file)}
+       (.isAbsolute file)
+       {:valid true :resolved-path (.getCanonicalPath file)}
 
       ;; Check 5: Relative path - resolve against project root
-      :else
-      (let [resolved (io/file project-root file-path)
-            canonical-path (.getCanonicalPath resolved)]
-        {:valid true :resolved-path canonical-path}))))
+       :else
+       (let [resolved (io/file project-root file-path)
+             canonical-path (.getCanonicalPath resolved)]
+         {:valid true :resolved-path canonical-path})))))
 
 ;; =============================================================================
 ;; Application: Handlers

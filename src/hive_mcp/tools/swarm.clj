@@ -365,6 +365,8 @@
                                "preset" {:type "string"
                                          :description "Drone preset (default: drone-worker)"}
                                "trace" {:type "boolean"
-                                        :description "Emit progress events (default: true)"}}
+                                        :description "Emit progress events (default: true)"}
+                               "cwd" {:type "string"
+                                      :description "Working directory override for path resolution. Pass ling's cwd when spawned with a different project directory."}}
                   :required ["tasks"]}
     :handler handle-dispatch-drone-wave}])

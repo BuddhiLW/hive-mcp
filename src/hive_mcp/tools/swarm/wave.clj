@@ -67,12 +67,13 @@
    Arguments:
      item   - Change item map
      preset - Drone preset
+     cwd    - Optional working directory override for path resolution
 
    Returns:
      Map with :success :result or :error"
-  [{:keys [change-item/id change-item/file change-item/task]} preset]
+  [{:keys [change-item/id change-item/file change-item/task]} preset cwd]
   (try
-    (log/info "Executing drone task for item:" id "file:" file)
+    (log/info "Executing drone task for item:" id "file:" file "cwd:" cwd)
     ;; Update status to dispatched
     (ds/update-item-status! id :dispatched)
 
@@ -81,7 +82,8 @@
                   {:task (str "File: " file "\n\nTask: " task)
                    :files [file]
                    :preset preset
-                   :trace true})]
+                   :trace true
+                   :cwd cwd})]
       (if (= :success (:status result))
         {:success true
          :item-id id
@@ -101,20 +103,20 @@
 
 (defn- item->work-unit
   "Convert item to work unit for async processing."
-  [item preset]
-  {:item item :preset preset})
+  [item preset cwd]
+  {:item item :preset preset :cwd cwd})
 
 (defn execute-wave!
   "Execute a wave for a plan with bounded concurrency.
 
    Arguments:
      plan-id     - Plan to execute
-     opts        - Map with :concurrency (default 3), :trace (default true)
+     opts        - Map with :concurrency (default 3), :trace (default true), :cwd (optional)
 
    Returns:
      Wave-id immediately. Wave executes asynchronously.
      Monitor via events or get-wave-status."
-  [plan-id & [{:keys [concurrency trace] :or {concurrency default-concurrency trace true}}]]
+  [plan-id & [{:keys [concurrency trace cwd] :or {concurrency default-concurrency trace true}}]]
   (let [plan (ds/get-plan plan-id)]
     (when-not plan
       (throw (ex-info "Plan not found" {:plan-id plan-id})))
@@ -140,14 +142,14 @@
           ;; Producer: push all items to work channel
           (go
             (doseq [item items]
-              (>! work-ch (item->work-unit item preset)))
+              (>! work-ch (item->work-unit item preset cwd)))
             (close! work-ch))
 
           ;; Workers: process with bounded concurrency
           (dotimes [_ concurrency]
             (go-loop []
-              (when-let [{:keys [item preset]} (<! work-ch)]
-                (let [result (execute-drone-task item preset)]
+              (when-let [{:keys [item preset cwd]} (<! work-ch)]
+                (let [result (execute-drone-task item preset cwd)]
                   ;; Update item status
                   (if (:success result)
                     (do
@@ -240,11 +242,12 @@
      tasks   - Array of {:file :task} objects (required)
      preset  - Drone preset (default: \"drone-worker\")
      trace   - Emit progress events (default: true)
+     cwd     - Working directory override for path resolution (optional)
 
    Returns:
      JSON with wave-id for immediate response.
      Actual execution happens asynchronously."
-  [{:keys [tasks preset trace]}]
+  [{:keys [tasks preset trace cwd]}]
   (try
     (when (empty? tasks)
       (throw (ex-info "tasks array is required and must not be empty" {})))
@@ -255,7 +258,8 @@
                                     :task (or (get t "task") (:task t))})
                                  tasks)
           plan-id (create-plan! normalized-tasks preset)
-          wave-id (execute-wave! plan-id {:trace (if (nil? trace) true trace)})]
+          wave-id (execute-wave! plan-id {:trace (if (nil? trace) true trace)
+                                          :cwd cwd})]
       {:type "text"
        :text (json/write-str {:status "wave_started"
                               :plan_id plan-id
