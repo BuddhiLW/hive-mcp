@@ -291,6 +291,67 @@
         (log/error "[EVENT] Kanban sync error:" (.getMessage e))))))
 
 ;; =============================================================================
+;; Effect: :kanban-move-done (Session Complete)
+;; =============================================================================
+
+(defn- handle-kanban-move-done
+  "Execute a :kanban-move-done effect - move multiple tasks to done.
+
+   Moves each specified kanban task to done status via the memory kanban system.
+   Part of the session_complete workflow.
+
+   Expected data shape:
+   {:task-ids  [\"task-1\" \"task-2\"]
+    :directory \"/project/path\"}  ; optional, for scoping
+
+   Example:
+   {:kanban-move-done {:task-ids [\"kanban-uuid-1\" \"kanban-uuid-2\"]}}"
+  [{:keys [task-ids directory]}]
+  (when (seq task-ids)
+    (doseq [task-id task-ids]
+      (try
+        ;; Use emacsclient to call the kanban move function
+        (let [dir-arg (if directory
+                        (str "\"" directory "\"")
+                        "nil")
+              elisp (format "(json-encode (hive-mcp-api-kanban-move %s \"done\" %s))"
+                            (str "\"" task-id "\"")
+                            dir-arg)
+              {:keys [success error]} (require '[hive-mcp.emacsclient :as ec])
+              result (when (resolve 'hive-mcp.emacsclient/eval-elisp)
+                       ((resolve 'hive-mcp.emacsclient/eval-elisp) elisp))]
+          (if (:success result)
+            (log/info "[EVENT] Kanban task moved to done:" task-id)
+            (log/warn "[EVENT] Kanban move failed for" task-id ":" (:error result))))
+        (catch Exception e
+          (log/error "[EVENT] Kanban move error for" task-id ":" (.getMessage e)))))))
+
+;; =============================================================================
+;; Effect: :wrap-crystallize (Session Complete)
+;; =============================================================================
+
+(defn- handle-wrap-crystallize
+  "Execute a :wrap-crystallize effect - run wrap crystallization.
+
+   Triggers the wrap crystallize workflow to persist session learnings
+   to long-term memory. Part of the session_complete workflow.
+
+   Expected data shape:
+   {:agent-id \"ling-123\"}
+
+   Example:
+   {:wrap-crystallize {:agent-id \"swarm-ling-worker-456\"}}"
+  [{:keys [agent-id]}]
+  (try
+    ;; Dynamically require to avoid circular deps
+    (require '[hive-mcp.tools.crystal :as crystal])
+    (when-let [handler (resolve 'hive-mcp.tools.crystal/handle-wrap-crystallize)]
+      (handler {:agent_id agent-id}))
+    (log/info "[EVENT] Wrap crystallize completed for:" agent-id)
+    (catch Exception e
+      (log/error "[EVENT] Wrap crystallize failed:" (.getMessage e)))))
+
+;; =============================================================================
 ;; Effect: :dispatch-task (POC-07)
 ;; =============================================================================
 
@@ -417,6 +478,12 @@
     ;; :dispatch-task - Dispatch task to swarm slave (POC-07)
     (ev/reg-fx :dispatch-task handle-dispatch-task)
 
+    ;; :kanban-move-done - Move kanban tasks to done (Session Complete)
+    (ev/reg-fx :kanban-move-done handle-kanban-move-done)
+
+    ;; :wrap-crystallize - Run wrap crystallization (Session Complete)
+    (ev/reg-fx :wrap-crystallize handle-wrap-crystallize)
+
     ;; Register event handlers that produce these effects
     (ev/reg-event :crystal/wrap-notify []
                   (fn [_coeffects event]
@@ -430,7 +497,7 @@
 
     (reset! *registered true)
     (log/info "[hive-events] Coeffects registered: :now :agent-context :db-snapshot")
-    (log/info "[hive-events] Effects registered: :shout :log :ds-transact :wrap-notify :channel-publish :memory-write :report-metrics :dispatch :git-commit :kanban-sync :dispatch-task")
+    (log/info "[hive-events] Effects registered: :shout :log :ds-transact :wrap-notify :channel-publish :memory-write :report-metrics :dispatch :git-commit :kanban-sync :dispatch-task :kanban-move-done :wrap-crystallize")
     true))
 
 (defn reset-registration!
