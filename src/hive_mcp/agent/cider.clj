@@ -14,6 +14,7 @@
    - Integrates with existing agent.delegate! flow"
   (:require [hive-mcp.agent.protocol :as proto]
             [hive-mcp.agent :as agent]
+            [hive-mcp.agent.ollama :as ollama]
             [hive-mcp.agent.openrouter :as openrouter]
             [hive-mcp.emacsclient :as ec]
             [clojure.data.json :as json]
@@ -169,7 +170,7 @@
   [{:keys [ollama-model cider-session timeout-ms]
     :or {ollama-model "devstral-small-2:latest"
          timeout-ms 60000}}]
-  {:ollama (agent/ollama-backend {:model ollama-model})
+  {:ollama (ollama/ollama-backend {:model ollama-model})
    :cider (cider-backend {:timeout-ms timeout-ms :session cider-session})})
 
 ;;; ============================================================

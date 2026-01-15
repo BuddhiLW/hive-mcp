@@ -22,7 +22,8 @@
    SOLID: Single Responsibility - event-to-effect mapping only
    CLARITY: R - Represented intent through clear effect descriptions"
   (:require [hive-mcp.events.core :as ev]
-            [hive-mcp.events.interceptors :as interceptors]))
+            [hive-mcp.events.interceptors :as interceptors]
+            [clojure.string :as str]))
 
 ;; =============================================================================
 ;; Handler: :task/complete
@@ -331,23 +332,23 @@
     (str "## Session Summary: " date-str "\n\n"
          "### Completed\n"
          (if (seq accomplishments)
-           (clojure.string/join "\n" (map #(str "- [x] " %) accomplishments))
+           (str/join "\n" (map #(str "- [x] " %) accomplishments))
            "- (none)")
          "\n\n### Decisions Made\n"
          (if (seq decisions)
-           (clojure.string/join "\n" (map #(str "- " %) decisions))
+           (str/join "\n" (map #(str "- " %) decisions))
            "- (none)")
          "\n\n### Conventions Added\n"
          (if (seq conventions)
-           (clojure.string/join "\n" (map #(str "- " %) conventions))
+           (str/join "\n" (map #(str "- " %) conventions))
            "- (none)")
          "\n\n### In Progress\n"
          (if (seq in-progress)
-           (clojure.string/join "\n" (map #(str "- [ ] " %) in-progress))
+           (str/join "\n" (map #(str "- [ ] " %) in-progress))
            "- (none)")
          "\n\n### Next Actions\n"
          (if (seq next-actions)
-           (clojure.string/join "\n" (map #(str "- " %) next-actions))
+           (str/join "\n" (map #(str "- " %) next-actions))
            "- (none)"))))
 
 (defn- handle-crystal-wrap-request

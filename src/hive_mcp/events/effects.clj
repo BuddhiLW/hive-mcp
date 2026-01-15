@@ -27,9 +27,24 @@
             [hive-mcp.swarm.datascript :as ds]
             [hive-mcp.swarm.coordinator :as coordinator]
             [hive-mcp.channel :as channel]
-            [hive-mcp.tools.memory.crud :as memory-crud]
+            [clojure.java.shell :as shell]
             [datascript.core :as d]
             [taoensso.timbre :as log]))
+
+;; =============================================================================
+;; Injected Handler State
+;; =============================================================================
+
+(defonce ^:private *memory-write-handler* (atom nil))
+
+(defn set-memory-write-handler!
+  "Set the handler function for :memory-write effect.
+   Called during server initialization to wire infrastructure layer.
+
+   Example:
+     (set-memory-write-handler! memory-crud/handle-add)"
+  [f]
+  (reset! *memory-write-handler* f))
 
 ;; =============================================================================
 ;; Effect: :shout
@@ -157,11 +172,13 @@
                    :duration \"permanent\"}}"
   [{:keys [type content] :as data}]
   (when (and type content)
-    (try
-      (memory-crud/handle-add data)
-      (log/debug "[EVENT] Memory entry created:" type)
-      (catch Exception e
-        (log/error "[EVENT] Memory write failed:" (.getMessage e))))))
+    (if-let [handler @*memory-write-handler*]
+      (try
+        (handler data)
+        (log/debug "[EVENT] Memory entry created:" type)
+        (catch Exception e
+          (log/error "[EVENT] Memory write failed:" (.getMessage e))))
+      (log/warn "[EVENT] Memory write handler not configured - call set-memory-write-handler! during initialization"))))
 
 ;; =============================================================================
 ;; Effect: :report-metrics (CLARITY-T: Telemetry)
@@ -233,9 +250,9 @@
   [{:keys [files message task-id]}]
   (when (and (seq files) message)
     (try
-      (let [add-result (apply clojure.java.shell/sh
+      (let [add-result (apply shell/sh
                               "git" "add" "--" (vec files))
-            commit-result (clojure.java.shell/sh
+            commit-result (shell/sh
                            "git" "commit" "-m" message)]
         (if (zero? (:exit commit-result))
           (log/info "[EVENT] Git commit created:" message

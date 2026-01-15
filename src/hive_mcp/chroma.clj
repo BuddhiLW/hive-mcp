@@ -14,7 +14,7 @@
    
    Usage:
      ;; Initialize with embedding provider
-     (set-embedding-provider! (->MockEmbedder))  ; for testing
+     (set-embedding-provider! (mock-embedder))  ; for testing
      
      ;; Index a memory entry
      (index-memory-entry! {:id \"123\" :content \"My note\" :type \"note\"})
@@ -106,11 +106,11 @@
     (mapv #(embed-text this %) texts))
   (embedding-dimension [_] dimension))
 
-(defn ->MockEmbedder
+(defn mock-embedder
   "Create a mock embedder for testing (not for production use).
    Generates deterministic embeddings based on text hash."
-  ([] (->MockEmbedder 384))
-  ([dimension] (MockEmbedder. dimension)))
+  ([] (mock-embedder 384))
+  ([dimension] (->MockEmbedder dimension)))
 
 ;;; ============================================================
 ;;; Collection Management
