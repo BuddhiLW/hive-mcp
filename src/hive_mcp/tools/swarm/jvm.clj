@@ -13,35 +13,11 @@
             [clojure.data.json :as json]
             [clojure.java.shell :as shell]
             [clojure.string :as str]
-            [taoensso.timbre :as log]))
+            [taoensso.timbre :as log]
+            [hive-mcp.tools.swarm.jvm.parser :as parser]
+            [hive-mcp.tools.swarm.jvm.orphan :as orphan]))
 
-;; ============================================================
-;; Process Parsing
-;; ============================================================
 
-(defn parse-jvm-process-line
-  "Parse a ps output line into a process map."
-  [line]
-  (let [parts (str/split (str/trim line) #"\s+" 5)]
-    (when (>= (count parts) 5)
-      {:pid (first parts)
-       :cpu (second parts)
-       :mem (nth parts 2)
-       :etime (nth parts 3)
-       :cmd (nth parts 4)})))
-
-(defn parse-etime-to-minutes
-  "Parse elapsed time (format: [[DD-]HH:]MM:SS) to minutes."
-  [etime]
-  (try
-    (let [parts (str/split etime #"[-:]")
-          nums (map #(Integer/parseInt %) parts)]
-      (case (count nums)
-        2 (first nums) ; MM:SS -> minutes
-        3 (+ (* 60 (first nums)) (second nums)) ; HH:MM:SS -> minutes
-        4 (+ (* 24 60 (first nums)) (* 60 (second nums)) (nth nums 2)) ; DD-HH:MM:SS
-        0))
-    (catch Exception _ 0)))
 
 ;; ============================================================
 ;; Process Discovery
@@ -55,14 +31,7 @@
           lines (str/split-lines (:out result))
           jvm-lines (filter #(re-find #"java" %) lines)]
       (keep (fn [line]
-              (let [parts (str/split (str/trim line) #"\s+" 6)]
-                (when (>= (count parts) 6)
-                  {:pid (nth parts 0)
-                   :ppid (nth parts 1)
-                   :cpu (nth parts 2)
-                   :mem (nth parts 3)
-                   :etime (nth parts 4)
-                   :cmd (nth parts 5)})))
+              (parser/parse-process-line-extended line))
             jvm-lines))
     (catch Exception e
       (log/error "Error finding JVM processes:" (.getMessage e))
@@ -86,21 +55,7 @@
 ;; Process Enrichment & Classification
 ;; ============================================================
 
-(defn enrich-with-parent-info
-  "Enrich process with parent info from pre-fetched map."
-  [proc all-parents]
-  (let [ppid (:ppid proc)
-        parent (get all-parents ppid)
-        parent-alive (boolean parent)
-        parent-comm (:comm parent)
-        is-init (= "1" ppid)
-        is-claude (= "claude" parent-comm)
-        truly-orphaned (or (not parent-alive) is-init)]
-    (assoc proc
-           :parent-alive parent-alive
-           :parent-comm parent-comm
-           :parent-is-claude is-claude
-           :truly-orphaned truly-orphaned)))
+
 
 (defn get-process-swarm-info
   "Get swarm environment variables from /proc/<pid>/environ.
@@ -171,7 +126,7 @@
           all-procs (find-jvm-processes)
           classified (->> all-procs
                           (map classify-jvm-process)
-                          (map #(enrich-with-parent-info % all-parents)))
+                          (map #(orphan/enrich-with-parent-info % all-parents)))
 
           ;; Filter to swarm-only if requested
           working-procs (if swarm-only
@@ -186,30 +141,9 @@
           by-type (group-by :type working-procs)
 
           ;; Identify orphans based on detection mode
-          identify-orphans (fn [procs]
-                             (map (fn [p]
-                                    (let [age (parse-etime-to-minutes (:etime p))
-                                          protected-type (contains? keep-types-set (name (:type p)))
-                                          truly-orphaned (:truly-orphaned p)
-                                          age-orphaned (>= age min-age)
-                                          is-orphan (cond
-                                                      protected-type false
-                                                      true-orphans-only truly-orphaned
-                                                      :else (and truly-orphaned age-orphaned))
-                                          reason (cond
-                                                   protected-type "protected-type"
-                                                   truly-orphaned (str "truly-orphaned (parent: "
-                                                                       (or (:parent-comm p) "dead") ")")
-                                                   (:parent-is-claude p) (str "managed-by-claude (ppid: "
-                                                                              (:ppid p) ")")
-                                                   :else (str "has-parent: " (:parent-comm p)))]
-                                      (assoc p
-                                             :orphan is-orphan
-                                             :age-minutes age
-                                             :reason reason)))
-                                  procs))
+          all-classified (orphan/identify-orphans working-procs :protected-types keep-types-set :true-orphans-only true-orphans-only :min-age-minutes min-age)
 
-          all-classified (identify-orphans working-procs)
+
           orphans (filter :orphan all-classified)
           managed (filter :parent-is-claude all-classified)
 

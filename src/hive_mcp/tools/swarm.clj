@@ -26,6 +26,8 @@
             [hive-mcp.tools.swarm.prompt :as prompt]
             [hive-mcp.tools.swarm.channel :as channel]
             [hive-mcp.tools.swarm.jvm :as jvm]
+            [hive-mcp.tools.swarm.jvm.parser :as parser]
+            [hive-mcp.tools.swarm.jvm.orphan :as orphan]
             [hive-mcp.tools.swarm.wave :as wave]
             [hive-mcp.swarm.coordinator :as coord]
             [clojure.data.json :as json]))
@@ -160,12 +162,12 @@
 ;; ============================================================
 
 (def parse-jvm-process-line
-  "Parse a ps output line. Delegated to jvm module."
-  jvm/parse-jvm-process-line)
+  "Parse a ps output line. Delegated to parser module."
+  parser/parse-process-line)
 
 (def parse-etime-to-minutes
-  "Parse elapsed time to minutes. Delegated to jvm module."
-  jvm/parse-etime-to-minutes)
+  "Parse elapsed time to minutes. Delegated to parser module."
+  parser/parse-etime-to-minutes)
 
 (def find-jvm-processes
   "Find all JVM processes. Delegated to jvm module."
@@ -176,8 +178,8 @@
   jvm/get-all-process-parents)
 
 (def enrich-with-parent-info
-  "Enrich process with parent info. Delegated to jvm module."
-  jvm/enrich-with-parent-info)
+  "Enrich process with parent info. Delegated to orphan module."
+  orphan/enrich-with-parent-info)
 
 (def get-process-swarm-info
   "Get swarm env vars for process. Delegated to jvm module."

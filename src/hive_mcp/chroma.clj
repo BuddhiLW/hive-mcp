@@ -87,30 +87,7 @@
   []
   @embedding-provider)
 
-;;; ============================================================
-;;; Mock Embedding Provider (for testing)
-;;; ============================================================
 
-(defrecord MockEmbedder [dimension]
-  EmbeddingProvider
-  (embed-text [_ text]
-    ;; Generate deterministic pseudo-random embedding based on text hash
-    (let [h (hash text)]
-      (vec (for [i (range dimension)]
-             (-> (bit-xor h i)
-                 (mod 1000)
-                 (/ 1000.0)
-                 (* 2)
-                 (- 1))))))
-  (embed-batch [this texts]
-    (mapv #(embed-text this %) texts))
-  (embedding-dimension [_] dimension))
-
-(defn mock-embedder
-  "Create a mock embedder for testing (not for production use).
-   Generates deterministic embeddings based on text hash."
-  ([] (mock-embedder 384))
-  ([dimension] (->MockEmbedder dimension)))
 
 ;;; ============================================================
 ;;; Collection Management

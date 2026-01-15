@@ -244,7 +244,9 @@ Options are `ollama' (local), `mock' (testing), or `none' (disabled)."
                                                       (chroma/set-embedding-provider!
                                                         (ollama/->OllamaEmbedder \"%s\"))"
                                                      hive-mcp-chroma-ollama-model))
-                                    ('mock "(chroma/set-embedding-provider! (chroma/->MockEmbedder))")
+                                    ('mock "(require '[hive-mcp.test-fixtures :as fixtures])
+                                            (chroma/set-embedding-provider!
+                                              (fixtures/->MockEmbedder))")
                                     (_ "")))))
      (lambda (response)
        (if (plist-get response :error)
