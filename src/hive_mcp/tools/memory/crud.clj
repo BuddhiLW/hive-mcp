@@ -27,12 +27,20 @@
    Stores full entry in Chroma with content, metadata, and embedding.
 
    When directory is provided, uses that path to determine project scope
-   instead of relying on Emacs's current buffer (fixes /wrap scoping issue)."
-  [{:keys [type content tags duration directory]}]
-  (log/info "mcp-memory-add:" type "directory:" directory)
+   instead of relying on Emacs's current buffer (fixes /wrap scoping issue).
+
+   When agent_id is provided (or CLAUDE_SWARM_SLAVE_ID env var is set),
+   adds an 'agent:{id}' tag for tracking which ling created the entry."
+  [{:keys [type content tags duration directory agent_id]}]
+  (log/info "mcp-memory-add:" type "directory:" directory "agent_id:" agent_id)
   (with-chroma
     (let [project-id (scope/get-current-project-id directory)
-          tags-with-scope (scope/inject-project-scope (or tags []) project-id)
+          ;; Agent tagging for convergence tracking
+          agent-id (or agent_id (System/getenv "CLAUDE_SWARM_SLAVE_ID"))
+          agent-tag (when agent-id (str "agent:" agent-id))
+          base-tags (or tags [])
+          tags-with-agent (if agent-tag (conj base-tags agent-tag) base-tags)
+          tags-with-scope (scope/inject-project-scope tags-with-agent project-id)
           content-hash (chroma/content-hash content)
           duration-str (or duration "long")
           expires (dur/calculate-expires duration-str)

@@ -25,6 +25,8 @@
 ;; - auto-completed: Task auto-detected as finished (terminal ready transition)
 ;; - auto-error: Error auto-detected in terminal output (pattern matching)
 ;; - idle-timeout: Ling went silent without shouting (Layer 2 convergence)
+;; - prompt-stall: Ling idle WITH pending prompt (coordinator hasn't responded)
+;; - ling-ready-for-wrap: Ling completed work and is ready for auto-wrap
 
 ;;; Code:
 
@@ -175,6 +177,49 @@ This event alerts the coordinator that a ling may need attention:
      ("detection-method" . "terminal-introspection")
      ("layer" . 2)
      ("convergence-pattern" . "4-layer-convergence"))))
+
+(defun hive-mcp-swarm-events-emit-prompt-stall (slave-id idle-duration-secs prompt-text)
+  "Emit prompt-stall event for SLAVE-ID (Layer 2 convergence).
+This is emitted when a ling is idle AND has a pending prompt awaiting response.
+This is more specific than idle-timeout - the ling is blocked on the coordinator.
+
+IDLE-DURATION-SECS is how long the slave has been idle (float).
+PROMPT-TEXT is the pending prompt text (truncated if long).
+
+This event is URGENT - the coordinator needs to respond via swarm_respond_prompt
+to unblock the ling. Desktop notification is also sent via prompts module."
+  (hive-mcp-swarm-events-emit
+   "prompt-stall"
+   `(("slave-id" . ,slave-id)
+     ("idle-duration-secs" . ,(or idle-duration-secs 0))
+     ("prompt-preview" . ,(if (> (length prompt-text) 100)
+                              (concat (substring prompt-text 0 97) "...")
+                            prompt-text))
+     ("detection-method" . "idle-with-pending-prompt")
+     ("layer" . 2)
+     ("convergence-pattern" . "4-layer-convergence")
+     ("urgency" . "high"))))
+
+(defun hive-mcp-swarm-events-emit-ling-ready-for-wrap (slave-id reason)
+  "Emit ling-ready-for-wrap event for SLAVE-ID with REASON.
+This is emitted when a ling completes its work and is ready for auto-wrap.
+Used for auto-wrap hook that crystallizes session learnings before termination.
+
+REASON is a string describing why wrap is triggered:
+- \"task-completed\": Ling finished task and went idle
+- \"idle-detected\": Ling has been idle for timeout period
+- \"manual\": User requested wrap
+
+This event triggers the wrap workflow in the Clojure backend,
+which will:
+1. Run wrap-gather to collect session data
+2. Run wrap-crystallize to store to memory
+3. Emit wrap_notify for coordinator permeation"
+  (hive-mcp-swarm-events-emit
+   "ling-ready-for-wrap"
+   `(("slave-id" . ,slave-id)
+     ("reason" . ,(or reason "task-completed"))
+     ("session-id" . ,hive-mcp-swarm-events--session-id))))
 
 ;;;; Session Management:
 

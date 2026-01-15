@@ -12,6 +12,7 @@
    - :task-completed   - Mark task complete, release claims, process queue
    - :task-failed      - Mark task failed, release claims, process queue
    - :prompt-shown     - Forward permission prompts to hivemind coordinator
+   - :prompt-stall     - Urgent alert when ling idle with pending prompt
 
    Migration Note (ADR-001):
    - Phase 1: Uses DataScript for swarm state (replacing core.logic pldb)
@@ -24,7 +25,7 @@
             [hive-mcp.emacsclient :as ec]
             [hive-mcp.hivemind :as hivemind]
             [hive-mcp.hooks :as hooks]
-            [hive-mcp.hooks.handlers :as handlers]
+            ;; MIGRATION NOTE: handlers require removed - using event dispatch instead (P5-5)
             [clojure.core.async :as async :refer [go-loop <!]]
             [clojure.data.json :as json]
             [taoensso.timbre :as log]))
@@ -56,45 +57,41 @@
 ;; Hook Action Execution (Layer 4 - Architectural Guarantee)
 ;; =============================================================================
 
-(defn- execute-shout-action!
-  "Execute a :shout action returned by a hook handler.
-
-   Layer 4 of 4-layer convergence pattern: If ling forgot to shout,
-   this synthetic shout ensures visibility to the coordinator.
-
-   Action shape: {:action :shout :event-type keyword :message string :data map}"
-  [{:keys [action event-type message data]} slave-id]
-  (when (= action :shout)
-    (let [event-kw (if (keyword? event-type) event-type (keyword event-type))
-          shout-data (merge data {:source "layer4-synthetic" :message message})]
-      (hivemind/shout! slave-id event-kw shout-data)
-      (log/debug "Layer4: Executed synthetic shout for" slave-id "->" event-kw))))
-
 (defn- trigger-task-complete-hooks!
-  "Trigger :task-complete hooks and execute resulting shout actions.
+  "Trigger :task-complete hooks via event dispatch.
 
    ARCHITECTURAL GUARANTEE: This function ensures a shout is emitted
    on task completion, regardless of whether the ling explicitly called
    hivemind_shout. Part of 4-layer convergence pattern.
 
-   Returns: Vector of hook results"
+   MIGRATION (P5-5): Uses event dispatch instead of direct handler calls.
+   The :task/shout-complete event produces a :shout effect which is
+   executed by the effects system.
+
+   Returns: Vector of custom hook results"
   [task-id slave-id]
+  ;; Dispatch event - the :task/shout-complete handler produces a :shout effect
+  ;; which is executed by the registered effect handler (Layer 4 guarantee)
+  (try
+    (require '[hive-mcp.events.core :as ev])
+    ((resolve 'hive-mcp.events.core/dispatch)
+     [:task/shout-complete {:task-id task-id
+                            :agent-id slave-id}])
+    (log/debug "Layer4: Dispatched :task/shout-complete for" slave-id)
+    (catch Exception e
+      (log/warn "Layer4: Task shout-complete dispatch failed:" (.getMessage e))))
+
+  ;; Also trigger any custom hooks registered via the registry
+  ;; These receive merged event/context (single-arg handlers)
   (when-let [registry (get-hooks-registry)]
-    ;; Build event/context following handlers.clj contract
     (let [event {:type :task-complete
                  :task-id task-id}
           context {:agent-id slave-id
                    :task-id task-id}
-          ;; Call handlers directly (they expect [event context])
-          handler-result (handlers/shout-completion event context)]
-      ;; Execute the shout action
-      (execute-shout-action! handler-result slave-id)
-      ;; Also trigger any custom hooks registered via the registry
-      ;; These receive just context (single-arg handlers)
-      (let [custom-results (hooks/trigger-hooks registry :task-complete
-                                                (merge event context))]
-        (log/debug "Layer4: Triggered" (count custom-results) "custom hooks")
-        custom-results))))
+          custom-results (hooks/trigger-hooks registry :task-complete
+                                              (merge event context))]
+      (log/debug "Layer4: Triggered" (count custom-results) "custom hooks")
+      custom-results)))
 
 ;; =============================================================================
 ;; Event Handlers
@@ -127,10 +124,20 @@
 
 (defn- handle-slave-killed
   "Handle slave killed event.
-   Event: {:slave-id}"
+   Event: {:slave-id}
+   
+   EVENTS-07: Dispatches :ling/completed event BEFORE removing from DataScript
+   to allow event handlers to access ling state before cleanup."
   [event]
   (let [slave-id (or (get event "slave-id") (:slave-id event))]
     (when slave-id
+      ;; EVENTS-07: Dispatch BEFORE removal so handlers can access ling state
+      (try
+        (require '[hive-mcp.events.core :as ev])
+        ((resolve 'hive-mcp.events.core/dispatch)
+         [:ling/completed {:slave-id slave-id :reason "terminated"}])
+        (catch Exception e
+          (log/warn "Event dispatch for ling termination failed:" (.getMessage e))))
       ;; ds/remove-slave! handles claim release internally
       (ds/remove-slave! slave-id)
       (log/debug "Sync: removed slave" slave-id))))
@@ -156,13 +163,23 @@
 
    LAYER 4 INTEGRATION: Triggers :task-complete hooks which emit
    a synthetic shout. This is the architectural guarantee - completion
-   is always visible to the coordinator regardless of ling behavior."
+   is always visible to the coordinator regardless of ling behavior.
+   
+   EVENTS-02: Also dispatches to hive-events for unified event processing."
   [event]
   (let [task-id (or (get event "task-id") (:task-id event))
         slave-id (or (get event "slave-id") (:slave-id event))]
     (when task-id
       ;; ds/complete-task! handles status update, claim release, and slave stats
       (ds/complete-task! task-id)
+
+      ;; EVENTS-02: Dispatch to hive-events for unified event processing
+      (try
+        (require '[hive-mcp.events.core :as ev])
+        ((resolve 'hive-mcp.events.core/dispatch)
+         [:task/complete {:task-id task-id :agent-id slave-id :result :completed}])
+        (catch Exception e
+          (log/warn "Event dispatch failed:" (.getMessage e))))
 
       ;; LAYER 4: Trigger hooks for synthetic shout (architectural guarantee)
       ;; Even if ling forgot to call hivemind_shout, this ensures visibility
@@ -189,7 +206,7 @@
 (defn- handle-prompt-shown
   "Handle permission prompt event from Emacs swarm slave.
    Event: {:slave-id :prompt :timestamp :session-id}
-   
+
    Forwards the prompt to hivemind so the coordinator can see it
    via hivemind_status without polling swarm_pending_prompts."
   [event]
@@ -200,6 +217,28 @@
     (when (and slave-id prompt)
       (hivemind/add-swarm-prompt! slave-id prompt session-id timestamp)
       (log/info "Sync: forwarded prompt from" slave-id "to hivemind"))))
+
+(defn- handle-prompt-stall
+  "Handle prompt-stall event from Emacs idle watcher.
+   Event: {:slave-id :idle-duration-secs :prompt-preview :urgency}
+
+   This is emitted when a ling has been idle AND has a pending prompt.
+   Records as a shout so it appears in HIVEMIND piggyback messages,
+   alerting the coordinator that they need to respond urgently."
+  [event]
+  (let [slave-id (or (get event "slave-id") (:slave-id event))
+        idle-secs (or (get event "idle-duration-secs") (:idle-duration-secs event) 0)
+        prompt-preview (or (get event "prompt-preview") (:prompt-preview event) "")
+        urgency (or (get event "urgency") (:urgency event) "high")]
+    (when slave-id
+      ;; Record as a shout so it appears in HIVEMIND piggyback
+      (hivemind/shout! slave-id :prompt-stall
+                       {:task "awaiting-response"
+                        :message (format "STALLED %.0fs waiting for prompt response: %s"
+                                         idle-secs prompt-preview)
+                        :idle-secs idle-secs
+                        :urgency urgency})
+      (log/warn "Sync: prompt-stall from" slave-id "- idle" idle-secs "secs"))))
 
 ;; =============================================================================
 ;; Event Subscription Management
@@ -213,7 +252,8 @@
    :task-dispatched handle-task-dispatched
    :task-completed handle-task-completed
    :task-failed handle-task-failed
-   :prompt-shown handle-prompt-shown})
+   :prompt-shown handle-prompt-shown
+   :prompt-stall handle-prompt-stall})
 
 (defn- subscribe-to-event!
   "Subscribe to a single event type with handler."

@@ -524,64 +524,76 @@ Returns position if found, nil otherwise."
 
 ;;;; In-Memory Kanban API:
 
-(defun hive-mcp-api-kanban-create (title &optional priority context)
+(defun hive-mcp-api-kanban-create (title &optional priority context directory)
   "API: Create kanban task with TITLE.
 PRIORITY is optional (default: medium). Valid: high, medium, low.
 CONTEXT is optional notes.
+DIRECTORY specifies the project directory for scoping.
 Returns created entry as alist."
   (hive-mcp-with-fallback
-      (let ((entry (hive-mcp-kanban-task-create title priority context)))
+      (let* ((project-id (when directory (hive-mcp-memory-project-id directory)))
+             (entry (hive-mcp-kanban-task-create title priority context project-id)))
         (hive-mcp-api--plist-to-alist entry))
     `((error . "kanban-create-failed") (title . ,title))))
 
-(defun hive-mcp-api-kanban-list (&optional status)
+(defun hive-mcp-api-kanban-list (&optional status directory)
   "API: List kanban tasks.
 STATUS filters by todo/doing/review. If nil, returns all tasks.
+DIRECTORY specifies the project directory for scoping.
 Returns vector of alists."
   (hive-mcp-with-fallback
-      (let ((entries (if status
-                         (hive-mcp-kanban-list-by-status status)
-                       (hive-mcp-kanban-list-all))))
+      (let* ((project-id (when directory (hive-mcp-memory-project-id directory)))
+             (entries (if status
+                          (hive-mcp-kanban-list-by-status status project-id)
+                        (hive-mcp-kanban-list-all project-id))))
         (hive-mcp-api--convert-entries entries))
     []))
 
-(defun hive-mcp-api-kanban-move (task-id new-status)
+(defun hive-mcp-api-kanban-move (task-id new-status &optional directory)
   "API: Move task TASK-ID to NEW-STATUS.
 Valid statuses: todo, doing, review, done.
 If moved to done, task is DELETED.
+DIRECTORY specifies the project directory for scoping.
 Returns updated entry as alist, or ((deleted . t)) if done."
   (hive-mcp-with-fallback
-      (let ((result (hive-mcp-kanban-task-move task-id new-status)))
+      (let* ((project-id (when directory (hive-mcp-memory-project-id directory)))
+             (result (hive-mcp-kanban-task-move task-id new-status project-id)))
         (if (eq result t)
             '((deleted . t) (status . "done"))
           (hive-mcp-api--plist-to-alist result)))
     `((error . "kanban-move-failed") (task_id . ,task-id))))
 
-(defun hive-mcp-api-kanban-delete (task-id)
+(defun hive-mcp-api-kanban-delete (task-id &optional directory)
   "API: Delete task TASK-ID.
+DIRECTORY specifies the project directory for scoping.
 Returns ((deleted . t)) on success, ((deleted . :false)) if not found."
   (hive-mcp-with-fallback
-      (if (hive-mcp-kanban-task-delete task-id)
-          '((deleted . t))
-        '((deleted . :false)))
+      (let ((project-id (when directory (hive-mcp-memory-project-id directory))))
+        (if (hive-mcp-kanban-task-delete task-id project-id)
+            '((deleted . t))
+          '((deleted . :false))))
     `((error . "kanban-delete-failed") (task_id . ,task-id))))
 
-(defun hive-mcp-api-kanban-stats ()
+(defun hive-mcp-api-kanban-stats (&optional directory)
   "API: Get task counts by status.
+DIRECTORY specifies the project directory for scoping.
 Returns alist with todo, doing, review counts."
   (hive-mcp-with-fallback
-      (let ((stats (hive-mcp-kanban-stats)))
+      (let* ((project-id (when directory (hive-mcp-memory-project-id directory)))
+             (stats (hive-mcp-kanban-stats project-id)))
         `((todo . ,(plist-get stats :todo))
           (doing . ,(plist-get stats :doing))
           (review . ,(plist-get stats :review))))
     '((error . "kanban-stats-failed"))))
 
-(defun hive-mcp-api-kanban-update (task-id &optional title priority context)
+(defun hive-mcp-api-kanban-update (task-id &optional title priority context directory)
   "API: Update task TASK-ID with new TITLE, PRIORITY, or CONTEXT.
 Only provided fields are updated.
+DIRECTORY specifies the project directory for scoping.
 Returns updated entry as alist."
   (hive-mcp-with-fallback
-      (let ((entry (hive-mcp-kanban-task-update task-id title priority context)))
+      (let* ((project-id (when directory (hive-mcp-memory-project-id directory)))
+             (entry (hive-mcp-kanban-task-update task-id title priority context project-id)))
         (hive-mcp-api--plist-to-alist entry))
     `((error . "kanban-update-failed") (task_id . ,task-id))))
 

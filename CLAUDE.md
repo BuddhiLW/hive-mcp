@@ -200,6 +200,41 @@ swarm_dispatch(slave_id: "swarm-task-name-...", prompt: "...", files: ["..."])
 
 Lings consult `kanban.org` for task guidance and use `delegate_drone` for implementation work.
 
+### Crystal Convergence (Auto-Permeate)
+
+When lings run `/wrap`, the system emits a `:wrap_notify` event that appears in HIVEMIND piggyback messages. The coordinator should **automatically permeate** crystals when seeing this notification.
+
+**How wrap_notify appears:**
+```
+---HIVEMIND---
+[{:a "ling-task-name-123" :e "wrap_notify" :m "Session wrapped: 3 decisions, 2 conventions"}]
+---/HIVEMIND---
+```
+
+**Coordinator action:** When you see `wrap_notify` in any HIVEMIND piggyback, call:
+```clojure
+mcp_permeate_crystals
+```
+
+This processes the wrap queue, permeating session learnings from lings into permanent memory.
+
+**Full flow:**
+```
+1. Ling completes task, runs /wrap
+2. wrap_crystallize dispatches :crystal/wrap-notify event
+3. Event adds entry to wrap-queue in DataScript
+4. HIVEMIND piggybacks wrap_notify on next MCP tool call
+5. Coordinator sees wrap_notify, calls mcp_permeate_crystals
+6. Queue is processed, entries marked processed
+7. Session learnings become permanent memory
+```
+
+**Why auto-permeate?**
+- Ling sessions contain valuable learnings (decisions, conventions, snippets)
+- Without permeation, these remain in wrap-queue indefinitely
+- Coordinator has global context to assess cross-session value
+- Maintains the "coordinator as memory curator" pattern
+
 ## Swarm Trust & Delegation (CRITICAL)
 
 **This section is loaded via /catchup at session start. Trust these patterns immediately.**

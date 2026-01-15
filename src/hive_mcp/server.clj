@@ -15,6 +15,10 @@
             [hive-mcp.transport.websocket :as ws]
             [hive-mcp.hooks :as hooks]
             [hive-mcp.crystal.hooks :as crystal-hooks]
+            [hive-mcp.events.core :as ev]
+            [hive-mcp.events.effects :as effects]
+            [hive-mcp.events.handlers :as ev-handlers]
+            [hive-mcp.events.channel-bridge :as channel-bridge]
             [nrepl.server :as nrepl-server]
             [clojure.core.async :as async]
             [taoensso.timbre :as log]
@@ -399,6 +403,15 @@
     (log/info "Starting hive-mcp server:" server-id)
     ;; Initialize hooks system FIRST - needed for session-end auto-wrap
     (init-hooks!)
+    ;; Initialize hive-events system (re-frame inspired event dispatch)
+    ;; EVENTS-01: Event system must init after hooks but before channel
+    (try
+      (ev/init!)
+      (effects/register-effects!)
+      (ev-handlers/register-handlers!)
+      (log/info "hive-events system initialized")
+      (catch Exception e
+        (log/warn "hive-events initialization failed (non-fatal):" (.getMessage e))))
     ;; Start embedded nREPL FIRST - bb-mcp needs this to forward tool calls
     ;; This MUST run in the same JVM as channel server for hivemind to work
     (start-embedded-nrepl!)
@@ -421,6 +434,13 @@
         (log/info "Legacy channel server started on TCP port" channel-port)
         (catch Exception e
           (log/warn "Legacy channel server failed to start (non-fatal):" (.getMessage e)))))
+    ;; Initialize channel bridge - wires channel events to hive-events dispatch
+    ;; EVENTS-01: Must init after both channel server and event system
+    (try
+      (channel-bridge/init!)
+      (log/info "Channel bridge initialized - channel events will dispatch to hive-events")
+      (catch Exception e
+        (log/warn "Channel bridge initialization failed (non-fatal):" (.getMessage e))))
     ;; Start swarm sync - bridges channel events to logic database
     ;; This enables: task-completed → release claims → process queue
     (try

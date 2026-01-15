@@ -6,6 +6,8 @@
             [hive-mcp.emacsclient :as ec]
             [hive-mcp.telemetry :as telemetry]
             [hive-mcp.validation :as v]
+            [hive-mcp.workflows.router :as router]
+            [hive-mcp.workflows.hooks :as hooks]
             [clojure.data.json :as json]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
@@ -212,25 +214,36 @@
 
 (defn handle-mcp-run-workflow
   "Run a user-defined workflow.
-   Special-cases 'catchup' to use native Clojure implementation for Chroma access."
+   
+   Uses workflow router for execution decisions and hooks for lifecycle events.
+   This clean architecture replaces the previous hardcoded special cases.
+   
+   SOLID: SRP - This function orchestrates; routing/hooks are separate concerns.
+   CLARITY: C - Composition via hooks, not hardcoded special cases."
   [{:keys [name args]}]
   (log/info "mcp-run-workflow:" name)
-  ;; Special handling for catchup - use native Clojure implementation
-  (if (= name "catchup")
-    (catchup/handle-native-catchup args)
-    ;; All other workflows go through elisp
-    (if (hive-mcp-el-available?)
-      (let [elisp (if args
-                    (format "(json-encode (hive-mcp-api-run-workflow %s %s))"
-                            (pr-str name)
-                            (clj->elisp args))
-                    (format "(json-encode (hive-mcp-api-run-workflow %s))"
-                            (pr-str name)))
-            {:keys [success result error]} (ec/eval-elisp elisp)]
-        (if success
-          {:type "text" :text result}
-          {:type "text" :text (str "Error: " error) :isError true}))
-      {:type "text" :text "Error: hive-mcp.el is not loaded." :isError true})))
+  ;; Ensure hooks are registered
+  (hooks/register-hooks!)
+  ;; Dispatch before hook
+  (hooks/dispatch-before name args)
+  ;; Route to appropriate executor
+  (let [result (case (router/route-workflow name)
+                 :native (catchup/handle-native-catchup args)
+                 :elisp (if (hive-mcp-el-available?)
+                          (let [elisp (if args
+                                        (format "(json-encode (hive-mcp-api-run-workflow %s %s))"
+                                                (pr-str name)
+                                                (clj->elisp args))
+                                        (format "(json-encode (hive-mcp-api-run-workflow %s))"
+                                                (pr-str name)))
+                                {:keys [success result error]} (ec/eval-elisp elisp)]
+                            (if success
+                              {:type "text" :text result}
+                              {:type "text" :text (str "Error: " error) :isError true}))
+                          {:type "text" :text "Error: hive-mcp.el is not loaded." :isError true}))]
+    ;; Dispatch after hook (handles wrap_notify for wrap workflow)
+    (hooks/dispatch-after name args (:text result))
+    result))
 
 (defn handle-mcp-watch-buffer
   "Get recent content from a buffer for monitoring (e.g., *Messages*)."

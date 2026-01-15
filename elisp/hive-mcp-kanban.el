@@ -58,9 +58,10 @@
 
 ;;; Core Functions
 
-(defun hive-mcp-kanban-task-create (title &optional priority context)
+(defun hive-mcp-kanban-task-create (title &optional priority context project-id)
   "Create a kanban task in memory with short-term duration.
 TITLE is required. PRIORITY defaults to medium. CONTEXT is optional notes.
+PROJECT-ID specifies the project (defaults to current).
 Returns the created entry."
   (let* ((prio (or priority "medium"))
          (status "todo")
@@ -77,18 +78,19 @@ Returns the created entry."
       (error "Invalid priority: %s. Must be one of %s"
              prio hive-mcp-kanban-priorities))
     ;; Add to memory with short-term duration
-    (hive-mcp-memory-add 'note content tags nil 'short-term)))
+    (hive-mcp-memory-add 'note content tags project-id 'short-term)))
 
-(defun hive-mcp-kanban-task-move (task-id new-status)
+(defun hive-mcp-kanban-task-move (task-id new-status &optional project-id)
   "Move task TASK-ID to NEW-STATUS. If done, delete task.
 Valid statuses: todo, doing, review, done.
+PROJECT-ID specifies the project (defaults to current).
 Returns the updated entry, or t if deleted (done)."
   ;; Validate status
   (unless (member new-status hive-mcp-kanban-statuses)
     (error "Invalid status: %s. Must be one of %s"
            new-status hive-mcp-kanban-statuses))
   ;; Get existing entry
-  (let ((entry (hive-mcp-memory-get task-id)))
+  (let ((entry (hive-mcp-memory-get task-id project-id)))
     (unless entry
       (error "Task not found: %s" task-id))
     (unless (hive-mcp-kanban--is-kanban-entry-p entry)
@@ -96,7 +98,7 @@ Returns the updated entry, or t if deleted (done)."
     ;; If done, delete the task
     (if (string= new-status "done")
         (progn
-          (hive-mcp-memory-delete task-id)
+          (hive-mcp-memory-delete task-id project-id)
           t)
       ;; Otherwise, update status and tags
       (let* ((content (plist-get entry :content))
@@ -109,19 +111,22 @@ Returns the updated entry, or t if deleted (done)."
         ;; Update the entry
         (hive-mcp-memory-update task-id
                                  (list :content new-content
-                                       :tags new-tags))
+                                       :tags new-tags)
+                                 project-id)
         ;; Return updated entry
-        (hive-mcp-memory-get task-id)))))
+        (hive-mcp-memory-get task-id project-id)))))
 
-(defun hive-mcp-kanban-task-delete (task-id)
+(defun hive-mcp-kanban-task-delete (task-id &optional project-id)
   "Delete task TASK-ID from memory.
+PROJECT-ID specifies the project (defaults to current).
 Returns t if deleted, nil if not found."
-  (hive-mcp-memory-delete task-id))
+  (hive-mcp-memory-delete task-id project-id))
 
-(defun hive-mcp-kanban-list-all ()
+(defun hive-mcp-kanban-list-all (&optional project-id)
   "List all kanban tasks.
+PROJECT-ID specifies the project (defaults to current).
 Returns list of entries sorted by priority (high first)."
-  (let* ((entries (hive-mcp-memory-query 'note '("kanban")))
+  (let* ((entries (hive-mcp-memory-query 'note '("kanban") project-id))
          (kanban-entries (seq-filter #'hive-mcp-kanban--is-kanban-entry-p entries)))
     ;; Sort by priority: high > medium > low
     (sort kanban-entries
@@ -131,20 +136,22 @@ Returns list of entries sorted by priority (high first)."
               (< (seq-position hive-mcp-kanban-priorities prio-a)
                  (seq-position hive-mcp-kanban-priorities prio-b)))))))
 
-(defun hive-mcp-kanban-list-by-status (status)
+(defun hive-mcp-kanban-list-by-status (status &optional project-id)
   "List tasks by STATUS (todo, doing, review).
+PROJECT-ID specifies the project (defaults to current).
 Returns list of entries for that status."
   (unless (member status hive-mcp-kanban-statuses)
     (error "Invalid status: %s" status))
   (when (string= status "done")
     (error "Cannot list 'done' tasks - they are deleted on completion"))
-  (let ((entries (hive-mcp-memory-query 'note (list "kanban" status))))
+  (let ((entries (hive-mcp-memory-query 'note (list "kanban" status) project-id)))
     (seq-filter #'hive-mcp-kanban--is-kanban-entry-p entries)))
 
-(defun hive-mcp-kanban-stats ()
+(defun hive-mcp-kanban-stats (&optional project-id)
   "Return task counts by status.
+PROJECT-ID specifies the project (defaults to current).
 Returns plist with :todo, :doing, :review counts."
-  (let ((all-tasks (hive-mcp-kanban-list-all))
+  (let ((all-tasks (hive-mcp-kanban-list-all project-id))
         (counts (list :todo 0 :doing 0 :review 0)))
     (dolist (task all-tasks)
       (let* ((content (plist-get task :content))
@@ -153,10 +160,12 @@ Returns plist with :todo, :doing, :review counts."
         (plist-put counts key (1+ (plist-get counts key)))))
     counts))
 
-(defun hive-mcp-kanban-task-update (task-id &optional title priority context)
+(defun hive-mcp-kanban-task-update (task-id &optional title priority context project-id)
   "Update task TASK-ID with new TITLE, PRIORITY, or CONTEXT.
-Only provided fields are updated. Returns the updated entry."
-  (let ((entry (hive-mcp-memory-get task-id)))
+Only provided fields are updated.
+PROJECT-ID specifies the project (defaults to current).
+Returns the updated entry."
+  (let ((entry (hive-mcp-memory-get task-id project-id)))
     (unless entry
       (error "Task not found: %s" task-id))
     (unless (hive-mcp-kanban--is-kanban-entry-p entry)
@@ -179,9 +188,10 @@ Only provided fields are updated. Returns the updated entry."
       (let ((new-tags (hive-mcp-kanban--build-tags current-status new-priority)))
         (hive-mcp-memory-update task-id
                                  (list :content content
-                                       :tags new-tags)))
+                                       :tags new-tags)
+                                 project-id))
       ;; Return updated entry
-      (hive-mcp-memory-get task-id))))
+      (hive-mcp-memory-get task-id project-id))))
 
 (provide 'hive-mcp-kanban)
 ;;; hive-mcp-kanban.el ends here

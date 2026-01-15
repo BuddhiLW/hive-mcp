@@ -12,6 +12,7 @@
    - swarm.prompt    - Pending prompts, respond handlers
    - swarm.channel   - Channel event management
    - swarm.jvm       - JVM process cleanup
+   - swarm.wave      - Batch drone wave execution
 
    SOLID: Facade pattern - thin delegation to focused modules.
    CLARITY: L - Layers stay pure (facade separate from implementation)."
@@ -25,6 +26,7 @@
             [hive-mcp.tools.swarm.prompt :as prompt]
             [hive-mcp.tools.swarm.channel :as channel]
             [hive-mcp.tools.swarm.jvm :as jvm]
+            [hive-mcp.tools.swarm.wave :as wave]
             [hive-mcp.swarm.coordinator :as coord]
             [clojure.data.json :as json]))
 
@@ -152,6 +154,10 @@
 (def handle-swarm-respond-prompt
   "Respond to prompt. Delegated to prompt module."
   prompt/handle-swarm-respond-prompt)
+
+(def handle-dispatch-drone-wave
+  "Dispatch batch drone wave. Delegated to wave module."
+  wave/handle-dispatch-drone-wave)
 
 ;; ============================================================
 ;; JVM Process Cleanup (delegated to jvm module)
@@ -343,4 +349,22 @@
                (let [ready (coord/process-queue!)]
                  {:type "text"
                   :text (json/write-str {:processed (count ready)
-                                         :tasks (mapv #(select-keys % [:id :slave-id]) ready)})}))}])
+                                         :tasks (mapv #(select-keys % [:id :slave-id]) ready)})}))}
+
+   {:name "dispatch_drone_wave"
+    :description "Dispatch multiple drones in parallel for batch file mutations. Creates a change plan with multiple tasks and executes them concurrently (max 3). Returns wave status with results from each drone."
+    :inputSchema {:type "object"
+                  :properties {"tasks" {:type "array"
+                                        :items {:type "object"
+                                                :properties {"file" {:type "string"
+                                                                     :description "File path to modify"}
+                                                             "task" {:type "string"
+                                                                     :description "Task description for this file"}}
+                                                :required ["file" "task"]}
+                                        :description "Array of {file, task} objects to execute in parallel"}
+                               "preset" {:type "string"
+                                         :description "Drone preset (default: drone-worker)"}
+                               "trace" {:type "boolean"
+                                        :description "Emit progress events (default: true)"}}
+                  :required ["tasks"]}
+    :handler handle-dispatch-drone-wave}])

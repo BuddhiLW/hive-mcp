@@ -466,55 +466,48 @@ PROVIDED takes precedence. Converts gathered data to wrap args format."
         (plist-put result :git-commits commits)))
     result))
 
-(defun hive-mcp-workflow-wrap (&optional args)
-  "Execute wrap workflow with ARGS plist.
+(defun hive-mcp-workflow-wrap--emit-via-channel (args project-name)
+  "Emit wrap-request event via channel for unified Clojure handling.
+ARGS is the wrap arguments plist, PROJECT-NAME is the current project.
+Returns t if successfully sent, nil otherwise."
+  (when (and (fboundp 'hive-mcp-channel-connected-p)
+             (fboundp 'hive-mcp-channel-send)
+             (hive-mcp-channel-connected-p))
+    (let ((event `(("type" . "wrap-request")
+                   ("accomplishments" . ,(vconcat (plist-get args :accomplishments)))
+                   ("decisions" . ,(vconcat (plist-get args :decisions)))
+                   ("conventions" . ,(vconcat (plist-get args :conventions)))
+                   ("in-progress" . ,(vconcat (plist-get args :in-progress)))
+                   ("next-actions" . ,(vconcat (plist-get args :next-actions)))
+                   ("completed-tasks" . ,(vconcat (plist-get args :completed-tasks)))
+                   ("project" . ,project-name)
+                   ("timestamp" . ,(float-time)))))
+      (hive-mcp-channel-send event))))
 
-ARGS can contain:
-  :accomplishments - list of completed tasks (stored as note, short-term)
-  :decisions - list of decisions made (stored as decision, long-term)
-  :conventions - list of conventions (stored as convention, permanent)
-  :in-progress - list of in-progress items (for summary)
-  :next-actions - list of next session priorities (for summary)
-  :completed-tasks - list of kanban task IDs to mark done
-
-All stored entries auto-inject project scope via
-`hive-mcp-memory--inject-project-scope'.
-
-Returns structured result with:
-  :success, :project, :date, :stored, :expired-cleaned, :git, :kanban"
-  (interactive)
-  (let* ((accomplishments (plist-get args :accomplishments))
-         (decisions (plist-get args :decisions))
-         (conventions (plist-get args :conventions))
-         (in-progress (plist-get args :in-progress))
-         (next-actions (plist-get args :next-actions))
-         (completed-tasks (plist-get args :completed-tasks))
-         (project-name (hive-mcp-memory--get-project-name))
-         (date (hive-mcp-workflow-wrap--get-date))
-         (git-info (hive-mcp-workflow-wrap--git-status))
-         (kanban-before (hive-mcp-workflow-wrap--get-kanban-status))
-         (stored '())
-         (expired-count 0))
-
-    ;; 1. Cleanup expired memory entries first
-    (setq expired-count (hive-mcp-memory-cleanup-expired))
-
-    ;; 2. Store accomplishments as session summary
+(defun hive-mcp-workflow-wrap--store-locally (args)
+  "Store wrap data locally (offline fallback path).
+ARGS is the wrap arguments plist.
+Returns list of stored item symbols."
+  (let ((accomplishments (plist-get args :accomplishments))
+        (decisions (plist-get args :decisions))
+        (conventions (plist-get args :conventions))
+        (in-progress (plist-get args :in-progress))
+        (next-actions (plist-get args :next-actions))
+        (date (hive-mcp-workflow-wrap--get-date))
+        (stored '()))
+    ;; Store accomplishments
     (when accomplishments
       (hive-mcp-workflow-wrap--store-accomplishments accomplishments)
       (push 'accomplishments stored))
-
-    ;; 3. Store decisions
+    ;; Store decisions
     (when decisions
       (hive-mcp-workflow-wrap--store-decisions decisions)
       (push 'decisions stored))
-
-    ;; 4. Store conventions
+    ;; Store conventions
     (when conventions
       (hive-mcp-workflow-wrap--store-conventions conventions)
       (push 'conventions stored))
-
-    ;; 5. Create full session summary note if any content provided
+    ;; Create full session summary note
     (when (or accomplishments decisions in-progress next-actions)
       (let* ((tags (hive-mcp-workflow-wrap--make-tags
                     '("session-summary" "wrap" "full-summary")))
@@ -538,31 +531,77 @@ Returns structured result with:
                                 "- (none)"))))
         (hive-mcp-memory-add 'note content tags nil 'short-term)
         (push 'session-summary stored)))
+    (nreverse stored)))
 
-    ;; 6. Sync kanban - move completed tasks to done
+(defun hive-mcp-workflow-wrap (&optional args)
+  "Execute wrap workflow with ARGS plist.
+
+ARGS can contain:
+  :accomplishments - list of completed tasks (stored as note, short-term)
+  :decisions - list of decisions made (stored as decision, long-term)
+  :conventions - list of conventions (stored as convention, permanent)
+  :in-progress - list of in-progress items (for summary)
+  :next-actions - list of next session priorities (for summary)
+  :completed-tasks - list of kanban task IDs to mark done
+
+Option A Implementation (ADR 20260114163525-69f8a0de):
+- If channel is connected: Emits wrap-request to Clojure (single source of truth)
+- If offline: Falls back to local storage (offline fallback)
+
+Clojure handles: session summary storage, wrap_notify emission for Crystal Convergence.
+
+Returns structured result with:
+  :success, :project, :date, :stored, :expired-cleaned, :git, :kanban, :path"
+  (interactive)
+  (let* ((project-name (hive-mcp-memory--get-project-name))
+         (date (hive-mcp-workflow-wrap--get-date))
+         (git-info (hive-mcp-workflow-wrap--git-status))
+         (kanban-before (hive-mcp-workflow-wrap--get-kanban-status))
+         (completed-tasks (plist-get args :completed-tasks))
+         (expired-count 0)
+         (stored '())
+         (path nil))
+
+    ;; 1. Cleanup expired memory entries first
+    (setq expired-count (hive-mcp-memory-cleanup-expired))
+
+    ;; 2. Try unified path via channel (Option A)
+    (if (hive-mcp-workflow-wrap--emit-via-channel args project-name)
+        (progn
+          (setq path 'channel)
+          (setq stored '(channel-emitted)))
+      ;; 3. Offline fallback - store locally
+      (setq path 'local)
+      (setq stored (hive-mcp-workflow-wrap--store-locally args)))
+
+    ;; 4. Sync kanban - move completed tasks to done (always local)
     (when completed-tasks
       (let ((moved-count (hive-mcp-workflow-wrap--sync-kanban completed-tasks)))
         (when (> moved-count 0)
           (push 'kanban-synced stored))))
 
-    ;; 7. Get final kanban status
+    ;; 5. Get final kanban status
     (let ((kanban-after (hive-mcp-workflow-wrap--get-kanban-status)))
 
       ;; Return result
       (list :success t
             :date date
             :project (or project-name "global")
-            :stored (nreverse stored)
-            :counts (list :accomplishments (length accomplishments)
-                          :decisions (length decisions)
-                          :conventions (length conventions)
+            :path path
+            :stored (if (eq path 'channel)
+                        stored
+                      (nreverse stored))
+            :counts (list :accomplishments (length (plist-get args :accomplishments))
+                          :decisions (length (plist-get args :decisions))
+                          :conventions (length (plist-get args :conventions))
                           :tasks-completed (length completed-tasks))
             :expired-cleaned expired-count
             :git git-info
             :kanban (list :before kanban-before
                           :after kanban-after)
-            :summary (format "Session wrapped for %s. Stored: %s. Cleaned %d expired entries."
+            :summary (format "Session wrapped for %s via %s. Stored: %s. Cleaned %d expired entries."
                              (or project-name "global")
+                             path
                              (mapconcat #'symbol-name stored ", ")
                              expired-count)))))
 
