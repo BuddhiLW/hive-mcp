@@ -71,18 +71,6 @@
                      (binding [*out* *err*]
                        (println (force output_)))))}}})
 
-;; Spec definitions for tool and hivemind message validation
-(s/def ::name string?)
-(s/def ::description string?)
-(s/def ::inputSchema map?)
-(s/def ::handler fn?)
-(s/def ::tool-def (s/keys :req-un [::name ::description ::inputSchema ::handler]))
-(s/def ::tool-response (s/keys :req-un [::name ::description ::inputSchema ::handler]))
-(s/def ::agent-id string?)
-(s/def ::event-type string?)
-(s/def ::message string?)
-(s/def ::hivemind-message (s/keys :req-un [::agent-id ::event-type ::message]))
-
 ;; =============================================================================
 ;; SRP Helpers for make-tool
 ;; =============================================================================

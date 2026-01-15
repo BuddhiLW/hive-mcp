@@ -224,3 +224,30 @@
     (-> s
         (str/replace "\\" "\\\\")
         (str/replace "\"" "\\\""))))
+
+(defn elisp-string
+  "Wrap a string as an escaped Elisp string literal with quotes.
+
+   DRY: Replaces the repeated pattern:
+     (str \"\\\"\" (escape-elisp-string x) \"\\\"\")
+
+   Example:
+     (elisp-string \"hello world\") => \"\\\"hello world\\\"\"
+     (elisp-string nil) => nil"
+  [s]
+  (when s
+    (str "\"" (escape-elisp-string s) "\"")))
+
+(defn elisp-optional
+  "Wrap an optional value as an Elisp string or return nil.
+
+   DRY: Replaces conditional elisp string wrapping patterns.
+   Returns nil for nil/empty input, elisp-string otherwise.
+
+   Example:
+     (elisp-optional \"value\") => \"\\\"value\\\"\"
+     (elisp-optional nil) => nil
+     (elisp-optional \"\") => nil"
+  [s]
+  (when (and s (seq s))
+    (elisp-string s)))

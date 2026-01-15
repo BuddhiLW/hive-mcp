@@ -297,8 +297,10 @@
   (call [this f] "Execute function f if circuit breaker allows it.")
   (state [this] "Get the current state of the circuit breaker."))
 
-(defrecord CircuitBreakerState [state failure-count last-failure-time options]
-  "Record to hold the state and configuration of the circuit breaker.")
+(defrecord CircuitBreakerState
+           [state failure-count last-failure-time options]
+  ;; Record to hold the state and configuration of the circuit breaker.
+  )
 
 (defn make-circuit-breaker
   "Create a new circuit breaker with the given options.

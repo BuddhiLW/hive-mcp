@@ -10,8 +10,8 @@
    - helpfulness-ratio: Calculate entry usefulness ratio"
   (:require [hive-mcp.tools.memory.core :refer [with-chroma]]
             [hive-mcp.tools.memory.format :as fmt]
+            [hive-mcp.tools.core :refer [mcp-json]]
             [hive-mcp.chroma :as chroma]
-            [clojure.data.json :as json]
             [taoensso.timbre :as log])
   (:import [java.time ZonedDateTime]))
 
@@ -29,8 +29,8 @@
       (let [new-count (inc (or (:access-count entry) 0))
             updated (chroma/update-entry! id {:access-count new-count
                                               :last-accessed (str (ZonedDateTime/now))})]
-        {:type "text" :text (json/write-str (fmt/entry->json-alist updated))})
-      {:type "text" :text (json/write-str {:error "Entry not found"}) :isError true})))
+        (mcp-json (fmt/entry->json-alist updated)))
+      (mcp-json {:error "Entry not found"}))))
 
 ;; ============================================================
 ;; Feedback Handler
@@ -48,8 +48,8 @@
                       "unhelpful" {:unhelpful-count (inc (or (:unhelpful-count entry) 0))}
                       (throw (ex-info "Invalid feedback type" {:feedback feedback})))
             updated (chroma/update-entry! id updates)]
-        {:type "text" :text (json/write-str (fmt/entry->json-alist updated))})
-      {:type "text" :text (json/write-str {:error "Entry not found"}) :isError true})))
+        (mcp-json (fmt/entry->json-alist updated)))
+      (mcp-json {:error "Entry not found"}))))
 
 ;; ============================================================
 ;; Helpfulness Ratio Handler
@@ -66,7 +66,7 @@
             unhelpful (or (:unhelpful-count entry) 0)
             total (+ helpful unhelpful)
             ratio (when (pos? total) (/ (double helpful) total))]
-        {:type "text" :text (json/write-str {:ratio ratio
-                                             :helpful helpful
-                                             :unhelpful unhelpful})})
-      {:type "text" :text (json/write-str {:error "Entry not found"}) :isError true})))
+        (mcp-json {:ratio ratio
+                   :helpful helpful
+                   :unhelpful unhelpful}))
+      (mcp-json {:error "Entry not found"}))))
