@@ -16,11 +16,11 @@
             [hive-mcp.hivemind :as hivemind]
             [hive-mcp.emacsclient :as ec]
             [hive-mcp.validation :as v]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [hive-mcp.telemetry.prometheus :as prom]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
-
 
 ;; ============================================================
 ;; Spawn Handler
@@ -62,7 +62,11 @@
         ;; ADR-001 Phase 2: No manual registration here.
         ;; Registration is handled by event-driven sync when elisp emits
         ;; slave-spawned event via channel (see registry/start-registry-sync!).
-        (core/mcp-success result)
+        (do
+          ;; CLARITY-T: Update Prometheus gauge (estimate +1 until registry sync)
+          (let [current-count (count (registry/get-available-lings))]
+            (prom/set-lings-active! (inc current-count)))
+          (core/mcp-success result))
 
         :else
         (core/mcp-error (str "Error: " error))))))
@@ -126,6 +130,8 @@
                 ;; Bug fix (task 9871bcf4): hivemind_status showed stale entries
                 (registry/clear-registry!)
                 (reset! hivemind/agent-registry {})
+                ;; CLARITY-T: Reset Prometheus gauge to 0
+                (prom/set-lings-active! 0)
                 (core/mcp-success result))
 
               :else
@@ -152,6 +158,9 @@
                 ;; Clear from both registries: DataScript + hivemind agent-registry
                 ;; Bug fix (task 9871bcf4): hivemind_status showed stale entries
                 (hivemind/clear-agent! slave_id)
+                ;; CLARITY-T: Decrement Prometheus gauge (estimate current - 1)
+                (let [current-count (count (registry/get-available-lings))]
+                  (prom/set-lings-active! (max 0 (dec current-count))))
                 (core/mcp-success result))
 
               :else

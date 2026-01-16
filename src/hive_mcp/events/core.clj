@@ -36,11 +36,11 @@
             [malli.error :as me]
             [hive-mcp.events.schemas :as schemas]
             [hive-mcp.swarm.datascript :as ds]
-            [hive-mcp.channel.websocket :as ws]))
+            [hive-mcp.channel.websocket :as ws]
+            [hive-mcp.telemetry.prometheus :as prom]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
-
 
 ;; =============================================================================
 ;; State
@@ -413,7 +413,10 @@
    (dispatch event @*event-handlers @*fx-handlers))
   ([event handlers fx-handlers]
    (schemas/validate-event! event) ;; CLARITY: Guard inputs at boundary
-   (let [event-id (first event)]
+   (let [event-id (first event)
+         start-ns (System/nanoTime)]
+     ;; CLARITY-T: Record event to Prometheus
+     (prom/inc-events-total! event-id :info)
      (if-let [{:keys [interceptors handler]} (get handlers event-id)]
        (let [;; Handler interceptor converts coeffects to effects
              handler-interceptor (->interceptor
@@ -425,7 +428,10 @@
              ;; Build full chain: registered interceptors + handler
              full-chain (conj (vec interceptors) handler-interceptor)
              ;; Execute and apply effects
-             result (execute event full-chain)]
+             result (execute event full-chain)
+             ;; CLARITY-T: Record dispatch duration to Prometheus
+             elapsed-sec (/ (- (System/nanoTime) start-ns) 1e9)]
+         (prom/observe-request-duration! (str "event-dispatch-" (name event-id)) elapsed-sec)
          (do-fx result fx-handlers)
          result)
        (throw (ex-info (str "No handler registered for event: " event-id)
