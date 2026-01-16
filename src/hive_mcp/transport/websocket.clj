@@ -7,6 +7,10 @@
             [clojure.data.json :as json]
             [taoensso.timbre :as log])
   (:import [java.io File]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; State
 (defonce ^:private server-atom (atom nil))

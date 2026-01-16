@@ -30,6 +30,9 @@
             [clojure.java.shell :as shell]
             [datascript.core :as d]
             [taoensso.timbre :as log]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 ;; =============================================================================
 ;; Injected Handler State
@@ -62,6 +65,30 @@
                          (System/getenv "CLAUDE_SWARM_SLAVE_ID")
                          "unknown-agent")]
     (hivemind/shout! effective-id event-type data)))
+
+;; =============================================================================
+;; Effect: :targeted-shout (File Claim Cascade)
+;; =============================================================================
+
+(defn- handle-targeted-shout
+  "Execute a :targeted-shout effect - send shout to specific agent.
+
+   Like :shout but explicitly targets a specific agent-id rather than
+   using the current agent from environment. Used for notifying lings
+   about events that affect them (e.g., file availability).
+
+   Expected data shape:
+   {:target-agent-id \"ling-worker-123\"  ; Agent to receive the shout
+    :event-type      :file-available     ; Type of event
+    :data            {:file \"...\" ...}}  ; Event payload
+
+   Example:
+   {:targeted-shout {:target-agent-id \"swarm-ling-task-1\"
+                     :event-type :file-available
+                     :data {:file \"src/core.clj\"}}}"
+  [{:keys [target-agent-id event-type data]}]
+  (when target-agent-id
+    (hivemind/shout! target-agent-id event-type data)))
 
 ;; =============================================================================
 ;; Effect: :log
@@ -228,6 +255,35 @@
         (ev/dispatch event)
         (catch Exception e
           (log/error "[EVENT] Dispatch chain failed:" (.getMessage e)))))))
+
+;; =============================================================================
+;; Effect: :dispatch-n (File Claim Cascade)
+;; =============================================================================
+
+(defn- handle-dispatch-n
+  "Execute a :dispatch-n effect - dispatch multiple events in sequence.
+
+   Like :dispatch but accepts a vector of events to dispatch.
+   Events are dispatched sequentially using async futures.
+   Useful when one event needs to trigger multiple follow-up events.
+
+   Expected data: Vector of event vectors.
+
+   Example:
+   {:dispatch-n [[:claim/notify-waiting {:target \"ling-1\" :file \"a.clj\"}]
+                 [:claim/notify-waiting {:target \"ling-2\" :file \"a.clj\"}]]}
+
+   Note: Uses async dispatch via futures to prevent stack overflow."
+  [events]
+  (when (and (sequential? events) (seq events))
+    (doseq [event events]
+      (when (and (vector? event) (keyword? (first event)))
+        ;; Use async dispatch via future to prevent stack overflow
+        (future
+          (try
+            (ev/dispatch event)
+            (catch Exception e
+              (log/error "[EVENT] Dispatch-n chain failed for" (first event) ":" (.getMessage e)))))))))
 
 ;; =============================================================================
 ;; Effect: :git-commit (P5-2)
@@ -399,22 +455,25 @@
    Safe to call multiple times - only registers once.
 
    Effects registered:
-   - :shout          - Broadcast to hivemind coordinator
-   - :log            - Simple logging
-   - :ds-transact    - DataScript transactions
-   - :wrap-notify    - Record ling wrap to DataScript
+   - :shout           - Broadcast to hivemind coordinator
+   - :targeted-shout  - Send shout to specific agent (File Claim Cascade)
+   - :log             - Simple logging
+   - :ds-transact     - DataScript transactions
+   - :wrap-notify     - Record ling wrap to DataScript
    - :channel-publish - Emit to WebSocket channel
-   - :memory-write   - Add entry to Chroma memory
-   - :report-metrics - Report metrics
-   - :dispatch       - Chain to another event
-   - :git-commit     - Stage files and create git commit (P5-2)
-   - :kanban-sync    - Synchronize kanban state (P5-4)
-   - :dispatch-task  - Dispatch task to swarm slave (POC-07)
+   - :memory-write    - Add entry to Chroma memory
+   - :report-metrics  - Report metrics
+   - :dispatch        - Chain to another event
+   - :dispatch-n      - Dispatch multiple events in sequence (File Claim Cascade)
+   - :git-commit      - Stage files and create git commit (P5-2)
+   - :kanban-sync     - Synchronize kanban state (P5-4)
+   - :dispatch-task   - Dispatch task to swarm slave (POC-07)
 
-   Coeffects registered (POC-08/09/10):
-   - :now            - Current timestamp in milliseconds
-   - :agent-context  - Agent ID and current working directory
-   - :db             - DataScript database snapshot
+   Coeffects registered (POC-08/09/10/11):
+   - :now             - Current timestamp in milliseconds
+   - :agent-context   - Agent ID and current working directory
+   - :db-snapshot     - DataScript database snapshot
+   - :waiting-lings   - Query lings waiting on a specific file (File Claim Cascade)
 
    Returns true if effects were registered, false if already registered."
   []
@@ -441,12 +500,37 @@
                  (fn [coeffects]
                    (assoc coeffects :db-snapshot @(ds/get-conn))))
 
+    ;; POC-11: :waiting-lings coeffect - Query lings waiting on a file
+    ;; Used by :claim/file-released to find lings to notify
+    ;; Note: This is a parameterized coeffect - takes file-path argument
+    (ev/reg-cofx :waiting-lings
+                 (fn [coeffects file-path]
+                   (let [db @(ds/get-conn)
+                         waiting (when (and db file-path)
+                                   (d/q '[:find ?slave-id ?task-id
+                                          :in $ ?file
+                                          :where
+                                          [?t :task/files ?file]
+                                          [?t :task/status :queued]
+                                          [?t :task/id ?task-id]
+                                          [?t :task/slave ?s]
+                                          [?s :slave/id ?slave-id]]
+                                        db file-path))]
+                     (assoc coeffects :waiting-lings
+                            (mapv (fn [[slave-id task-id]]
+                                    {:slave-id slave-id
+                                     :task-id task-id})
+                                  (or waiting []))))))
+
     ;; ==========================================================================
     ;; Effects
     ;; ==========================================================================
 
     ;; :shout - Broadcast to hivemind coordinator
     (ev/reg-fx :shout handle-shout)
+
+    ;; :targeted-shout - Send shout to specific agent (File Claim Cascade)
+    (ev/reg-fx :targeted-shout handle-targeted-shout)
 
     ;; :log - Simple logging
     (ev/reg-fx :log handle-log)
@@ -469,6 +553,9 @@
     ;; :dispatch - Chain events (for :ling/completed -> :session/end)
     (ev/reg-fx :dispatch handle-dispatch)
 
+    ;; :dispatch-n - Dispatch multiple events (File Claim Cascade)
+    (ev/reg-fx :dispatch-n handle-dispatch-n)
+
     ;; :git-commit - Stage files and create git commit (P5-2)
     (ev/reg-fx :git-commit handle-git-commit)
 
@@ -484,20 +571,13 @@
     ;; :wrap-crystallize - Run wrap crystallization (Session Complete)
     (ev/reg-fx :wrap-crystallize handle-wrap-crystallize)
 
-    ;; Register event handlers that produce these effects
-    (ev/reg-event :crystal/wrap-notify []
-                  (fn [_coeffects event]
-                    (let [{:keys [agent-id session-id created-ids stats]} (second event)]
-                      {:wrap-notify {:agent-id agent-id
-                                     :session-id session-id
-                                     :created-ids created-ids
-                                     :stats stats}
-                       :log {:level :info
-                             :message (str "Wrap notification from " agent-id)}})))
+    ;; NOTE: :crystal/wrap-notify event handler is registered in
+    ;; hive-mcp.events.handlers.crystal/register-handlers! with proper
+    ;; defensive stats handling. Do NOT duplicate here.
 
     (reset! *registered true)
-    (log/info "[hive-events] Coeffects registered: :now :agent-context :db-snapshot")
-    (log/info "[hive-events] Effects registered: :shout :log :ds-transact :wrap-notify :channel-publish :memory-write :report-metrics :dispatch :git-commit :kanban-sync :dispatch-task :kanban-move-done :wrap-crystallize")
+    (log/info "[hive-events] Coeffects registered: :now :agent-context :db-snapshot :waiting-lings")
+    (log/info "[hive-events] Effects registered: :shout :targeted-shout :log :ds-transact :wrap-notify :channel-publish :memory-write :report-metrics :dispatch :dispatch-n :git-commit :kanban-sync :dispatch-task :kanban-move-done :wrap-crystallize")
     true))
 
 (defn reset-registration!

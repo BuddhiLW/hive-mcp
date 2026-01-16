@@ -12,6 +12,10 @@
             [hive-mcp.validation :as v]
             [clojure.data.json :as json]
             [clojure.string :as str]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; ============================================================
 ;; Swarm Addon Check

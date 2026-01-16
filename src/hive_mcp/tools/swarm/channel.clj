@@ -10,6 +10,10 @@
    - Event handlers for task-completed, task-failed, prompt-shown"
   (:require [clojure.core.async :as async :refer [go-loop <! close!]]
             [taoensso.timbre :as log]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; ============================================================
 ;; Event Journal (Push-based task tracking)

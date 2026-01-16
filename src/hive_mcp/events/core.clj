@@ -37,6 +37,10 @@
             [hive-mcp.events.schemas :as schemas]
             [hive-mcp.swarm.datascript :as ds]
             [hive-mcp.channel.websocket :as ws]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; =============================================================================
 ;; State

@@ -2,6 +2,10 @@
   "Telemetry and logging utilities for evaluation operations.
    Follows CLARITY principle: 'Telemetry first' - observability is essential."
   (:require [taoensso.timbre :as log]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 (defmacro with-timing
   "Execute body and log the operation duration.

@@ -15,18 +15,15 @@
 
 (defn with-clean-state [f]
   "Ensure clean registry state before and after each test.
-   ADR-002: Reset both DataScript and deprecated atom."
-  ;; Reset DataScript (primary - ADR-002)
+   ADR-002: DataScript is now the only registry."
+  ;; Reset DataScript (ADR-002 - sole source of truth)
   (ds/reset-conn!)
-  ;; Reset deprecated atom
-  (reset! swarm/lings-registry {})
   (ch/stop-server!)
   (Thread/sleep 50)
   (f)
   (ch/stop-server!)
   ;; Cleanup
   (ds/reset-conn!)
-  (reset! swarm/lings-registry {})
   (Thread/sleep 50))
 
 (use-fixtures :each with-clean-state)
@@ -41,34 +38,35 @@
                           {:name "worker1"
                            :presets ["tdd" "clarity"]
                            :cwd "/home/user/project"})
-    (let [lings @swarm/lings-registry
-          ling (get lings "test-slave-123")]
-      (is (= 1 (count lings)))
+    (let [ling (ds/get-slave "test-slave-123")]
+      (is (= 1 (count (ds/get-all-slaves))))
       (is (some? ling))
-      (is (= "worker1" (:name ling)))
-      (is (= ["tdd" "clarity"] (:presets ling)))
-      (is (= "/home/user/project" (:cwd ling)))
-      (is (number? (:spawned-at ling))))))
+      (is (= "worker1" (:slave/name ling)))
+      ;; DataScript cardinality-many stores presets as a set
+      (is (= #{"tdd" "clarity"} (:slave/presets ling)))
+      (is (= "/home/user/project" (:slave/cwd ling)))
+      ;; Schema uses :slave/created-at (stored as #inst, not number)
+      (is (inst? (:slave/created-at ling))))))
 
 (deftest unregister-ling-test
   (testing "unregister-ling! removes ling from registry"
     ;; Setup: add a ling
     (swarm/register-ling! "test-slave-456" {:name "temp" :presets [] :cwd "/"})
-    (is (= 1 (count @swarm/lings-registry)))
+    (is (= 1 (count (ds/get-all-slaves))))
 
     ;; Act: unregister
     (swarm/unregister-ling! "test-slave-456")
 
     ;; Assert: removed
-    (is (= 0 (count @swarm/lings-registry)))
-    (is (nil? (get @swarm/lings-registry "test-slave-456")))))
+    (is (= 0 (count (ds/get-all-slaves))))
+    (is (nil? (ds/get-slave "test-slave-456")))))
 
 (deftest unregister-nonexistent-ling-test
   (testing "unregister-ling! handles non-existent ling gracefully"
-    (is (= 0 (count @swarm/lings-registry)))
+    (is (= 0 (count (ds/get-all-slaves))))
     ;; Should not throw
     (swarm/unregister-ling! "nonexistent-slave")
-    (is (= 0 (count @swarm/lings-registry)))))
+    (is (= 0 (count (ds/get-all-slaves))))))
 
 ;; =============================================================================
 ;; Event Handler Tests (Mocked Channel)
@@ -95,11 +93,12 @@
     (Thread/sleep 200)
 
     ;; Verify ling was registered
-    (let [ling (get @swarm/lings-registry "spawned-via-event-1")]
+    (let [ling (ds/get-slave "spawned-via-event-1")]
       (is (some? ling) "Ling should be registered via event")
-      (is (= "test-worker" (:name ling)))
-      (is (= ["hivemind"] (:presets ling)))
-      (is (= "/tmp/test-project" (:cwd ling))))
+      (is (= "test-worker" (:slave/name ling)))
+      ;; DataScript cardinality-many stores presets as a set
+      (is (= #{"hivemind"} (:slave/presets ling)))
+      (is (= "/tmp/test-project" (:slave/cwd ling))))
 
     ;; Cleanup
     (swarm/stop-registry-sync!)))
@@ -109,7 +108,7 @@
     ;; Setup: pre-register a ling
     (swarm/register-ling! "to-be-killed-1"
                           {:name "doomed" :presets [] :cwd "/"})
-    (is (some? (get @swarm/lings-registry "to-be-killed-1")))
+    (is (some? (ds/get-slave "to-be-killed-1")))
 
     ;; Start channel server
     (ch/start-server! {:type :unix :path "/tmp/hive-mcp-sync-test2.sock"})
@@ -127,7 +126,7 @@
     (Thread/sleep 200)
 
     ;; Verify ling was unregistered
-    (is (nil? (get @swarm/lings-registry "to-be-killed-1"))
+    (is (nil? (ds/get-slave "to-be-killed-1"))
         "Ling should be unregistered via event")
 
     ;; Cleanup
@@ -154,8 +153,8 @@
     (Thread/sleep 200)
 
     ;; Verify registered
-    (is (some? (get @swarm/lings-registry "lifecycle-test-1")))
-    (is (= 1 (count @swarm/lings-registry)))
+    (is (some? (ds/get-slave "lifecycle-test-1")))
+    (is (= 1 (count (ds/get-all-slaves))))
 
     ;; Simulate another spawn
     (ch/emit-event! :slave-spawned
@@ -166,7 +165,7 @@
     (Thread/sleep 200)
 
     ;; Verify both registered
-    (is (= 2 (count @swarm/lings-registry)))
+    (is (= 2 (count (ds/get-all-slaves))))
 
     ;; Simulate kill event for first ling
     (ch/emit-event! :slave-killed
@@ -174,9 +173,9 @@
     (Thread/sleep 200)
 
     ;; Verify first unregistered, second still there
-    (is (nil? (get @swarm/lings-registry "lifecycle-test-1")))
-    (is (some? (get @swarm/lings-registry "lifecycle-test-2")))
-    (is (= 1 (count @swarm/lings-registry)))
+    (is (nil? (ds/get-slave "lifecycle-test-1")))
+    (is (some? (ds/get-slave "lifecycle-test-2")))
+    (is (= 1 (count (ds/get-all-slaves))))
 
     ;; Cleanup
     (swarm/stop-registry-sync!)))
@@ -197,9 +196,9 @@
     (Thread/sleep 200)
 
     ;; Should still register with what we have
-    (let [ling (get @swarm/lings-registry "minimal-ling")]
+    (let [ling (ds/get-slave "minimal-ling")]
       (is (some? ling))
-      (is (= "minimal" (:name ling))))
+      (is (= "minimal" (:slave/name ling))))
 
     ;; Cleanup
     (swarm/stop-registry-sync!)))

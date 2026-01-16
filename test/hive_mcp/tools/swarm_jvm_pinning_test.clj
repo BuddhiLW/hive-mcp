@@ -15,7 +15,8 @@
             [clojure.data.json :as json]
             [clojure.java.shell :as shell]
             [hive-mcp.tools.swarm :as swarm]
-            [hive-mcp.tools.swarm.jvm :as jvm]))
+            [hive-mcp.tools.swarm.jvm :as jvm]
+            [hive-mcp.tools.swarm.jvm.classifier :as classifier]))
 
 ;; =============================================================================
 ;; Test Helpers
@@ -138,9 +139,9 @@
 
 (deftest classify-jvm-process-shadow-cljs-test
   (testing "Classifies shadow-cljs processes"
-    (with-redefs [jvm/get-process-swarm-info (constantly nil)]
+    (with-redefs [classifier/get-process-swarm-info (constantly nil)]
       (let [proc {:pid "123" :cmd "java -jar shadow-cljs.jar watch app"}
-            result (jvm/classify-jvm-process proc)]
+            result (classifier/classify-jvm-process proc)]
         (is (= :shadow-cljs (:type result))
             "Should identify shadow-cljs process")
         (is (false? (:swarm-spawned result))
@@ -148,44 +149,44 @@
 
 (deftest classify-jvm-process-hive-mcp-test
   (testing "Classifies hive-mcp processes"
-    (with-redefs [jvm/get-process-swarm-info (constantly nil)]
+    (with-redefs [classifier/get-process-swarm-info (constantly nil)]
       (let [proc {:pid "456" :cmd "java -cp hive-mcp.jar clojure.main"}
-            result (jvm/classify-jvm-process proc)]
+            result (classifier/classify-jvm-process proc)]
         (is (= :hive-mcp (:type result))
             "Should identify hive-mcp process")))))
 
 (deftest classify-jvm-process-nrepl-test
   (testing "Classifies nREPL processes"
-    (with-redefs [jvm/get-process-swarm-info (constantly nil)]
+    (with-redefs [classifier/get-process-swarm-info (constantly nil)]
       (let [proc {:pid "789" :cmd "java -jar clojure nrepl.server"}
-            result (jvm/classify-jvm-process proc)]
+            result (classifier/classify-jvm-process proc)]
         (is (= :nrepl (:type result))
             "Should identify nREPL process")))))
 
 (deftest classify-jvm-process-leiningen-test
   (testing "Classifies Leiningen processes"
-    (with-redefs [jvm/get-process-swarm-info (constantly nil)]
+    (with-redefs [classifier/get-process-swarm-info (constantly nil)]
       (let [proc {:pid "101" :cmd "java -jar leiningen-standalone.jar repl"}
-            result (jvm/classify-jvm-process proc)]
+            result (classifier/classify-jvm-process proc)]
         (is (= :leiningen (:type result))
             "Should identify Leiningen process")))))
 
 (deftest classify-jvm-process-other-test
   (testing "Classifies unknown JVM processes as :other"
-    (with-redefs [jvm/get-process-swarm-info (constantly nil)]
+    (with-redefs [classifier/get-process-swarm-info (constantly nil)]
       (let [proc {:pid "999" :cmd "java -jar some-random-app.jar"}
-            result (jvm/classify-jvm-process proc)]
+            result (classifier/classify-jvm-process proc)]
         (is (= :other (:type result))
             "Should classify unknown as :other")))))
 
 (deftest classify-jvm-process-swarm-spawned-test
   (testing "Identifies swarm-spawned processes"
-    (with-redefs [jvm/get-process-swarm-info
+    (with-redefs [classifier/get-process-swarm-info
                   (constantly {:swarm-slave-id "slave-1"
                                :swarm-master-id "master-1"
                                :swarm-depth 1})]
       (let [proc {:pid "222" :cmd "java -jar app.jar"}
-            result (jvm/classify-jvm-process proc)]
+            result (classifier/classify-jvm-process proc)]
         (is (true? (:swarm-spawned result))
             "Swarm process should have swarm-spawned true")
         (is (= "slave-1" (:swarm-slave-id result))
@@ -221,7 +222,7 @@
                                  {:exit 0 :out sample-parent-output :err ""}
 
                                  :else {:exit 0 :out "" :err ""})))
-                  jvm/get-process-swarm-info (constantly nil)]
+                  classifier/get-process-swarm-info (constantly nil)]
       (let [result (jvm/handle-jvm-cleanup {:dry_run true})
             data (parse-json-result result)]
         (is (= "text" (:type result))
@@ -245,7 +246,7 @@
                                  {:exit 0 :out sample-parent-output :err ""}
 
                                  :else {:exit 0 :out "" :err ""})))
-                  jvm/get-process-swarm-info (constantly nil)]
+                  classifier/get-process-swarm-info (constantly nil)]
       (let [result (jvm/handle-jvm-cleanup {:dry_run true
                                             :keep_types ["shadow-cljs"]})
             data (parse-json-result result)]
@@ -266,7 +267,7 @@
                                  {:exit 0 :out sample-parent-output :err ""}
 
                                  :else {:exit 0 :out "" :err ""})))
-                  jvm/get-process-swarm-info (constantly nil)]
+                  classifier/get-process-swarm-info (constantly nil)]
       (let [result (jvm/handle-jvm-cleanup {:dry_run true
                                             :true_orphans_only true
                                             :keep_types []})
@@ -300,7 +301,7 @@
                                  {:exit 0 :out sample-parent-output :err ""}
 
                                  :else {:exit 0 :out "" :err ""})))
-                  jvm/get-process-swarm-info (constantly nil)]
+                  classifier/get-process-swarm-info (constantly nil)]
       (let [result (jvm/handle-jvm-cleanup {:dry_run true
                                             :swarm_only true})
             data (parse-json-result result)]
@@ -443,7 +444,7 @@ Cached:          1000000 kB")
                                {:exit 0 :out "" :err ""}
 
                                :else {:exit 0 :out "" :err ""}))
-                  jvm/get-process-swarm-info (constantly nil)]
+                  classifier/get-process-swarm-info (constantly nil)]
       ;; Test jvm-cleanup
       (let [cleanup-result (jvm/handle-jvm-cleanup {:dry_run true})]
         (is (contains? cleanup-result :type))

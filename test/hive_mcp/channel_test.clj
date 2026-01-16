@@ -128,13 +128,22 @@
 
 (deftest emit-event-adds-timestamp-test
   (testing "emit-event! adds timestamp"
-    (let [received (atom nil)
+    (let [received (promise)
           sub (ch/subscribe! :timestamped)]
-      (go (when-let [e (<!! sub)] (reset! received e)))
+      ;; Start async receiver first
+      (async/go
+        (when-let [e (async/<! sub)]
+          (deliver received e)))
+      ;; Brief pause to ensure go block is waiting
+      (Thread/sleep 10)
+      ;; Emit event
       (ch/emit-event! :timestamped {:data "test"})
-      (Thread/sleep 100)
-      (is (number? (:timestamp @received)))
-      (is (> (:timestamp @received) 0))
+      ;; Wait for result with timeout
+      (let [result (deref received 1000 nil)]
+        (is (some? result) "Should receive event")
+        (when result
+          (is (number? (:timestamp result)))
+          (is (> (:timestamp result) 0))))
       (ch/unsubscribe! :timestamped sub))))
 
 ;; =============================================================================

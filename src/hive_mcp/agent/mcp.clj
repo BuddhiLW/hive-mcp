@@ -9,6 +9,10 @@
   (:require [hive-mcp.agent.config :as config]
             [hive-mcp.tools.core :refer [mcp-error mcp-json]]
             [clojure.string :as str]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;;; ============================================================
 ;;; Tool Handlers

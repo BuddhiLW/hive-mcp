@@ -1,6 +1,10 @@
 (ns hive-mcp.org-clj.query
   "Query functions for finding and filtering org headlines."
   (:require [clojure.test :refer [deftest is testing]]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; =============================================================================
 ;; Tree Traversal

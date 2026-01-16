@@ -14,6 +14,10 @@
    
    SOLID: Single responsibility - schema definition only.
    DDD: Value objects and entity definitions for graph domain.")
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;;; -----------------------------------------------------------------------------
 ;;; Friction Types (Enum values)

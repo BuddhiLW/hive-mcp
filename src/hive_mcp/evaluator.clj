@@ -16,6 +16,10 @@
             [taoensso.timbre :as log])
   (:import [java.net Socket InetSocketAddress]
            [java.io BufferedOutputStream PushbackInputStream]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; ============================================================================
 ;; Protocol Definition
@@ -210,6 +214,17 @@
            :error (when has-error?
                     (or (:err result) "Evaluation error"))}))
 
+      ;; CLARITY-Y: Yield safe failure with informative messages
+      (catch java.net.ConnectException _e
+        (log/warn "DirectNreplEvaluator: connection refused on port" port)
+        {:success false
+         :result nil
+         :value nil
+         :out ""
+         :err ""
+         :ns "user"
+         :error (format "nREPL connection refused on port %d - server may not be running. Start with: clojure -M:nrepl or lein repl :headless" port)})
+
       (catch java.net.SocketTimeoutException e
         (log/warn "DirectNreplEvaluator: timeout" (.getMessage e))
         {:success false
@@ -218,7 +233,27 @@
          :out ""
          :err ""
          :ns "user"
-         :error (str "Timeout: " (.getMessage e))})
+         :error (format "nREPL connection timeout after %dms on port %d - server may be overloaded or unresponsive" timeout-ms port)})
+
+      (catch java.net.UnknownHostException _e
+        (log/warn "DirectNreplEvaluator: unknown host" host)
+        {:success false
+         :result nil
+         :value nil
+         :out ""
+         :err ""
+         :ns "user"
+         :error (format "nREPL host '%s' not found - check hostname spelling" host)})
+
+      (catch java.net.NoRouteToHostException _e
+        (log/warn "DirectNreplEvaluator: no route to host" host)
+        {:success false
+         :result nil
+         :value nil
+         :out ""
+         :err ""
+         :ns "user"
+         :error (format "nREPL host '%s:%d' unreachable - check network connectivity" host port)})
 
       (catch Exception e
         (log/warn "DirectNreplEvaluator: error" (.getMessage e))
@@ -228,7 +263,7 @@
          :out ""
          :err ""
          :ns "user"
-         :error (str "Error: " (.getMessage e))})))
+         :error (format "nREPL error on %s:%d - %s" host port (.getMessage e))})))
 
   (connected? [_this]
     (try

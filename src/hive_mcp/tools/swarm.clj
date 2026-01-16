@@ -13,6 +13,7 @@
    - swarm.channel   - Channel event management
    - swarm.jvm       - JVM process cleanup
    - swarm.wave      - Batch drone wave execution
+   - swarm.team      - Team composition selection
 
    SOLID: Facade pattern - thin delegation to focused modules.
    CLARITY: L - Layers stay pure (facade separate from implementation)."
@@ -28,9 +29,16 @@
             [hive-mcp.tools.swarm.jvm :as jvm]
             [hive-mcp.tools.swarm.jvm.parser :as parser]
             [hive-mcp.tools.swarm.jvm.orphan :as orphan]
+            [hive-mcp.tools.swarm.jvm.classifier :as classifier]
+            [hive-mcp.tools.swarm.jvm.memory :as memory]
             [hive-mcp.tools.swarm.wave :as wave]
+            [hive-mcp.tools.swarm.team :as team]
             [hive-mcp.swarm.coordinator :as coord]
             [clojure.data.json :as json]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; ============================================================
 ;; Backward Compatibility: Re-export Registry API
@@ -157,6 +165,14 @@
   "Dispatch batch drone wave. Delegated to wave module."
   wave/handle-dispatch-drone-wave)
 
+(def handle-get-wave-status
+  "Get wave execution status. Delegated to wave module."
+  wave/handle-get-wave-status)
+
+(def handle-team-select
+  "Select team composition for task type. Delegated to team module."
+  team/handle-team-select)
+
 ;; ============================================================
 ;; JVM Process Cleanup (delegated to jvm module)
 ;; ============================================================
@@ -170,32 +186,32 @@
   parser/parse-etime-to-minutes)
 
 (def find-jvm-processes
-  "Find all JVM processes. Delegated to jvm module."
-  jvm/find-jvm-processes)
+  "Find all JVM processes. Delegated to classifier module."
+  classifier/find-jvm-processes)
 
 (def get-all-process-parents
-  "Get parent info for all processes. Delegated to jvm module."
-  jvm/get-all-process-parents)
+  "Get parent info for all processes. Delegated to classifier module."
+  classifier/get-all-process-parents)
 
 (def enrich-with-parent-info
   "Enrich process with parent info. Delegated to orphan module."
   orphan/enrich-with-parent-info)
 
 (def get-process-swarm-info
-  "Get swarm env vars for process. Delegated to jvm module."
-  jvm/get-process-swarm-info)
+  "Get swarm env vars for process. Delegated to classifier module."
+  classifier/get-process-swarm-info)
 
 (def classify-jvm-process
-  "Classify JVM process. Delegated to jvm module."
-  jvm/classify-jvm-process)
+  "Classify JVM process. Delegated to classifier module."
+  classifier/classify-jvm-process)
 
 (def handle-jvm-cleanup
   "Handle JVM cleanup. Delegated to jvm module."
   jvm/handle-jvm-cleanup)
 
 (def get-memory-usage
-  "Get current RAM usage. Delegated to jvm module."
-  jvm/get-memory-usage)
+  "Get current RAM usage. Delegated to memory module."
+  memory/get-memory-usage)
 
 (def handle-resource-guard
   "Handle resource guard. Delegated to jvm module."
@@ -367,4 +383,25 @@
                                "cwd" {:type "string"
                                       :description "Working directory override for path resolution. Pass ling's cwd when spawned with a different project directory."}}
                   :required ["tasks"]}
-    :handler handle-dispatch-drone-wave}])
+    :handler handle-dispatch-drone-wave}
+
+   {:name "get_wave_status"
+    :description "Get current status of a wave execution. Use after dispatch_drone_wave to check progress and see any failed items with their error details."
+    :inputSchema {:type "object"
+                  :properties {"wave_id" {:type "string"
+                                          :description "Wave ID returned from dispatch_drone_wave"}}
+                  :required ["wave_id"]}
+    :handler handle-get-wave-status}
+
+   {:name "team_select"
+    :description "Select a pre-configured team composition for common task types. Returns ling specs with presets, parallelization strategy, and coordinator checklist. Task types: implementation, refactoring, greenfield, simplification, quality-review, documentation."
+    :inputSchema {:type "object"
+                  :properties {"task_type" {:type "string"
+                                            :enum ["implementation" "refactoring" "greenfield" "simplification" "quality-review" "documentation"]
+                                            :description "Type of task to assemble a team for"}
+                               "context" {:type "string"
+                                          :description "Context string for name interpolation (e.g., auth-feature)"}
+                               "auto_spawn" {:type "boolean"
+                                             :description "Execute spawns immediately (default: false)"}}
+                  :required ["task_type"]}
+    :handler handle-team-select}])

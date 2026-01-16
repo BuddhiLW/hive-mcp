@@ -18,6 +18,10 @@
   (:require [clojure.string :as str]
             [hive-mcp.prompt.validation :as validation]
             [hive-mcp.prompt.storage :as storage]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;;; ============================================================
 ;;; Default Store Instance (DIP - depend on abstraction)

@@ -9,6 +9,10 @@
    CLARITY: Single Responsibility - only AST construction, no tokenization."
   (:require [clojure.string :as str]
             [hive-mcp.org-clj.tokenizer :as tok]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; =============================================================================
 ;; Property Drawer Extraction

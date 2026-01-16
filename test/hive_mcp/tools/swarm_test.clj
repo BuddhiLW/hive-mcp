@@ -8,6 +8,7 @@
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [clojure.data.json :as json]
             [hive-mcp.tools.swarm :as swarm]
+            [hive-mcp.tools.swarm.core :as swarm-core]
             [hive-mcp.swarm.datascript :as ds]
             [hive-mcp.emacsclient :as ec]
             [hive-mcp.hivemind :as hivemind]))
@@ -17,17 +18,17 @@
 ;; =============================================================================
 
 (defn reset-registry-fixture
-  "Reset lings-registry, DataScript, and hivemind agent-registry before each test.
+  "Reset DataScript and hivemind agent-registry before each test.
    ADR-002: DataScript is now the primary registry."
   [f]
   ;; Reset DataScript (primary - ADR-002)
   (ds/reset-conn!)
-  ;; Reset deprecated atom (backward compat)
-  (reset! swarm/lings-registry {})
+  ;; Reset hivemind agent-registry (message history)
   (reset! hivemind/agent-registry {})
   (f)
   ;; Cleanup after test
-  (ds/reset-conn!))
+  (ds/reset-conn!)
+  (reset! hivemind/agent-registry {}))
 
 (use-fixtures :each reset-registry-fixture)
 
@@ -64,7 +65,7 @@
                         :cwd "/tmp/test"
                         :status "working"}]
           elisp-json (json/write-str elisp-lings)]
-      (with-redefs [swarm/swarm-addon-available? (constantly true)
+      (with-redefs [swarm-core/swarm-addon-available? (constantly true)
                     ec/eval-elisp-with-timeout
                     (fn [elisp _timeout]
                       ;; Check it's calling the lings list function
@@ -82,7 +83,7 @@
 
 (deftest lings-available-elisp-fallback-graceful-degradation-test
   (testing "Returns empty gracefully when both registry and elisp have no lings"
-    (with-redefs [swarm/swarm-addon-available? (constantly true)
+    (with-redefs [swarm-core/swarm-addon-available? (constantly true)
                   ec/eval-elisp-with-timeout
                   (fn [_elisp _timeout]
                     {:success true :result "[]" :timed-out false})]
@@ -95,7 +96,7 @@
 (deftest lings-available-elisp-fallback-error-handling-test
   (testing "Handles elisp fallback errors gracefully"
     ;; Registry is empty, elisp fails
-    (with-redefs [swarm/swarm-addon-available? (constantly true)
+    (with-redefs [swarm-core/swarm-addon-available? (constantly true)
                   ec/eval-elisp-with-timeout
                   (fn [elisp _timeout]
                     (if (re-find #"hive-mcp-swarm-list-lings" elisp)
@@ -119,7 +120,7 @@
                         :slaves-detail [{:slave-id "slave-1" :name "worker-1" :status "idle"}
                                         {:slave-id "slave-2" :name "worker-2" :status "busy"}
                                         {:slave-id "slave-3" :name "worker-3" :status "idle"}]})]
-      (with-redefs [swarm/swarm-addon-available? (constantly true)
+      (with-redefs [swarm-core/swarm-addon-available? (constantly true)
                     ec/eval-elisp-with-timeout
                     (fn [_elisp _timeout]
                       {:success true :result status-json :timed-out false})]
@@ -144,7 +145,7 @@
                         :slaves-detail [{:slave-id "slave-1" :name "worker-1" :status "idle"}
                                         {:slave-id "slave-2" :name "worker-2" :status "idle"}
                                         {:slave-id "slave-3" :name "worker-3" :status "idle"}]})]
-      (with-redefs [swarm/swarm-addon-available? (constantly true)
+      (with-redefs [swarm-core/swarm-addon-available? (constantly true)
                     ec/eval-elisp-with-timeout
                     (fn [_elisp _timeout]
                       {:success true :result status-json :timed-out false})]
@@ -166,7 +167,7 @@
 (deftest swarm-status-handles-nil-slaves-detail-test
   (testing "Handles nil slaves-detail gracefully"
     (let [status-json (json/write-str {:slaves-count 0})]
-      (with-redefs [swarm/swarm-addon-available? (constantly true)
+      (with-redefs [swarm-core/swarm-addon-available? (constantly true)
                     ec/eval-elisp-with-timeout
                     (fn [_elisp _timeout]
                       {:success true :result status-json :timed-out false})]
@@ -179,7 +180,7 @@
 (deftest swarm-status-handles-empty-slaves-detail-test
   (testing "Handles empty slaves-detail vector gracefully"
     (let [status-json (json/write-str {:slaves-count 0 :slaves-detail []})]
-      (with-redefs [swarm/swarm-addon-available? (constantly true)
+      (with-redefs [swarm-core/swarm-addon-available? (constantly true)
                     ec/eval-elisp-with-timeout
                     (fn [_elisp _timeout]
                       {:success true :result status-json :timed-out false})]
@@ -198,7 +199,7 @@
                             (range 10))
           status-json (json/write-str {:slaves-count 10
                                        :slaves-detail many-slaves})]
-      (with-redefs [swarm/swarm-addon-available? (constantly true)
+      (with-redefs [swarm-core/swarm-addon-available? (constantly true)
                     ec/eval-elisp-with-timeout
                     (fn [_elisp _timeout]
                       {:success true :result status-json :timed-out false})]
@@ -232,9 +233,75 @@
   (testing "Register and unregister lings correctly"
     (swarm/register-ling! "ling-1" {:name "worker" :presets ["tdd"] :cwd "/tmp"})
 
-    (is (contains? @swarm/lings-registry "ling-1"))
-    (is (= "worker" (:name (get @swarm/lings-registry "ling-1"))))
-    (is (number? (:spawned-at (get @swarm/lings-registry "ling-1"))))
+    ;; ADR-002: Use DataScript queries instead of deprecated atom
+    (let [lings (swarm/get-available-lings)]
+      (is (contains? lings "ling-1"))
+      (is (= "worker" (:name (get lings "ling-1"))))
+      (is (number? (:spawned-at (get lings "ling-1")))))
 
     (swarm/unregister-ling! "ling-1")
-    (is (not (contains? @swarm/lings-registry "ling-1")))))
+    (let [lings-after (swarm/get-available-lings)]
+      (is (not (contains? lings-after "ling-1"))))))
+
+;; =============================================================================
+;; Bug Fix: swarm_kill should clean up agents from hivemind_status (task 9871bcf4)
+;; =============================================================================
+
+(deftest swarm-kill-cleans-up-hivemind-agents-test
+  (testing "swarm_kill removes agent from hivemind_status :agents map"
+    ;; Setup: Register a ling in both registries (simulating real spawn)
+    (let [slave-id "test-ling-cleanup"
+          metadata {:name "cleanup-worker" :presets ["tdd"] :cwd "/tmp/test"}]
+      ;; Register in swarm registry (DataScript)
+      (swarm/register-ling! slave-id metadata)
+      ;; Also register in hivemind (as event-driven spawn does)
+      (hivemind/register-agent! slave-id metadata)
+
+      ;; Verify agent appears in hivemind_status
+      (let [status-before (hivemind/get-status)
+            agents-before (:agents status-before)]
+        (is (contains? agents-before slave-id)
+            "Agent should be in hivemind_status before kill"))
+
+      ;; Kill the ling via the handler (mocking elisp call success)
+      ;; Note: Must mock swarm-core/swarm-addon-available? since with-swarm macro uses it
+      (with-redefs [swarm-core/swarm-addon-available? (constantly true)
+                    ec/eval-elisp-with-timeout
+                    (fn [_elisp _timeout]
+                      {:success true :result "{\"killed\": true}" :timed-out false})]
+        (swarm/handle-swarm-kill {:slave_id slave-id}))
+
+      ;; Verify agent is removed from hivemind_status
+      (let [status-after (hivemind/get-status)
+            agents-after (:agents status-after)]
+        (is (not (contains? agents-after slave-id))
+            "Agent should NOT be in hivemind_status after kill - BUG: stale entries remain")))))
+
+(deftest swarm-kill-all-cleans-up-hivemind-agents-test
+  (testing "swarm_kill with 'all' removes all agents from hivemind_status"
+    ;; Setup: Register multiple lings
+    (doseq [i (range 3)]
+      (let [slave-id (str "test-ling-" i)
+            metadata {:name (str "worker-" i) :presets ["tdd"] :cwd "/tmp"}]
+        (swarm/register-ling! slave-id metadata)
+        (hivemind/register-agent! slave-id metadata)))
+
+    ;; Verify all agents appear in hivemind_status
+    (let [status-before (hivemind/get-status)
+          agents-before (:agents status-before)]
+      (is (= 3 (count agents-before))
+          "All 3 agents should be in hivemind_status before kill"))
+
+    ;; Kill all via the handler
+    ;; Note: Must mock swarm-core/swarm-addon-available? since with-swarm macro uses it
+    (with-redefs [swarm-core/swarm-addon-available? (constantly true)
+                  ec/eval-elisp-with-timeout
+                  (fn [_elisp _timeout]
+                    {:success true :result "{\"killed\": 3}" :timed-out false})]
+      (swarm/handle-swarm-kill {:slave_id "all"}))
+
+    ;; Verify all agents are removed from hivemind_status
+    (let [status-after (hivemind/get-status)
+          agents-after (:agents status-after)]
+      (is (empty? agents-after)
+          "No agents should be in hivemind_status after kill all - BUG: stale entries remain"))))

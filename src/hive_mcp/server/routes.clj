@@ -13,6 +13,10 @@
             [hive-mcp.docs :as docs]
             [taoensso.timbre :as log]
             [clojure.spec.alpha :as s]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; =============================================================================
 ;; Specs for Tool Definitions
@@ -95,6 +99,51 @@
       default))
 
 ;; =============================================================================
+;; Composable Handler Wrappers (SRP: Each wrapper single responsibility)
+;; =============================================================================
+
+(defn wrap-handler-normalize
+  "Wrap handler to normalize its result to content array.
+   SRP: Single responsibility - content normalization only.
+
+   (wrap-handler-normalize handler) returns handler that:
+   - Calls original handler
+   - Normalizes result via normalize-content"
+  [handler]
+  (fn [args]
+    (normalize-content (handler args))))
+
+(defn- get-piggyback-messages
+  "Get hivemind piggyback messages for agent.
+   SRP: Single responsibility - piggyback retrieval.
+   Encapsulates dynamic require/resolve pattern."
+  [agent-id]
+  (require 'hive-mcp.tools.core)
+  ((resolve 'hive-mcp.tools.core/get-hivemind-piggyback) agent-id))
+
+(defn wrap-handler-piggyback
+  "Wrap handler to attach hivemind piggyback messages.
+   SRP: Single responsibility - piggyback embedding only.
+
+   Expects handler to return normalized content (vector of items).
+   Extracts agent-id from args, retrieves piggyback, embeds in content."
+  [handler]
+  (fn [args]
+    (let [content (handler args)
+          agent-id (extract-agent-id args "coordinator")
+          piggyback (get-piggyback-messages agent-id)]
+      (wrap-piggyback content piggyback))))
+
+(defn wrap-handler-response
+  "Wrap handler to build SDK response format.
+   SRP: Single responsibility - response building only.
+
+   Wraps handler result in {:content ...} map."
+  [handler]
+  (fn [args]
+    {:content (handler args)}))
+
+;; =============================================================================
 ;; Tool Definition Conversion
 ;; =============================================================================
 
@@ -106,25 +155,21 @@
   "Convert a tool definition with :handler to SDK format.
    Wraps handler to attach pending hivemind messages via content embedding.
 
-   Uses SRP helper functions:
-   - normalize-content: converts result to content array
-   - find-last-text-idx: locates last text item
-   - wrap-piggyback: embeds hivemind messages
+   Uses composable handler wrappers (SRP: each wrapper single responsibility):
+   - wrap-handler-normalize: converts result to content array
+   - wrap-handler-piggyback: embeds hivemind messages with agent-id extraction
+   - wrap-handler-response: builds {:content ...} response
 
-   Agent ID for piggyback is extracted from args or defaults to 'coordinator'."
+   Composition via -> threading enables clear data flow:
+   handler -> normalize -> piggyback -> response"
   [{:keys [name description inputSchema handler]}]
-  (let [wrapped-handler (fn [args]
-                          (let [result (handler args)
-                                agent-id (extract-agent-id args "coordinator")
-                                _ (require 'hive-mcp.tools.core)
-                                piggyback ((resolve 'hive-mcp.tools.core/get-hivemind-piggyback) agent-id)
-                                content (normalize-content result)
-                                content-with-piggyback (wrap-piggyback content piggyback)]
-                            {:content content-with-piggyback}))]
-    {:name name
-     :description description
-     :inputSchema inputSchema
-     :handler wrapped-handler}))
+  {:name name
+   :description description
+   :inputSchema inputSchema
+   :handler (-> handler
+                wrap-handler-normalize
+                wrap-handler-piggyback
+                wrap-handler-response)})
 
 ;; =============================================================================
 ;; Server Spec Building

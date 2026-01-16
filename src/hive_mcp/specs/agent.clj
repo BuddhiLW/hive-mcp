@@ -7,10 +7,17 @@
    - Agent delegation requests
    - Swarm events (shout, ask)
    - Hivemind coordination
+   - Domain records (HivemindMessage, PiggybackEnvelope)
 
-   Reference: mcp-clojure-sdk/src/io/modelcontext/clojure_sdk/specs.clj"
+   Reference: mcp-clojure-sdk/src/io/modelcontext/clojure_sdk/specs.clj
+   Domain types: hive-mcp.domain.hivemind"
   (:require [clojure.spec.alpha :as s]
-            [clojure.spec.gen.alpha :as gen]))
+            [clojure.spec.gen.alpha :as gen]
+            [hive-mcp.domain.hivemind :as hivemind]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; ============================================================
 ;; Backend Enums
@@ -35,6 +42,17 @@
 (s/def ::task-type-any
   (s/or :keyword ::task-type
         :string ::task-type-string))
+
+;; Team task type for team_select tool
+(s/def ::team-task-type
+  #{:implementation :refactoring :greenfield :simplification :quality-review :documentation})
+
+(s/def ::team-task-type-string
+  #{"implementation" "refactoring" "greenfield" "simplification" "quality-review" "documentation"})
+
+(s/def ::team-task-type-any
+  (s/or :keyword ::team-task-type
+        :string ::team-task-type-string))
 
 ;; Model identifier string (e.g., "mistralai/devstral-2512:free")
 (s/def ::model
@@ -331,6 +349,11 @@
   [task-type]
   (s/valid? ::task-type task-type))
 
+(defn valid-team-task-type?
+  "Check if team-task-type is a valid team task type keyword."
+  [task-type]
+  (s/valid? ::team-task-type task-type))
+
 (defn valid-event-type?
   "Check if event-type is a valid event type keyword."
   [event-type]
@@ -359,6 +382,11 @@
   "Generator for task type keywords."
   []
   (gen/elements [:coding :coding-alt :arch :docs]))
+
+(defn team-task-type-gen
+  "Generator for team task type keywords."
+  []
+  (gen/elements [:implementation :refactoring :greenfield :simplification :quality-review :documentation]))
 
 (defn event-type-gen
   "Generator for event type keywords."
@@ -391,3 +419,74 @@
    :task (gen/fmap #(str "Task: " %) (gen/string-alphanumeric))
    :backend (backend-gen)
    :max-steps (gen/choose 5 50)))
+
+;; ============================================================
+;; Domain Record Specs (DDD Value Objects)
+;; ============================================================
+
+;; Spec for HivemindMessage record (uses predicate from domain ns)
+(s/def ::hivemind-message-record hivemind/hivemind-message?)
+
+;; Spec for PiggybackEnvelope record (uses predicate from domain ns)
+(s/def ::piggyback-envelope-record hivemind/piggyback-envelope?)
+
+;; Collection of HivemindMessage records
+(s/def ::hivemind-messages
+  (s/coll-of ::hivemind-message-record :kind vector?))
+
+;; ============================================================
+;; Domain Record Helpers
+;; ============================================================
+
+(defn valid-hivemind-message?
+  "Check if x is a valid HivemindMessage record."
+  [x]
+  (s/valid? ::hivemind-message-record x))
+
+(defn valid-piggyback-envelope?
+  "Check if x is a valid PiggybackEnvelope record."
+  [x]
+  (s/valid? ::piggyback-envelope-record x))
+
+(defn shout-payload->message
+  "Convert shout payload map to HivemindMessage record.
+   Validates the payload first, returns nil if invalid."
+  [payload agent-id]
+  (when (valid-shout-payload? payload)
+    (hivemind/hivemind-message
+     agent-id
+     (:event-type payload)
+     (:message payload))))
+
+(defn messages->envelope
+  "Convert a collection of HivemindMessage records to PiggybackEnvelope.
+   cursor-ts should be the max timestamp from messages."
+  [messages cursor-ts]
+  (hivemind/piggyback-envelope messages cursor-ts))
+
+;; ============================================================
+;; Domain Record Generators (for test.check)
+;; ============================================================
+
+(defn hivemind-message-gen
+  "Generator for HivemindMessage records."
+  []
+  (gen/fmap
+   (fn [[agent-id event-type message timestamp]]
+     (hivemind/hivemind-message agent-id event-type message timestamp))
+   (gen/tuple
+    (gen/fmap #(str "agent-" %) (gen/such-that seq (gen/string-alphanumeric)))
+    (event-type-gen)
+    (gen/one-of [(gen/return nil)
+                 (gen/fmap #(str "Message: " %) (gen/string-alphanumeric))])
+    (gen/fmap #(+ 1000000000000 %) (gen/choose 0 100000000000)))))
+
+(defn piggyback-envelope-gen
+  "Generator for PiggybackEnvelope records."
+  []
+  (gen/fmap
+   (fn [[messages cursor-ts]]
+     (hivemind/piggyback-envelope messages cursor-ts))
+   (gen/tuple
+    (gen/vector (hivemind-message-gen) 0 5)
+    (gen/choose 0 10000000000000))))

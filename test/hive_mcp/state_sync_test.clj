@@ -20,11 +20,10 @@
   ;; ADR-002: Reset DataScript as primary registry
   (ds/reset-conn!)
   (reset! hivemind/agent-registry {})
-  (reset! swarm/lings-registry {})
+  ;; Note: lings-registry moved to DataScript, no separate atom
   (f)
   (ds/reset-conn!)
-  (reset! hivemind/agent-registry {})
-  (reset! swarm/lings-registry {}))
+  (reset! hivemind/agent-registry {}))
 
 (use-fixtures :each reset-state-fixture)
 

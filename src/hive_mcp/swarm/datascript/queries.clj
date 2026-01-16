@@ -1,0 +1,276 @@
+(ns hive-mcp.swarm.datascript.queries
+  "Read-only query operations for swarm state.
+
+   Query functions for:
+   - Slave queries (get, list, filter by status)
+   - Task queries (get, list for slave, completed tasks)
+   - Claim queries (get, list, conflict detection)
+   - Statistics and debugging
+
+   SOLID-S: Single Responsibility - queries only (no mutations).
+   SOLID-I: Interface Segregation - read operations separated from writes."
+  (:require [datascript.core :as d]
+            [hive-mcp.swarm.datascript.connection :as conn]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
+
+;;; =============================================================================
+;;; Slave Query Functions
+;;; =============================================================================
+
+(defn get-slave
+  "Get a slave by ID.
+
+   Returns:
+     Map with slave attributes or nil if not found"
+  [slave-id]
+  (let [c (conn/ensure-conn)
+        db @c]
+    (when-let [e (d/entity db [:slave/id slave-id])]
+      (-> (into {} e)
+          (dissoc :db/id)
+          ;; Resolve refs to IDs
+          (update :slave/parent #(when % (:slave/id %)))
+          (update :slave/current-task #(when % (:task/id %)))))))
+
+(defn get-all-slaves
+  "Get all slaves in the swarm.
+
+   Returns:
+     Seq of maps with slave attributes"
+  []
+  (let [c (conn/ensure-conn)
+        db @c
+        eids (d/q '[:find [?e ...]
+                    :where [?e :slave/id _]]
+                  db)]
+    (->> eids
+         (map #(d/entity db %))
+         (map (fn [e]
+                (-> (into {} e)
+                    (dissoc :db/id)
+                    (update :slave/parent #(when % (:slave/id %)))
+                    (update :slave/current-task #(when % (:task/id %)))))))))
+
+(defn get-slaves-by-status
+  "Get slaves filtered by status.
+
+   Arguments:
+     status - Status to filter by
+
+   Returns:
+     Seq of slave maps"
+  [status]
+  (let [c (conn/ensure-conn)
+        db @c
+        eids (d/q '[:find [?e ...]
+                    :in $ ?status
+                    :where
+                    [?e :slave/id _]
+                    [?e :slave/status ?status]]
+                  db status)]
+    (->> eids
+         (map #(d/entity db %))
+         (map (fn [e]
+                (-> (into {} e)
+                    (dissoc :db/id)
+                    (update :slave/parent #(when % (:slave/id %)))
+                    (update :slave/current-task #(when % (:task/id %)))))))))
+
+;;; =============================================================================
+;;; Task Query Functions
+;;; =============================================================================
+
+(defn get-task
+  "Get a task by ID.
+
+   Returns:
+     Map with task attributes or nil if not found"
+  [task-id]
+  (let [c (conn/ensure-conn)
+        db @c]
+    (when-let [e (d/entity db [:task/id task-id])]
+      (-> (into {} e)
+          (dissoc :db/id)
+          (update :task/slave #(when % (:slave/id %)))))))
+
+(defn get-tasks-for-slave
+  "Get all tasks for a slave.
+
+   Arguments:
+     slave-id - Slave to get tasks for
+     status   - Optional status filter
+
+   Returns:
+     Seq of task maps"
+  [slave-id & [status]]
+  (let [c (conn/ensure-conn)
+        db @c
+        slave-eid (:db/id (d/entity db [:slave/id slave-id]))]
+    (when slave-eid
+      (let [query (if status
+                    '[:find [?e ...]
+                      :in $ ?slave-eid ?status
+                      :where
+                      [?e :task/slave ?slave-eid]
+                      [?e :task/status ?status]]
+                    '[:find [?e ...]
+                      :in $ ?slave-eid
+                      :where
+                      [?e :task/slave ?slave-eid]])
+            args (if status [db slave-eid status] [db slave-eid])
+            eids (apply d/q query args)]
+        (->> eids
+             (map #(d/entity db %))
+             (map (fn [e]
+                    (-> (into {} e)
+                        (dissoc :db/id)
+                        (update :task/slave #(when % (:slave/id %)))))))))))
+
+(defn get-completed-tasks
+  "Get all completed tasks, optionally filtered by slave or time range.
+
+   Options:
+   - :slave-id - Filter by specific slave
+   - :since - Only tasks completed after this timestamp (java.util.Date)
+   - :limit - Maximum number to return (default 100)
+
+   Returns:
+     Seq of task maps sorted by completion time (most recent first)"
+  [& {:keys [slave-id since limit] :or {limit 100}}]
+  (let [c (conn/ensure-conn)
+        db @c
+        ;; Query all completed tasks with slave info
+        completed-tasks (d/q '[:find [(pull ?e [* {:task/slave [:slave/id]}]) ...]
+                               :in $ ?status
+                               :where
+                               [?e :task/status ?status]]
+                             db :completed)]
+    (->> completed-tasks
+         ;; Filter by slave-id if provided
+         (filter (fn [task]
+                   (or (nil? slave-id)
+                       (= slave-id (get-in task [:task/slave :slave/id])))))
+         ;; Filter by since timestamp if provided
+         (filter (fn [task]
+                   (or (nil? since)
+                       (and (:task/completed-at task)
+                            (.after (:task/completed-at task) since)))))
+         ;; Sort by completion time (most recent first)
+         (sort-by :task/completed-at #(compare %2 %1))
+         ;; Apply limit
+         (take limit)
+         ;; Clean up the output format
+         (map (fn [task]
+                (-> task
+                    (dissoc :db/id)
+                    (update :task/slave #(when % (:slave/id %)))))))))
+
+;;; =============================================================================
+;;; Claim Query Functions
+;;; =============================================================================
+
+(defn get-claims-for-file
+  "Get claim info for a file.
+
+   Returns:
+     Map with :slave-id and :task-id or nil if unclaimed"
+  [file-path]
+  (let [c (conn/ensure-conn)
+        db @c]
+    (when-let [e (d/entity db [:claim/file file-path])]
+      {:file file-path
+       :slave-id (get-in e [:claim/slave :slave/id])
+       :task-id (get-in e [:claim/task :task/id])
+       :created-at (:claim/created-at e)})))
+
+(defn get-all-claims
+  "Get all current file claims.
+
+   Returns:
+     Seq of {:file :slave-id :task-id} maps"
+  []
+  (let [c (conn/ensure-conn)
+        db @c
+        eids (d/q '[:find [?e ...]
+                    :where [?e :claim/file _]]
+                  db)]
+    (->> eids
+         (map #(d/entity db %))
+         (map (fn [e]
+                {:file (:claim/file e)
+                 :slave-id (get-in e [:claim/slave :slave/id])
+                 :task-id (get-in e [:claim/task :task/id])
+                 :created-at (:claim/created-at e)})))))
+
+(defn has-conflict?
+  "Check if a file claim would conflict with existing claims.
+
+   Arguments:
+     file-path       - File to check
+     requesting-slave - Slave wanting to claim (conflicts if different)
+
+   Returns:
+     {:conflict? bool :held-by slave-id} or {:conflict? false}"
+  [file-path requesting-slave]
+  (let [c (conn/ensure-conn)
+        db @c]
+    (if-let [e (d/entity db [:claim/file file-path])]
+      (let [holder-id (get-in e [:claim/slave :slave/id])]
+        (if (= holder-id requesting-slave)
+          {:conflict? false}
+          {:conflict? true :held-by holder-id}))
+      {:conflict? false})))
+
+(defn check-file-conflicts
+  "Check for conflicts on multiple files.
+
+   Arguments:
+     requesting-slave - Slave wanting to claim files
+     files           - Collection of file paths to check
+
+   Returns:
+     Seq of {:file :held-by} for conflicting files (empty if no conflicts)"
+  [requesting-slave files]
+  (when (seq files)
+    (->> files
+         (map (fn [f]
+                (let [result (has-conflict? f requesting-slave)]
+                  (when (:conflict? result)
+                    {:file f :held-by (:held-by result)}))))
+         (filter some?))))
+
+;;; =============================================================================
+;;; Statistics & Debugging
+;;; =============================================================================
+
+(defn db-stats
+  "Get statistics about the current swarm state."
+  []
+  (let [c (conn/ensure-conn)
+        db @c]
+    {:slaves (count (d/q '[:find ?e :where [?e :slave/id _]] db))
+     :tasks (count (d/q '[:find ?e :where [?e :task/id _]] db))
+     :claims (count (d/q '[:find ?e :where [?e :claim/file _]] db))
+     :active-tasks (count (d/q '[:find ?e
+                                 :where
+                                 [?e :task/status :dispatched]]
+                               db))
+     :wrap-queue (count (d/q '[:find ?e :where [?e :wrap-queue/id _]] db))
+     :unprocessed-wraps (count (d/q '[:find ?e
+                                      :where
+                                      [?e :wrap-queue/processed? false]]
+                                    db))
+     :completed-tasks (count (d/q '[:find ?e :where [?e :completed-task/id _]] db))}))
+
+(defn dump-db
+  "Dump the current database state for debugging."
+  []
+  {:slaves (get-all-slaves)
+   :tasks (d/q '[:find [(pull ?e [*]) ...]
+                 :where [?e :task/id _]]
+               @(conn/ensure-conn))
+   :claims (get-all-claims)
+   :stats (db-stats)})

@@ -9,6 +9,10 @@
   (:require [hive-mcp.tools.core :refer [mcp-success mcp-error]]
             [hive-mcp.emacsclient :as ec]
             [hive-mcp.validation :as v]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; ============================================================
 ;; Kanban Tools (org-kanban integration)

@@ -14,6 +14,10 @@
             [hive-mcp.chroma :as chroma]
             [taoensso.timbre :as log])
   (:import [java.time ZonedDateTime]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; ============================================================
 ;; Access Tracking Handler

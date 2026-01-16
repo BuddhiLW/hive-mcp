@@ -1,5 +1,9 @@
 (ns hive-mcp.examples.pascal
   "Implementation of Pascal's triangle using DDD/SOLID principles.")
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; PascalTriangle protocol
 (defprotocol PascalTriangle

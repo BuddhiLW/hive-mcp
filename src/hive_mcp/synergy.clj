@@ -13,6 +13,10 @@
    See: elisp/hive-mcp-api.el for the full API"
   (:require [hive-mcp.emacsclient :as ec]
             [clojure.string :as str]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; ============================================================================
 ;; 1. EDIT-AND-SHOW: Real-time visual feedback

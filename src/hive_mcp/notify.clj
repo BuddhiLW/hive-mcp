@@ -5,6 +5,10 @@
    independent of Emacs. Used for hivemind alerts that require human attention."
   (:require [clojure.java.shell :as shell]
             [taoensso.timbre :as log]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; =============================================================================
 ;; Desktop Notifications via notify-send

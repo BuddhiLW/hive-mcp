@@ -23,6 +23,10 @@
   (:require [hive-mcp.prompts.infra :as infra]
             [hive-mcp.channel :as channel]
             [taoensso.timbre :as log]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;;; ============================================================
 ;;; State Management

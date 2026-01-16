@@ -2,6 +2,10 @@
   "Transform functions for modifying org documents immutably."
   (:require [clojure.test :refer [deftest is testing]]
             [hive-mcp.org-clj.query :as query]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; =============================================================================
 ;; Headline Tree Updates

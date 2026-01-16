@@ -24,6 +24,10 @@
             [hive-mcp.tools.memory.lifecycle :as lifecycle]
             [hive-mcp.tools.memory.analytics :as analytics]
             [hive-mcp.tools.memory.migration :as migration]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; ============================================================
 ;; Handler Re-exports (Facade)

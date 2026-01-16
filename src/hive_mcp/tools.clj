@@ -24,6 +24,7 @@
    [hive-mcp.tools.scc :as scc]
    [hive-mcp.tools.crystal :as crystal]
    [hive-mcp.tools.hot :as hot]
+   [hive-mcp.tools.health :as health]
    [hive-mcp.tools.drone-feedback :as drone-feedback]
    [hive-mcp.tools.session-complete :as session-complete]
    [hive-mcp.tools.hive-project :as hive-project]
@@ -32,6 +33,10 @@
    [hive-mcp.agent :as agent]
    [hive-mcp.chroma :as chroma]
    [taoensso.timbre :as log]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; =============================================================================
 ;; Capability-Based Kanban Tool Switching
@@ -67,6 +72,7 @@
                kondo/tools
                scc/tools
                hot/tools     ; hot reload coordination tools
+               health/tools  ; MCP health check
                drone-feedback/tools
                session-complete/tools  ; ling session lifecycle
                hive-project/tools      ; .hive-project.edn generator
@@ -129,6 +135,7 @@
                kondo/tools
                scc/tools
                hot/tools     ; hot reload coordination tools
+               health/tools  ; MCP health check
                drone-feedback/tools
                session-complete/tools  ; ling session lifecycle
                hive-project/tools      ; .hive-project.edn generator

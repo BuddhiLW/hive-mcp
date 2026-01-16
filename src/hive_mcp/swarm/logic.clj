@@ -13,6 +13,10 @@
   (:require [clojure.core.logic :as l]
             [clojure.core.logic.pldb :as pldb]
             [taoensso.timbre :as log]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; =============================================================================
 ;; Database Relations (pldb/db-rel)

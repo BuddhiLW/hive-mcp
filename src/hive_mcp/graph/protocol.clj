@@ -9,6 +9,10 @@
    
    SOLID: Interface Segregation - focused graph operations only.
    DDD: Port in hexagonal architecture for persistence adapter.")
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 (defprotocol GraphStore
   "Interface for knowledge graph storage.

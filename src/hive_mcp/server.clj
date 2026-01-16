@@ -22,10 +22,15 @@
             [taoensso.timbre :as log]
             [clojure.spec.alpha :as s]
             [clojure.string :as str]
+            [clojure.edn :as edn]
             [hive-hot.core :as hot]
             [hive-hot.events :as hot-events]
             [hive-mcp.swarm.logic :as logic])
   (:gen-class))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; Specs moved to hive-mcp.server.routes
 ;; Hivemind message spec (kept here for validation in server lifecycle)
@@ -49,6 +54,10 @@
 
 ;; Track if shutdown hook is registered
 (defonce ^:private shutdown-hook-registered? (atom false))
+
+;; Store coordinator-id for graceful shutdown
+;; CLARITY-Y: Yield safe failure - enables coordinator cleanup on JVM exit
+(defonce ^:private coordinator-id-atom (atom nil))
 
 ;; Configure Timbre to write to stderr instead of stdout
 ;; This is CRITICAL for MCP servers - stdout is the JSON-RPC channel
@@ -171,6 +180,61 @@
 
 (defonce ws-channel-monitor (atom nil))
 
+;; =============================================================================
+;; Hot-Reload Auto-Healing (CLARITY-Y: Yield safe failure)
+;; =============================================================================
+
+(defonce ^:private hot-reload-listener-registered? (atom false))
+
+(defn- emit-mcp-health-event!
+  "Emit health event via WebSocket channel after hot-reload.
+   Lings can listen for this to confirm MCP is operational."
+  [loaded-ns unloaded-ns ms]
+  (try
+    (ws-channel/emit! :mcp-health-restored
+                      {:loaded (count loaded-ns)
+                       :unloaded (count unloaded-ns)
+                       :reload-ms ms
+                       :timestamp (System/currentTimeMillis)
+                       :status "healthy"})
+    (log/info "Emitted :mcp-health-restored event after hot-reload")
+    (catch Exception e
+      (log/warn "Failed to emit health event (non-fatal):" (.getMessage e)))))
+
+(defn- handle-hot-reload-success!
+  "Handler for successful hot-reload - refreshes tools and emits health event.
+
+   CLARITY: Yield safe failure - errors logged but don't break the reload."
+  [{:keys [loaded unloaded ms]}]
+  (log/info "Hot-reload completed:" (count loaded) "loaded," (count unloaded) "unloaded in" ms "ms")
+  ;; Refresh MCP tool handlers to point to new var values
+  (try
+    (when @server-context-atom
+      (routes/refresh-tools! server-context-atom)
+      (log/info "MCP tools refreshed after hot-reload"))
+    (catch Exception e
+      (log/error "Failed to refresh MCP tools after hot-reload:" (.getMessage e))))
+  ;; Emit health event for lings
+  (emit-mcp-health-event! loaded unloaded ms))
+
+(defn- register-hot-reload-listener!
+  "Register listener with hive-hot to auto-heal MCP after reload.
+
+   Only registers once. Safe to call multiple times."
+  []
+  (when-not @hot-reload-listener-registered?
+    (try
+      (require 'hive-hot.core)
+      (let [add-listener! (resolve 'hive-hot.core/add-listener!)]
+        (add-listener! :mcp-auto-heal
+                       (fn [event]
+                         (when (= (:type event) :reload-success)
+                           (handle-hot-reload-success! event))))
+        (reset! hot-reload-listener-registered? true)
+        (log/info "Registered hot-reload listener for MCP auto-healing"))
+      (catch Exception e
+        (log/warn "Could not register hot-reload listener (non-fatal):" (.getMessage e))))))
+
 (defn start-ws-channel-with-healing!
   "Start WebSocket channel server with auto-healing.
    
@@ -245,9 +309,31 @@
      (Thread.
       (fn []
         (log/info "JVM shutdown detected - running session-end hooks")
+        ;; Mark coordinator as terminated in DataScript (Phase 4)
+        (when-let [coord-id @coordinator-id-atom]
+          (try
+            (require 'hive-mcp.swarm.datascript)
+            (let [mark-terminated! (resolve 'hive-mcp.swarm.datascript/mark-coordinator-terminated!)]
+              (mark-terminated! coord-id)
+              (log/info "Coordinator marked terminated:" coord-id))
+            (catch Exception e
+              (log/warn "Coordinator cleanup failed (non-fatal):" (.getMessage e)))))
         (trigger-session-end! "jvm-shutdown"))))
     (reset! shutdown-hook-registered? true)
     (log/info "JVM shutdown hook registered for auto-wrap")))
+
+(defn- read-project-watch-dirs
+  "Read :watch-dirs from .hive-project.edn if present.
+   Falls back to nil if file doesn't exist or :watch-dirs not specified.
+   Priority: env var > .hive-project.edn > default [\"src\"]"
+  []
+  (try
+    (let [project-file (java.io.File. ".hive-project.edn")]
+      (when (.exists project-file)
+        (let [config (edn/read-string (slurp project-file))]
+          (:watch-dirs config))))
+    (catch Exception _
+      nil)))
 
 (defn init-hooks!
   "Initialize the hooks system and register crystal hooks.
@@ -287,6 +373,17 @@
       (log/info "hive-events system initialized")
       (catch Exception e
         (log/warn "hive-events initialization failed (non-fatal):" (.getMessage e))))
+    ;; Register coordinator in DataScript + hivemind (Phase 4)
+    ;; CLARITY-T: Telemetry first - expose coordinator identity for hivemind operations
+    (try
+      (require 'hive-mcp.swarm.datascript)
+      (let [register! (resolve 'hive-mcp.swarm.datascript/register-coordinator!)
+            project-id (or (System/getenv "HIVE_MCP_PROJECT_ID") "hive-mcp")]
+        (register! project-id {:project project-id})
+        (reset! coordinator-id-atom project-id)
+        (log/info "Coordinator registered:" project-id))
+      (catch Exception e
+        (log/warn "Coordinator registration failed (non-fatal):" (.getMessage e))))
     ;; Start embedded nREPL FIRST - bb-mcp needs this to forward tool calls
     ;; This MUST run in the same JVM as channel server for hivemind to work
     (start-embedded-nrepl!)
@@ -304,6 +401,10 @@
     (let [channel-port (parse-long (or (System/getenv "HIVE_MCP_CHANNEL_PORT") "9998"))]
       (try
         (channel/start-server! {:type :tcp :port channel-port})
+        ;; Mark coordinator as running to protect from test fixture cleanup
+        ;; CLARITY-Y: This prevents ch/stop-server! in test fixtures from killing
+        ;; the production server when tests run in the same JVM
+        (channel/mark-coordinator-running!)
         (log/info "Legacy channel server started on TCP port" channel-port)
         (catch Exception e
           (log/warn "Legacy channel server failed to start (non-fatal):" (.getMessage e)))))
@@ -326,12 +427,15 @@
     (try
       (let [src-dirs (or (some-> (System/getenv "HIVE_MCP_SRC_DIRS")
                                  (str/split #":"))
+                         (read-project-watch-dirs)
                          ["src"])
             claim-checker (hot-events/make-claim-checker logic/get-all-claims)]
         (hot/init-with-watcher! {:dirs src-dirs
                                  :claim-checker claim-checker
                                  :debounce-ms 100})
-        (log/info "Hot-reload watcher started:" {:dirs src-dirs}))
+        (log/info "Hot-reload watcher started:" {:dirs src-dirs})
+        ;; Register MCP auto-heal listener to refresh tools after reload
+        (register-hot-reload-listener!))
       (catch Exception e
         (log/warn "Hot-reload watcher failed to start (non-fatal):" (.getMessage e))))
     ;; Start lings registry sync - keeps Clojure registry in sync with elisp

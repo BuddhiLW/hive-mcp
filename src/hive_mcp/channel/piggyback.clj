@@ -15,6 +15,10 @@
    - SRP: All piggyback logic in one module
    - DIP: Message source is injectable, not hardcoded to hivemind"
   (:require [clojure.spec.alpha :as s]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; Specs for piggyback messages
 (s/def ::agent-id string?)

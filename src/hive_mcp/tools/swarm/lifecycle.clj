@@ -13,9 +13,14 @@
   (:require [hive-mcp.tools.swarm.core :as core]
             [hive-mcp.tools.swarm.registry :as registry]
             [hive-mcp.swarm.datascript :as ds]
+            [hive-mcp.hivemind :as hivemind]
             [hive-mcp.emacsclient :as ec]
             [hive-mcp.validation :as v]
             [clojure.string :as str]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; ============================================================
 ;; Spawn Handler
@@ -117,7 +122,10 @@
 
               success
               (do
+                ;; Clear all registries: DataScript + hivemind agent-registry
+                ;; Bug fix (task 9871bcf4): hivemind_status showed stale entries
                 (registry/clear-registry!)
+                (reset! hivemind/agent-registry {})
                 (core/mcp-success result))
 
               :else
@@ -141,7 +149,9 @@
 
               success
               (do
-                (registry/unregister-ling! slave_id)
+                ;; Clear from both registries: DataScript + hivemind agent-registry
+                ;; Bug fix (task 9871bcf4): hivemind_status showed stale entries
+                (hivemind/clear-agent! slave_id)
                 (core/mcp-success result))
 
               :else

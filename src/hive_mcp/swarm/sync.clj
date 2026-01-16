@@ -17,17 +17,25 @@
    Migration Note (ADR-001):
    - Phase 1: Uses DataScript for swarm state (replacing core.logic pldb)
    - Phase 2: Elisp queries DataScript via MCP (future)
-   - Phase 3: Single source of truth achieved (future)"
+   - Phase 3: Single source of truth achieved (future)
+
+   DRY Patterns (Sprint-2):
+   - `get-field`: Unified event field extraction (string or keyword keys)
+   - `dispatch-event!`: Safe event dispatch with error handling
+   - Handler functions use consistent field extraction pattern"
   (:require [hive-mcp.swarm.datascript :as ds]
             [hive-mcp.swarm.coordinator :as coord]
             [hive-mcp.channel :as channel]
             [hive-mcp.emacsclient :as ec]
             [hive-mcp.hivemind :as hivemind]
             [hive-mcp.hooks :as hooks]
-            ;; MIGRATION NOTE: handlers require removed - using event dispatch instead (P5-5)
             [clojure.core.async :as async :refer [go-loop <!]]
             [clojure.data.json :as json]
             [taoensso.timbre :as log]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; =============================================================================
 ;; State
@@ -37,12 +45,10 @@
   (atom {:running false
          :subscriptions []}))
 
-;; Injected hooks registry - set via set-hooks-registry! to avoid cyclic deps
 (defonce ^:private hooks-registry-atom (atom nil))
 
 (defn set-hooks-registry!
-  "Inject the hooks registry from server.clj to avoid cyclic dependency.
-   Called during server initialization."
+  "Inject the hooks registry from server.clj to avoid cyclic dependency."
   [registry]
   (reset! hooks-registry-atom registry)
   (log/info "Sync: hooks registry injected"))
@@ -53,184 +59,134 @@
   @hooks-registry-atom)
 
 ;; =============================================================================
+;; DRY Helpers (Sprint-2 Refactoring)
+;; =============================================================================
+
+(defn- get-field
+  "Extract field from event map, handling both string and keyword keys.
+   DRY pattern: All handlers use this instead of (or (get event \"x\") (:x event))."
+  ([event field] (get-field event field nil))
+  ([event field default]
+   (or (get event (name field))
+       (get event field)
+       default)))
+
+(defn- dispatch-event!
+  "Dispatch event to hive-events system with error handling.
+   DRY pattern: Replaces repeated try/require/resolve/catch blocks."
+  [event-vec]
+  (try
+    (require '[hive-mcp.events.core :as ev])
+    ((resolve 'hive-mcp.events.core/dispatch) event-vec)
+    (catch Exception e
+      (log/warn "Event dispatch failed:" (.getMessage e)))))
+
+;; =============================================================================
 ;; Hook Action Execution (Layer 4 - Architectural Guarantee)
 ;; =============================================================================
 
 (defn- trigger-task-complete-hooks!
   "Trigger :task-complete hooks via event dispatch.
 
-   ARCHITECTURAL GUARANTEE: This function ensures a shout is emitted
-   on task completion, regardless of whether the ling explicitly called
-   hivemind_shout. Part of 4-layer convergence pattern.
-
-   MIGRATION (P5-5): Uses event dispatch instead of direct handler calls.
-   The :task/shout-complete event produces a :shout effect which is
-   executed by the effects system.
-
-   Returns: Vector of custom hook results"
+   ARCHITECTURAL GUARANTEE: Ensures a shout is emitted on task completion,
+   regardless of whether the ling explicitly called hivemind_shout."
   [task-id slave-id]
-  ;; Dispatch event - the :task/shout-complete handler produces a :shout effect
-  ;; which is executed by the registered effect handler (Layer 4 guarantee)
-  (try
-    (require '[hive-mcp.events.core :as ev])
-    ((resolve 'hive-mcp.events.core/dispatch)
-     [:task/shout-complete {:task-id task-id
-                            :agent-id slave-id}])
-    (log/debug "Layer4: Dispatched :task/shout-complete for" slave-id)
-    (catch Exception e
-      (log/warn "Layer4: Task shout-complete dispatch failed:" (.getMessage e))))
-
-  ;; Also trigger any custom hooks registered via the registry
-  ;; These receive merged event/context (single-arg handlers)
+  (dispatch-event! [:task/shout-complete {:task-id task-id :agent-id slave-id}])
+  (log/debug "Layer4: Dispatched :task/shout-complete for" slave-id)
   (when-let [registry (get-hooks-registry)]
-    (let [event {:type :task-complete
-                 :task-id task-id}
-          context {:agent-id slave-id
-                   :task-id task-id}
-          custom-results (hooks/trigger-hooks registry :task-complete
-                                              (merge event context))]
-      (log/debug "Layer4: Triggered" (count custom-results) "custom hooks")
-      custom-results)))
+    (let [merged-ctx {:type :task-complete :task-id task-id :agent-id slave-id}
+          results (hooks/trigger-hooks registry :task-complete merged-ctx)]
+      (log/debug "Layer4: Triggered" (count results) "custom hooks")
+      results)))
 
 ;; =============================================================================
 ;; Event Handlers
 ;; =============================================================================
 
 (defn- handle-slave-spawned
-  "Handle slave spawn event.
-   Event: {:slave-id :name :parent-id :depth}"
+  "Handle slave spawn event. Event: {:slave-id :name :parent-id :depth}"
   [event]
-  (let [slave-id (or (get event "slave-id") (:slave-id event))
-        name (or (get event "name") (:name event) slave-id)
-        depth (or (get event "depth") (:depth event) 1)
-        parent-id (or (get event "parent-id") (:parent-id event))]
+  (let [slave-id (get-field event :slave-id)
+        name (get-field event :name slave-id)
+        depth (get-field event :depth 1)
+        parent-id (get-field event :parent-id)]
     (when slave-id
-      (ds/add-slave! slave-id {:status :idle
-                               :name name
-                               :depth depth
-                               :parent parent-id})
+      (ds/add-slave! slave-id {:status :idle :name name :depth depth :parent parent-id})
       (log/debug "Sync: registered slave" slave-id "depth:" depth))))
 
 (defn- handle-slave-status
-  "Handle slave status change event.
-   Event: {:slave-id :status}"
+  "Handle slave status change event. Event: {:slave-id :status}"
   [event]
-  (let [slave-id (or (get event "slave-id") (:slave-id event))
-        status (keyword (or (get event "status") (:status event)))]
+  (let [slave-id (get-field event :slave-id)
+        status (some-> (get-field event :status) keyword)]
     (when (and slave-id status)
       (ds/update-slave! slave-id {:slave/status status})
       (log/debug "Sync: updated slave status" slave-id "->" status))))
 
 (defn- handle-slave-killed
-  "Handle slave killed event.
-   Event: {:slave-id}
-   
-   EVENTS-07: Dispatches :ling/completed event BEFORE removing from DataScript
-   to allow event handlers to access ling state before cleanup."
+  "Handle slave killed event. Event: {:slave-id}
+   EVENTS-07: Dispatches :ling/completed BEFORE removing from DataScript."
   [event]
-  (let [slave-id (or (get event "slave-id") (:slave-id event))]
+  (let [slave-id (get-field event :slave-id)]
     (when slave-id
-      ;; EVENTS-07: Dispatch BEFORE removal so handlers can access ling state
-      (try
-        (require '[hive-mcp.events.core :as ev])
-        ((resolve 'hive-mcp.events.core/dispatch)
-         [:ling/completed {:slave-id slave-id :reason "terminated"}])
-        (catch Exception e
-          (log/warn "Event dispatch for ling termination failed:" (.getMessage e))))
-      ;; ds/remove-slave! handles claim release internally
+      (dispatch-event! [:ling/completed {:slave-id slave-id :reason "terminated"}])
       (ds/remove-slave! slave-id)
       (log/debug "Sync: removed slave" slave-id))))
 
 (defn- handle-task-dispatched
-  "Handle task dispatch event.
-   Event: {:task-id :slave-id :files}"
+  "Handle task dispatch event. Event: {:task-id :slave-id :files}"
   [event]
-  (let [task-id (or (get event "task-id") (:task-id event))
-        slave-id (or (get event "slave-id") (:slave-id event))
-        files (or (get event "files") (:files event) [])]
+  (let [task-id (get-field event :task-id)
+        slave-id (get-field event :slave-id)
+        files (get-field event :files [])]
     (when (and task-id slave-id)
-      ;; Add task with files stored in :task/files
       (ds/add-task! task-id slave-id {:status :dispatched :files files})
-      ;; Register file claims linked to task
       (doseq [f files]
         (ds/claim-file! f slave-id task-id))
       (log/debug "Sync: registered task" task-id "with" (count files) "files"))))
 
 (defn- handle-task-completed
-  "Handle task completion event.
-   Event: {:task-id :slave-id}
-
-   LAYER 4 INTEGRATION: Triggers :task-complete hooks which emit
-   a synthetic shout. This is the architectural guarantee - completion
-   is always visible to the coordinator regardless of ling behavior.
-   
-   EVENTS-02: Also dispatches to hive-events for unified event processing."
+  "Handle task completion event. Event: {:task-id :slave-id}
+   LAYER 4: Triggers hooks for synthetic shout (architectural guarantee)."
   [event]
-  (let [task-id (or (get event "task-id") (:task-id event))
-        slave-id (or (get event "slave-id") (:slave-id event))]
+  (let [task-id (get-field event :task-id)
+        slave-id (get-field event :slave-id)]
     (when task-id
-      ;; ds/complete-task! handles status update, claim release, and slave stats
       (ds/complete-task! task-id)
-
-      ;; EVENTS-02: Dispatch to hive-events for unified event processing
-      (try
-        (require '[hive-mcp.events.core :as ev])
-        ((resolve 'hive-mcp.events.core/dispatch)
-         [:task/complete {:task-id task-id :agent-id slave-id :result :completed}])
-        (catch Exception e
-          (log/warn "Event dispatch failed:" (.getMessage e))))
-
-      ;; LAYER 4: Trigger hooks for synthetic shout (architectural guarantee)
-      ;; Even if ling forgot to call hivemind_shout, this ensures visibility
+      (dispatch-event! [:task/complete {:task-id task-id :agent-id slave-id :result :completed}])
       (trigger-task-complete-hooks! task-id slave-id)
-
-      ;; Process queue - some waiting tasks might be ready now
-      (let [ready (coord/process-queue!)]
-        (when (seq ready)
-          (log/info "Sync: " (count ready) "queued tasks now ready")))
+      (when-let [ready (seq (coord/process-queue!))]
+        (log/info "Sync:" (count ready) "queued tasks now ready"))
       (log/debug "Sync: task completed" task-id))))
 
 (defn- handle-task-failed
-  "Handle task failure event.
-   Event: {:task-id :error}"
+  "Handle task failure event. Event: {:task-id :error}"
   [event]
-  (let [task-id (or (get event "task-id") (:task-id event))]
+  (let [task-id (get-field event :task-id)]
     (when task-id
-      ;; ds/fail-task! handles status update and claim release
       (ds/fail-task! task-id :error)
-      ;; Process queue - claims released
       (coord/process-queue!)
       (log/debug "Sync: task failed" task-id))))
 
 (defn- handle-prompt-shown
-  "Handle permission prompt event from Emacs swarm slave.
-   Event: {:slave-id :prompt :timestamp :session-id}
-
-   Forwards the prompt to hivemind so the coordinator can see it
-   via hivemind_status without polling swarm_pending_prompts."
+  "Handle permission prompt event. Event: {:slave-id :prompt :timestamp :session-id}"
   [event]
-  (let [slave-id (or (get event "slave-id") (:slave-id event))
-        prompt (or (get event "prompt") (:prompt event))
-        timestamp (or (get event "timestamp") (:timestamp event))
-        session-id (or (get event "session-id") (:session-id event))]
+  (let [slave-id (get-field event :slave-id)
+        prompt (get-field event :prompt)
+        timestamp (get-field event :timestamp)
+        session-id (get-field event :session-id)]
     (when (and slave-id prompt)
       (hivemind/add-swarm-prompt! slave-id prompt session-id timestamp)
       (log/info "Sync: forwarded prompt from" slave-id "to hivemind"))))
 
 (defn- handle-prompt-stall
-  "Handle prompt-stall event from Emacs idle watcher.
-   Event: {:slave-id :idle-duration-secs :prompt-preview :urgency}
-
-   This is emitted when a ling has been idle AND has a pending prompt.
-   Records as a shout so it appears in HIVEMIND piggyback messages,
-   alerting the coordinator that they need to respond urgently."
+  "Handle prompt-stall event. Event: {:slave-id :idle-duration-secs :prompt-preview :urgency}"
   [event]
-  (let [slave-id (or (get event "slave-id") (:slave-id event))
-        idle-secs (or (get event "idle-duration-secs") (:idle-duration-secs event) 0)
-        prompt-preview (or (get event "prompt-preview") (:prompt-preview event) "")
-        urgency (or (get event "urgency") (:urgency event) "high")]
+  (let [slave-id (get-field event :slave-id)
+        idle-secs (get-field event :idle-duration-secs 0)
+        prompt-preview (get-field event :prompt-preview "")
+        urgency (get-field event :urgency "high")]
     (when slave-id
-      ;; Record as a shout so it appears in HIVEMIND piggyback
       (hivemind/shout! slave-id :prompt-stall
                        {:task "awaiting-response"
                         :message (format "STALLED %.0fs waiting for prompt response: %s"
@@ -244,7 +200,6 @@
 ;; =============================================================================
 
 (def ^:private event-handlers
-  "Map of event types to handler functions."
   {:slave-spawned handle-slave-spawned
    :slave-status handle-slave-status
    :slave-killed handle-slave-killed
@@ -271,36 +226,29 @@
 ;; Full Sync from Emacs (Bootstrap)
 ;; =============================================================================
 
+(defn- register-slave-from-status!
+  "Register a single slave from Emacs status data."
+  [slave]
+  (let [slave-id (:slave-id slave)
+        status (keyword (:status slave))
+        name (or (:name slave) slave-id)
+        depth (or (:depth slave) 1)]
+    (ds/add-slave! slave-id {:status status :name name :depth depth})
+    (log/debug "Sync: bootstrapped slave" slave-id status)))
+
 (defn full-sync-from-emacs!
-  "One-time full sync from Emacs swarm state.
-   Call this on startup to bootstrap the DataScript database."
+  "One-time full sync from Emacs swarm state. Call on startup to bootstrap."
   []
   (log/info "Starting full sync from Emacs...")
   (ds/reset-conn!)
-
-  ;; Get current swarm status from Emacs
   (let [elisp "(json-encode (hive-mcp-swarm-api-status))"
         {:keys [success result error]} (ec/eval-elisp-with-timeout elisp 5000)]
     (if success
       (try
-        (let [status (json/read-str result :key-fn keyword)]
-          ;; Register all active slaves
-          (when-let [slaves (:slaves-detail status)]
-            (doseq [slave slaves]
-              (let [slave-id (:slave-id slave)
-                    slave-status (keyword (:status slave))
-                    name (or (:name slave) slave-id)
-                    depth (or (:depth slave) 1)]
-                (ds/add-slave! slave-id {:status slave-status
-                                         :name name
-                                         :depth depth})
-                (log/debug "Sync: bootstrapped slave" slave-id slave-status))))
-
-          ;; Note: Task claims would need to be tracked by Emacs side
-          ;; For now, we start fresh and track from dispatch forward
-
-          (log/info "Full sync complete:"
-                    (count (or (:slaves-detail status) [])) "slaves"))
+        (let [status (json/read-str result :key-fn keyword)
+              slaves (or (:slaves-detail status) [])]
+          (run! register-slave-from-status! slaves)
+          (log/info "Full sync complete:" (count slaves) "slaves"))
         (catch Exception e
           (log/error "Failed to parse Emacs swarm status:" (.getMessage e))))
       (log/warn "Could not fetch Emacs swarm status:" error))))
@@ -311,30 +259,16 @@
 
 (defn start-sync!
   "Start event-driven synchronization with Emacs.
-   Subscribes to channel events and updates logic database.
-
-   Options:
-   - :bootstrap? - If true, do full sync from Emacs first (default: true)"
+   Options: :bootstrap? - If true, do full sync from Emacs first (default: true)"
   ([] (start-sync! {:bootstrap? true}))
   ([{:keys [bootstrap?] :or {bootstrap? true}}]
    (if (:running @sync-state)
-     (do
-       (log/warn "Sync already running")
-       @sync-state)
+     (do (log/warn "Sync already running") @sync-state)
      (do
        (log/info "Starting logic database sync...")
-
-       ;; Bootstrap from current Emacs state
-       (when bootstrap?
-         (full-sync-from-emacs!))
-
-       ;; Subscribe to all event types
-       (let [subs (mapv (fn [[event-type handler]]
-                          (subscribe-to-event! event-type handler))
-                        event-handlers)]
-         (reset! sync-state
-                 {:running true
-                  :subscriptions subs})
+       (when bootstrap? (full-sync-from-emacs!))
+       (let [subs (mapv (fn [[et h]] (subscribe-to-event! et h)) event-handlers)]
+         (reset! sync-state {:running true :subscriptions subs})
          (log/info "Logic database sync started -" (count subs) "event subscriptions")
          @sync-state)))))
 
@@ -342,8 +276,7 @@
   "Stop event synchronization."
   []
   (when (:running @sync-state)
-    (doseq [sub (:subscriptions @sync-state)]
-      (async/close! sub))
+    (run! async/close! (:subscriptions @sync-state))
     (reset! sync-state {:running false :subscriptions []})
     (log/info "Logic database sync stopped")))
 
@@ -356,19 +289,9 @@
 
 (comment
   ;; Development REPL examples
-
-  ;; Start sync
   (start-sync!)
-
-  ;; Check status
   (sync-status)
-
-  ;; Manual test: simulate events
   (handle-slave-spawned {:slave-id "test-slave-1" :name "test" :depth 1})
-  (handle-task-dispatched {:task-id "task-1"
-                           :slave-id "test-slave-1"
-                           :files ["/src/core.clj"]})
+  (handle-task-dispatched {:task-id "task-1" :slave-id "test-slave-1" :files ["/src/core.clj"]})
   (ds/dump-db)
-
-  ;; Stop sync
   (stop-sync!))

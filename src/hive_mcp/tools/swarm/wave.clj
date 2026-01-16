@@ -20,6 +20,10 @@
             [clojure.string :as str]
             [taoensso.timbre :as log]
             [clojure.data.json :as json]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;;; =============================================================================
 ;;; Constants
@@ -337,6 +341,36 @@
 ;;; =============================================================================
 ;;; MCP Handler
 ;;; =============================================================================
+
+(defn handle-get-wave-status
+  "Handle get_wave_status MCP tool call.
+
+   Parameters:
+     wave_id - Wave ID to get status for (required)
+
+   Returns:
+     JSON with wave status including counts and item details."
+  [{:keys [wave_id]}]
+  (try
+    (when-not wave_id
+      (throw (ex-info "wave_id is required" {})))
+
+    (if-let [status (get-wave-status wave_id)]
+      ;; Also get item-level details for failed items
+      (let [plan-status (get-plan-status (:plan-id status))
+            failed-items (->> (:items plan-status)
+                              (filter #(= :failed (:status %)))
+                              (mapv #(select-keys % [:item-id :file :result])))]
+        {:type "text"
+         :text (json/write-str (merge status
+                                      {:failed_items failed-items}))})
+      {:type "text"
+       :text (json/write-str {:error "Wave not found"
+                              :wave_id wave_id})})
+    (catch Exception e
+      (log/error e "get_wave_status failed")
+      {:type "text"
+       :text (json/write-str {:error (.getMessage e)})})))
 
 (defn handle-dispatch-drone-wave
   "Handle dispatch_drone_wave MCP tool call.

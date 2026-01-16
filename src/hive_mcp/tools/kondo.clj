@@ -10,6 +10,10 @@
   (:require [hive-mcp.tools.core :refer [mcp-error mcp-json]]
             [clj-kondo.core :as kondo]
             [taoensso.timbre :as log]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; =============================================================================
 ;; Core Analysis

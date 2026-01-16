@@ -9,6 +9,10 @@
    - Port must be valid port number (1-65535) if provided
    - Timeout must be positive integer if provided"
   (:require [clojure.string :as str]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 (defn validate-code
   "Validate that code is a non-empty string.

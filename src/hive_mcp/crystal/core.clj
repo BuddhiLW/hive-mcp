@@ -9,6 +9,10 @@
    SOLID: Single responsibility - promotion scoring only.
    DDD: Pure domain functions, no side effects."
   (:require [clojure.string :as str]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; =============================================================================
 ;; Recall Context Weights

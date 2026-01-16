@@ -54,6 +54,10 @@
    - Yield safe failure: Nil returns indicate no-op"
   (:require [clojure.string :as str]
             [hive-mcp.events.core :as ev]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; =============================================================================
 ;; Helper Functions

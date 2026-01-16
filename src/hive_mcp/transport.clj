@@ -32,6 +32,10 @@
            [java.nio.file Files]
            [java.io ByteArrayOutputStream ByteArrayInputStream PushbackInputStream Closeable]
            [java.util.concurrent Executors]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; =============================================================================
 ;; Bencode Helpers (shared with channel.clj)
@@ -229,11 +233,12 @@
 ;; Unix Domain Socket Server
 ;; =============================================================================
 
-(defn- handle-unix-client
-  "Handle a connected Unix client in a separate thread.
-   Properly handles EOF to avoid spinning on closed connections."
-  [^SocketChannel client-channel client-id clients on-message running?]
-  (log/info "Unix client connected:" client-id)
+(defn- handle-client
+  "Handle a connected client in a separate thread.
+   Properly handles EOF to avoid spinning on closed connections.
+   `client-type` is a string like \"unix\" or \"tcp\" for logging."
+  [^SocketChannel client-channel client-id clients on-message running? client-type]
+  (log/info (str client-type " client connected:") client-id)
   (swap! clients assoc client-id client-channel)
   (try
     (let [in (PushbackInputStream.
@@ -244,7 +249,7 @@
             (cond
               ;; EOF - clean disconnect, exit loop
               (= msg :eof)
-              (log/debug "Unix client" client-id "sent EOF")
+              (log/debug (str client-type " client") client-id "sent EOF")
 
               ;; Valid message - process and continue
               (some? msg)
@@ -259,30 +264,37 @@
               (recur))))))
     (catch Exception e
       (when @running?
-        (log/debug "Unix client" client-id "disconnected:" (.getMessage e)))))
+        (log/debug (str client-type " client") client-id "disconnected:" (.getMessage e)))))
   (swap! clients dissoc client-id)
   (when (.isOpen client-channel)
     (.close client-channel))
-  (log/info "Unix client disconnected:" client-id))
+  (log/info (str client-type " client disconnected:") client-id))
+
+(defn- shutdown-server-common!
+  "Shared shutdown logic for servers. Optional cleanup-fn for extra steps."
+  [running? clients server-channel executor cleanup-fn]
+  (reset! running? false)
+  ;; Close all client channels
+  (doseq [[_id ch] @clients]
+    (try (.close ^SocketChannel ch) (catch Exception _)))
+  (reset! clients {})
+  ;; Close server channel
+  (when server-channel
+    (try (.close ^ServerSocketChannel server-channel) (catch Exception _)))
+  ;; Shutdown executor
+  (when executor
+    (.shutdownNow ^java.util.concurrent.ExecutorService executor))
+  ;; Optional cleanup (e.g., delete socket file)
+  (when cleanup-fn (cleanup-fn)))
 
 (defrecord UnixServer [path server-channel clients running? executor]
   IServer
   (stop-server! [_]
-    (reset! running? false)
-    ;; Close all client channels
-    (doseq [[_id ch] @clients]
-      (try (.close ^SocketChannel ch) (catch Exception _)))
-    (reset! clients {})
-    ;; Close server channel
-    (when server-channel
-      (try (.close ^ServerSocketChannel server-channel) (catch Exception _)))
-    ;; Shutdown executor
-    (when executor
-      (.shutdownNow ^java.util.concurrent.ExecutorService executor))
-    ;; Cleanup socket file
-    (try
-      (Files/deleteIfExists (.toPath (java.io.File. ^String path)))
-      (catch Exception _))
+    (shutdown-server-common!
+     running? clients server-channel executor
+     #(try
+        (Files/deleteIfExists (.toPath (java.io.File. ^String path)))
+        (catch Exception _)))
     (log/info "Unix server stopped:" path))
 
   (server-running? [_]
@@ -331,8 +343,8 @@
                        (when on-connect (on-connect client-id))
                        (.submit executor
                                 ^Runnable
-                                #(handle-unix-client client-ch client-id
-                                                     clients on-message running?))))
+                                #(handle-client client-ch client-id
+                                                clients on-message running? "Unix"))))
                    (catch java.nio.channels.ClosedChannelException _
                      (reset! running? false))
                    (catch Exception e
@@ -340,12 +352,12 @@
                        (log/error "Unix server accept error:" (.getMessage e))))))))
     server))
 
-(defn broadcast-unix!
-  "Broadcast a message to all connected Unix clients."
-  [^UnixServer server msg]
+(defn- broadcast-to-clients!
+  "Broadcast a message to all connected clients in the clients atom."
+  [clients-atom msg]
   (let [data (encode-msg msg)
         buf-template (ByteBuffer/wrap data)]
-    (doseq [[id ^SocketChannel ch] @(:clients server)]
+    (doseq [[id ^SocketChannel ch] @clients-atom]
       (when (.isConnected ch)
         (try
           (let [buf (.duplicate buf-template)]
@@ -359,56 +371,10 @@
 ;; TCP Server (using Java NIO for consistency)
 ;; =============================================================================
 
-(defn- handle-tcp-client
-  "Handle a connected TCP client in a separate thread.
-   Properly handles EOF to avoid spinning on closed connections."
-  [^SocketChannel client-channel client-id clients on-message running?]
-  (log/info "TCP client connected:" client-id)
-  (swap! clients assoc client-id client-channel)
-  (try
-    (let [in (PushbackInputStream.
-              (java.nio.channels.Channels/newInputStream client-channel))]
-      (loop []
-        (when (and @running? (.isConnected client-channel))
-          (let [msg (decode-msg-from-stream in)]
-            (cond
-              ;; EOF - clean disconnect, exit loop
-              (= msg :eof)
-              (log/debug "TCP client" client-id "sent EOF")
-
-              ;; Valid message - process and continue
-              (some? msg)
-              (do
-                (log/debug "Received from" client-id ":" msg)
-                (when on-message
-                  (on-message (assoc msg :client-id client-id)))
-                (recur))
-
-              ;; nil - recoverable error, continue reading
-              :else
-              (recur))))))
-    (catch Exception e
-      (when @running?
-        (log/debug "TCP client" client-id "disconnected:" (.getMessage e)))))
-  (swap! clients dissoc client-id)
-  (when (.isOpen client-channel)
-    (.close client-channel))
-  (log/info "TCP client disconnected:" client-id))
-
 (defrecord TCPServer [port server-channel clients running? executor]
   IServer
   (stop-server! [_]
-    (reset! running? false)
-    ;; Close all client channels
-    (doseq [[_id ch] @clients]
-      (try (.close ^SocketChannel ch) (catch Exception _)))
-    (reset! clients {})
-    ;; Close server channel
-    (when server-channel
-      (try (.close ^ServerSocketChannel server-channel) (catch Exception _)))
-    ;; Shutdown executor
-    (when executor
-      (.shutdownNow ^java.util.concurrent.ExecutorService executor))
+    (shutdown-server-common! running? clients server-channel executor nil)
     (log/info "TCP server stopped on port" port))
 
   (server-running? [_]
@@ -452,29 +418,14 @@
                        (when on-connect (on-connect client-id))
                        (.submit executor
                                 ^Runnable
-                                #(handle-tcp-client client-ch client-id
-                                                    clients on-message running?))))
+                                #(handle-client client-ch client-id
+                                                clients on-message running? "TCP"))))
                    (catch java.nio.channels.ClosedChannelException _
                      (reset! running? false))
                    (catch Exception e
                      (when @running?
                        (log/error "TCP server accept error:" (.getMessage e))))))))
     server))
-
-(defn broadcast-tcp!
-  "Broadcast a message to all connected TCP clients."
-  [^TCPServer server msg]
-  (let [data (encode-msg msg)
-        buf-template (ByteBuffer/wrap data)]
-    (doseq [[id ^SocketChannel ch] @(:clients server)]
-      (when (.isConnected ch)
-        (try
-          (let [buf (.duplicate buf-template)]
-            (.rewind buf)
-            (while (.hasRemaining buf)
-              (.write ch buf)))
-          (catch Exception e
-            (log/warn "Broadcast to" id "failed:" (.getMessage e))))))))
 
 ;; =============================================================================
 ;; Factory Functions
@@ -500,10 +451,7 @@
 (defn broadcast!
   "Broadcast message to all clients of a server."
   [server msg]
-  (condp instance? server
-    UnixServer (broadcast-unix! server msg)
-    TCPServer (broadcast-tcp! server msg)
-    (throw (ex-info "Unknown server type" {:server (type server)}))))
+  (broadcast-to-clients! (:clients server) msg))
 
 (defn client-count
   "Get number of connected clients."

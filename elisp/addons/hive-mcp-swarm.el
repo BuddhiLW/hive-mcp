@@ -478,6 +478,10 @@ Also stops Layer 2 idle detection watcher."
 (defalias 'hive-mcp-swarm-kill 'hive-mcp-swarm-slaves-kill)
 (defalias 'hive-mcp-swarm-kill-all 'hive-mcp-swarm-slaves-kill-all)
 
+;; Internal function aliases for test compatibility (pre-decomposition API)
+(defalias 'hive-mcp-swarm--generate-slave-id 'hive-mcp-swarm-slaves-generate-id)
+(defalias 'hive-mcp-swarm--depth-label 'hive-mcp-swarm-slaves--depth-label)
+
 ;;;; Task Dispatch and Collection:
 ;; Delegated to hive-mcp-swarm-tasks module.
 ;; Public API aliases for backward compatibility:
@@ -486,75 +490,223 @@ Also stops Layer 2 idle detection watcher."
 (defalias 'hive-mcp-swarm-collect 'hive-mcp-swarm-tasks-collect)
 (defalias 'hive-mcp-swarm-broadcast 'hive-mcp-swarm-tasks-broadcast)
 
+;; Internal function aliases for test compatibility (pre-decomposition API)
+(defalias 'hive-mcp-swarm--slave-matches-filter 'hive-mcp-swarm-tasks--slave-matches-filter)
+
 ;;;; Status and Monitoring:
+
+;; Helper functions for formatting slave/ling data (CLARITY-L: self-documenting code)
+
+(defun hive-mcp-swarm--get-slave-status-name (slave)
+  "Get status name string from SLAVE plist, defaulting to \"unknown\"."
+  (symbol-name (or (plist-get slave :status) 'unknown)))
+
+(defun hive-mcp-swarm--get-presets-or-empty (slave)
+  "Get presets from SLAVE plist, defaulting to empty vector for JSON."
+  (or (plist-get slave :presets) []))
+
+(defun hive-mcp-swarm--format-slave-detail (id slave)
+  "Format SLAVE with ID as alist for status API response.
+Returns an alist suitable for JSON serialization as an object."
+  `((slave-id . ,id)
+    (name . ,(plist-get slave :name))
+    (status . ,(hive-mcp-swarm--get-slave-status-name slave))
+    (depth . ,(plist-get slave :depth))
+    (parent-id . ,(plist-get slave :parent-id))
+    (current-task . ,(plist-get slave :current-task))
+    (tasks-completed . ,(plist-get slave :tasks-completed))))
+
+(defun hive-mcp-swarm--format-ling-data (id slave)
+  "Format SLAVE with ID as alist for lings list API response.
+Returns an alist with slave-id, name, presets, cwd, and status."
+  `((slave-id . ,id)
+    (name . ,(plist-get slave :name))
+    (presets . ,(hive-mcp-swarm--get-presets-or-empty slave))
+    (cwd . ,(plist-get slave :cwd))
+    (status . ,(hive-mcp-swarm--get-slave-status-name slave))))
+
+(defun hive-mcp-swarm--format-orphan-detail (orphan)
+  "Format ORPHAN plist as alist for status API response.
+Includes orphan marker and discovery method."
+  `((slave-id . ,(plist-get orphan :slave-id))
+    (name . ,(plist-get orphan :name))
+    (status . "orphan")
+    (depth . nil)
+    (parent-id . nil)
+    (current-task . nil)
+    (tasks-completed . nil)
+    (orphan . t)
+    (discovered-via . "buffer-introspection")))
+
+(defun hive-mcp-swarm--format-orphan-ling (orphan)
+  "Format ORPHAN plist as alist for lings list API response."
+  `((slave-id . ,(plist-get orphan :slave-id))
+    (name . ,(plist-get orphan :name))
+    (presets . [])
+    (cwd . nil)
+    (status . "orphan")
+    (orphan . t)))
+
+(defun hive-mcp-swarm--count-slaves-by-status (slaves-hash)
+  "Count slaves in SLAVES-HASH by status.
+Returns plist with :total, :idle, :working, :error counts."
+  (let ((total 0) (idle 0) (working 0) (error-count 0))
+    (maphash
+     (lambda (_id slave)
+       (cl-incf total)
+       (pcase (plist-get slave :status)
+         ('idle (cl-incf idle))
+         ('working (cl-incf working))
+         ('error (cl-incf error-count))))
+     slaves-hash)
+    (list :total total :idle idle :working working :error error-count)))
+
+(defun hive-mcp-swarm--collect-slave-details (slaves-hash)
+  "Collect formatted details from all slaves in SLAVES-HASH.
+Returns list of alists suitable for JSON serialization."
+  (let ((details '()))
+    (maphash
+     (lambda (id slave)
+       (push (hive-mcp-swarm--format-slave-detail id slave) details))
+     slaves-hash)
+    details))
+
+(defun hive-mcp-swarm--format-pending-prompt (prompt)
+  "Format PROMPT plist for API response with ISO timestamp."
+  `(:slave-id ,(plist-get prompt :slave-id)
+    :prompt ,(plist-get prompt :prompt)
+    :timestamp ,(format-time-string "%Y-%m-%dT%H:%M:%S"
+                                    (plist-get prompt :timestamp))))
+
+(defun hive-mcp-swarm--introspect-terminal-buffers ()
+  "Introspect all swarm terminal buffers to find potentially unregistered lings.
+Returns a list of buffer-info plists for buffers not in `hive-mcp-swarm--slaves'.
+
+This catches lings that may have been spawned but failed to register properly,
+or whose registration was lost due to hash table issues.
+
+CLARITY: Y - Yield safe failure with fallback discovery."
+  (let ((orphan-buffers '())
+        (registered-buffers (make-hash-table :test 'equal)))
+    ;; Collect all registered buffer names for quick lookup
+    (maphash (lambda (_id slave)
+               (when-let* ((buf (plist-get slave :buffer)))
+                 (when (buffer-live-p buf)
+                   (puthash (buffer-name buf) t registered-buffers))))
+             hive-mcp-swarm--slaves)
+    ;; Find swarm buffers not in registry
+    (dolist (buf (buffer-list))
+      (let ((name (buffer-name buf)))
+        (when (and (string-prefix-p hive-mcp-swarm-buffer-prefix name)
+                   (buffer-live-p buf)
+                   (not (gethash name registered-buffers)))
+          ;; Extract slave name from buffer name: *swarm-NAME* -> NAME
+          (let* ((prefix-len (length hive-mcp-swarm-buffer-prefix))
+                 (raw-name (substring name prefix-len))
+                 ;; Remove trailing * if present
+                 (slave-name (if (string-suffix-p "*" raw-name)
+                                 (substring raw-name 0 -1)
+                               raw-name))
+                 ;; Generate a synthetic slave-id for this orphan
+                 (synthetic-id (format "swarm-%s-orphan" slave-name)))
+            (push (list :slave-id synthetic-id
+                        :name slave-name
+                        :buffer buf
+                        :status 'unknown
+                        :orphan t
+                        :discovered-via "buffer-introspection")
+                  orphan-buffers)))))
+    orphan-buffers))
 
 (defun hive-mcp-swarm-status (&optional slave-id)
   "Get swarm status.
 If SLAVE-ID is provided, get that slave's status.
-Otherwise return aggregate status."
+Otherwise return aggregate status.
+
+Uses terminal buffer introspection as fallback to discover any lings
+that may have been spawned but not properly registered in the hash table.
+
+CLARITY: Y - Yield safe failure with fallback discovery.
+CLARITY: L - Bottom-up reading via extracted helpers."
   (interactive)
   (if slave-id
       (gethash slave-id hive-mcp-swarm--slaves)
-    (let ((total 0) (idle 0) (working 0) (error-count 0)
-          (slaves-detail '()))
-      (maphash
-       (lambda (id slave)
-         (cl-incf total)
-         (pcase (plist-get slave :status)
-           ('idle (cl-incf idle))
-           ('working (cl-incf working))
-           ('error (cl-incf error-count)))
-         ;; Use alist format for proper JSON serialization as objects
-         ;; Plists serialize as arrays, alists serialize as objects
-         (push `((slave-id . ,id)
-                 (name . ,(plist-get slave :name))
-                 (status . ,(symbol-name (or (plist-get slave :status) 'unknown)))
-                 (depth . ,(plist-get slave :depth))
-                 (parent-id . ,(plist-get slave :parent-id))
-                 (current-task . ,(plist-get slave :current-task))
-                 (tasks-completed . ,(plist-get slave :tasks-completed)))
-               slaves-detail))
-       hive-mcp-swarm--slaves)
+    (let* ((counts (hive-mcp-swarm--count-slaves-by-status hive-mcp-swarm--slaves))
+           (total (plist-get counts :total))
+           (idle (plist-get counts :idle))
+           (working (plist-get counts :working))
+           (error-count (plist-get counts :error))
+           (orphans (hive-mcp-swarm--introspect-terminal-buffers))
+           (orphan-count (length orphans))
+           (slaves-detail (hive-mcp-swarm--collect-slave-details hive-mcp-swarm--slaves)))
+      ;; Add orphaned lings to details and total
+      (dolist (orphan orphans)
+        (push (hive-mcp-swarm--format-orphan-detail orphan) slaves-detail))
+      (cl-incf total orphan-count)
 
-      (let ((status `(:session-id ,hive-mcp-swarm--session-id
-                      :status ,(if (> total 0) "active" "inactive")
-                      :current-depth ,hive-mcp-swarm--current-depth
-                      :safeguards (:max-depth ,hive-mcp-swarm-max-depth
-                                   :max-slaves ,hive-mcp-swarm-max-slaves
-                                   :rate-limit (:window-seconds ,hive-mcp-swarm-rate-limit-window
-                                                :max-spawns ,hive-mcp-swarm-rate-limit-max-spawns
-                                                :recent-spawns ,(length hive-mcp-swarm--spawn-timestamps)))
-                      :slaves (:total ,total :idle ,idle :working ,working :error ,error-count)
-                      :tasks (:total ,(hash-table-count hive-mcp-swarm--tasks))
-                      :slaves-detail ,(nreverse slaves-detail))))
+      ;; Convert to vector for consistent JSON array encoding (like hive-mcp-swarm-list-lings)
+      (let ((status (hive-mcp-swarm--build-status-response
+                     total idle working error-count orphan-count
+                     (vconcat (nreverse slaves-detail)))))
         (when (called-interactively-p 'any)
-          (message "Swarm: %d slaves (%d idle, %d working), %d tasks"
-                   total idle working (hash-table-count hive-mcp-swarm--tasks)))
+          (message "Swarm: %d slaves (%d idle, %d working%s), %d tasks"
+                   total idle working
+                   (if (> orphan-count 0)
+                       (format ", %d orphan" orphan-count)
+                     "")
+                   (hash-table-count hive-mcp-swarm--tasks)))
         status))))
+
+(defun hive-mcp-swarm--build-status-response (total idle working error-count orphan-count slaves-detail)
+  "Build the complete status response plist.
+Arguments are counts and SLAVES-DETAIL is a vector of slave alists.
+SLAVES-DETAIL must be a vector for consistent JSON array encoding."
+  `(:session-id ,hive-mcp-swarm--session-id
+    :status ,(if (> total 0) "active" "inactive")
+    :current-depth ,hive-mcp-swarm--current-depth
+    :safeguards (:max-depth ,hive-mcp-swarm-max-depth
+                 :max-slaves ,hive-mcp-swarm-max-slaves
+                 :rate-limit (:window-seconds ,hive-mcp-swarm-rate-limit-window
+                              :max-spawns ,hive-mcp-swarm-rate-limit-max-spawns
+                              :recent-spawns ,(length hive-mcp-swarm--spawn-timestamps)))
+    :slaves (:total ,total :idle ,idle :working ,working
+             :error ,error-count :orphan ,orphan-count)
+    :tasks (:total ,(hash-table-count hive-mcp-swarm--tasks))
+    :slaves-detail ,slaves-detail))
 
 (defun hive-mcp-swarm-list-lings ()
   "List all lings (spawned slaves) with their metadata.
 Returns a vector of alists suitable for JSON encoding.
 Used by Clojure's query-elisp-lings fallback when registry is empty.
 
+Uses terminal buffer introspection as fallback to discover any lings
+that may exist as buffers but weren't registered in the hash table.
+
 Each ling alist contains:
 - slave-id: Unique identifier
 - name: Display name
 - presets: List of applied presets
 - cwd: Working directory
-- status: Current status (idle/working/error)"
+- status: Current status (idle/working/error/orphan)
+
+CLARITY: Y - Yield safe failure with fallback discovery.
+CLARITY: L - Bottom-up reading via extracted helpers."
+  (let ((lings (hive-mcp-swarm--collect-ling-data hive-mcp-swarm--slaves)))
+    ;; Include introspected orphan buffers
+    (dolist (orphan (hive-mcp-swarm--introspect-terminal-buffers))
+      (push (hive-mcp-swarm--format-orphan-ling orphan) lings))
+    ;; Return as vector for consistent JSON array encoding
+    (vconcat (nreverse lings))))
+
+(defun hive-mcp-swarm--collect-ling-data (slaves-hash)
+  "Collect formatted ling data from all slaves in SLAVES-HASH.
+Returns list of alists suitable for JSON serialization."
   (let ((lings '()))
     (maphash
      (lambda (id slave)
-       (push `((slave-id . ,id)
-               (name . ,(plist-get slave :name))
-               (presets . ,(or (plist-get slave :presets) []))
-               (cwd . ,(plist-get slave :cwd))
-               (status . ,(symbol-name (or (plist-get slave :status) 'unknown))))
-             lings))
-     hive-mcp-swarm--slaves)
-    ;; Return as vector for consistent JSON array encoding
-    (vconcat (nreverse lings))))
+       (push (hive-mcp-swarm--format-ling-data id slave) lings))
+     slaves-hash)
+    lings))
 
 (defun hive-mcp-swarm-show-slave (slave-id)
   "Switch to buffer for SLAVE-ID."
@@ -700,17 +852,11 @@ Returns result plist. Never fails."
 
 (defun hive-mcp-swarm-api-pending-prompts ()
   "API: Get list of pending prompts awaiting human decision.
-Returns list of prompts with slave-id, prompt text, and timestamp."
+Returns list of prompts with slave-id, prompt text, and timestamp.
+CLARITY: L - Uses extracted helper for formatting."
   (hive-mcp-with-fallback
       (let* ((pending (hive-mcp-swarm-prompts-get-pending))
-             (prompts
-              (mapcar (lambda (p)
-                        `(:slave-id ,(plist-get p :slave-id)
-                          :prompt ,(plist-get p :prompt)
-                          :timestamp ,(format-time-string
-                                       "%Y-%m-%dT%H:%M:%S"
-                                       (plist-get p :timestamp))))
-                      pending)))
+             (prompts (mapcar #'hive-mcp-swarm--format-pending-prompt pending)))
         `(:count ,(length prompts)
           :prompts ,prompts
           :mode ,hive-mcp-swarm-prompts-mode))

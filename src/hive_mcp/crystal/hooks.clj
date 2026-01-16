@@ -18,6 +18,9 @@
             [clojure.data.json :as json]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 ;; =============================================================================
 ;; Kanban DONE Hook
@@ -176,6 +179,7 @@
         emacs-tasks (if success
                       (try
                         (->> (json/read-str result :key-fn keyword)
+                             (filter map?)  ;; Guard: prevent "Key must be integer" if non-map items
                              (map #(assoc % :source :emacs)))
                         (catch Exception _ []))
                       [])

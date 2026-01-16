@@ -220,7 +220,7 @@ This processes the wrap queue, permeating session learnings from lings into perm
 
 **Full flow:**
 ```
-1. Ling completes task, runs /wrap
+1. Ling completes task, runs /wrap (or session_complete)
 2. wrap_crystallize dispatches :crystal/wrap-notify event
 3. Event adds entry to wrap-queue in DataScript
 4. HIVEMIND piggybacks wrap_notify on next MCP tool call
@@ -228,6 +228,14 @@ This processes the wrap queue, permeating session learnings from lings into perm
 6. Queue is processed, entries marked processed
 7. Session learnings become permanent memory
 ```
+
+**CRITICAL: agent_id Attribution**
+Lings MUST pass `agent_id` explicitly to `wrap_crystallize` and `session_complete`:
+```
+session_complete(agent_id: $CLAUDE_SWARM_SLAVE_ID, ...)
+wrap_crystallize(agent_id: $CLAUDE_SWARM_SLAVE_ID)
+```
+Why? The MCP server runs in the coordinator's JVM - System/getenv reads coordinator's env, not ling's. Without explicit agent_id, wraps show "coordinator" instead of ling's ID.
 
 **Why auto-permeate?**
 - Ling sessions contain valuable learnings (decisions, conventions, snippets)

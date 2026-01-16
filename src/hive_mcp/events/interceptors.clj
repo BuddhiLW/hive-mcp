@@ -11,6 +11,10 @@
    SOLID: Single Responsibility - facade for backwards compatibility only
    CLARITY: L - Layers stay pure (no duplicate logic, just re-exports)"
   (:require [hive-mcp.events.core :as core]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; =============================================================================
 ;; Re-exports from core (backwards compatibility)

@@ -14,6 +14,10 @@
             [hive-mcp.validation :as v]
             [hive-mcp.swarm.coordinator :as coord]
             [clojure.data.json :as json]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; ============================================================
 ;; Layer 3: Shout Reminder Injection

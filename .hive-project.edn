@@ -1,3 +1,9 @@
-{:project-id "hive-mcp"
+{:project-id  "hive-mcp"
  :aliases ["emacs-mcp"]
- :description "Hivemind MCP server for Claude Code + Emacs integration"}
+ :description "Hivemind MCP server for Claude Code + Emacs integration"
+
+ ;; Source directories for hot-reload watching (recursive)
+ :watch-dirs ["src" "hive-hot/src" "test"]
+
+ ;; Enable hot-reload for this Clojure project
+ :hot-reload true}
