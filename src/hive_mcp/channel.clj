@@ -16,11 +16,11 @@
    "
   (:require [hive-mcp.transport :as t]
             [clojure.core.async :as async :refer [chan pub sub unsub close!]]
-            [taoensso.timbre :as log]))
+            [taoensso.timbre :as log]
+            [hive-mcp.guards :as guards]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
-
 
 ;; =============================================================================
 ;; Event Bus (core.async pub/sub for internal routing)
@@ -101,12 +101,12 @@
   "Stop the channel server.
 
    CLARITY-Y: Yield safe failure - guards against stopping coordinator's server.
-   If :coordinator-running? is true, logs warning and returns nil instead of stopping.
-   This prevents test fixtures from killing the production server when tests run
-   in the same JVM (e.g., via embedded nREPL)."
+   Uses centralized guards/coordinator-running? check. Logs warning and returns nil
+   instead of stopping if coordinator is active. This prevents test fixtures from
+   killing the production server when tests run in the same JVM (e.g., via embedded nREPL)."
   []
-  (when-let [{:keys [server coordinator-running?]} @server-state]
-    (if coordinator-running?
+  (when-let [{:keys [server]} @server-state]
+    (if (guards/coordinator-running?)
       (log/warn "stop-server! called but coordinator is running - ignoring to protect connections")
       (do
         (t/stop-server! server)
@@ -124,8 +124,12 @@
 
 (defn mark-coordinator-running!
   "Mark that the coordinator is running, protecting the server from test fixture cleanup.
-   Called from server.clj during startup."
+   Called from server.clj during startup.
+
+   NOTE: This now delegates to centralized guards/coordinator-running? check.
+   Local state is also updated for backward compatibility."
   []
+  ;; Local state update for backward compat (some code may check @server-state)
   (swap! server-state assoc :coordinator-running? true)
   (log/info "Channel server marked as coordinator-owned (protected from test fixtures)"))
 

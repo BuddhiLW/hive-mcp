@@ -37,7 +37,8 @@
             [hive-mcp.events.schemas :as schemas]
             [hive-mcp.swarm.datascript :as ds]
             [hive-mcp.channel.websocket :as ws]
-            [hive-mcp.telemetry.prometheus :as prom]))
+            [hive-mcp.telemetry.prometheus :as prom]
+            [hive-mcp.guards :as guards]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -680,12 +681,16 @@
 
 (defn reset-all!
   "Reset all event system state. Primarily for testing.
-   
-   Resets handlers, coeffects, effects, and metrics."
+
+   Resets handlers, coeffects, effects, and metrics.
+
+   CLARITY-Y: Guarded - skipped if coordinator is running to protect production."
   []
-  (clojure.core/reset! *initialized false)
-  (clojure.core/reset! *fx-handlers {})
-  (clojure.core/reset! *cofx-handlers {})
-  (clojure.core/reset! *event-handlers {})
-  (reset-metrics!)
-  nil)
+  (guards/when-not-coordinator
+   "ev/reset-all! blocked"
+   (clojure.core/reset! *initialized false)
+   (clojure.core/reset! *fx-handlers {})
+   (clojure.core/reset! *cofx-handlers {})
+   (clojure.core/reset! *event-handlers {})
+   (reset-metrics!)
+   nil))

@@ -25,12 +25,12 @@
             [clojure.edn :as edn]
             [hive-hot.core :as hot]
             [hive-hot.events :as hot-events]
-            [hive-mcp.swarm.logic :as logic])
+            [hive-mcp.swarm.logic :as logic]
+            [hive-mcp.guards :as guards])
   (:gen-class))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
-
 
 ;; Specs moved to hive-mcp.server.routes
 ;; Hivemind message spec (kept here for validation in server lifecycle)
@@ -362,7 +362,10 @@
   [& _args]
   (let [server-id (random-uuid)]
     (log/info "Starting hive-mcp server:" server-id)
-    ;; Initialize hooks system FIRST - needed for session-end auto-wrap
+    ;; CLARITY-Y: Mark coordinator running FIRST to protect production state
+    ;; This prevents test fixtures from resetting ev/reset-all! or ds/reset-conn!
+    (guards/mark-coordinator-running!)
+    ;; Initialize hooks system - needed for session-end auto-wrap
     (init-hooks!)
     ;; Initialize hive-events system (re-frame inspired event dispatch)
     ;; EVENTS-01: Event system must init after hooks but before channel
