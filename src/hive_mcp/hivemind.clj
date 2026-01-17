@@ -17,6 +17,7 @@
             [hive-mcp.channel.piggyback :as piggyback]
             [hive-mcp.swarm.datascript :as ds]
             [hive-mcp.guards :as guards]
+            [hive-mcp.agent.context :as ctx]
             [clojure.core.async :as async :refer [>!! chan timeout alt!!]]
             [clojure.data.json :as json]
             [clojure.set :as set]
@@ -397,7 +398,10 @@ NOTE: agent_id is auto-detected from CLAUDE_SWARM_SLAVE_ID env var if not provid
                                        :description "Additional event data"}}
                   :required ["event_type"]}
     :handler (fn [{:keys [agent_id event_type task message data]}]
+               ;; P1 FIX: Check ctx/current-agent-id for drone context
+               ;; Fallback chain: explicit param → context binding → env var → unknown
                (let [effective-id (or agent_id
+                                      (ctx/current-agent-id)
                                       (System/getenv "CLAUDE_SWARM_SLAVE_ID")
                                       "unknown-agent")]
                  (shout! effective-id (keyword event_type)
@@ -430,7 +434,9 @@ NOTE: agent_id is auto-detected from CLAUDE_SWARM_SLAVE_ID env var if not provid
                                              :description "Timeout in ms (default 300000 = 5 min)"}}
                   :required ["question"]}
     :handler (fn [{:keys [agent_id question options timeout_ms]}]
+               ;; P1 FIX: Check ctx/current-agent-id for drone context
                (let [effective-id (or agent_id
+                                      (ctx/current-agent-id)
                                       (System/getenv "CLAUDE_SWARM_SLAVE_ID")
                                       "unknown-agent")
                      result (ask! effective-id question options
