@@ -15,6 +15,9 @@
    ```"
   (:require [malli.core :as m]
             [malli.error :as me]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 ;; =============================================================================
 ;; Event Schemas
@@ -101,9 +104,85 @@
 
 (def DsTransactEffectData
   "Data shape for :ds-transact effect.
-   
+
    Must be a valid DataScript transaction - vector of operations."
   [:vector :any])
+
+;; =============================================================================
+;; System Event Schemas (Telemetry Phase 1)
+;; =============================================================================
+
+(def SystemErrorData
+  "Data shape for :system/error event.
+
+   Captures structured error information for post-mortem analysis.
+
+   Example:
+   {:error-type :harvest-failed
+    :source \"hooks/harvest-session-progress\"
+    :message \"Emacs unreachable\"
+    :timestamp 1705000000000
+    :context {:attempt 1}}"
+  [:map
+   [:error-type :keyword]
+   [:source :string]
+   [:message :string]
+   [:timestamp {:optional true} :int]
+   [:context {:optional true} :map]])
+
+(def SystemComponentFailedData
+  "Data shape for :system/component-failed event.
+
+   Indicates a system component has failed or become unavailable.
+
+   Example:
+   {:component :emacs-channel
+    :reason \"WebSocket disconnected\"
+    :recoverable? true}"
+  [:map
+   [:component :keyword]
+   [:reason :string]
+   [:recoverable? :boolean]])
+
+(def SystemRestartCollisionData
+  "Data shape for :system/restart-collision event.
+
+   Indicates a port collision during MCP server restart.
+
+   Example:
+   {:port 7910
+    :existing-pid 12345}"
+  [:map
+   [:port :int]
+   [:existing-pid {:optional true} :int]])
+
+(def SystemEmacsUnreachableData
+  "Data shape for :system/emacs-unreachable event.
+
+   Indicates Emacs has become unreachable (emacsclient failures).
+
+   Example:
+   {:last-seen 1705000000000
+    :retry-count 3}"
+  [:map
+   [:last-seen {:optional true} :int]
+   [:retry-count :int]])
+
+(def EmitSystemErrorData
+  "Data shape for :emit-system-error effect.
+
+   Used by harvest functions and other components to emit structured errors.
+
+   Example:
+   {:error-type :harvest-failed
+    :source \"hooks/harvest-session-progress\"
+    :message \"Emacs unreachable\"
+    :context {:fn \"harvest-session-progress\"}}"
+  [:map
+   [:error-type :keyword]
+   [:source :string]
+   [:message :string]
+   [:context {:optional true} :map]])
 
 ;; =============================================================================
 ;; Validation Functions

@@ -1,8 +1,8 @@
 (ns hive-mcp.events.effects-test
   "Tests for effect implementations - TDD for POC-05/06/07/08/09/10.
 
-   Validates effect handlers work correctly using with-redefs
-   to mock external dependencies."
+   Validates effect handlers work correctly. Uses set-memory-write-handler!
+   API instead of with-redefs for memory tests."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [hive-mcp.events.effects :as effects]
             [hive-mcp.events.core :as ev]))
@@ -62,41 +62,44 @@
   (testing ":memory-write effect is registered and callable"
     (effects/register-effects!)
     (let [added (atom nil)]
-      (with-redefs [hive-mcp.tools.memory.crud/handle-add
-                    (fn [data]
-                      (reset! added data)
-                      {:success true :id "mem-123"})]
-        (let [handler (ev/get-fx-handler :memory-write)]
-          (is (fn? handler) "Handler should be a function")
-          (handler {:type "note" :content "Test content" :tags ["test"]})
-          (is (= "note" (:type @added)) "Should pass type")
-          (is (= "Test content" (:content @added)) "Should pass content")
-          (is (= ["test"] (:tags @added)) "Should pass tags"))))))
+      ;; Configure the memory write handler (mimics server initialization)
+      (effects/set-memory-write-handler!
+       (fn [data]
+         (reset! added data)
+         {:success true :id "mem-123"}))
+      (let [handler (ev/get-fx-handler :memory-write)]
+        (is (fn? handler) "Handler should be a function")
+        (handler {:type "note" :content "Test content" :tags ["test"]})
+        (is (= "note" (:type @added)) "Should pass type")
+        (is (= "Test content" (:content @added)) "Should pass content")
+        (is (= ["test"] (:tags @added)) "Should pass tags")))))
 
 (deftest memory-write-effect-skips-when-missing-required-fields
   (testing ":memory-write does nothing when type or content missing"
     (effects/register-effects!)
     (let [added (atom nil)]
-      (with-redefs [hive-mcp.tools.memory.crud/handle-add
-                    (fn [data] (reset! added data))]
-        (let [handler (ev/get-fx-handler :memory-write)]
-          ;; Missing content
-          (handler {:type "note"})
-          (is (nil? @added) "Should not call add when content missing")
+      ;; Configure the memory write handler
+      (effects/set-memory-write-handler!
+       (fn [data] (reset! added data)))
+      (let [handler (ev/get-fx-handler :memory-write)]
+        ;; Missing content
+        (handler {:type "note"})
+        (is (nil? @added) "Should not call add when content missing")
 
-          ;; Missing type
-          (handler {:content "Some content"})
-          (is (nil? @added) "Should not call add when type missing"))))))
+        ;; Missing type
+        (handler {:content "Some content"})
+        (is (nil? @added) "Should not call add when type missing")))))
 
 (deftest memory-write-effect-handles-exception
   (testing ":memory-write catches and logs exceptions"
     (effects/register-effects!)
-    (with-redefs [hive-mcp.tools.memory.crud/handle-add
-                  (fn [_data] (throw (Exception. "Chroma unavailable")))]
-      (let [handler (ev/get-fx-handler :memory-write)]
-        ;; Should not throw - graceful failure
-        (is (nil? (handler {:type "note" :content "Will fail"}))
-            "Should handle exception gracefully")))))
+    ;; Configure handler that throws
+    (effects/set-memory-write-handler!
+     (fn [_data] (throw (Exception. "Chroma unavailable"))))
+    (let [handler (ev/get-fx-handler :memory-write)]
+      ;; Should not throw - graceful failure
+      (is (nil? (handler {:type "note" :content "Will fail"}))
+          "Should handle exception gracefully"))))
 
 ;; =============================================================================
 ;; POC-07: :dispatch-task effect tests
@@ -194,6 +197,7 @@
     (let [cofx-handler (ev/get-cofx-handler :db-snapshot)
           result (cofx-handler {})]
       (is (fn? cofx-handler) "Handler should be a function")
-      (is (contains? result :db) "Should have :db key")
+      ;; Coeffect injects as :db-snapshot, not :db (per effects.clj:439-442)
+      (is (contains? result :db-snapshot) "Should have :db-snapshot key")
       ;; The db should be a DataScript database value (dereferenced)
-      (is (some? (:db result)) ":db should be non-nil"))))
+      (is (some? (:db-snapshot result)) ":db-snapshot should be non-nil"))))

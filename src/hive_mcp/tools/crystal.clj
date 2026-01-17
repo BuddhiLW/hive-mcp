@@ -12,6 +12,10 @@
             [hive-mcp.events.effects]
             [clojure.data.json :as json]
             [taoensso.timbre :as log]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 (defn- hive-mcp-el-available?
   "Check if hive-mcp.el is loaded in Emacs."
@@ -65,20 +69,39 @@
    3. Flushes recall buffer
    4. Emits wrap_notify event for hivemind permeation
 
+   Params:
+   - agent_id (REQUIRED for lings): Ling's slave-id. CRITICAL: MCP server runs in
+     coordinator's JVM, so System/getenv reads coordinator's env, NOT the ling's.
+     Lings MUST pass their CLAUDE_SWARM_SLAVE_ID explicitly via this parameter
+     to ensure proper attribution in wrap-queue and HIVEMIND piggyback messages.
+
    Call after wrap-gather when ready to persist."
-  [_params]
-  (log/info "wrap-crystallize")
+  [{:keys [agent_id] :as _params}]
+  (log/info "wrap-crystallize" (when agent_id (str "agent-id:" agent_id)))
   (try
     (let [harvested (crystal-hooks/harvest-all)
           result (crystal-hooks/crystallize-session harvested)
-          agent-id (or (System/getenv "CLAUDE_SWARM_SLAVE_ID") "coordinator")]
+          ;; Priority: explicit param > env var > fallback
+          ;; CRITICAL: Lings MUST pass agent_id param since MCP server has coordinator's env
+          env-agent-id (System/getenv "CLAUDE_SWARM_SLAVE_ID")
+          agent-id (or agent_id env-agent-id "coordinator")
+          ;; Warn if falling back to env var (likely wrong for lings)
+          _ (when (and (nil? agent_id) env-agent-id)
+              (log/warn "wrap-crystallize: agent_id not passed explicitly, falling back to env var"
+                        env-agent-id "- this may show as coordinator for ling calls"))
+          ;; Warn if defaulting to "coordinator"
+          _ (when (and (nil? agent_id) (nil? env-agent-id))
+              (log/warn "wrap-crystallize: No agent_id provided and CLAUDE_SWARM_SLAVE_ID not set"
+                        "- defaulting to 'coordinator'. Lings should pass agent_id explicitly."))
+          ;; Ensure stats is a map (defensive against JSON decode issues)
+          safe-stats (if (map? (:stats result)) (:stats result) {})]
       ;; Emit wrap_notify via hive-events for Crystal Convergence
       (try
         (ev/dispatch [:crystal/wrap-notify
                       {:agent-id agent-id
                        :session-id (:session result)
                        :created-ids (when-let [sid (:summary-id result)] [sid])
-                       :stats (:stats result)}])
+                       :stats safe-stats}])
         (log/info "wrap-crystallize: emitted wrap_notify for" agent-id)
         (catch Exception e
           (log/warn "wrap-crystallize: failed to emit wrap_notify:" (.getMessage e))))
@@ -129,9 +152,10 @@
     :handler handle-wrap-gather}
 
    {:name "wrap_crystallize"
-    :description "Crystallize session data into long-term memory. Creates session summary, promotes entries meeting score threshold, and flushes recall buffer. Call after wrap_gather to persist."
+    :description "Crystallize session data into long-term memory. Creates session summary, promotes entries meeting score threshold, and flushes recall buffer. Call after wrap_gather to persist. CRITICAL FOR LINGS: You MUST pass your CLAUDE_SWARM_SLAVE_ID as agent_id parameter - the MCP server runs in coordinator's JVM so env vars won't work. Without explicit agent_id, wrap_notify will show 'coordinator' instead of your ling ID."
     :inputSchema {:type "object"
-                  :properties {}
+                  :properties {:agent_id {:type "string"
+                                          :description "REQUIRED FOR LINGS: Your CLAUDE_SWARM_SLAVE_ID. Without this, wrap attribution shows 'coordinator' instead of your ling ID. MCP server runs in coordinator's JVM - System.getenv reads coordinator's env, not yours."}}
                   :required []}
     :handler handle-wrap-crystallize}
 

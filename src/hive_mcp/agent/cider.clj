@@ -13,12 +13,16 @@
    - CiderBackend: implements LLMBackend protocol via nREPL eval
    - Integrates with existing agent.delegate! flow"
   (:require [hive-mcp.agent.protocol :as proto]
-            [hive-mcp.agent :as agent]
+            [hive-mcp.agent.ollama :as ollama]
             [hive-mcp.agent.openrouter :as openrouter]
             [hive-mcp.emacsclient :as ec]
             [clojure.data.json :as json]
             [taoensso.timbre :as log])
   (:import [java.util.concurrent ArrayBlockingQueue TimeUnit]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;;; ============================================================
 ;;; Session Pool
@@ -129,7 +133,7 @@
 (defrecord CiderBackend [session-name port timeout-ms]
   proto/LLMBackend
 
-  (chat [_ messages tools]
+  (chat [_ messages _tools]
     ;; For CiderBackend, we don't call an LLM - we execute Clojure code directly
     ;; The "task" in messages becomes code to evaluate
     ;; This is useful for pure Clojure execution without LLM reasoning
@@ -169,7 +173,7 @@
   [{:keys [ollama-model cider-session timeout-ms]
     :or {ollama-model "devstral-small-2:latest"
          timeout-ms 60000}}]
-  {:ollama (agent/ollama-backend {:model ollama-model})
+  {:ollama (ollama/ollama-backend {:model ollama-model})
    :cider (cider-backend {:timeout-ms timeout-ms :session cider-session})})
 
 ;;; ============================================================
@@ -191,7 +195,7 @@
   ([type] (make-backend type {}))
   ([type opts]
    (case type
-     :ollama (agent/ollama-backend opts)
+     :ollama (ollama/ollama-backend opts)
      :cider (cider-backend opts)
      :openrouter (openrouter/openrouter-backend opts)
      (throw (ex-info "Unknown backend type" {:type type :available [:ollama :cider :openrouter]})))))

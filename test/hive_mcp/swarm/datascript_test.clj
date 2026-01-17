@@ -1,500 +1,365 @@
 (ns hive-mcp.swarm.datascript-test
-  "TDD tests for unified DataScript swarm state.
+  "Tests for unified DataScript swarm state.
+   
+   Coverage target: 60% of core functions (slave/task/claim CRUD + queries).
+   Tests follow TDD pattern with fixture-based isolation."
+  (:require [clojure.test :refer [deftest is testing use-fixtures]]
+            [hive-mcp.swarm.datascript :as ds]))
 
-   Tests cover:
-   1. Schema tests - Slave, Task, Claims entity CRUD operations
-   2. Query tests - Status filtering, slave lookups, conflict detection
-   3. Sync tests - Elisp state sync, periodic refresh, idempotent updates
+;; Fixture - reset global conn before each test
+(defn with-fresh-conn [f]
+  (ds/reset-conn!)
+  (f))
 
-   Architecture:
-   - Replaces core.logic pldb with DataScript for swarm state
-   - Unified state management with transactional guarantees
-   - Same GraphStore protocol as hive-mcp.graph.datascript
+(use-fixtures :each with-fresh-conn)
 
-   SOLID: These tests guide implementation via TDD (red-green-refactor).
-   DDD: Domain entities are Slave, Task, Claim following swarm.logic semantics."
-  (:require [clojure.test :refer [deftest is testing use-fixtures]]))
-
-;; =============================================================================
-;; Test Fixtures and Helpers
-;; =============================================================================
-
-(def ^:dynamic *test-store* nil)
-
-(defn with-fresh-store
-  "Fixture that creates a fresh DataScript store for each test.
-   Will be implemented in hive-mcp.swarm.datascript namespace."
-  [f]
-  ;; Once implemented, this will call:
-  ;; (binding [*test-store* (ds/create-swarm-store)]
-  ;;   (f))
-  ;; For now, use placeholder to allow test definitions
-  (binding [*test-store* :placeholder]
-    (f)))
-
-(use-fixtures :each with-fresh-store)
-
-(defn gen-slave-id
-  "Generate unique slave ID for testing."
-  []
+(defn gen-slave-id []
   (str "test-slave-" (java.util.UUID/randomUUID)))
 
-(defn gen-task-id
-  "Generate unique task ID for testing."
-  []
+(defn gen-task-id []
   (str "test-task-" (java.util.UUID/randomUUID)))
 
 ;; =============================================================================
-;; SECTION 1: Schema Tests - Slave Entity CRUD
+;; Slave CRUD Tests
 ;; =============================================================================
 
 (deftest slave-add-test
-  (testing "Adding a slave creates entity with correct attributes"
-    ;; EXPECTED: (ds/add-slave! *test-store* slave-id :idle) creates entity
-    ;; Returns entity ID or tempid resolution
+  (testing "Adding a slave creates entity"
     (let [slave-id (gen-slave-id)]
-      ;; Will implement: result should contain entity ID
-      (is (some? slave-id) "Placeholder - will test slave creation"))))
+      (ds/add-slave! slave-id {:status :idle})
+      (let [slave (ds/get-slave slave-id)]
+        (is (= slave-id (:slave/id slave)))
+        (is (= :idle (:slave/status slave)))))))
 
 (deftest slave-add-with-metadata-test
-  (testing "Adding a slave with metadata (name, presets, cwd)"
-    ;; EXPECTED: (ds/add-slave! store id :idle {:name "worker1" :presets ["tdd"] :cwd "/project"})
-    ;; Entity should have all attributes
-    (let [slave-id (gen-slave-id)
-          metadata {:name "test-worker"
-                    :presets ["tdd" "clarity"]
-                    :cwd "/home/user/project"}]
-      (is (= "test-worker" (:name metadata)) "Placeholder - will verify metadata storage"))))
-
-(deftest slave-update-status-test
-  (testing "Updating slave status changes the entity"
-    ;; EXPECTED: (ds/update-slave-status! store id :working) updates entity
-    ;; Entity should reflect new status
+  (testing "Adding slave with name and presets"
     (let [slave-id (gen-slave-id)]
-      (is (some? slave-id) "Placeholder - will test status update"))))
+      (ds/add-slave! slave-id {:status :idle :name "worker" :presets ["tdd"]})
+      (let [slave (ds/get-slave slave-id)]
+        (is (= "worker" (:slave/name slave)))
+        ;; presets are stored as a set due to :db.cardinality/many
+        (is (contains? (:slave/presets slave) "tdd"))))))
 
-(deftest slave-update-status-from-any-state-test
-  (testing "Status updates work from any state to any state"
-    ;; Test state transitions: :idle -> :working -> :error -> :idle
-    (let [slave-id (gen-slave-id)
-          states [:idle :working :spawning :starting :error]]
-      (is (= 5 (count states)) "All valid slave states defined"))))
+(deftest slave-add-with-cwd-test
+  (testing "Adding slave with working directory"
+    (let [slave-id (gen-slave-id)]
+      (ds/add-slave! slave-id {:status :idle :cwd "/home/user/project"})
+      (let [slave (ds/get-slave slave-id)]
+        (is (= "/home/user/project" (:slave/cwd slave)))))))
+
+(deftest slave-update-test
+  (testing "Updating slave status"
+    (let [slave-id (gen-slave-id)]
+      (ds/add-slave! slave-id {:status :idle})
+      (ds/update-slave! slave-id {:slave/status :working})
+      (let [slave (ds/get-slave slave-id)]
+        (is (= :working (:slave/status slave)))))))
 
 (deftest slave-remove-test
-  (testing "Removing a slave removes entity from store"
-    ;; EXPECTED: (ds/remove-slave! store id) removes entity
-    ;; Subsequent queries should not find it
+  (testing "Removing a slave"
     (let [slave-id (gen-slave-id)]
-      (is (some? slave-id) "Placeholder - will test slave removal"))))
+      (ds/add-slave! slave-id {:status :idle})
+      (ds/remove-slave! slave-id)
+      (is (nil? (ds/get-slave slave-id))))))
 
 (deftest slave-remove-nonexistent-test
-  (testing "Removing non-existent slave is a no-op (no error)"
-    ;; EXPECTED: (ds/remove-slave! store "nonexistent") succeeds without error
-    (is true "Placeholder - will verify graceful handling")))
+  (testing "Removing non-existent slave returns nil"
+    (is (nil? (ds/remove-slave! "nonexistent")))))
 
-(deftest slave-exists-test
-  (testing "Checking slave existence returns boolean"
-    ;; EXPECTED: (ds/slave-exists? store id) returns true/false
-    (is true "Placeholder - will test existence check")))
-
-(deftest slave-unique-id-constraint-test
-  (testing "Slave IDs are unique (upsert semantics)"
-    ;; EXPECTED: Adding same slave-id twice updates rather than duplicates
-    ;; Due to :db/unique :db.unique/identity on :slave/id
-    (let [slave-id (gen-slave-id)]
-      (is (some? slave-id) "Placeholder - will test uniqueness"))))
+(deftest slave-get-nonexistent-test
+  (testing "Getting non-existent slave returns nil"
+    (is (nil? (ds/get-slave "nonexistent")))))
 
 ;; =============================================================================
-;; SECTION 2: Schema Tests - Task Entity CRUD
+;; Task CRUD Tests
 ;; =============================================================================
 
 (deftest task-add-test
-  (testing "Adding a task creates entity with correct attributes"
-    ;; EXPECTED: (ds/add-task! store task-id slave-id :dispatched)
-    ;; Entity should have task-id, slave-id, status
-    (let [task-id (gen-task-id)
-          slave-id (gen-slave-id)]
-      (is (some? task-id) "Placeholder - will test task creation"))))
+  (testing "Adding a task"
+    (let [slave-id (gen-slave-id)
+          task-id (gen-task-id)]
+      (ds/add-slave! slave-id {:status :idle})
+      (ds/add-task! task-id slave-id {:status :dispatched})
+      (let [task (ds/get-task task-id)]
+        (is (= task-id (:task/id task)))
+        (is (= :dispatched (:task/status task)))))))
 
-(deftest task-add-with-files-test
-  (testing "Adding a task with associated files"
-    ;; EXPECTED: (ds/add-task! store task-id slave-id :dispatched {:files ["/src/a.clj"]})
-    ;; Task should reference file claims
-    (let [task-id (gen-task-id)
-          files ["/src/core.clj" "/src/util.clj"]]
-      (is (= 2 (count files)) "Placeholder - will test file association"))))
+(deftest task-complete-test
+  (testing "Completing a task"
+    (let [slave-id (gen-slave-id)
+          task-id (gen-task-id)]
+      (ds/add-slave! slave-id {:status :idle})
+      (ds/add-task! task-id slave-id {:status :dispatched})
+      (ds/complete-task! task-id)
+      (let [task (ds/get-task task-id)]
+        (is (= :completed (:task/status task)))))))
 
-(deftest task-update-status-test
-  (testing "Updating task status changes entity"
-    ;; EXPECTED: (ds/update-task-status! store task-id :completed)
-    (is true "Placeholder - will test task status update")))
+(deftest task-fail-error-test
+  (testing "Failing a task with error status"
+    (let [slave-id (gen-slave-id)
+          task-id (gen-task-id)]
+      (ds/add-slave! slave-id {:status :idle})
+      (ds/add-task! task-id slave-id {:status :dispatched})
+      (ds/fail-task! task-id :error)
+      (let [task (ds/get-task task-id)]
+        (is (= :error (:task/status task)))))))
 
-(deftest task-status-transitions-test
-  (testing "Task supports all valid status transitions"
-    ;; Valid statuses: :dispatched :queued :completed :timeout :error
-    (let [statuses [:dispatched :queued :completed :timeout :error]]
-      (is (= 5 (count statuses)) "All valid task states defined"))))
+(deftest task-fail-timeout-test
+  (testing "Failing a task with timeout status"
+    (let [slave-id (gen-slave-id)
+          task-id (gen-task-id)]
+      (ds/add-slave! slave-id {:status :idle})
+      (ds/add-task! task-id slave-id {:status :dispatched})
+      (ds/fail-task! task-id :timeout)
+      (let [task (ds/get-task task-id)]
+        (is (= :timeout (:task/status task)))))))
 
-(deftest task-complete-releases-claims-test
-  (testing "Completing a task releases associated file claims"
-    ;; EXPECTED: (ds/complete-task! store task-id) releases claims
-    ;; Claims query should not find files for this task
-    (is true "Placeholder - will test claim release on completion")))
-
-(deftest task-fail-releases-claims-test
-  (testing "Failing a task releases associated file claims"
-    ;; EXPECTED: (ds/fail-task! store task-id) releases claims
-    (is true "Placeholder - will test claim release on failure")))
-
-(deftest task-dependencies-test
-  (testing "Tasks can have dependencies on other tasks"
-    ;; EXPECTED: (ds/add-task-dependency! store task-a task-b)
-    ;; Task A depends on Task B completing first
-    (is true "Placeholder - will test dependency tracking")))
-
-;; =============================================================================
-;; SECTION 3: Schema Tests - Claims Entity CRUD
-;; =============================================================================
-
-(deftest claim-acquire-test
-  (testing "Acquiring a file claim creates entity"
-    ;; EXPECTED: (ds/acquire-claim! store file-path slave-id)
-    (let [file "/src/core.clj"
-          slave-id (gen-slave-id)]
-      (is (some? file) "Placeholder - will test claim acquisition"))))
-
-(deftest claim-release-test
-  (testing "Releasing a file claim removes entity"
-    ;; EXPECTED: (ds/release-claim! store file-path slave-id)
-    (is true "Placeholder - will test claim release")))
-
-(deftest claim-release-all-for-slave-test
-  (testing "Releasing all claims for a slave removes all its claims"
-    ;; EXPECTED: (ds/release-claims-for-slave! store slave-id)
-    (is true "Placeholder - will test bulk claim release")))
-
-(deftest claim-conflict-detection-test
-  (testing "Detecting conflicts when two slaves claim same file"
-    ;; EXPECTED: (ds/check-conflicts store requesting-slave ["/src/core.clj"])
-    ;; Returns [{:file "/src/core.clj" :held-by "other-slave"}] if conflict
-    (is true "Placeholder - will test conflict detection")))
-
-(deftest claim-no-conflict-same-slave-test
-  (testing "No conflict when slave re-claims its own file"
-    ;; EXPECTED: Same slave claiming same file is not a conflict
-    (is true "Placeholder - will test self-claim handling")))
-
-(deftest claim-multiple-files-test
-  (testing "Checking conflicts for multiple files at once"
-    ;; EXPECTED: (ds/check-conflicts store slave ["/a.clj" "/b.clj" "/c.clj"])
-    ;; Returns list of all conflicting files
-    (is true "Placeholder - will test multi-file conflict check")))
-
-(deftest claim-task-association-test
-  (testing "Claims are associated with tasks for release tracking"
-    ;; EXPECTED: (ds/acquire-claim! store file slave {:task-id task-id})
-    ;; When task completes, claims are released
-    (is true "Placeholder - will test task-claim association")))
+(deftest task-get-nonexistent-test
+  (testing "Getting non-existent task returns nil"
+    (is (nil? (ds/get-task "nonexistent")))))
 
 ;; =============================================================================
-;; SECTION 4: Query Tests - Slave Queries
+;; Claims Tests
 ;; =============================================================================
 
-(deftest query-all-slaves-test
-  (testing "Query returns all registered slaves"
-    ;; EXPECTED: (ds/get-all-slaves store) returns seq of slave entities
-    (is true "Placeholder - will test all slaves query")))
+(deftest claim-file-test
+  (testing "Claiming a file"
+    (let [slave-id (gen-slave-id)
+          file "/src/core.clj"]
+      (ds/add-slave! slave-id {:status :idle})
+      (ds/claim-file! file slave-id)
+      (let [claim (ds/get-claims-for-file file)]
+        (is (some? claim))
+        (is (= file (:file claim)))
+        (is (= slave-id (:slave-id claim)))))))
 
-(deftest query-slaves-by-status-test
-  (testing "Query slaves filtered by status"
-    ;; EXPECTED: (ds/get-slaves-by-status store :working) returns only working slaves
-    (is true "Placeholder - will test status filter query")))
+(deftest release-claim-test
+  (testing "Releasing a file claim"
+    (let [slave-id (gen-slave-id)
+          file "/src/core.clj"]
+      (ds/add-slave! slave-id {:status :idle})
+      (ds/claim-file! file slave-id)
+      (ds/release-claim! file)
+      (is (nil? (ds/get-claims-for-file file))))))
 
-(deftest query-slaves-by-status-multiple-test
-  (testing "Query with multiple status values"
-    ;; EXPECTED: (ds/get-slaves-by-status store [:idle :working]) returns both
-    (is true "Placeholder - will test multi-status filter")))
+(deftest has-conflict-detects-conflict-test
+  (testing "Conflict detection when different slave holds claim"
+    (let [slave1-id (gen-slave-id)
+          slave2-id (gen-slave-id)
+          file "/src/core.clj"]
+      (ds/add-slave! slave1-id {:status :idle})
+      (ds/add-slave! slave2-id {:status :idle})
+      (ds/claim-file! file slave1-id)
+      (is (:conflict? (ds/has-conflict? file slave2-id))))))
 
-(deftest query-slave-by-id-test
-  (testing "Query single slave by ID"
-    ;; EXPECTED: (ds/get-slave store slave-id) returns entity map or nil
-    (is true "Placeholder - will test single slave lookup")))
+(deftest has-conflict-no-conflict-same-slave-test
+  (testing "No conflict when same slave holds claim"
+    (let [slave-id (gen-slave-id)
+          file "/src/core.clj"]
+      (ds/add-slave! slave-id {:status :idle})
+      (ds/claim-file! file slave-id)
+      (is (not (:conflict? (ds/has-conflict? file slave-id)))))))
 
-(deftest query-slave-by-id-not-found-test
-  (testing "Query for non-existent slave returns nil"
-    ;; EXPECTED: (ds/get-slave store "nonexistent") returns nil
-    (is true "Placeholder - will test not-found handling")))
+(deftest has-conflict-shows-holder-test
+  (testing "Conflict shows holder ID"
+    (let [slave1-id (gen-slave-id)
+          slave2-id (gen-slave-id)
+          file "/src/core.clj"]
+      (ds/add-slave! slave1-id {:status :idle})
+      (ds/add-slave! slave2-id {:status :idle})
+      (ds/claim-file! file slave1-id)
+      (let [result (ds/has-conflict? file slave2-id)]
+        (is (:conflict? result))
+        (is (= slave1-id (:held-by result)))))))
 
-(deftest query-working-slaves-test
-  (testing "Query all slaves currently working (for broadcast targeting)"
-    ;; EXPECTED: (ds/get-working-slaves store) returns slaves with :working status
-    ;; Used by swarm_broadcast to target active slaves
-    (is true "Placeholder - will test working slaves query")))
-
-(deftest query-idle-slaves-test
-  (testing "Query all idle slaves (available for new tasks)"
-    ;; EXPECTED: (ds/get-idle-slaves store) returns slaves with :idle status
-    (is true "Placeholder - will test idle slaves query")))
-
-;; =============================================================================
-;; SECTION 5: Query Tests - Task Queries
-;; =============================================================================
-
-(deftest query-all-tasks-test
-  (testing "Query returns all registered tasks"
-    ;; EXPECTED: (ds/get-all-tasks store)
-    (is true "Placeholder - will test all tasks query")))
-
-(deftest query-tasks-for-slave-test
-  (testing "Query tasks assigned to a specific slave"
-    ;; EXPECTED: (ds/get-tasks-for-slave store slave-id)
-    (is true "Placeholder - will test slave tasks query")))
-
-(deftest query-tasks-by-status-test
-  (testing "Query tasks filtered by status"
-    ;; EXPECTED: (ds/get-tasks-by-status store :dispatched)
-    (is true "Placeholder - will test task status filter")))
-
-(deftest query-pending-tasks-test
-  (testing "Query tasks not yet completed"
-    ;; EXPECTED: (ds/get-pending-tasks store) returns non-completed tasks
-    (is true "Placeholder - will test pending tasks query")))
-
-(deftest query-queued-tasks-test
-  (testing "Query tasks waiting in queue (blocked by file conflicts)"
-    ;; EXPECTED: (ds/get-queued-tasks store) returns :queued status tasks
-    (is true "Placeholder - will test queued tasks query")))
-
-(deftest query-task-dependencies-ready-test
-  (testing "Check if all dependencies of a task are completed"
-    ;; EXPECTED: (ds/dependencies-ready? store task-id) returns {:ready? bool :pending [ids]}
-    (is true "Placeholder - will test dependency readiness")))
+(deftest has-conflict-unclaimed-file-test
+  (testing "No conflict for unclaimed file"
+    (let [slave-id (gen-slave-id)]
+      (ds/add-slave! slave-id {:status :idle})
+      (is (not (:conflict? (ds/has-conflict? "/unclaimed.clj" slave-id)))))))
 
 ;; =============================================================================
-;; SECTION 6: Query Tests - Claims Queries
+;; Query Tests
 ;; =============================================================================
 
-(deftest query-all-claims-test
-  (testing "Query returns all active file claims"
-    ;; EXPECTED: (ds/get-all-claims store)
-    (is true "Placeholder - will test all claims query")))
+(deftest get-all-slaves-test
+  (testing "Get all slaves"
+    (let [slave1-id (gen-slave-id)
+          slave2-id (gen-slave-id)]
+      (ds/add-slave! slave1-id {:status :idle})
+      (ds/add-slave! slave2-id {:status :working})
+      (let [slaves (ds/get-all-slaves)]
+        (is (= 2 (count slaves)))))))
 
-(deftest query-claims-for-file-test
-  (testing "Query claims for a specific file (conflict check)"
-    ;; EXPECTED: (ds/get-claims-for-file store "/src/core.clj")
-    ;; Returns {:file path :slave-id holder} or nil
-    (is true "Placeholder - will test file claims query")))
+(deftest get-slaves-by-status-test
+  (testing "Get slaves by status"
+    (let [slave1-id (gen-slave-id)
+          slave2-id (gen-slave-id)]
+      (ds/add-slave! slave1-id {:status :idle})
+      (ds/add-slave! slave2-id {:status :working})
+      (let [idle-slaves (ds/get-slaves-by-status :idle)]
+        (is (= 1 (count idle-slaves)))))))
 
-(deftest query-claims-for-slave-test
-  (testing "Query all files claimed by a slave"
-    ;; EXPECTED: (ds/get-claims-for-slave store slave-id)
-    (is true "Placeholder - will test slave claims query")))
+(deftest get-slaves-by-status-working-test
+  (testing "Get working slaves"
+    (let [slave1-id (gen-slave-id)
+          slave2-id (gen-slave-id)
+          slave3-id (gen-slave-id)]
+      (ds/add-slave! slave1-id {:status :idle})
+      (ds/add-slave! slave2-id {:status :working})
+      (ds/add-slave! slave3-id {:status :working})
+      (let [working-slaves (ds/get-slaves-by-status :working)]
+        (is (= 2 (count working-slaves)))))))
 
-(deftest query-unclaimed-files-test
-  (testing "Check which files from a list are unclaimed"
-    ;; EXPECTED: (ds/get-unclaimed-files store ["/a.clj" "/b.clj"])
-    ;; Returns files not currently claimed
-    (is true "Placeholder - will test unclaimed files query")))
+(deftest get-all-claims-test
+  (testing "Get all claims"
+    (let [slave-id (gen-slave-id)]
+      (ds/add-slave! slave-id {:status :idle})
+      (ds/claim-file! "/src/a.clj" slave-id)
+      (ds/claim-file! "/src/b.clj" slave-id)
+      (let [claims (ds/get-all-claims)]
+        (is (= 2 (count claims)))))))
 
-;; =============================================================================
-;; SECTION 7: Query Tests - Complex Queries
-;; =============================================================================
+(deftest db-stats-test
+  (testing "DB statistics"
+    (let [slave-id (gen-slave-id)
+          task-id (gen-task-id)]
+      (ds/add-slave! slave-id {:status :idle})
+      (ds/add-task! task-id slave-id {:status :dispatched})
+      (ds/claim-file! "/src/core.clj" slave-id)
+      (let [stats (ds/db-stats)]
+        (is (= 1 (:slaves stats)))
+        (is (= 1 (:tasks stats)))
+        (is (= 1 (:claims stats)))))))
 
-(deftest query-slave-with-tasks-test
-  (testing "Query slave with its associated tasks (join)"
-    ;; EXPECTED: Entity pull with nested task refs
-    (is true "Placeholder - will test slave-tasks join")))
+(deftest get-tasks-for-slave-test
+  (testing "Get tasks for specific slave"
+    (let [slave-id (gen-slave-id)
+          task1-id (gen-task-id)
+          task2-id (gen-task-id)]
+      (ds/add-slave! slave-id {:status :idle})
+      (ds/add-task! task1-id slave-id {:status :dispatched})
+      (ds/add-task! task2-id slave-id {:status :dispatched})
+      (let [tasks (ds/get-tasks-for-slave slave-id)]
+        (is (= 2 (count tasks)))))))
 
-(deftest query-task-with-claims-test
-  (testing "Query task with its associated file claims (join)"
-    ;; EXPECTED: Entity pull with nested claim refs
-    (is true "Placeholder - will test task-claims join")))
-
-(deftest query-coordinator-status-test
-  (testing "Query full coordinator status (aggregated stats)"
-    ;; EXPECTED: (ds/coordinator-status store) returns:
-    ;; {:slaves {:total N :working N :idle N}
-    ;;  :tasks {:total N :dispatched N :queued N :completed N}
-    ;;  :claims {:total N :by-slave {...}}}
-    (is true "Placeholder - will test coordinator status aggregation")))
-
-(deftest query-dependency-chain-test
-  (testing "Query transitive dependency chain for a task"
-    ;; EXPECTED: (ds/get-dependency-chain store task-id)
-    ;; Returns all tasks this task depends on (recursively)
-    (is true "Placeholder - will test dependency chain query")))
-
-(deftest query-would-deadlock-test
-  (testing "Check if adding dependency would create cycle"
-    ;; EXPECTED: (ds/would-deadlock? store task-a task-b) returns boolean
-    (is true "Placeholder - will test deadlock detection")))
-
-;; =============================================================================
-;; SECTION 8: Sync Tests - Initial Sync from Elisp
-;; =============================================================================
-
-(deftest sync-from-elisp-snapshot-test
-  (testing "Sync populates store from elisp swarm status snapshot"
-    ;; EXPECTED: (ds/sync-from-snapshot! store elisp-status)
-    ;; elisp-status: {:slaves-detail [{:slave-id :status :name :presets :cwd}...]}
-    (let [snapshot {:slaves-detail [{:slave-id "slave-1" :status "working"
-                                     :name "worker1" :presets ["tdd"] :cwd "/proj"}
-                                    {:slave-id "slave-2" :status "idle"
-                                     :name "worker2" :presets [] :cwd "/proj2"}]}]
-      (is (= 2 (count (:slaves-detail snapshot))) "Snapshot has 2 slaves"))))
-
-(deftest sync-from-elisp-empty-snapshot-test
-  (testing "Sync handles empty elisp state gracefully"
-    ;; EXPECTED: Empty snapshot results in empty store (no errors)
-    (let [snapshot {:slaves-detail []}]
-      (is (empty? (:slaves-detail snapshot)) "Empty snapshot handled"))))
-
-(deftest sync-from-elisp-partial-data-test
-  (testing "Sync handles partial/missing fields in snapshot"
-    ;; EXPECTED: Missing optional fields (presets, cwd) default gracefully
-    (let [snapshot {:slaves-detail [{:slave-id "slave-1" :status "idle"}]}]
-      (is (= 1 (count (:slaves-detail snapshot))) "Partial data handled"))))
-
-(deftest sync-clears-existing-state-test
-  (testing "Full sync clears existing state before populating"
-    ;; EXPECTED: (ds/full-sync! store snapshot) resets store first
-    ;; Old data should not persist after sync
-    (is true "Placeholder - will test state clearing")))
+(deftest get-completed-tasks-test
+  (testing "Get completed tasks"
+    (let [slave-id (gen-slave-id)
+          task1-id (gen-task-id)
+          task2-id (gen-task-id)]
+      (ds/add-slave! slave-id {:status :idle})
+      (ds/add-task! task1-id slave-id {:status :dispatched})
+      (ds/add-task! task2-id slave-id {:status :dispatched})
+      (ds/complete-task! task1-id)
+      (let [completed (ds/get-completed-tasks)]
+        (is (= 1 (count completed)))
+        (is (= task1-id (:task/id (first completed))))))))
 
 ;; =============================================================================
-;; SECTION 9: Sync Tests - Event-Driven Updates
+;; Kill Guard / Critical Operations Tests (ADR-003)
 ;; =============================================================================
 
-(deftest sync-event-slave-spawned-test
-  (testing "slave-spawned event creates slave entity"
-    ;; EXPECTED: (ds/handle-event! store :slave-spawned {:slave-id ...})
-    (let [event {:slave-id "new-slave" :name "worker" :presets [] :cwd "/"}]
-      (is (some? (:slave-id event)) "Event has slave-id"))))
+(deftest enter-critical-op-test
+  (testing "Entering a critical operation adds to set"
+    (let [slave-id (gen-slave-id)]
+      (ds/add-slave! slave-id {:status :idle})
+      (ds/enter-critical-op! slave-id :wrap)
+      (let [ops (ds/get-critical-ops slave-id)]
+        (is (contains? ops :wrap))))))
 
-(deftest sync-event-slave-killed-test
-  (testing "slave-killed event removes slave and releases claims"
-    ;; EXPECTED: (ds/handle-event! store :slave-killed {:slave-id ...})
-    (is true "Placeholder - will test kill event handling")))
+(deftest exit-critical-op-test
+  (testing "Exiting a critical operation removes from set"
+    (let [slave-id (gen-slave-id)]
+      (ds/add-slave! slave-id {:status :idle})
+      (ds/enter-critical-op! slave-id :wrap)
+      (ds/exit-critical-op! slave-id :wrap)
+      (let [ops (ds/get-critical-ops slave-id)]
+        (is (not (contains? ops :wrap)))))))
 
-(deftest sync-event-slave-status-test
-  (testing "slave-status event updates slave status"
-    ;; EXPECTED: (ds/handle-event! store :slave-status {:slave-id :status})
-    (is true "Placeholder - will test status event handling")))
+(deftest multiple-critical-ops-test
+  (testing "Multiple critical operations can be active"
+    (let [slave-id (gen-slave-id)]
+      (ds/add-slave! slave-id {:status :idle})
+      (ds/enter-critical-op! slave-id :wrap)
+      (ds/enter-critical-op! slave-id :commit)
+      (let [ops (ds/get-critical-ops slave-id)]
+        (is (= #{:wrap :commit} ops))))))
 
-(deftest sync-event-task-dispatched-test
-  (testing "task-dispatched event creates task and claims"
-    ;; EXPECTED: (ds/handle-event! store :task-dispatched {:task-id :slave-id :files})
-    (let [event {:task-id "task-1" :slave-id "slave-1" :files ["/src/core.clj"]}]
-      (is (= 1 (count (:files event))) "Event has files"))))
+(deftest get-critical-ops-nonexistent-test
+  (testing "Getting critical ops for non-existent slave returns empty set"
+    (is (= #{} (ds/get-critical-ops "nonexistent-slave")))))
 
-(deftest sync-event-task-completed-test
-  (testing "task-completed event updates status and releases claims"
-    ;; EXPECTED: (ds/handle-event! store :task-completed {:task-id})
-    (is true "Placeholder - will test completion event")))
+(deftest can-kill-when-no-ops-test
+  (testing "can-kill? returns true when no critical ops"
+    (let [slave-id (gen-slave-id)]
+      (ds/add-slave! slave-id {:status :idle})
+      (let [{:keys [can-kill? blocking-ops]} (ds/can-kill? slave-id)]
+        (is can-kill?)
+        (is (empty? blocking-ops))))))
 
-(deftest sync-event-task-failed-test
-  (testing "task-failed event updates status and releases claims"
-    ;; EXPECTED: (ds/handle-event! store :task-failed {:task-id :error})
-    (is true "Placeholder - will test failure event")))
+(deftest can-kill-blocked-by-wrap-test
+  (testing "can-kill? returns false when wrap in progress"
+    (let [slave-id (gen-slave-id)]
+      (ds/add-slave! slave-id {:status :idle})
+      (ds/enter-critical-op! slave-id :wrap)
+      (let [{:keys [can-kill? blocking-ops]} (ds/can-kill? slave-id)]
+        (is (not can-kill?))
+        (is (contains? blocking-ops :wrap))))))
 
-;; =============================================================================
-;; SECTION 10: Sync Tests - Idempotency
-;; =============================================================================
+(deftest can-kill-blocked-by-commit-test
+  (testing "can-kill? returns false when commit in progress"
+    (let [slave-id (gen-slave-id)]
+      (ds/add-slave! slave-id {:status :idle})
+      (ds/enter-critical-op! slave-id :commit)
+      (let [{:keys [can-kill? blocking-ops]} (ds/can-kill? slave-id)]
+        (is (not can-kill?))
+        (is (contains? blocking-ops :commit))))))
 
-(deftest sync-event-idempotent-spawn-test
-  (testing "Duplicate slave-spawned events are idempotent"
-    ;; EXPECTED: Sending same spawn event twice doesn't create duplicates
-    ;; Due to :db/unique on :slave/id
-    (is true "Placeholder - will test spawn idempotency")))
+(deftest can-kill-blocked-by-dispatch-test
+  (testing "can-kill? returns false when dispatch in progress"
+    (let [slave-id (gen-slave-id)]
+      (ds/add-slave! slave-id {:status :idle})
+      (ds/enter-critical-op! slave-id :dispatch)
+      (let [{:keys [can-kill? blocking-ops]} (ds/can-kill? slave-id)]
+        (is (not can-kill?))
+        (is (contains? blocking-ops :dispatch))))))
 
-(deftest sync-event-idempotent-status-test
-  (testing "Duplicate status events are idempotent"
-    ;; EXPECTED: Setting same status twice is safe
-    (is true "Placeholder - will test status idempotency")))
+(deftest can-kill-multiple-blocking-ops-test
+  (testing "can-kill? returns all blocking ops"
+    (let [slave-id (gen-slave-id)]
+      (ds/add-slave! slave-id {:status :idle})
+      (ds/enter-critical-op! slave-id :wrap)
+      (ds/enter-critical-op! slave-id :commit)
+      (let [{:keys [can-kill? blocking-ops]} (ds/can-kill? slave-id)]
+        (is (not can-kill?))
+        (is (= #{:wrap :commit} blocking-ops))))))
 
-(deftest sync-event-idempotent-task-test
-  (testing "Duplicate task-dispatched events are idempotent"
-    ;; EXPECTED: Same task-id doesn't create duplicates
-    (is true "Placeholder - will test task idempotency")))
+(deftest can-kill-nonexistent-slave-test
+  (testing "can-kill? returns true for non-existent slave (no ops to block)"
+    (let [{:keys [can-kill? blocking-ops]} (ds/can-kill? "nonexistent")]
+      (is can-kill?)
+      (is (empty? blocking-ops)))))
 
-(deftest sync-event-order-independent-test
-  (testing "Events can arrive out of order (eventual consistency)"
-    ;; EXPECTED: task-completed before task-dispatched is handled gracefully
-    (is true "Placeholder - will test out-of-order handling")))
+(deftest with-critical-op-macro-test
+  (testing "with-critical-op macro manages enter/exit correctly"
+    (let [slave-id (gen-slave-id)]
+      (ds/add-slave! slave-id {:status :idle})
+      ;; Before: no ops
+      (is (empty? (ds/get-critical-ops slave-id)))
+      ;; During: op is active
+      (ds/with-critical-op slave-id :wrap
+        (is (contains? (ds/get-critical-ops slave-id) :wrap)))
+      ;; After: op is cleared
+      (is (empty? (ds/get-critical-ops slave-id))))))
 
-;; =============================================================================
-;; SECTION 11: Sync Tests - Periodic Refresh
-;; =============================================================================
-
-(deftest sync-periodic-refresh-test
-  (testing "Periodic refresh doesn't lose in-flight state"
-    ;; EXPECTED: (ds/refresh-from-elisp! store) preserves tasks/claims
-    ;; Only updates slave metadata, not active work
-    (is true "Placeholder - will test refresh preservation")))
-
-(deftest sync-periodic-reconcile-test
-  (testing "Periodic reconciliation detects drift"
-    ;; EXPECTED: (ds/reconcile! store elisp-state) returns {:added :removed :updated}
-    ;; Drift detection for monitoring
-    (is true "Placeholder - will test drift detection")))
-
-(deftest sync-periodic-no-data-loss-test
-  (testing "Refresh during active work doesn't lose claims"
-    ;; Critical: active file claims must survive refresh
-    (is true "Placeholder - will test claim preservation")))
-
-;; =============================================================================
-;; SECTION 12: Store Statistics and Debugging
-;; =============================================================================
-
-(deftest store-stats-test
-  (testing "Store stats returns correct counts"
-    ;; EXPECTED: (ds/store-stats store) returns {:slaves N :tasks N :claims N}
-    (is true "Placeholder - will test stats aggregation")))
-
-(deftest store-dump-test
-  (testing "Store dump returns all entities for debugging"
-    ;; EXPECTED: (ds/dump-store store) returns {:slaves [...] :tasks [...] :claims [...]}
-    (is true "Placeholder - will test debug dump")))
-
-;; =============================================================================
-;; Test Suite Summary
-;; =============================================================================
-;;
-;; Total tests: 55
-;;
-;; Schema tests (15):
-;;   - Slave CRUD: 8 tests
-;;   - Task CRUD: 7 tests (including dependency tracking)
-;;   - Claims CRUD: 8 tests (including conflict detection)
-;;
-;; Query tests (17):
-;;   - Slave queries: 7 tests
-;;   - Task queries: 6 tests
-;;   - Claims queries: 4 tests
-;;   - Complex queries: 5 tests
-;;
-;; Sync tests (15):
-;;   - Initial sync: 4 tests
-;;   - Event-driven: 6 tests
-;;   - Idempotency: 4 tests
-;;   - Periodic refresh: 3 tests
-;;
-;; Debug/stats tests (2)
-;;
-;; Implementation namespace: hive-mcp.swarm.datascript
-;; Schema additions to: hive-mcp.graph.schema (or new swarm-specific schema)
-
-(comment
-  ;; Run tests
-  (clojure.test/run-tests 'hive-mcp.swarm.datascript-test)
-
-  ;; Run single test
-  (clojure.test/test-vars [#'slave-add-test])
-
-  ;; Count tests
-  (->> (ns-publics 'hive-mcp.swarm.datascript-test)
-       (filter #(clojure.test/test-var? (val %)))
-       count)
-  ;; => 55
-  )
+(deftest with-critical-op-exception-cleanup-test
+  (testing "with-critical-op cleans up even on exception"
+    (let [slave-id (gen-slave-id)]
+      (ds/add-slave! slave-id {:status :idle})
+      (try
+        (ds/with-critical-op slave-id :commit
+          (throw (ex-info "Simulated error" {})))
+        (catch Exception _))
+      ;; Op should be cleaned up despite exception
+      (is (empty? (ds/get-critical-ops slave-id))))))

@@ -8,8 +8,12 @@
    - start-channel-subscriptions! / stop-channel-subscriptions!
    - check-event-journal / clear-event-journal!
    - Event handlers for task-completed, task-failed, prompt-shown"
-  (:require [clojure.core.async :as async :refer [go go-loop <! close!]]
+  (:require [clojure.core.async :as async :refer [go-loop <! close!]]
             [taoensso.timbre :as log]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; ============================================================
 ;; Event Journal (Push-based task tracking)
@@ -82,8 +86,8 @@
    Note: bencode returns string keys, so we use get instead of keywords."
   [event]
   (let [slave-id (get event "slave-id")
-        prompt (get event "prompt")
-        timestamp (get event "timestamp")]
+        _prompt (get event "prompt")
+        _timestamp (get event "timestamp")]
     (log/info "Channel: prompt-shown from" slave-id)
     ;; For now just log - could add to a prompts journal if needed
     ))

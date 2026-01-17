@@ -14,12 +14,16 @@
    - Domain: Diff lifecycle (pending → applied/rejected)
    - Application: Handlers coordinate validation + state updates
    - Infra: File I/O via slurp/spit (mocked in tests)"
-  (:require [hive-mcp.tools.core :refer [mcp-success mcp-error mcp-json]]
+  (:require [hive-mcp.tools.core :refer [mcp-json]]
             [hive-mcp.emacsclient :as ec]
+            [hive-mcp.guards :as guards]
             [clojure.data.json :as json]
             [clojure.string :as str]
             [clojure.java.io :as io]
             [taoensso.timbre :as log]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 ;; =============================================================================
 ;; Domain: Pending Diffs State
@@ -34,6 +38,16 @@
 
 ;; Atom storing pending diff proposals. Map of diff-id -> diff-data.
 (defonce pending-diffs (atom {}))
+
+(defn clear-pending-diffs!
+  "Clear pending diffs. GUARDED - no-op if coordinator running.
+
+   CLARITY-Y: Yield safe failure - prevents test fixtures from
+   corrupting production diff state."
+  []
+  (guards/when-not-coordinator
+   "clear-pending-diffs! called"
+   (reset! pending-diffs {})))
 
 ;; =============================================================================
 ;; Domain: Diff Operations (Pure Functions)
@@ -75,12 +89,17 @@
      :created-at (java.time.Instant/now)}))
 
 (defn validate-propose-params
-  "Validate parameters for propose_diff. Returns nil if valid, error message if not."
+  "Validate parameters for propose_diff. Returns nil if valid, error message if not.
+
+   CLARITY-Y: Validates new_content is non-empty to prevent 0-byte file writes
+   when LLMs return empty responses."
   [{:keys [file_path old_content new_content]}]
   (cond
     (str/blank? file_path) "Missing required field: file_path"
     (nil? old_content) "Missing required field: old_content"
     (nil? new_content) "Missing required field: new_content"
+    ;; CLARITY-Y: Prevent empty file writes from LLM empty responses
+    (str/blank? new_content) "new_content cannot be empty or whitespace-only - LLM may have returned empty response"
     :else nil))
 
 (defn get-project-root
@@ -106,54 +125,59 @@
 
 (defn validate-diff-path
   "Validate a file path for propose_diff.
-   
+
    Drones sometimes hallucinate invalid paths like '/hivemind/controller.clj'.
    This function validates that paths:
    1. Are not suspicious absolute paths (absolute paths must exist)
    2. Don't escape the project directory (no ../../../etc/passwd)
    3. Resolve to valid locations within the project
-   
+
+   Arguments:
+     file-path    - Path to validate
+     project-root - Optional project root override (defaults to get-project-root)
+
    Returns {:valid true :resolved-path \"...\"} or {:valid false :error \"...\"}."
-  [file-path]
-  (let [project-root (get-project-root)
-        file (io/file file-path)]
-    (cond
+  ([file-path] (validate-diff-path file-path nil))
+  ([file-path project-root-override]
+   (let [project-root (or project-root-override (get-project-root))
+         file (io/file file-path)]
+     (cond
       ;; Check 1: Empty or blank path
-      (str/blank? file-path)
-      {:valid false :error "File path cannot be empty"}
+       (str/blank? file-path)
+       {:valid false :error "File path cannot be empty"}
 
       ;; Check 2: Suspicious absolute paths (absolute but doesn't exist)
-      (and (.isAbsolute file)
-           (not (.exists file))
+       (and (.isAbsolute file)
+            (not (.exists file))
            ;; Also reject if the parent directory doesn't exist
            ;; (clear sign of hallucinated path like /hivemind/foo.clj)
-           (not (.exists (.getParentFile file))))
-      {:valid false
-       :error (str "Invalid absolute path: '" file-path "' - "
-                   "neither the file nor its parent directory exists. "
-                   "Use relative paths like 'src/hive_mcp/foo.clj' or ensure the path is valid.")}
+            (not (.exists (.getParentFile file))))
+       {:valid false
+        :error (str "Invalid absolute path: '" file-path "' - "
+                    "neither the file nor its parent directory exists. "
+                    "Use relative paths like 'src/hive_mcp/foo.clj' or ensure the path is valid.")}
 
       ;; Check 3: Path escapes project directory
-      (let [resolved (if (.isAbsolute file)
-                       file
-                       (io/file project-root file-path))
-            canonical-path (.getCanonicalPath resolved)
-            canonical-root (.getCanonicalPath (io/file project-root))]
-        (not (str/starts-with? canonical-path canonical-root)))
-      {:valid false
-       :error (str "Path escapes project directory: '" file-path "' "
-                   "would resolve outside the project root '" project-root "'. "
-                   "All paths must be within the project directory.")}
+       (let [resolved (if (.isAbsolute file)
+                        file
+                        (io/file project-root file-path))
+             canonical-path (.getCanonicalPath resolved)
+             canonical-root (.getCanonicalPath (io/file project-root))]
+         (not (str/starts-with? canonical-path canonical-root)))
+       {:valid false
+        :error (str "Path escapes project directory: '" file-path "' "
+                    "would resolve outside the project root '" project-root "'. "
+                    "All paths must be within the project directory.")}
 
       ;; Check 4: Absolute path that exists - allow it
-      (.isAbsolute file)
-      {:valid true :resolved-path (.getCanonicalPath file)}
+       (.isAbsolute file)
+       {:valid true :resolved-path (.getCanonicalPath file)}
 
       ;; Check 5: Relative path - resolve against project root
-      :else
-      (let [resolved (io/file project-root file-path)
-            canonical-path (.getCanonicalPath resolved)]
-        {:valid true :resolved-path canonical-path}))))
+       :else
+       (let [resolved (io/file project-root file-path)
+             canonical-path (.getCanonicalPath resolved)]
+         {:valid true :resolved-path canonical-path})))))
 
 ;; =============================================================================
 ;; Application: Handlers
@@ -163,7 +187,7 @@
   "Handle propose_diff tool call.
    Stores a proposed diff for review by the hivemind.
    Translates sandbox paths and validates file paths."
-  [{:keys [file_path old_content new_content description drone_id] :as params}]
+  [{:keys [file_path _old_content _new_content _description drone_id] :as params}]
   (log/debug "propose_diff called" {:file file_path :drone drone_id})
   (if-let [error (validate-propose-params params)]
     (do
@@ -224,7 +248,10 @@
 (defn handle-apply-diff
   "Handle apply_diff tool call.
    Applies the diff by finding and replacing old-content within the file.
-   If old-content is empty and file doesn't exist, creates a new file."
+   If old-content is empty and file doesn't exist, creates a new file.
+
+   CLARITY-Y: Defense-in-depth validation blocks empty new_content even if
+   it passed propose_diff, preventing 0-byte file writes from LLM failures."
   [{:keys [diff_id]}]
   (log/debug "apply_diff called" {:diff_id diff_id})
   (cond
@@ -239,35 +266,45 @@
       (mcp-error-json (str "Diff not found: " diff_id)))
 
     :else
-    (let [{:keys [file-path old-content new-content] :as diff} (get @pending-diffs diff_id)
+    (let [{:keys [file-path old-content new-content]} (get @pending-diffs diff_id)
           file-exists? (.exists (io/file file-path))
           creating-new-file? (and (str/blank? old-content) (not file-exists?))]
-      (try
-        (cond
-          ;; Case 1: Creating a new file (old-content empty, file doesn't exist)
-          creating-new-file?
-          (do
-            ;; Ensure parent directory exists
-            (let [parent (.getParentFile (io/file file-path))]
-              (when (and parent (not (.exists parent)))
-                (.mkdirs parent)))
-            (spit file-path new-content)
-            (swap! pending-diffs dissoc diff_id)
-            (log/info "New file created" {:id diff_id :file file-path})
-            (mcp-json {:id diff_id
-                       :status "applied"
-                       :file-path file-path
-                       :created true
-                       :message "New file created successfully"}))
+      ;; CLARITY-Y: Defense-in-depth - block empty content even if it passed propose_diff
+      (cond
+        ;; Block empty new_content (prevents 0-byte file writes)
+        (str/blank? new-content)
+        (do
+          (log/warn "apply_diff blocked: empty new_content" {:diff_id diff_id :file file-path})
+          (swap! pending-diffs dissoc diff_id)
+          (mcp-error-json "Cannot apply diff: new_content is empty or whitespace-only. This typically indicates the LLM returned an empty response."))
 
-          ;; Case 2: File doesn't exist but old-content is not empty - error
-          (not file-exists?)
-          (do
-            (log/warn "apply_diff file not found" {:file file-path})
-            (mcp-error-json (str "File not found: " file-path)))
+        ;; Case 1: Creating a new file (old-content empty, file doesn't exist)
+        creating-new-file?
+        (try
+          (let [parent (.getParentFile (io/file file-path))]
+            (when (and parent (not (.exists parent)))
+              (.mkdirs parent)))
+          (spit file-path new-content)
+          (swap! pending-diffs dissoc diff_id)
+          (log/info "New file created" {:id diff_id :file file-path})
+          (mcp-json {:id diff_id
+                     :status "applied"
+                     :file-path file-path
+                     :created true
+                     :message "New file created successfully"})
+          (catch Exception e
+            (log/error e "Failed to create file" {:diff_id diff_id})
+            (mcp-error-json (str "Failed to create file: " (.getMessage e)))))
 
-          ;; Case 3: Normal replacement in existing file
-          :else
+        ;; Case 2: File doesn't exist but old-content is not empty - error
+        (not file-exists?)
+        (do
+          (log/warn "apply_diff file not found" {:file file-path})
+          (mcp-error-json (str "File not found: " file-path)))
+
+        ;; Case 3: Normal replacement in existing file
+        :else
+        (try
           (let [current-content (slurp file-path)]
             (cond
               ;; old-content not found in file
@@ -284,17 +321,17 @@
 
               ;; Exactly one match - apply the replacement
               :else
-              (let [updated-content (str/replace-first current-content old-content new-content)]
-                (spit file-path updated-content)
+              (do
+                (spit file-path (str/replace-first current-content old-content new-content))
                 (swap! pending-diffs dissoc diff_id)
                 (log/info "Diff applied" {:id diff_id :file file-path})
                 (mcp-json {:id diff_id
                            :status "applied"
                            :file-path file-path
-                           :message "Diff applied successfully"})))))
-        (catch Exception e
-          (log/error e "Failed to apply diff" {:diff_id diff_id})
-          (mcp-error-json (str "Failed to apply diff: " (.getMessage e))))))))
+                           :message "Diff applied successfully"}))))
+          (catch Exception e
+            (log/error e "Failed to apply diff" {:diff_id diff_id})
+            (mcp-error-json (str "Failed to apply diff: " (.getMessage e)))))))))
 
 (defn handle-reject-diff
   "Handle reject_diff tool call.

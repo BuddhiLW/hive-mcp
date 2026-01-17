@@ -2,8 +2,11 @@
   "Prompt capture and analysis tool handlers.
 
    Extracted from hive-mcp.tools for modularity."
-  (:require [hive-mcp.tools.core :refer [mcp-success mcp-error mcp-json]]
-            [hive-mcp.prompt-capture :as prompt-capture]))
+  (:require [hive-mcp.prompt-capture :as prompt-capture]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 (defn handle-prompt-capture
   "Capture a well-structured prompt with analysis for RAG."

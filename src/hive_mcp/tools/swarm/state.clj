@@ -1,36 +1,42 @@
 (ns hive-mcp.tools.swarm.state
   "Hivemind state integration for swarm status.
 
-   Maps hivemind event types to swarm working status.
-   Provides unified view merging hivemind state with lings registry.
+   Maps DataScript slave status to swarm working status.
+   Provides unified view merging DataScript state with lings registry.
 
+   ADR-002 COMPLIANCE: DataScript is source of truth for slave status.
    SOLID: SRP - Single responsibility for state mapping/merging.
    CLARITY: R - Represented intent with clear status mapping."
   (:require [hive-mcp.tools.swarm.registry :as registry]
-            [hive-mcp.hivemind :as hivemind]))
+            [hive-mcp.swarm.datascript :as ds]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 ;; ============================================================
 ;; Hivemind Status Mapping
 ;; ============================================================
 
 (defn get-slave-working-status
-  "Get the working status of a slave based on hivemind events.
+  "Get the working status of a slave based on DataScript state.
 
-   Maps hivemind event types to swarm working status:
-   - :started, :progress -> \"working\"
-   - :completed, :error -> \"idle\"
+   ADR-002 COMPLIANCE: Queries DataScript (source of truth), not hivemind atom.
+
+   Maps DataScript slave status to swarm working status:
+   - :working, :started, :progress -> \"working\"
+   - :idle, :completed, :error -> \"idle\"
    - :blocked -> \"blocked\"
    - nil (not registered) -> nil
 
    agent-id: The slave/agent ID to query
 
-   CLARITY: R - Clear mapping from hivemind to swarm status"
+   CLARITY: R - Clear mapping from DataScript to swarm status"
   [agent-id]
-  (when-let [agent (get @hivemind/agent-registry agent-id)]
-    (let [status (:status agent)]
+  (when-let [slave (ds/get-slave agent-id)]
+    (let [status (:slave/status slave)]
       (case status
-        (:started :progress) "working"
-        :completed "idle"
+        (:working :started :progress) "working"
+        (:idle :completed) "idle"
         :error "idle"
         :blocked "blocked"
         ;; Default to idle for unknown states

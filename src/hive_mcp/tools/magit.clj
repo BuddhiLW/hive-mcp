@@ -5,10 +5,14 @@
    - Status, branches, log, diff
    - Stage, commit, push, pull, fetch
    - Feature branch listing for /ship and /ship-pr skills"
-  (:require [hive-mcp.tools.core :refer [mcp-success mcp-error mcp-json]]
+  (:require [hive-mcp.tools.core :refer [mcp-success mcp-error]]
             [hive-mcp.emacsclient :as ec]
             [hive-mcp.elisp :as el]
             [taoensso.timbre :as log]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; ============================================================
 ;; Working Directory Resolution

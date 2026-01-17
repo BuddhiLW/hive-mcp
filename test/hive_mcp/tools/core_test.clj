@@ -8,7 +8,8 @@
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [clojure.data.json :as json]
             [hive-mcp.tools.core :as core]
-            [hive-mcp.channel.piggyback :as piggyback]))
+            [hive-mcp.channel.piggyback :as piggyback]
+            [hive-mcp.emacsclient]))
 
 ;; =============================================================================
 ;; Test Fixtures
@@ -205,3 +206,155 @@
       ;; Drain and verify count
       (let [instructions (core/drain-instructions! agent-id)]
         (is (= push-count (count instructions)))))))
+
+;; =============================================================================
+;; Test: call-elisp-safe Macro
+;; =============================================================================
+
+(deftest test-call-elisp-safe-success-default
+  (testing "call-elisp-safe returns mcp-json wrapped result on success"
+    (with-redefs [hive-mcp.emacsclient/eval-elisp
+                  (fn [_elisp] {:success true :result {:status "ok"}})]
+      (let [response (core/call-elisp-safe "(some-elisp)")]
+        (is (= "text" (:type response)))
+        (let [parsed (json/read-str (:text response) :key-fn keyword)]
+          (is (= {:status "ok"} parsed)))))))
+
+(deftest test-call-elisp-safe-error-default
+  (testing "call-elisp-safe returns mcp-json with :error on failure"
+    (with-redefs [hive-mcp.emacsclient/eval-elisp
+                  (fn [_elisp] {:success false :error "Elisp error occurred"})]
+      (let [response (core/call-elisp-safe "(failing-elisp)")]
+        (is (= "text" (:type response)))
+        (let [parsed (json/read-str (:text response) :key-fn keyword)]
+          (is (= "Elisp error occurred" (:error parsed))))))))
+
+(deftest test-call-elisp-safe-custom-on-success
+  (testing "call-elisp-safe uses custom :on-success handler"
+    (with-redefs [hive-mcp.emacsclient/eval-elisp
+                  (fn [_elisp] {:success true :result {:count 42}})]
+      (let [response (core/call-elisp-safe "(some-elisp)"
+                                           :on-success #(core/mcp-json {:transformed (:count %)}))]
+        (is (= "text" (:type response)))
+        (let [parsed (json/read-str (:text response) :key-fn keyword)]
+          (is (= 42 (:transformed parsed))))))))
+
+(deftest test-call-elisp-safe-custom-on-error
+  (testing "call-elisp-safe uses custom :on-error handler"
+    (with-redefs [hive-mcp.emacsclient/eval-elisp
+                  (fn [_elisp] {:success false :error "custom error"})]
+      (let [response (core/call-elisp-safe "(failing-elisp)"
+                                           :on-error #(core/mcp-error (str "Custom: " %)))]
+        (is (= "text" (:type response)))
+        (is (= "Custom: custom error" (:text response)))
+        (is (true? (:isError response)))))))
+
+(deftest test-call-elisp-safe-string-result
+  (testing "call-elisp-safe handles string results correctly"
+    (with-redefs [hive-mcp.emacsclient/eval-elisp
+                  (fn [_elisp] {:success true :result "plain string result"})]
+      (let [response (core/call-elisp-safe "(string-returning-elisp)")]
+        (is (= "text" (:type response)))
+        (let [parsed (json/read-str (:text response) :key-fn keyword)]
+          (is (= "plain string result" parsed)))))))
+
+(deftest test-call-elisp-safe-nil-result
+  (testing "call-elisp-safe handles nil result gracefully"
+    (with-redefs [hive-mcp.emacsclient/eval-elisp
+                  (fn [_elisp] {:success true :result nil})]
+      (let [response (core/call-elisp-safe "(nil-returning-elisp)")]
+        (is (= "text" (:type response)))
+        (is (= "null" (:text response)))))))
+
+(deftest test-call-elisp-safe-macroexpand
+  (testing "call-elisp-safe macro expands correctly"
+    (let [expanded (macroexpand `(core/call-elisp-safe "(test)"))]
+      ;; Should expand to a let binding with the elisp result
+      (is (seq? expanded))
+      (is (= 'let* (first expanded))))))
+
+(deftest test-call-elisp-safe-macroexpand-with-opts
+  (testing "call-elisp-safe macro expands correctly with options"
+    (let [expanded (macroexpand `(core/call-elisp-safe "(test)"
+                                                       :on-success identity))]
+      (is (seq? expanded))
+      (is (= 'let* (first expanded))))))
+
+(deftest test-call-elisp-safe-elisp-code-passed-through
+  (testing "call-elisp-safe passes elisp code to eval-elisp"
+    (let [captured-elisp (atom nil)]
+      (with-redefs [hive-mcp.emacsclient/eval-elisp
+                    (fn [elisp]
+                      (reset! captured-elisp elisp)
+                      {:success true :result :ok})]
+        (core/call-elisp-safe "(my-elisp-code)")
+        (is (= "(my-elisp-code)" @captured-elisp))))))
+
+;; =============================================================================
+;; Test: with-validation Macro
+;; =============================================================================
+
+(defn sample-validator
+  "Sample validator: returns nil if valid, error map if invalid.
+   Validates that :name is present and non-empty."
+  [{:keys [name]}]
+  (cond
+    (nil? name) {:error "Missing required field: name"}
+    (empty? name) {:error "name cannot be empty"}
+    :else nil))
+
+(deftest test-with-validation-valid-params
+  (testing "with-validation executes body when validation passes"
+    (let [result (core/with-validation [{:name "test"} sample-validator]
+                   (core/mcp-success "Body executed"))]
+      (is (= "text" (:type result)))
+      (is (= "Body executed" (:text result)))
+      (is (nil? (:isError result))))))
+
+(deftest test-with-validation-invalid-params-nil
+  (testing "with-validation returns error when param is missing"
+    (let [result (core/with-validation [{} sample-validator]
+                   (core/mcp-success "Should not execute"))]
+      (is (= "text" (:type result)))
+      (let [parsed (json/read-str (:text result) :key-fn keyword)]
+        (is (= "Missing required field: name" (:error parsed)))))))
+
+(deftest test-with-validation-invalid-params-empty
+  (testing "with-validation returns error when param is empty"
+    (let [result (core/with-validation [{:name ""} sample-validator]
+                   (core/mcp-success "Should not execute"))]
+      (is (= "text" (:type result)))
+      (let [parsed (json/read-str (:text result) :key-fn keyword)]
+        (is (= "name cannot be empty" (:error parsed)))))))
+
+(deftest test-with-validation-body-not-executed-on-failure
+  (testing "with-validation does not execute body when validation fails"
+    (let [executed (atom false)]
+      (core/with-validation [{} sample-validator]
+        (reset! executed true)
+        (core/mcp-success "Body"))
+      (is (false? @executed)))))
+
+(deftest test-with-validation-body-returns-value
+  (testing "with-validation returns body result on success"
+    (let [result (core/with-validation [{:name "valid"} sample-validator]
+                   {:custom "response" :data 123})]
+      (is (= {:custom "response" :data 123} result)))))
+
+(deftest test-with-validation-macroexpand
+  (testing "with-validation macro expands correctly"
+    (let [expanded (macroexpand `(core/with-validation [~'params ~'validator]
+                                   (+ 1 2)))]
+      ;; if-let expands to let*, so we check the structure is a valid form
+      (is (seq? expanded))
+      (is (= 'let* (first expanded))))))
+
+(deftest test-with-validation-error-passthrough
+  (testing "with-validation passes validator error directly to mcp-json"
+    ;; Validator that returns a complex error structure
+    (let [complex-validator (fn [_] {:error "complex" :details {:field "x" :code 42}})
+          result (core/with-validation [{:any "params"} complex-validator]
+                   (core/mcp-success "Never"))]
+      (is (= "text" (:type result)))
+      (let [parsed (json/read-str (:text result) :key-fn keyword)]
+        (is (= {:error "complex" :details {:field "x" :code 42}} parsed))))))

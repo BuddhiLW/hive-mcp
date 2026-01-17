@@ -49,7 +49,12 @@ This is a minimal parser for .hive-project.edn files."
 
 (defun hive-mcp-memory-project--parse-edn-value ()
   "Parse an EDN value at point."
-  (skip-chars-forward " \t\n\r")
+  ;; Skip whitespace and comments
+  (while (progn
+           (skip-chars-forward " \t\n\r")
+           (when (looking-at ";")
+             (forward-line 1)
+             t)))
   (cond
    ;; String
    ((looking-at "\"")

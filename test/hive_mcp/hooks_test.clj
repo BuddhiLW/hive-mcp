@@ -78,7 +78,7 @@
   (testing "trigger-hooks executes all registered handlers"
     (let [registry (hooks/create-registry)
           called (atom false)]
-      (hooks/register-hook registry :task-complete (fn [ctx] (reset! called true)))
+      (hooks/register-hook registry :task-complete (fn [_ctx] (reset! called true)))
       (hooks/trigger-hooks registry :task-complete {})
       (is @called))))
 
@@ -87,7 +87,7 @@
     (let [registry (hooks/create-registry)
           received-ctx (atom nil)]
       (hooks/register-hook registry :task-complete
-                           (fn [ctx] (reset! received-ctx ctx)))
+                           (fn [_ctx] (reset! received-ctx _ctx)))
       (hooks/trigger-hooks registry :task-complete {:task-id "123" :result :success})
       (is (= {:task-id "123" :result :success} @received-ctx)))))
 

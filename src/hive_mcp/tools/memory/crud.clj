@@ -14,9 +14,14 @@
             [hive-mcp.tools.memory.scope :as scope]
             [hive-mcp.tools.memory.format :as fmt]
             [hive-mcp.tools.memory.duration :as dur]
+            [hive-mcp.tools.core :refer [mcp-json]]
             [hive-mcp.chroma :as chroma]
             [clojure.data.json :as json]
             [taoensso.timbre :as log]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; ============================================================
 ;; Add Handler
@@ -51,7 +56,7 @@
         (let [merged-tags (distinct (concat (:tags existing) tags-with-scope))
               updated (chroma/update-entry! (:id existing) {:tags merged-tags})]
           (log/info "Duplicate found, merged tags:" (:id existing))
-          {:type "text" :text (json/write-str (fmt/entry->json-alist updated))})
+          (mcp-json (fmt/entry->json-alist updated)))
         ;; Create new entry
         (let [entry-id (chroma/index-memory-entry!
                         {:type type
@@ -63,7 +68,7 @@
                          :project-id project-id})
               created (chroma/get-entry-by-id entry-id)]
           (log/info "Created memory entry:" entry-id)
-          {:type "text" :text (json/write-str (fmt/entry->json-alist created))})))))
+          (mcp-json (fmt/entry->json-alist created)))))))
 
 ;; ============================================================
 ;; Query Handler
@@ -116,7 +121,7 @@
           dur-filtered (apply-duration-filter tag-filtered duration)
           ;; Apply limit
           results (take limit-val dur-filtered)]
-      {:type "text" :text (json/write-str (mapv fmt/entry->json-alist results))})))
+      (mcp-json (mapv fmt/entry->json-alist results)))))
 
 ;; ============================================================
 ;; Query Metadata Handler
@@ -139,7 +144,7 @@
         {:type "text" :text text :isError true}
         (let [entries (json/read-str text :key-fn keyword)
               metadata (mapv fmt/entry->metadata entries)]
-          {:type "text" :text (json/write-str metadata)})))))
+          (mcp-json metadata))))))
 
 ;; ============================================================
 ;; Get Full Handler
@@ -152,8 +157,8 @@
   (log/info "mcp-memory-get-full:" id)
   (with-chroma
     (if-let [entry (chroma/get-entry-by-id id)]
-      {:type "text" :text (json/write-str (fmt/entry->json-alist entry))}
-      {:type "text" :text (json/write-str {:error "Entry not found" :id id}) :isError true})))
+      (mcp-json (fmt/entry->json-alist entry))
+      (mcp-json {:error "Entry not found" :id id}))))
 
 ;; ============================================================
 ;; Check Duplicate Handler
@@ -170,6 +175,23 @@
     (let [project-id (scope/get-current-project-id directory)
           hash (chroma/content-hash content)
           existing (chroma/find-duplicate type hash :project-id project-id)]
-      {:type "text" :text (json/write-str {:exists (some? existing)
-                                           :entry (when existing (fmt/entry->json-alist existing))
-                                           :content_hash hash})})))
+      (mcp-json {:exists (some? existing)
+                 :entry (when existing (fmt/entry->json-alist existing))
+                 :content_hash hash}))))
+
+;; ============================================================
+;; Update Tags Handler
+;; ============================================================
+
+(defn handle-update-tags
+  "Update tags on an existing memory entry (Chroma-only).
+   Replaces existing tags with the new tags list.
+   Returns the updated entry or error if not found."
+  [{:keys [id tags]}]
+  (log/info "mcp-memory-update-tags:" id "tags:" tags)
+  (with-chroma
+    (if-let [_existing (chroma/get-entry-by-id id)]
+      (let [updated (chroma/update-entry! id {:tags (or tags [])})]
+        (log/info "Updated tags for entry:" id)
+        (mcp-json (fmt/entry->json-alist updated)))
+      (mcp-json {:error "Entry not found" :id id}))))

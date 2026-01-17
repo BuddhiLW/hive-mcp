@@ -25,6 +25,7 @@
 
 (require 'project)
 (require 'seq)
+(require 'parseedn)
 
 ;; Compatibility: plistp was added in Emacs 29
 (unless (fboundp 'plistp)
@@ -88,71 +89,20 @@ Used for client-side duration display and hints."
   "Hook run after adding memory entry. Args: TYPE ENTRY PROJECT-ID.")
 
 ;;; ============================================================
-;;; EDN Parser (for .hive-project.edn)
+;;; EDN Parser (using parseedn library)
 ;;; ============================================================
 
 (defun hive-mcp-memory--parse-edn-string (str)
-  "Parse a simple EDN string STR into elisp.
-Supports: strings, keywords, numbers, vectors, maps.
-This is a minimal parser for .hive-project.edn files."
-  (with-temp-buffer
-    (insert str)
-    (goto-char (point-min))
-    (hive-mcp-memory--parse-edn-value)))
+  "Parse an EDN string STR into elisp using parseedn.
+Returns a hash-table for maps, vectors for vectors, etc."
+  (parseedn-read-str str))
 
-(defun hive-mcp-memory--parse-edn-value ()
-  "Parse an EDN value at point."
-  (skip-chars-forward " \t\n\r")
+(defun hive-mcp-memory--edn-get (edn key)
+  "Get KEY from EDN hash-table or alist.
+KEY should be a keyword symbol like :project-id."
   (cond
-   ;; String
-   ((looking-at "\"")
-    (let ((start (point)))
-      (forward-char 1)
-      (while (not (looking-at "\""))
-        (if (looking-at "\\\\")
-            (forward-char 2)
-          (forward-char 1)))
-      (forward-char 1)
-      (car (read-from-string (buffer-substring start (point))))))
-   ;; Keyword
-   ((looking-at ":\\([a-zA-Z0-9_-]+\\)")
-    (let ((kw (match-string 1)))
-      (goto-char (match-end 0))
-      (intern (concat ":" kw))))
-   ;; Number
-   ((looking-at "-?[0-9]+\\(\\.[0-9]+\\)?")
-    (let ((num (match-string 0)))
-      (goto-char (match-end 0))
-      (string-to-number num)))
-   ;; Vector
-   ((looking-at "\\[")
-    (forward-char 1)
-    (let (items)
-      (while (not (looking-at "\\]"))
-        (push (hive-mcp-memory--parse-edn-value) items)
-        (skip-chars-forward " \t\n\r,"))
-      (forward-char 1)
-      (nreverse items)))
-   ;; Map
-   ((looking-at "{")
-    (forward-char 1)
-    (let (pairs)
-      (while (not (looking-at "}"))
-        (let ((key (hive-mcp-memory--parse-edn-value))
-              (val (hive-mcp-memory--parse-edn-value)))
-          (push (cons key val) pairs))
-        (skip-chars-forward " \t\n\r,"))
-      (forward-char 1)
-      (nreverse pairs)))
-   ;; nil/true/false
-   ((looking-at "nil") (goto-char (match-end 0)) nil)
-   ((looking-at "true") (goto-char (match-end 0)) t)
-   ((looking-at "false") (goto-char (match-end 0)) nil)
-   ;; Symbol (fallback)
-   ((looking-at "[a-zA-Z][a-zA-Z0-9_-]*")
-    (let ((sym (match-string 0)))
-      (goto-char (match-end 0))
-      (intern sym)))
+   ((hash-table-p edn) (gethash key edn))
+   ((listp edn) (cdr (assoc key edn)))
    (t nil)))
 
 ;;; ============================================================
@@ -183,7 +133,7 @@ Caches result per project root."
   "Get stable project ID from config file at PROJECT-ROOT.
 Returns the :project-id value from .hive-project.edn, or nil if not found."
   (when-let* ((config (hive-mcp-memory--read-project-config project-root))
-              (project-id (cdr (assoc :project-id config))))
+              (project-id (hive-mcp-memory--edn-get config :project-id)))
     (if (stringp project-id)
         project-id
       (symbol-name project-id))))

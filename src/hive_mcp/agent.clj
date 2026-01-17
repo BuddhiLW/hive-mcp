@@ -34,8 +34,12 @@
             [hive-mcp.agent.registry :as registry]
             [hive-mcp.agent.loop :as loop]
             [hive-mcp.agent.mcp :as mcp]
+            [hive-mcp.agent.drone :as drone]
             [hive-mcp.channel :as channel]
             [taoensso.timbre :as log]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 ;;; ============================================================
 ;;; Public API
@@ -136,8 +140,7 @@
   "Delegate a task to a drone (token-optimized leaf agent).
    See hive-mcp.agent.drone/delegate! for full documentation."
   [opts]
-  (require 'hive-mcp.agent.drone)
-  ((resolve 'hive-mcp.agent.drone/delegate!) opts delegate!))
+  (drone/delegate! opts delegate!))
 
 ;;; ============================================================
 ;;; MCP Tool Definitions (delegated to agent/mcp.clj)

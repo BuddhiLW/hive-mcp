@@ -199,6 +199,37 @@
     (let [claims (logic/get-all-claims)]
       (is (empty? claims)))))
 
+(deftest release-claims-for-task-without-task-relation-test
+  (testing "Releases claims when task relation is NOT populated (atomic-claim-files! case)"
+    ;; This tests the bug fix: atomic-claim-files! only populates claims and
+    ;; task-files, NOT the task relation. release-claims-for-task! must still
+    ;; work by getting slave-id from claims directly.
+    (logic/add-claim! "/src/a.clj" "slave-1")
+    (logic/add-claim! "/src/b.clj" "slave-1")
+    (logic/add-task-file! "task-1" "/src/a.clj")
+    (logic/add-task-file! "task-1" "/src/b.clj")
+    ;; Note: NO add-task! call - mimics atomic-claim-files! behavior
+
+    (logic/release-claims-for-task! "task-1")
+
+    (let [claims (logic/get-all-claims)]
+      (is (empty? claims) "All claims should be released even without task relation"))))
+
+(deftest release-claims-for-task-leaves-other-claims-test
+  (testing "Only releases claims for the specified task, not other tasks"
+    ;; Task 1 claims
+    (logic/add-claim! "/src/a.clj" "slave-1")
+    (logic/add-task-file! "task-1" "/src/a.clj")
+    ;; Task 2 claims (different slave)
+    (logic/add-claim! "/src/b.clj" "slave-2")
+    (logic/add-task-file! "task-2" "/src/b.clj")
+
+    (logic/release-claims-for-task! "task-1")
+
+    (let [claims (logic/get-all-claims)]
+      (is (= 1 (count claims)) "Only task-2 claim should remain")
+      (is (= "slave-2" (:slave-id (first claims)))))))
+
 ;; =============================================================================
 ;; Database Stats Tests
 ;; =============================================================================

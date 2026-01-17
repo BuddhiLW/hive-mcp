@@ -11,6 +11,10 @@
             [clojure.data.json :as json]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; =============================================================================
 ;; Basic Buffer Operations
@@ -245,23 +249,6 @@
     (hooks/dispatch-after name args (:text result))
     result))
 
-(defn handle-mcp-watch-buffer
-  "Get recent content from a buffer for monitoring (e.g., *Messages*)."
-  [{:keys [buffer_name lines]}]
-  (log/info "mcp-watch-buffer:" buffer_name)
-  (let [num-lines (or lines 50)
-        elisp (format "(with-current-buffer %s
-                         (save-excursion
-                           (goto-char (point-max))
-                           (forward-line (- %d))
-                           (buffer-substring-no-properties (point) (point-max))))"
-                      (pr-str buffer_name)
-                      num-lines)
-        {:keys [success result error]} (ec/eval-elisp elisp)]
-    (if success
-      {:type "text" :text result}
-      {:type "text" :text (str "Error: " error) :isError true})))
-
 (defn handle-mcp-list-special-buffers
   "List special buffers useful for monitoring (*Messages*, *Warnings*, etc.)."
   [_]
@@ -414,16 +401,6 @@
                                        :description "Optional arguments. For catchup: {\"directory\": \"/path/to/project\"} to specify project context."}}
                   :required ["name"]}
     :handler handle-mcp-run-workflow}
-
-   {:name "mcp_watch_buffer"
-    :description "Get recent content from a buffer for monitoring. Useful for watching *Messages*, *Warnings*, *Compile-Log*, etc. Returns the last N lines."
-    :inputSchema {:type "object"
-                  :properties {"buffer_name" {:type "string"
-                                              :description "Name of the buffer to watch (e.g., \"*Messages*\")"}
-                               "lines" {:type "integer"
-                                        :description "Number of lines to retrieve from end (default: 50)"}}
-                  :required ["buffer_name"]}
-    :handler handle-mcp-watch-buffer}
 
    {:name "mcp_list_special_buffers"
     :description "List all special buffers (those starting with *) useful for monitoring. Returns buffer names like *Messages*, *scratch*, *Warnings*, etc."

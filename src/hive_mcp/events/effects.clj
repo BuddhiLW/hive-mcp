@@ -27,9 +27,27 @@
             [hive-mcp.swarm.datascript :as ds]
             [hive-mcp.swarm.coordinator :as coordinator]
             [hive-mcp.channel :as channel]
-            [hive-mcp.tools.memory.crud :as memory-crud]
+            [clojure.java.shell :as shell]
             [datascript.core :as d]
             [taoensso.timbre :as log]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
+;; =============================================================================
+;; Injected Handler State
+;; =============================================================================
+
+(defonce ^:private memory-write-handler (atom nil))
+
+(defn set-memory-write-handler!
+  "Set the handler function for :memory-write effect.
+   Called during server initialization to wire infrastructure layer.
+
+   Example:
+     (set-memory-write-handler! memory-crud/handle-add)"
+  [f]
+  (reset! memory-write-handler f))
 
 ;; =============================================================================
 ;; Effect: :shout
@@ -41,12 +59,44 @@
    Expected data shape:
    {:agent-id   \"swarm-worker-123\"
     :event-type :progress | :completed | :error | :blocked | :started
-    :data       {:task \"...\" :message \"...\" ...}}"
+    :data       {:task \"...\" :message \"...\" ...}}
+
+   P1 FIX: Fallback chain includes ctx/current-agent-id for drone context."
   [{:keys [agent-id event-type data]}]
-  (let [effective-id (or agent-id
+  ;; P1 FIX: Check context for drone attribution
+  ;; Uses hive-mcp.agent.context (no circular dep) for thread-local agent-id
+  (let [get-ctx-agent-id (try
+                           (requiring-resolve 'hive-mcp.agent.context/current-agent-id)
+                           (catch Exception _ nil))
+        effective-id (or agent-id
+                         (when get-ctx-agent-id (get-ctx-agent-id))
                          (System/getenv "CLAUDE_SWARM_SLAVE_ID")
                          "unknown-agent")]
     (hivemind/shout! effective-id event-type data)))
+
+;; =============================================================================
+;; Effect: :targeted-shout (File Claim Cascade)
+;; =============================================================================
+
+(defn- handle-targeted-shout
+  "Execute a :targeted-shout effect - send shout to specific agent.
+
+   Like :shout but explicitly targets a specific agent-id rather than
+   using the current agent from environment. Used for notifying lings
+   about events that affect them (e.g., file availability).
+
+   Expected data shape:
+   {:target-agent-id \"ling-worker-123\"  ; Agent to receive the shout
+    :event-type      :file-available     ; Type of event
+    :data            {:file \"...\" ...}}  ; Event payload
+
+   Example:
+   {:targeted-shout {:target-agent-id \"swarm-ling-task-1\"
+                     :event-type :file-available
+                     :data {:file \"src/core.clj\"}}}"
+  [{:keys [target-agent-id event-type data]}]
+  (when target-agent-id
+    (hivemind/shout! target-agent-id event-type data)))
 
 ;; =============================================================================
 ;; Effect: :log
@@ -157,11 +207,13 @@
                    :duration \"permanent\"}}"
   [{:keys [type content] :as data}]
   (when (and type content)
-    (try
-      (memory-crud/handle-add data)
-      (log/debug "[EVENT] Memory entry created:" type)
-      (catch Exception e
-        (log/error "[EVENT] Memory write failed:" (.getMessage e))))))
+    (if-let [handler @memory-write-handler]
+      (try
+        (handler data)
+        (log/debug "[EVENT] Memory entry created:" type)
+        (catch Exception e
+          (log/error "[EVENT] Memory write failed:" (.getMessage e))))
+      (log/warn "[EVENT] Memory write handler not configured - call set-memory-write-handler! during initialization"))))
 
 ;; =============================================================================
 ;; Effect: :report-metrics (CLARITY-T: Telemetry)
@@ -186,6 +238,61 @@
       :log (log/info "[METRICS] Event system metrics:" metrics)
       ;; Future: :prometheus, :statsd
       (log/warn "[METRICS] Unknown metrics destination:" destination))))
+
+;; =============================================================================
+;; Effect: :emit-system-error (Telemetry Phase 1)
+;; =============================================================================
+
+(defn- handle-emit-system-error
+  "Execute an :emit-system-error effect - emit structured error for telemetry.
+
+   Provides structured error handling for catastrophic failures:
+   1. Logs with structured format for searchability
+   2. Emits to WebSocket channel for Emacs visibility
+   3. Stores in DataScript for post-mortem analysis
+
+   Expected data shape:
+   {:error-type :harvest-failed | :component-failed | :restart-collision | :emacs-unreachable
+    :source     \"hooks/harvest-session-progress\"
+    :message    \"Emacs unreachable\"
+    :context    {:fn \"harvest-session-progress\" :attempt 1}}
+
+   Example:
+   {:emit-system-error {:error-type :harvest-failed
+                        :source \"hooks/harvest-session-progress\"
+                        :message \"Connection refused\"
+                        :context {:fn \"harvest-session-progress\"}}}
+
+   CLARITY Principle: Telemetry first - observable system behavior."
+  [{:keys [error-type source message context] :as data}]
+  (let [timestamp (System/currentTimeMillis)
+        error-data (assoc data :timestamp timestamp)]
+    ;; 1. Log with structured format
+    (log/error "[SYSTEM-ERROR]"
+               {:error-type error-type
+                :source source
+                :message message
+                :context context
+                :timestamp timestamp})
+
+    ;; 2. Emit to WebSocket channel for Emacs visibility
+    (try
+      (when (channel/server-connected?)
+        (channel/emit-event! :system-error error-data))
+      (catch Exception e
+        (log/warn "[SYSTEM-ERROR] Failed to emit to channel:" (.getMessage e))))
+
+    ;; 3. Store in DataScript for post-mortem analysis
+    (try
+      (let [conn (ds/get-conn)]
+        (d/transact! conn [{:error/type :system-error
+                            :error/error-type error-type
+                            :error/source source
+                            :error/message message
+                            :error/context (pr-str context)
+                            :error/timestamp timestamp}]))
+      (catch Exception e
+        (log/warn "[SYSTEM-ERROR] Failed to store in DataScript:" (.getMessage e))))))
 
 ;; =============================================================================
 ;; Effect: :dispatch (Event chaining)
@@ -213,6 +320,35 @@
           (log/error "[EVENT] Dispatch chain failed:" (.getMessage e)))))))
 
 ;; =============================================================================
+;; Effect: :dispatch-n (File Claim Cascade)
+;; =============================================================================
+
+(defn- handle-dispatch-n
+  "Execute a :dispatch-n effect - dispatch multiple events in sequence.
+
+   Like :dispatch but accepts a vector of events to dispatch.
+   Events are dispatched sequentially using async futures.
+   Useful when one event needs to trigger multiple follow-up events.
+
+   Expected data: Vector of event vectors.
+
+   Example:
+   {:dispatch-n [[:claim/notify-waiting {:target \"ling-1\" :file \"a.clj\"}]
+                 [:claim/notify-waiting {:target \"ling-2\" :file \"a.clj\"}]]}
+
+   Note: Uses async dispatch via futures to prevent stack overflow."
+  [events]
+  (when (and (sequential? events) (seq events))
+    (doseq [event events]
+      (when (and (vector? event) (keyword? (first event)))
+        ;; Use async dispatch via future to prevent stack overflow
+        (future
+          (try
+            (ev/dispatch event)
+            (catch Exception e
+              (log/error "[EVENT] Dispatch-n chain failed for" (first event) ":" (.getMessage e)))))))))
+
+;; =============================================================================
 ;; Effect: :git-commit (P5-2)
 ;; =============================================================================
 
@@ -233,9 +369,9 @@
   [{:keys [files message task-id]}]
   (when (and (seq files) message)
     (try
-      (let [add-result (apply clojure.java.shell/sh
-                              "git" "add" "--" (vec files))
-            commit-result (clojure.java.shell/sh
+      (let [_add-result (apply shell/sh
+                               "git" "add" "--" (vec files))
+            commit-result (shell/sh
                            "git" "commit" "-m" message)]
         (if (zero? (:exit commit-result))
           (log/info "[EVENT] Git commit created:" message
@@ -272,6 +408,67 @@
                 (str "direction=" (or direction :bidirectional)))
       (catch Exception e
         (log/error "[EVENT] Kanban sync error:" (.getMessage e))))))
+
+;; =============================================================================
+;; Effect: :kanban-move-done (Session Complete)
+;; =============================================================================
+
+(defn- handle-kanban-move-done
+  "Execute a :kanban-move-done effect - move multiple tasks to done.
+
+   Moves each specified kanban task to done status via the memory kanban system.
+   Part of the session_complete workflow.
+
+   Expected data shape:
+   {:task-ids  [\"task-1\" \"task-2\"]
+    :directory \"/project/path\"}  ; optional, for scoping
+
+   Example:
+   {:kanban-move-done {:task-ids [\"kanban-uuid-1\" \"kanban-uuid-2\"]}}"
+  [{:keys [task-ids directory]}]
+  (when (seq task-ids)
+    (doseq [task-id task-ids]
+      (try
+        ;; Use emacsclient to call the kanban move function
+        (let [dir-arg (if directory
+                        (str "\"" directory "\"")
+                        "nil")
+              elisp (format "(json-encode (hive-mcp-api-kanban-move %s \"done\" %s))"
+                            (str "\"" task-id "\"")
+                            dir-arg)
+              {:keys [success error]} (require '[hive-mcp.emacsclient :as ec])
+              result (when (resolve 'hive-mcp.emacsclient/eval-elisp)
+                       ((resolve 'hive-mcp.emacsclient/eval-elisp) elisp))]
+          (if (:success result)
+            (log/info "[EVENT] Kanban task moved to done:" task-id)
+            (log/warn "[EVENT] Kanban move failed for" task-id ":" (:error result))))
+        (catch Exception e
+          (log/error "[EVENT] Kanban move error for" task-id ":" (.getMessage e)))))))
+
+;; =============================================================================
+;; Effect: :wrap-crystallize (Session Complete)
+;; =============================================================================
+
+(defn- handle-wrap-crystallize
+  "Execute a :wrap-crystallize effect - run wrap crystallization.
+
+   Triggers the wrap crystallize workflow to persist session learnings
+   to long-term memory. Part of the session_complete workflow.
+
+   Expected data shape:
+   {:agent-id \"ling-123\"}
+
+   Example:
+   {:wrap-crystallize {:agent-id \"swarm-ling-worker-456\"}}"
+  [{:keys [agent-id]}]
+  (try
+    ;; Dynamically require to avoid circular deps
+    (require '[hive-mcp.tools.crystal :as crystal])
+    (when-let [handler (resolve 'hive-mcp.tools.crystal/handle-wrap-crystallize)]
+      (handler {:agent_id agent-id}))
+    (log/info "[EVENT] Wrap crystallize completed for:" agent-id)
+    (catch Exception e
+      (log/error "[EVENT] Wrap crystallize failed:" (.getMessage e)))))
 
 ;; =============================================================================
 ;; Effect: :dispatch-task (POC-07)
@@ -321,22 +518,26 @@
    Safe to call multiple times - only registers once.
 
    Effects registered:
-   - :shout          - Broadcast to hivemind coordinator
-   - :log            - Simple logging
-   - :ds-transact    - DataScript transactions
-   - :wrap-notify    - Record ling wrap to DataScript
+   - :shout           - Broadcast to hivemind coordinator
+   - :targeted-shout  - Send shout to specific agent (File Claim Cascade)
+   - :log             - Simple logging
+   - :ds-transact     - DataScript transactions
+   - :wrap-notify     - Record ling wrap to DataScript
    - :channel-publish - Emit to WebSocket channel
-   - :memory-write   - Add entry to Chroma memory
-   - :report-metrics - Report metrics
-   - :dispatch       - Chain to another event
-   - :git-commit     - Stage files and create git commit (P5-2)
-   - :kanban-sync    - Synchronize kanban state (P5-4)
-   - :dispatch-task  - Dispatch task to swarm slave (POC-07)
+   - :memory-write    - Add entry to Chroma memory
+   - :report-metrics  - Report metrics
+   - :dispatch        - Chain to another event
+   - :dispatch-n      - Dispatch multiple events in sequence (File Claim Cascade)
+   - :git-commit      - Stage files and create git commit (P5-2)
+   - :kanban-sync     - Synchronize kanban state (P5-4)
+   - :dispatch-task   - Dispatch task to swarm slave (POC-07)
+   - :emit-system-error - Structured error telemetry (Telemetry Phase 1)
 
-   Coeffects registered (POC-08/09/10):
-   - :now            - Current timestamp in milliseconds
-   - :agent-context  - Agent ID and current working directory
-   - :db             - DataScript database snapshot
+   Coeffects registered (POC-08/09/10/11):
+   - :now             - Current timestamp in milliseconds
+   - :agent-context   - Agent ID and current working directory
+   - :db-snapshot     - DataScript database snapshot
+   - :waiting-lings   - Query lings waiting on a specific file (File Claim Cascade)
 
    Returns true if effects were registered, false if already registered."
   []
@@ -363,12 +564,37 @@
                  (fn [coeffects]
                    (assoc coeffects :db-snapshot @(ds/get-conn))))
 
+    ;; POC-11: :waiting-lings coeffect - Query lings waiting on a file
+    ;; Used by :claim/file-released to find lings to notify
+    ;; Note: This is a parameterized coeffect - takes file-path argument
+    (ev/reg-cofx :waiting-lings
+                 (fn [coeffects file-path]
+                   (let [db @(ds/get-conn)
+                         waiting (when (and db file-path)
+                                   (d/q '[:find ?slave-id ?task-id
+                                          :in $ ?file
+                                          :where
+                                          [?t :task/files ?file]
+                                          [?t :task/status :queued]
+                                          [?t :task/id ?task-id]
+                                          [?t :task/slave ?s]
+                                          [?s :slave/id ?slave-id]]
+                                        db file-path))]
+                     (assoc coeffects :waiting-lings
+                            (mapv (fn [[slave-id task-id]]
+                                    {:slave-id slave-id
+                                     :task-id task-id})
+                                  (or waiting []))))))
+
     ;; ==========================================================================
     ;; Effects
     ;; ==========================================================================
 
     ;; :shout - Broadcast to hivemind coordinator
     (ev/reg-fx :shout handle-shout)
+
+    ;; :targeted-shout - Send shout to specific agent (File Claim Cascade)
+    (ev/reg-fx :targeted-shout handle-targeted-shout)
 
     ;; :log - Simple logging
     (ev/reg-fx :log handle-log)
@@ -388,8 +614,14 @@
     ;; :report-metrics - Report metrics to external system (CLARITY-T: Telemetry)
     (ev/reg-fx :report-metrics handle-report-metrics)
 
+    ;; :emit-system-error - Structured error telemetry (Telemetry Phase 1)
+    (ev/reg-fx :emit-system-error handle-emit-system-error)
+
     ;; :dispatch - Chain events (for :ling/completed -> :session/end)
     (ev/reg-fx :dispatch handle-dispatch)
+
+    ;; :dispatch-n - Dispatch multiple events (File Claim Cascade)
+    (ev/reg-fx :dispatch-n handle-dispatch-n)
 
     ;; :git-commit - Stage files and create git commit (P5-2)
     (ev/reg-fx :git-commit handle-git-commit)
@@ -400,20 +632,19 @@
     ;; :dispatch-task - Dispatch task to swarm slave (POC-07)
     (ev/reg-fx :dispatch-task handle-dispatch-task)
 
-    ;; Register event handlers that produce these effects
-    (ev/reg-event :crystal/wrap-notify []
-                  (fn [_coeffects event]
-                    (let [{:keys [agent-id session-id created-ids stats]} (second event)]
-                      {:wrap-notify {:agent-id agent-id
-                                     :session-id session-id
-                                     :created-ids created-ids
-                                     :stats stats}
-                       :log {:level :info
-                             :message (str "Wrap notification from " agent-id)}})))
+    ;; :kanban-move-done - Move kanban tasks to done (Session Complete)
+    (ev/reg-fx :kanban-move-done handle-kanban-move-done)
+
+    ;; :wrap-crystallize - Run wrap crystallization (Session Complete)
+    (ev/reg-fx :wrap-crystallize handle-wrap-crystallize)
+
+    ;; NOTE: :crystal/wrap-notify event handler is registered in
+    ;; hive-mcp.events.handlers.crystal/register-handlers! with proper
+    ;; defensive stats handling. Do NOT duplicate here.
 
     (reset! *registered true)
-    (log/info "[hive-events] Coeffects registered: :now :agent-context :db-snapshot")
-    (log/info "[hive-events] Effects registered: :shout :log :ds-transact :wrap-notify :channel-publish :memory-write :report-metrics :dispatch :git-commit :kanban-sync :dispatch-task")
+    (log/info "[hive-events] Coeffects registered: :now :agent-context :db-snapshot :waiting-lings")
+    (log/info "[hive-events] Effects registered: :shout :targeted-shout :log :ds-transact :wrap-notify :channel-publish :memory-write :report-metrics :emit-system-error :dispatch :dispatch-n :git-commit :kanban-sync :dispatch-task :kanban-move-done :wrap-crystallize")
     true))
 
 (defn reset-registration!

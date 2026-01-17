@@ -19,6 +19,10 @@
    - Inputs guarded: All public functions validate inputs
    - Yield safe failure: Handler errors don't stop other handlers"
   (:require [taoensso.timbre :as log]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; =============================================================================
 ;; Hook Events Definition

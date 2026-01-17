@@ -9,6 +9,9 @@
   (:require [hive-mcp.swarm.logic :as logic]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 ;; =============================================================================
 ;; Task Queue (for conflicting tasks that must wait)
@@ -88,6 +91,46 @@
          (remove #(str/starts-with? % "http"))
          distinct
          vec)))
+
+;; =============================================================================
+;; Atomic Claim Acquisition (Race-Free)
+;; =============================================================================
+
+(defn atomic-claim-files!
+  "Atomically check for conflicts AND acquire claims.
+
+   CRITICAL: This prevents the race condition where:
+   1. Drone A checks files - no conflicts
+   2. Drone B checks same files - no conflicts
+   3. Drone A claims files
+   4. Drone B claims same files (conflict not detected!)
+
+   Uses locking on logic-db to ensure check+claim is atomic.
+
+   Arguments:
+   - task-id:  Unique task identifier
+   - slave-id: Slave/drone claiming the files
+   - files:    List of file paths to claim
+
+   Returns:
+   {:acquired? bool    - true if all files were claimed
+    :conflicts [...]   - list of {:file path :held-by slave-id} if conflicts
+    :files-claimed N}  - count of files claimed (0 if conflicts)"
+  [task-id slave-id files]
+  (when (seq files)
+    (locking (logic/get-logic-db-atom)
+      (let [conflicts (logic/check-file-conflicts slave-id files)]
+        (if (seq conflicts)
+          {:acquired? false
+           :conflicts (vec conflicts)
+           :files-claimed 0}
+          (do
+            (doseq [f files]
+              (logic/add-claim! f slave-id)
+              (logic/add-task-file! task-id f))
+            {:acquired? true
+             :conflicts []
+             :files-claimed (count files)}))))))
 
 ;; =============================================================================
 ;; Pre-Flight Check API
@@ -188,7 +231,7 @@
 
    If approved, caller should proceed with actual dispatch.
    If queued, task is stored and will be returned by process-queue! when ready."
-  [{:keys [slave-id prompt files timeout-ms] :as task-spec}]
+  [{:keys [_slave-id _prompt files _timeout-ms] :as task-spec}]
   (let [check-result (pre-flight-check task-spec)]
     (cond
       ;; Deadlock - cannot proceed at all

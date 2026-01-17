@@ -14,7 +14,11 @@
    SOLID Principles:
    - SRP: All piggyback logic in one module
    - DIP: Message source is injectable, not hardcoded to hivemind"
-  (:require [clojure.spec.alpha :as s]))
+  (:require [clojure.spec.alpha :as s]
+            [hive-mcp.guards :as guards]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 ;; Specs for piggyback messages
 (s/def ::agent-id string?)
@@ -31,6 +35,16 @@
 (defonce ^{:doc "Map of agent-id -> [instructions...]. Drained when piggybacked."}
   instruction-queues
   (atom {}))
+
+(defn clear-instruction-queues!
+  "Clear instruction queues. GUARDED - no-op if coordinator running.
+
+   CLARITY-Y: Yield safe failure - prevents test fixtures from
+   corrupting production instruction queue state."
+  []
+  (guards/when-not-coordinator
+   "clear-instruction-queues! called"
+   (reset! instruction-queues {})))
 
 (defn push-instruction!
   "Push an instruction to an agent's queue.

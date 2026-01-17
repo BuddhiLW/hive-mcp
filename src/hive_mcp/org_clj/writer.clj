@@ -9,6 +9,10 @@
    - Nested headline structure"
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; =============================================================================
 ;; Property Drawer Writing
@@ -195,8 +199,7 @@
 
 (comment
   ;; Run tests
-  (require '[clojure.test :refer [run-tests]])
-  (run-tests)
+  (clojure.test/run-tests)
 
   ;; Example usage
   (write-headline-text {:level 2 :keyword "TODO" :priority "A" :title "My task" :tags ["work"]})

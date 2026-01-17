@@ -123,6 +123,23 @@ Returns plist (:text TEXT :pos POS) or nil."
 
 ;;;; Auto-Approve Mode:
 
+;; Helper predicates for prompt processing (CLARITY-L: self-documenting code)
+
+(defun hive-mcp-swarm-prompts--slave-active-p (slave buffer)
+  "Return t if SLAVE with BUFFER is actively working and ready for prompts."
+  (and (buffer-live-p buffer)
+       (eq (plist-get slave :status) 'working)))
+
+(defun hive-mcp-swarm-prompts--prompt-is-new-p (prompt-pos last-pos)
+  "Return t if PROMPT-POS indicates a new prompt after LAST-POS."
+  (and prompt-pos (> prompt-pos last-pos)))
+
+(defun hive-mcp-swarm-prompts--already-queued-p (slave-id)
+  "Return t if SLAVE-ID already has a pending prompt in queue."
+  (cl-find slave-id hive-mcp-swarm-prompts--pending
+           :key (lambda (p) (plist-get p :slave-id))
+           :test #'equal))
+
 (defun hive-mcp-swarm-prompts--send-approval (buffer term-type)
   "Send \\='y\\=' approval to BUFFER using TERM-TYPE."
   (when (buffer-live-p buffer)
@@ -146,23 +163,30 @@ Returns plist (:text TEXT :pos POS) or nil."
                                      eat-terminal)
                             (eat-term-send-string eat-terminal "\r"))))))))))
 
+(defun hive-mcp-swarm-prompts--process-auto-approve (slave-id slave get-terminal-fn)
+  "Process auto-approve for SLAVE with SLAVE-ID.
+GET-TERMINAL-FN extracts terminal type from slave plist.
+Returns t if a prompt was auto-approved, nil otherwise."
+  (let* ((buffer (plist-get slave :buffer))
+         (term-type (funcall get-terminal-fn slave))
+         (last-pos (gethash slave-id hive-mcp-swarm-prompts--last-positions 0)))
+    (when (hive-mcp-swarm-prompts--slave-active-p slave buffer)
+      (let ((prompt-pos (hive-mcp-swarm-prompts--check-for-prompt buffer)))
+        (when (hive-mcp-swarm-prompts--prompt-is-new-p prompt-pos last-pos)
+          (message "[swarm-prompts] Auto-approving prompt in %s" slave-id)
+          (puthash slave-id prompt-pos hive-mcp-swarm-prompts--last-positions)
+          (hive-mcp-swarm-prompts--send-approval buffer term-type)
+          t)))))
+
 (defun hive-mcp-swarm-prompts--auto-tick (slaves-hash get-terminal-fn)
   "Check all slave buffers for prompts in auto mode.
 SLAVES-HASH is hash table of slave-id -> slave plist.
-GET-TERMINAL-FN takes slave plist and returns terminal type symbol."
+GET-TERMINAL-FN takes slave plist and returns terminal type symbol.
+CLARITY: L - Bottom-up reading via extracted per-slave helper."
   (when hive-mcp-swarm-prompts-auto-approve
     (maphash
      (lambda (slave-id slave)
-       (let* ((buffer (plist-get slave :buffer))
-              (term-type (funcall get-terminal-fn slave))
-              (last-pos (gethash slave-id hive-mcp-swarm-prompts--last-positions 0)))
-         (when (and (buffer-live-p buffer)
-                    (eq (plist-get slave :status) 'working))
-           (let ((prompt-pos (hive-mcp-swarm-prompts--check-for-prompt buffer)))
-             (when (and prompt-pos (> prompt-pos last-pos))
-               (message "[swarm-prompts] Auto-approving prompt in %s" slave-id)
-               (puthash slave-id prompt-pos hive-mcp-swarm-prompts--last-positions)
-               (hive-mcp-swarm-prompts--send-approval buffer term-type))))))
+       (hive-mcp-swarm-prompts--process-auto-approve slave-id slave get-terminal-fn))
      slaves-hash)))
 
 ;;;; Human Mode:
@@ -213,28 +237,33 @@ Emits prompt-shown event via channel for push-based updates."
   (when (fboundp 'hive-mcp-swarm-events-emit-prompt-shown)
     (hive-mcp-swarm-events-emit-prompt-shown slave-id prompt-text)))
 
+(defun hive-mcp-swarm-prompts--process-human-mode (slave-id slave)
+  "Process human-mode prompt detection for SLAVE with SLAVE-ID.
+Queues prompt for human decision if new and not already queued.
+Returns t if a prompt was queued, nil otherwise."
+  (let* ((buffer (plist-get slave :buffer))
+         (last-pos (gethash slave-id hive-mcp-swarm-prompts--last-positions 0)))
+    (when (hive-mcp-swarm-prompts--slave-active-p slave buffer)
+      (let ((prompt-info (hive-mcp-swarm-prompts--extract-prompt buffer)))
+        (when (and prompt-info
+                   (hive-mcp-swarm-prompts--prompt-is-new-p
+                    (plist-get prompt-info :pos) last-pos)
+                   (not (hive-mcp-swarm-prompts--already-queued-p slave-id)))
+          (puthash slave-id (plist-get prompt-info :pos)
+                   hive-mcp-swarm-prompts--last-positions)
+          (hive-mcp-swarm-prompts--queue-prompt
+           slave-id
+           (plist-get prompt-info :text)
+           buffer)
+          t)))))
+
 (defun hive-mcp-swarm-prompts--human-tick (slaves-hash)
   "Check all slave buffers for prompts in human mode.
-SLAVES-HASH is hash table of slave-id -> slave plist."
+SLAVES-HASH is hash table of slave-id -> slave plist.
+CLARITY: L - Bottom-up reading via extracted per-slave helper."
   (maphash
    (lambda (slave-id slave)
-     (let* ((buffer (plist-get slave :buffer))
-            (last-pos (gethash slave-id hive-mcp-swarm-prompts--last-positions 0)))
-       (when (and (buffer-live-p buffer)
-                  (eq (plist-get slave :status) 'working))
-         (let ((prompt-info (hive-mcp-swarm-prompts--extract-prompt buffer)))
-           (when (and prompt-info
-                      (> (plist-get prompt-info :pos) last-pos)
-                      ;; Not already in queue
-                      (not (cl-find slave-id hive-mcp-swarm-prompts--pending
-                                    :key (lambda (p) (plist-get p :slave-id))
-                                    :test #'equal)))
-             (puthash slave-id (plist-get prompt-info :pos)
-                      hive-mcp-swarm-prompts--last-positions)
-             (hive-mcp-swarm-prompts--queue-prompt
-              slave-id
-              (plist-get prompt-info :text)
-              buffer))))))
+     (hive-mcp-swarm-prompts--process-human-mode slave-id slave))
    slaves-hash))
 
 ;;;; Response Sending:

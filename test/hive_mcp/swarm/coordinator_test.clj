@@ -1,239 +1,274 @@
 (ns hive-mcp.swarm.coordinator-test
-  "Integration tests for swarm coordinator.
-   
-   Tests real-world scenarios:
-   - Two agents trying to edit same file → conflict detected, second queued
-   - Agent completes → claims released → queued task becomes ready
-   - Full dispatch-or-queue lifecycle"
+  "Tests for coordinator lifecycle management in DataScript.
+
+   Covers:
+   - Coordinator registration and retrieval
+   - Heartbeat updates
+   - Status transitions (active → stale → terminated)
+   - Stale coordinator cleanup
+   - Multi-project coordinator queries"
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
-            [hive-mcp.swarm.coordinator :as coord]
-            [hive-mcp.swarm.logic :as logic]))
+            [hive-mcp.swarm.datascript :as ds]))
 
-;; =============================================================================
-;; Test Fixtures
-;; =============================================================================
+;;; =============================================================================
+;;; Test Fixtures
+;;; =============================================================================
 
-(defn reset-state-fixture
-  "Reset both logic database and coordinator queue before each test."
+(defn reset-db-fixture
+  "Reset DataScript database before each test."
   [f]
-  (logic/reset-db!)
-  (coord/clear-queue!)
+  (ds/reset-conn!)
   (f))
 
-(use-fixtures :each reset-state-fixture)
+(use-fixtures :each reset-db-fixture)
 
-;; =============================================================================
-;; Scenario: Two Agents Same File
-;; =============================================================================
+;;; =============================================================================
+;;; Registration Tests
+;;; =============================================================================
 
-(deftest two-agents-same-file-conflict-test
-  (testing "When two agents try to edit the same file, second is blocked"
-    ;; Setup: Agent Alice is working on core.clj
-    (logic/add-slave! "alice" :working)
-    (logic/add-claim! "/src/core.clj" "alice")
+(deftest register-coordinator-basic-test
+  (testing "register-coordinator! creates coordinator with required fields"
+    (ds/register-coordinator! "coord-1" {:project "test-project"})
+    (let [coord (ds/get-coordinator "coord-1")]
+      (is (some? coord) "Coordinator should exist")
+      (is (= "coord-1" (:coordinator/id coord)))
+      (is (= "test-project" (:coordinator/project coord)))
+      (is (= :active (:coordinator/status coord)) "Initial status should be :active")
+      (is (some? (:coordinator/pid coord)) "PID should be auto-populated")
+      (is (some? (:coordinator/session-id coord)) "Session ID should be auto-generated")
+      (is (some? (:coordinator/started-at coord)) "Started timestamp should be set")
+      (is (some? (:coordinator/heartbeat-at coord)) "Heartbeat timestamp should be set"))))
 
-    ;; Agent Bob tries to dispatch a task that touches core.clj
-    (logic/add-slave! "bob" :idle)
+(deftest register-coordinator-custom-opts-test
+  (testing "register-coordinator! respects custom options"
+    (ds/register-coordinator! "coord-2"
+                              {:project "custom-project"
+                               :pid 12345
+                               :session-id "custom-session-uuid"})
+    (let [coord (ds/get-coordinator "coord-2")]
+      (is (= 12345 (:coordinator/pid coord)))
+      (is (= "custom-session-uuid" (:coordinator/session-id coord))))))
 
-    (let [check-result (coord/pre-flight-check
-                        {:slave-id "bob"
-                         :files ["/src/core.clj"]})]
+(deftest register-coordinator-upsert-test
+  (testing "register-coordinator! upserts on same ID (unique identity)"
+    (ds/register-coordinator! "coord-3" {:project "project-v1"})
+    (let [coord-v1 (ds/get-coordinator "coord-3")]
+      (ds/register-coordinator! "coord-3" {:project "project-v2"})
+      (let [coord-v2 (ds/get-coordinator "coord-3")]
+        (is (= "project-v2" (:coordinator/project coord-v2)))
+        (is (= :active (:coordinator/status coord-v2)))))))
 
-      (is (not (:approved? check-result))
-          "Bob should NOT be approved - file conflict")
-      (is (:queue? check-result)
-          "Bob's task should be queued")
-      (is (= 1 (count (:conflicts check-result)))
-          "Should have exactly one conflict")
-      (is (= "/src/core.clj" (:file (first (:conflicts check-result))))
-          "Conflict should be on core.clj")
-      (is (= "alice" (:held-by (first (:conflicts check-result))))
-          "File should be held by alice"))))
+;;; =============================================================================
+;;; Query Tests
+;;; =============================================================================
 
-(deftest two-agents-different-files-no-conflict-test
-  (testing "When two agents edit different files, no conflict"
-    ;; Setup: Agent Alice is working on core.clj
-    (logic/add-slave! "alice" :working)
-    (logic/add-claim! "/src/core.clj" "alice")
+(deftest get-coordinator-not-found-test
+  (testing "get-coordinator returns nil for non-existent ID"
+    (is (nil? (ds/get-coordinator "non-existent")))))
 
-    ;; Agent Bob tries to dispatch a task on different file
-    (logic/add-slave! "bob" :idle)
+(deftest get-all-coordinators-test
+  (testing "get-all-coordinators returns all registered coordinators"
+    (ds/register-coordinator! "coord-a" {:project "proj-a"})
+    (ds/register-coordinator! "coord-b" {:project "proj-b"})
+    (ds/register-coordinator! "coord-c" {:project "proj-c"})
+    (let [all (ds/get-all-coordinators)]
+      (is (= 3 (count all)))
+      (is (= #{"coord-a" "coord-b" "coord-c"}
+             (set (map :coordinator/id all)))))))
 
-    (let [check-result (coord/pre-flight-check
-                        {:slave-id "bob"
-                         :files ["/src/utils.clj"]})]
+(deftest get-coordinators-by-status-test
+  (testing "get-coordinators-by-status filters correctly"
+    (ds/register-coordinator! "active-1" {:project "p1"})
+    (ds/register-coordinator! "active-2" {:project "p2"})
+    (ds/register-coordinator! "stale-1" {:project "p3"})
+    (ds/mark-coordinator-stale! "stale-1")
 
-      (is (:approved? check-result)
-          "Bob should be approved - no conflict")
-      (is (not (:queue? check-result))
-          "Bob's task should NOT be queued")
-      (is (empty? (:conflicts check-result))
-          "Should have no conflicts"))))
+    (let [active (ds/get-coordinators-by-status :active)
+          stale (ds/get-coordinators-by-status :stale)]
+      (is (= 2 (count active)))
+      (is (= #{"active-1" "active-2"} (set (map :coordinator/id active))))
+      (is (= 1 (count stale)))
+      (is (= "stale-1" (:coordinator/id (first stale)))))))
 
-;; =============================================================================
-;; Scenario: Claim Release and Queue Processing
-;; =============================================================================
+(deftest get-coordinators-for-project-test
+  (testing "get-coordinators-for-project filters by project"
+    (ds/register-coordinator! "hive-1" {:project "hive-mcp"})
+    (ds/register-coordinator! "hive-2" {:project "hive-mcp"})
+    (ds/register-coordinator! "other-1" {:project "other-project"})
 
-(deftest claim-release-unblocks-queued-task-test
-  (testing "When agent completes and releases claims, queued task becomes ready"
-    ;; Setup: Alice working on core.clj
-    (logic/add-slave! "alice" :working)
-    (logic/add-task! "task-alice" "alice" :dispatched)
-    (coord/register-task-claims! "task-alice" "alice" ["/src/core.clj"])
+    (let [hive-coords (ds/get-coordinators-for-project "hive-mcp")]
+      (is (= 2 (count hive-coords)))
+      (is (every? #(= "hive-mcp" (:coordinator/project %)) hive-coords)))))
 
-    ;; Bob's task gets queued due to conflict
-    (logic/add-slave! "bob" :idle)
-    (let [queue-result (coord/dispatch-or-queue!
-                        {:slave-id "bob"
-                         :prompt "Edit /src/core.clj"
-                         :files ["/src/core.clj"]})]
+;;; =============================================================================
+;;; Heartbeat Tests
+;;; =============================================================================
 
-      (is (= :queued (:action queue-result))
-          "Bob's task should be queued")
+(deftest update-heartbeat-basic-test
+  (testing "update-heartbeat! updates timestamp"
+    (ds/register-coordinator! "heartbeat-test" {:project "test"})
+    (let [before (ds/get-coordinator "heartbeat-test")
+          _ (Thread/sleep 10)
+          _ (ds/update-heartbeat! "heartbeat-test")
+          after (ds/get-coordinator "heartbeat-test")]
+      (is (.after (:coordinator/heartbeat-at after)
+                  (:coordinator/heartbeat-at before))
+          "Heartbeat timestamp should be updated"))))
 
-      ;; Queue should have Bob's task
-      (is (= 1 (count (coord/get-queue)))
-          "Queue should have one task")
+(deftest update-heartbeat-reactivates-stale-test
+  (testing "update-heartbeat! reactivates stale coordinator"
+    (ds/register-coordinator! "stale-reactivate" {:project "test"})
+    (ds/mark-coordinator-stale! "stale-reactivate")
+    (is (= :stale (:coordinator/status (ds/get-coordinator "stale-reactivate"))))
 
-      ;; Alice completes - release claims
-      (coord/release-task-claims! "task-alice")
+    (ds/update-heartbeat! "stale-reactivate")
+    (is (= :active (:coordinator/status (ds/get-coordinator "stale-reactivate")))
+        "Heartbeat should reactivate stale coordinator")))
 
-      ;; Process queue - Bob's task should now be ready
-      (let [ready-tasks (coord/get-ready-tasks)]
-        (is (= 1 (count ready-tasks))
-            "Bob's task should be ready after Alice releases claims")
-        (is (= "bob" (:slave-id (first ready-tasks)))
-            "Ready task should belong to Bob")))))
+(deftest update-heartbeat-nonexistent-test
+  (testing "update-heartbeat! returns nil for non-existent coordinator"
+    (is (nil? (ds/update-heartbeat! "non-existent")))))
 
-;; =============================================================================
-;; Scenario: dispatch-or-queue! Lifecycle
-;; =============================================================================
+;;; =============================================================================
+;;; Status Transition Tests
+;;; =============================================================================
 
-(deftest dispatch-or-queue-approved-test
-  (testing "dispatch-or-queue! returns :dispatch when no conflicts"
-    (logic/add-slave! "alice" :idle)
+(deftest mark-coordinator-terminated-test
+  (testing "mark-coordinator-terminated! sets status to :terminated"
+    (ds/register-coordinator! "to-terminate" {:project "test"})
+    (ds/mark-coordinator-terminated! "to-terminate")
+    (is (= :terminated (:coordinator/status (ds/get-coordinator "to-terminate"))))))
 
-    (let [result (coord/dispatch-or-queue!
-                  {:slave-id "alice"
-                   :prompt "Create new file"
-                   :files ["/src/new-feature.clj"]})]
+(deftest mark-coordinator-stale-test
+  (testing "mark-coordinator-stale! sets status to :stale"
+    (ds/register-coordinator! "to-stale" {:project "test"})
+    (ds/mark-coordinator-stale! "to-stale")
+    (is (= :stale (:coordinator/status (ds/get-coordinator "to-stale"))))))
 
-      (is (= :dispatch (:action result))
-          "Should approve dispatch")
-      (is (= ["/src/new-feature.clj"] (:files result))
-          "Should return the files"))))
+;;; =============================================================================
+;;; Cleanup Tests
+;;; =============================================================================
 
-(deftest dispatch-or-queue-queued-test
-  (testing "dispatch-or-queue! returns :queued when conflicts exist"
-    ;; Alice has claim
-    (logic/add-slave! "alice" :working)
-    (logic/add-claim! "/src/core.clj" "alice")
+(deftest cleanup-stale-coordinators-finds-stale-test
+  (testing "cleanup-stale-coordinators! marks old heartbeats as stale"
+    ;; Register coordinator with old heartbeat (simulated by direct transact)
+    (ds/register-coordinator! "old-coord" {:project "test"})
+    ;; Manually set heartbeat to 5 minutes ago
+    (let [c (ds/get-conn)
+          db @c
+          eid (:db/id (datascript.core/entity db [:coordinator/id "old-coord"]))
+          old-time (java.util.Date. (- (System/currentTimeMillis) (* 5 60 1000)))]
+      (datascript.core/transact! c [{:db/id eid :coordinator/heartbeat-at old-time}]))
 
-    ;; Bob tries to dispatch
-    (logic/add-slave! "bob" :idle)
-    (let [result (coord/dispatch-or-queue!
-                  {:slave-id "bob"
-                   :prompt "Refactor core"
-                   :files ["/src/core.clj"]})]
+    ;; Register fresh coordinator
+    (ds/register-coordinator! "fresh-coord" {:project "test"})
 
-      (is (= :queued (:action result))
-          "Should queue the task")
-      (is (string? (:task-id result))
-          "Should return a task ID")
-      (is (seq (:conflicts result))
-          "Should include conflicts"))))
+    ;; Cleanup with 2-minute threshold (default)
+    (let [stale-ids (ds/cleanup-stale-coordinators!)]
+      (is (= ["old-coord"] (vec stale-ids))
+          "Should mark old-coord as stale")
+      (is (= :stale (:coordinator/status (ds/get-coordinator "old-coord"))))
+      (is (= :active (:coordinator/status (ds/get-coordinator "fresh-coord")))
+          "Fresh coordinator should remain active"))))
 
-(deftest dispatch-or-queue-deadlock-blocked-test
-  (testing "dispatch-or-queue! returns :blocked on circular dependency"
-    ;; Setup circular dependency scenario
-    (logic/add-slave! "alice" :working)
-    (logic/add-slave! "bob" :working)
-    (logic/add-task! "task-a" "alice" :dispatched)
-    (logic/add-task! "task-b" "bob" :dispatched)
-    (logic/add-dependency! "task-a" "task-b")
+(deftest cleanup-stale-coordinators-custom-threshold-test
+  (testing "cleanup-stale-coordinators! respects custom threshold"
+    (ds/register-coordinator! "threshold-test" {:project "test"})
+    ;; Set heartbeat to 1 second ago
+    (let [c (ds/get-conn)
+          db @c
+          eid (:db/id (datascript.core/entity db [:coordinator/id "threshold-test"]))
+          old-time (java.util.Date. (- (System/currentTimeMillis) 1000))]
+      (datascript.core/transact! c [{:db/id eid :coordinator/heartbeat-at old-time}]))
 
-    ;; Try to add dependency that would create cycle: b -> a -> b
-    (let [result (coord/pre-flight-check
-                  {:slave-id "bob"
-                   :files []
-                   :dependencies [["task-b" "task-a"]]})]
+    ;; Cleanup with 500ms threshold
+    (let [stale-ids (ds/cleanup-stale-coordinators! {:threshold-ms 500})]
+      (is (= ["threshold-test"] (vec stale-ids))))))
 
-      (is (not (:approved? result))
-          "Should not approve - would deadlock")
-      (is (seq (:would-deadlock result))
-          "Should report deadlock pairs"))))
+(deftest cleanup-stale-coordinators-skips-already-stale-test
+  (testing "cleanup-stale-coordinators! skips already stale/terminated coordinators"
+    (ds/register-coordinator! "already-stale" {:project "test"})
+    (ds/mark-coordinator-stale! "already-stale")
 
-;; =============================================================================
-;; Scenario: File Extraction from Prompt
-;; =============================================================================
+    (ds/register-coordinator! "already-terminated" {:project "test"})
+    (ds/mark-coordinator-terminated! "already-terminated")
 
-(deftest file-extraction-from-prompt-test
-  (testing "Extracts file paths from task prompts when files not explicit"
-    (logic/add-slave! "alice" :idle)
+    ;; Set old heartbeats
+    (let [c (ds/get-conn)
+          db @c
+          old-time (java.util.Date. (- (System/currentTimeMillis) (* 5 60 1000)))]
+      (doseq [id ["already-stale" "already-terminated"]]
+        (when-let [eid (:db/id (datascript.core/entity db [:coordinator/id id]))]
+          (datascript.core/transact! c [{:db/id eid :coordinator/heartbeat-at old-time}]))))
 
-    (let [result (coord/pre-flight-check
-                  {:slave-id "alice"
-                   :prompt "Please edit /home/user/project/src/core.clj and add logging"})]
+    ;; Cleanup should find nothing (both are already non-active)
+    (let [stale-ids (ds/cleanup-stale-coordinators!)]
+      (is (nil? stale-ids) "Should not mark already non-active coordinators"))))
 
-      (is (seq (:extracted-files result))
-          "Should extract files from prompt")
-      (is (some #(re-find #"core\.clj" %) (:extracted-files result))
-          "Should find core.clj in prompt"))))
+;;; =============================================================================
+;;; Remove Tests
+;;; =============================================================================
 
-;; =============================================================================
-;; Scenario: Multiple Files, Partial Conflict
-;; =============================================================================
+(deftest remove-coordinator-test
+  (testing "remove-coordinator! deletes the entity"
+    (ds/register-coordinator! "to-remove" {:project "test"})
+    (is (some? (ds/get-coordinator "to-remove")))
 
-(deftest partial-file-conflict-test
-  (testing "Conflict detected even when only some files conflict"
-    ;; Alice has claim on one file
-    (logic/add-slave! "alice" :working)
-    (logic/add-claim! "/src/core.clj" "alice")
+    (ds/remove-coordinator! "to-remove")
+    (is (nil? (ds/get-coordinator "to-remove")))))
 
-    ;; Bob wants to edit two files, one conflicts
-    (logic/add-slave! "bob" :idle)
-    (let [result (coord/pre-flight-check
-                  {:slave-id "bob"
-                   :files ["/src/core.clj" "/src/utils.clj"]})]
+(deftest remove-coordinator-nonexistent-test
+  (testing "remove-coordinator! returns nil for non-existent coordinator"
+    (is (nil? (ds/remove-coordinator! "non-existent")))))
 
-      (is (not (:approved? result))
-          "Should not approve - partial conflict")
-      (is (= 1 (count (:conflicts result)))
-          "Should report one conflict")
-      (is (= "/src/core.clj" (:file (first (:conflicts result))))
-          "Conflict should be on core.clj only"))))
+;;; =============================================================================
+;;; Integration Tests
+;;; =============================================================================
 
-;; =============================================================================
-;; Scenario: Three Agents, Chain of Conflicts
-;; =============================================================================
+(deftest coordinator-lifecycle-integration-test
+  (testing "Full coordinator lifecycle: register → heartbeat → terminate → remove"
+    ;; 1. Register
+    (ds/register-coordinator! "lifecycle-test" {:project "integration"})
+    (is (= :active (:coordinator/status (ds/get-coordinator "lifecycle-test"))))
 
-(deftest three-agent-conflict-chain-test
-  (testing "Multiple agents queued for same file, released in order"
-    ;; Alice working on core.clj
-    (logic/add-slave! "alice" :working)
-    (logic/add-task! "task-alice" "alice" :dispatched)
-    (coord/register-task-claims! "task-alice" "alice" ["/src/core.clj"])
+    ;; 2. Heartbeat
+    (Thread/sleep 10)
+    (ds/update-heartbeat! "lifecycle-test")
+    (let [coord (ds/get-coordinator "lifecycle-test")]
+      (is (= :active (:coordinator/status coord))))
 
-    ;; Bob and Carol both want core.clj - both get queued
-    (logic/add-slave! "bob" :idle)
-    (logic/add-slave! "carol" :idle)
+    ;; 3. Mark stale (simulating crash detection)
+    (ds/mark-coordinator-stale! "lifecycle-test")
+    (is (= :stale (:coordinator/status (ds/get-coordinator "lifecycle-test"))))
 
-    (let [bob-result (coord/dispatch-or-queue!
-                      {:slave-id "bob"
-                       :files ["/src/core.clj"]})
-          carol-result (coord/dispatch-or-queue!
-                        {:slave-id "carol"
-                         :files ["/src/core.clj"]})]
+    ;; 4. Reactivate via heartbeat (simulating recovery)
+    (ds/update-heartbeat! "lifecycle-test")
+    (is (= :active (:coordinator/status (ds/get-coordinator "lifecycle-test"))))
 
-      (is (= :queued (:action bob-result)))
-      (is (= :queued (:action carol-result)))
-      (is (= 2 (count (coord/get-queue)))
-          "Queue should have two tasks")
+    ;; 5. Graceful termination
+    (ds/mark-coordinator-terminated! "lifecycle-test")
+    (is (= :terminated (:coordinator/status (ds/get-coordinator "lifecycle-test"))))
 
-      ;; Alice completes
-      (coord/release-task-claims! "task-alice")
+    ;; 6. Cleanup
+    (ds/remove-coordinator! "lifecycle-test")
+    (is (nil? (ds/get-coordinator "lifecycle-test")))))
 
-      ;; Both Bob and Carol are ready (both want same file, no one holds it now)
-      (let [ready (coord/get-ready-tasks)]
-        (is (= 2 (count ready))
-            "Both tasks should be ready after Alice releases")))))
+(deftest multi-project-coordinator-test
+  (testing "Multiple coordinators across different projects"
+    (ds/register-coordinator! "proj1-coord1" {:project "project-1"})
+    (ds/register-coordinator! "proj1-coord2" {:project "project-1"})
+    (ds/register-coordinator! "proj2-coord1" {:project "project-2"})
+
+    ;; Mark one as stale
+    (ds/mark-coordinator-stale! "proj1-coord2")
+
+    ;; Query by project
+    (let [proj1 (ds/get-coordinators-for-project "project-1")
+          proj2 (ds/get-coordinators-for-project "project-2")]
+      (is (= 2 (count proj1)))
+      (is (= 1 (count proj2))))
+
+    ;; Query active in project-1
+    (let [active (ds/get-coordinators-by-status :active)]
+      (is (= 1 (count (filter #(= "project-1" (:coordinator/project %)) active)))
+          "project-1 should have 1 active coordinator (the other is stale)"))))

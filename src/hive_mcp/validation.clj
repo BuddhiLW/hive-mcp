@@ -9,6 +9,10 @@
    - Port must be valid port number (1-65535) if provided
    - Timeout must be positive integer if provided"
   (:require [clojure.string :as str]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 (defn validate-code
   "Validate that code is a non-empty string.
@@ -224,3 +228,77 @@
     (-> s
         (str/replace "\\" "\\\\")
         (str/replace "\"" "\\\""))))
+
+(defn elisp-string
+  "Wrap a string as an escaped Elisp string literal with quotes.
+
+   DRY: Replaces the repeated pattern:
+     (str \"\\\"\" (escape-elisp-string x) \"\\\"\")
+
+   Example:
+     (elisp-string \"hello world\") => \"\\\"hello world\\\"\"
+     (elisp-string nil) => nil"
+  [s]
+  (when s
+    (str "\"" (escape-elisp-string s) "\"")))
+
+(defn elisp-optional
+  "Wrap an optional value as an Elisp string or return nil.
+
+   DRY: Replaces conditional elisp string wrapping patterns.
+   Returns nil for nil/empty input, elisp-string otherwise.
+
+   Example:
+     (elisp-optional \"value\") => \"\\\"value\\\"\"
+     (elisp-optional nil) => nil
+     (elisp-optional \"\") => nil"
+  [s]
+  (when (and s (seq s))
+    (elisp-string s)))
+
+;; ============================================================
+;; Case Conversion (snake_case <-> kebab-case)
+;; ============================================================
+;; MCP SDK asymmetry: OUTPUT converts keys to camelCase, but INPUT
+;; does NOT auto-convert. Tool handlers receive snake_case from JSON
+;; but Clojure idiom prefers kebab-case.
+
+(defn snake->kebab
+  "Convert snake_case string to kebab-case.
+
+   Example:
+     (snake->kebab \"some_key\") => \"some-key\"
+     (snake->kebab \"multi_word_key\") => \"multi-word-key\""
+  [s]
+  (when s
+    (str/replace s "_" "-")))
+
+(defn normalize-key
+  "Convert snake_case keyword to kebab-case keyword.
+
+   Example:
+     (normalize-key :some_key) => :some-key
+     (normalize-key :agent_id) => :agent-id
+     (normalize-key :already-kebab) => :already-kebab
+
+   Non-keyword values pass through unchanged."
+  [k]
+  (if (keyword? k)
+    (keyword (namespace k) (snake->kebab (name k)))
+    k))
+
+(defn normalize-params
+  "Convert all snake_case keys in a map to kebab-case.
+
+   Handles the MCP SDK asymmetry where JSON input arrives with snake_case
+   keys but Clojure idiom prefers kebab-case.
+
+   Example:
+     (normalize-params {:some_key 1 :other_value 2})
+     => {:some-key 1 :other-value 2}
+
+   Non-keyword keys pass through unchanged.
+   Nested maps are NOT recursively normalized (by design - values stay as-is)."
+  [m]
+  (when m
+    (into {} (map (fn [[k v]] [(normalize-key k) v]) m))))

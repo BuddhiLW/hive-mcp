@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+     SPDX-License-Identifier: AGPL-3.0-or-later -->
+<configuration>
+  <!-- Define log directory property -->
+  <property name="LOG_DIR" value="${user.home}/.config/hive-mcp"/>
+
+  <!-- Console appender with colored output for development -->
+  <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+      <!-- Format: timestamp hostname LEVEL [logger] - message -->
+      <pattern>%d{yyyy-MM-dd'T'HH:mm:ss.SSS'Z'} %property{HOSTNAME} %highlight(%-5level) [%cyan(%logger{36})] - %msg%n</pattern>
+    </encoder>
+  </appender>
+
+  <!-- JSON file appender for Loki ingestion -->
+  <appender name="JSON_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+    <file>${LOG_DIR}/server.json.log</file>
+    <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+      <!-- Rotate daily and by size -->
+      <fileNamePattern>${LOG_DIR}/server.%d{yyyy-MM-dd}.%i.json.log.gz</fileNamePattern>
+      <!-- Keep 7 days of history -->
+      <maxHistory>7</maxHistory>
+      <!-- Max 50MB per file -->
+      <maxFileSize>50MB</maxFileSize>
+      <!-- Total cap at 500MB -->
+      <totalSizeCap>500MB</totalSizeCap>
+    </rollingPolicy>
+    <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+      <!-- Include MDC context fields as top-level JSON -->
+      <includeMdcKeyName>agent-id</includeMdcKeyName>
+      <includeMdcKeyName>event-type</includeMdcKeyName>
+      <includeMdcKeyName>correlation-id</includeMdcKeyName>
+      <includeMdcKeyName>tool-name</includeMdcKeyName>
+      <includeMdcKeyName>project-id</includeMdcKeyName>
+      <!-- Custom field names for Loki labels -->
+      <fieldNames>
+        <timestamp>@timestamp</timestamp>
+        <version>[ignore]</version>
+      </fieldNames>
+      <!-- Include caller info for debugging -->
+      <includeCallerData>false</includeCallerData>
+      <!-- Add service name for Loki filtering -->
+      <customFields>{"service":"hive-mcp"}</customFields>
+    </encoder>
+  </appender>
+
+  <!-- Async wrapper for JSON appender to avoid blocking -->
+  <appender name="ASYNC_JSON" class="ch.qos.logback.classic.AsyncAppender">
+    <appender-ref ref="JSON_FILE"/>
+    <!-- Queue size for async buffering -->
+    <queueSize>512</queueSize>
+    <!-- Don't discard on full queue -->
+    <discardingThreshold>0</discardingThreshold>
+    <!-- Include caller data for MDC -->
+    <includeCallerData>true</includeCallerData>
+  </appender>
+
+  <!-- Quieter output for noisy libraries -->
+  <logger name="io.netty" level="WARN"/>
+  <logger name="aleph" level="INFO"/>
+  <logger name="manifold" level="INFO"/>
+  <logger name="io.pedestal" level="WARN"/>
+  <logger name="org.eclipse.jetty" level="WARN"/>
+
+  <!-- Our code at DEBUG for development -->
+  <logger name="hive-mcp" level="DEBUG"/>
+
+  <!-- Root logger: console for humans, JSON for machines -->
+  <root level="INFO">
+    <appender-ref ref="CONSOLE"/>
+    <appender-ref ref="ASYNC_JSON"/>
+  </root>
+</configuration>

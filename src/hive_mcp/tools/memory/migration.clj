@@ -9,10 +9,15 @@
    - import-json: Import from legacy JSON storage to Chroma"
   (:require [hive-mcp.tools.memory.core :refer [with-chroma]]
             [hive-mcp.tools.memory.scope :as scope]
+            [hive-mcp.tools.core :refer [mcp-json]]
             [hive-mcp.emacsclient :as ec]
             [hive-mcp.chroma :as chroma]
             [clojure.data.json :as json]
             [taoensso.timbre :as log]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; ============================================================
 ;; Project Migration Handler
@@ -41,10 +46,10 @@
           (chroma/update-entry! (:id entry) {:project-id new-project-id
                                              :tags new-tags})
           (swap! migrated inc)))
-      {:type "text" :text (json/write-str {:migrated @migrated
-                                           :updated-scopes @updated-scopes
-                                           :old-project-id old-project-id
-                                           :new-project-id new-project-id})})))
+      (mcp-json {:migrated @migrated
+                 :updated-scopes @updated-scopes
+                 :old-project-id old-project-id
+                 :new-project-id new-project-id}))))
 
 ;; ============================================================
 ;; JSON Import Handler
@@ -90,20 +95,20 @@
                         (pr-str pid) (pr-str pid) (pr-str pid) (pr-str pid))
           {:keys [success result error]} (ec/eval-elisp elisp)]
       (if-not success
-        {:type "text" :text (json/write-str {:error (str "Failed to read JSON: " error)}) :isError true}
+        (mcp-json {:error (str "Failed to read JSON: " error)})
         (let [data (json/read-str result :key-fn keyword)
               all-entries (concat (:notes data) (:snippets data)
                                   (:conventions data) (:decisions data))]
           (if dry-run
-            {:type "text" :text (json/write-str {:dry-run true
-                                                 :would-import (count all-entries)
-                                                 :by-type {:notes (count (:notes data))
-                                                           :snippets (count (:snippets data))
-                                                           :conventions (count (:conventions data))
-                                                           :decisions (count (:decisions data))}})}
+            (mcp-json {:dry-run true
+                       :would-import (count all-entries)
+                       :by-type {:notes (count (:notes data))
+                                 :snippets (count (:snippets data))
+                                 :conventions (count (:conventions data))
+                                 :decisions (count (:decisions data))}})
             (let [results (map #(import-entry! % pid) all-entries)
                   imported (count (filter identity results))
                   skipped (count (remove identity results))]
-              {:type "text" :text (json/write-str {:imported imported
-                                                   :skipped skipped
-                                                   :project-id pid})})))))))
+              (mcp-json {:imported imported
+                         :skipped skipped
+                         :project-id pid}))))))))

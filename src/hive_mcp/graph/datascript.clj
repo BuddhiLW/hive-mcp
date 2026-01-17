@@ -20,6 +20,10 @@
             [hive-mcp.graph.protocol :as proto]
             [hive-mcp.graph.schema :as schema]
             [taoensso.timbre :as log]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;;; -----------------------------------------------------------------------------
 ;;; String Similarity (for find-similar)
@@ -88,7 +92,7 @@
 (defrecord DatascriptStore [conn persist-path]
   proto/GraphStore
 
-  (transact! [this tx-data]
+  (transact! [_ tx-data]
     (log/debug "Transacting" (count tx-data) "facts")
     (try
       (let [report (d/transact! conn tx-data)]
@@ -101,17 +105,17 @@
                          :tx-data tx-data}
                         e)))))
 
-  (query [this datalog-query]
+  (query [_ datalog-query]
     (d/q datalog-query @conn))
 
-  (query [this datalog-query args]
+  (query [_ datalog-query args]
     (apply d/q datalog-query @conn args))
 
-  (entity [this eid]
+  (entity [_ eid]
     (when-let [e (d/entity @conn eid)]
       (into {} e)))
 
-  (find-similar [this entity-type content]
+  (find-similar [_ entity-type content]
     (when-let [content-attr (entity-content-attr entity-type)]
       (let [db @conn
             type-attr (entity-type-attr entity-type)
@@ -133,11 +137,11 @@
                         (take 10))]
         scored)))
 
-  (history [this eid]
+  (history [_ _eid]
     ;; Datascript doesn't have native history support
     nil)
 
-  (persist! [this]
+  (persist! [_]
     (when persist-path
       (let [db @conn
             db-data (d/serializable db)
@@ -149,7 +153,7 @@
         (log/info "Persisted graph to" persist-path)
         {:persisted-at (java.time.Instant/now)})))
 
-  (restore! [this]
+  (restore! [_]
     (when persist-path
       (let [file (io/file persist-path)]
         (if (.exists file)

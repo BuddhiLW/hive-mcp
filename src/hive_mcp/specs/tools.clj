@@ -12,6 +12,10 @@
    CLARITY: 'Inputs are guarded' - specs provide declarative validation"
   (:require [clojure.spec.alpha :as s]
             [clojure.string :as str]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; =============================================================================
 ;; Tool Result Specs (MCP Protocol Compliant)

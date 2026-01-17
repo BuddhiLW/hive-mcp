@@ -9,6 +9,9 @@
    SOLID: Single responsibility - promotion scoring only.
    DDD: Pure domain functions, no side effects."
   (:require [clojure.string :as str]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 ;; =============================================================================
 ;; Recall Context Weights
@@ -198,13 +201,18 @@
 
 (defn summarize-session-progress
   "Summarize multiple progress notes into a session summary.
-   
+
    notes: seq of progress note maps (handles nil, empty, or malformed)
    git-commits: seq of commit strings (handles nil)
-   
-   Returns: session summary map suitable for crystallization"
+
+   Returns: session summary map suitable for crystallization
+
+   CLARITY-I: Inputs are guarded - filters non-map items to prevent
+   'Key must be integer' error when accessing (:tags item) on vectors."
   [notes git-commits]
-  (let [notes (or notes [])
+  (let [;; Guard: ensure notes is a sequence of maps only
+        notes (->> (or notes [])
+                   (filter map?))
         git-commits (or git-commits [])
         task-count (count (filter #(some #{"completed-task"} (:tags %)) notes))
         session (session-id)

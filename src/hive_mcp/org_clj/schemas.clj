@@ -8,6 +8,10 @@
    CLARITY: Single Responsibility - only schema definitions and validation."
   (:require [malli.core :as m]
             [malli.error :as me]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; =============================================================================
 ;; Enumeration Schemas

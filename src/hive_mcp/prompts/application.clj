@@ -22,7 +22,11 @@
      (respond-prompt! \"prompt-123\" true :coordinator)"
   (:require [hive-mcp.prompts.infra :as infra]
             [hive-mcp.channel :as channel]
+            [hive-mcp.guards :as guards]
             [taoensso.timbre :as log]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 ;;; ============================================================
 ;;; State Management
@@ -211,6 +215,16 @@
     (reset! pending-prompts {})
     (log/warn "Cleared all pending prompts:" count)
     count))
+
+(defn clear-pending-prompts!
+  "Clear pending prompts. GUARDED - no-op if coordinator running.
+
+   CLARITY-Y: Yield safe failure - prevents test fixtures from
+   corrupting production prompt state."
+  []
+  (guards/when-not-coordinator
+   "clear-pending-prompts! called"
+   (reset! pending-prompts {})))
 
 (defn expire-old-prompts!
   "Remove prompts older than the given age in milliseconds.

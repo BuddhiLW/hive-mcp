@@ -12,8 +12,11 @@
             [hive-mcp.validation :as v]
             [hive-mcp.crystal.hooks :as crystal-hooks]
             [clojure.data.json :as json]
-            [clojure.string :as str]
             [taoensso.timbre :as log]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; Tool handlers
 

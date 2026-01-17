@@ -1,7 +1,14 @@
 (ns hive-mcp.telemetry
   "Telemetry and logging utilities for evaluation operations.
-   Follows CLARITY principle: 'Telemetry first' - observability is essential."
-  (:require [taoensso.timbre :as log]))
+   Follows CLARITY principle: 'Telemetry first' - observability is essential.
+
+   Sub-modules:
+   - hive-mcp.telemetry.health - Centralized catastrophic event handling"
+  (:require [taoensso.timbre :as log]
+            [hive-mcp.telemetry.health :as health]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 (defmacro with-timing
   "Execute body and log the operation duration.
@@ -194,3 +201,30 @@
 
   ;; Configure logging
   (configure-logging! {:level :debug}))
+
+;;; =============================================================================
+;;; Health Module Re-exports
+;;; =============================================================================
+;;
+;; For convenience, key health module functions are re-exported here.
+;; New code should import from hive-mcp.telemetry.health directly.
+
+(def emit-health-event!
+  "Emit a catastrophic health event. See hive-mcp.telemetry.health for details."
+  health/emit-health-event!)
+
+(def get-recent-errors
+  "Query recent health errors. See hive-mcp.telemetry.health for details."
+  health/get-recent-errors)
+
+(def health-summary
+  "Get health summary. See hive-mcp.telemetry.health for details."
+  health/health-summary)
+
+(def health-severities
+  "Valid severity levels: #{:info :warn :error :fatal}"
+  health/severities)
+
+(def health-error-types
+  "Known error types. See hive-mcp.telemetry.health for details."
+  health/error-types)

@@ -17,6 +17,10 @@
             [hive-mcp.graph.datascript :as ds]
             [hive-mcp.graph.schema :as schema]
             [taoensso.timbre :as log]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; =============================================================================
 ;; Database State (Datascript GraphStore)
@@ -50,7 +54,7 @@
    entry: {:id :type :duration :tags :recalls :created}
    
    Extracts session from tags and populates all relations."
-  [{:keys [id type duration tags recalls] :as entry}]
+  [{:keys [id type duration tags recalls] :as _entry}]
   (when id
     ;; Add base memory entry
     (let [memory-entity (schema/make-memory

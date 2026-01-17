@@ -5,10 +5,13 @@
    including project info, file listing, search, and navigation.
 
    Requires the hive-mcp-projectile addon to be loaded in Emacs."
-  (:require [hive-mcp.tools.core :refer [mcp-success mcp-error mcp-json]]
-            [hive-mcp.emacsclient :as ec]
+  (:require [hive-mcp.emacsclient :as ec]
             [hive-mcp.elisp :as el]
             [taoensso.timbre :as log]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; =============================================================================
 ;; Projectile Integration Handlers (requires hive-mcp-projectile addon)

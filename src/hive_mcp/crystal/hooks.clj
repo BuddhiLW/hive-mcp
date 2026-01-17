@@ -14,9 +14,38 @@
             [hive-mcp.emacsclient :as ec]
             [hive-mcp.channel :as channel]
             [hive-mcp.hooks :as hooks]
+            [hive-mcp.swarm.datascript :as ds]
+            [hive-mcp.events.core :as ev]
             [clojure.data.json :as json]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
+;; =============================================================================
+;; Telemetry Helper (Phase 1)
+;; =============================================================================
+
+(defn- emit-harvest-error!
+  "Emit a structured error for harvest failures.
+
+   Provides structured error handling for catastrophic failures:
+   1. Logs with structured format for searchability
+   2. Dispatches :system/error event for telemetry pipeline
+
+   CLARITY: Telemetry first - observable system behavior."
+  [fn-name message context]
+  (let [error-data {:error-type :harvest-failed
+                    :source (str "hooks/" fn-name)
+                    :message message
+                    :context (merge {:fn fn-name} context)}]
+    ;; Dispatch to event system (handler in effects.clj will do the rest)
+    (try
+      (ev/dispatch [:system/error error-data])
+      (catch Exception e
+        ;; Fallback: at minimum log the error if event system fails
+        (log/error "[TELEMETRY-FALLBACK] Failed to dispatch system error:" (.getMessage e))))))
 
 ;; =============================================================================
 ;; Kanban DONE Hook
@@ -24,15 +53,22 @@
 
 (defn on-kanban-done
   "Hook called when a kanban task moves to DONE.
-   
+
    Creates an ephemeral progress note capturing the completion,
+   registers the task in DataScript for wrap harvesting,
    then the kanban entry can be safely deleted.
-   
+
    task: {:id :title :context :priority :started :status}
-   
+
    Returns: {:success bool :progress-note-id string}"
-  [{:keys [id title context priority started] :as task}]
+  [{:keys [id title _context _priority _started] :as task}]
   (log/info "Kanban DONE hook triggered for task:" id title)
+  ;; Register in DataScript for wrap harvesting (CLARITY-T: telemetry)
+  (try
+    (ds/register-completed-task! id {:title title})
+    (log/debug "Registered completed task in DataScript:" id)
+    (catch Exception e
+      (log/warn "Failed to register completed task in DataScript:" (.getMessage e))))
   (let [;; Generate progress note
         progress-note (crystal/task-to-progress-note
                        (assoc task :completed-at (.toString (java.time.Instant/now))))
@@ -97,7 +133,7 @@
             :project string
             :query-type string  ; 'note', 'decision', etc.
             :tags [string]}"
-  [{:keys [entry-ids source session project] :as params}]
+  [{:keys [entry-ids source session project] :as _params}]
   (let [current-session (or session (crystal/session-id))]
     (doseq [entry-id entry-ids]
       ;; For each entry, we'd ideally look up its session/project
@@ -117,91 +153,189 @@
 
 (defn harvest-session-progress
   "Harvest session progress notes for wrap workflow.
-   
+
    Queries ephemeral notes from current project - no specific tags required.
    This captures all ephemeral notes LLMs created during the session,
    regardless of what tags they used.
-   
-   Returns: {:notes [...] :count int}"
+
+   Returns: {:notes [...] :count int :error? {...} on failure}
+
+   CLARITY: Telemetry first - emits :system/error on failure."
   []
-  (let [session-tag (crystal/session-tag)
-        ;; Query ephemeral notes with auto scope filtering (current project + global)
-        ;; Args: type, tags, project-id, limit, duration, scope-filter
-        elisp "(json-encode (hive-mcp-memory-query 'note nil nil 50 'ephemeral nil))"
-        {:keys [success result error]} (ec/eval-elisp elisp)]
-    (if success
-      (let [notes (try (json/read-str result :key-fn keyword)
-                       (catch Exception _ []))]
-        {:notes notes
-         :count (count notes)
-         :session session-tag})
-      {:notes []
-       :count 0
-       :error error})))
+  (try
+    (let [session-tag (crystal/session-tag)
+          ;; Query ephemeral notes with auto scope filtering (current project + global)
+          ;; Args: type, tags, project-id, limit, duration, scope-filter
+          elisp "(json-encode (hive-mcp-memory-query 'note nil nil 50 'ephemeral nil))"
+          {:keys [success result error]} (ec/eval-elisp elisp)]
+      (if success
+        (let [raw-notes (try (json/read-str result :key-fn keyword)
+                             (catch Exception _ []))
+              ;; Guard: filter to maps only to prevent "Key must be integer" error
+              ;; when accessing (:tags item) on non-map items (vectors, strings, etc.)
+              notes (filterv map? (if (sequential? raw-notes) raw-notes []))]
+          {:notes notes
+           :count (count notes)
+           :session session-tag})
+        (do
+          (log/error "harvest-session-progress: Emacs query failed:" error)
+          {:notes []
+           :count 0
+           :error {:type :harvest-failed
+                   :fn "harvest-session-progress"
+                   :msg error}})))
+    (catch Exception e
+      (let [error-data {:type :harvest-failed
+                        :fn "harvest-session-progress"
+                        :msg (.getMessage e)}]
+        (log/error e "harvest-session-progress failed")
+        ;; Emit structured error for telemetry
+        (emit-harvest-error! "harvest-session-progress" (.getMessage e) {})
+        {:notes []
+         :count 0
+         :error error-data}))))
 
 (defn harvest-completed-tasks
   "Harvest completed task progress notes for wrap.
-   
-   Queries kanban-tagged notes from current project with ephemeral or short-term duration.
-   Captures task completions automatically without requiring specific 'completed-task' tag.
-   
-   Returns: {:tasks [...] :count int}"
+
+   Queries from TWO sources:
+   1. DataScript registry (primary, reliable)
+   2. Emacs kanban-tagged notes (fallback, may be unreliable)
+
+   Returns: {:tasks [...] :count int :ds-count int :emacs-count int :error? {...} on failure}
+
+   CLARITY: Telemetry first - emits :system/error on failure."
   []
-  (let [;; Query kanban-tagged ephemeral notes
-        elisp-ephemeral "(hive-mcp-memory-query 'note '(\"kanban\") nil 50 'ephemeral nil)"
-        ;; Also query short-term kanban notes (might have been promoted)
-        elisp-short "(hive-mcp-memory-query 'note '(\"kanban\") nil 50 'short-term nil)"
-        ;; Combine both queries
-        elisp (format "(json-encode (append %s %s))" elisp-ephemeral elisp-short)
-        {:keys [success result error]} (ec/eval-elisp elisp)]
-    (if success
-      (let [tasks (try (json/read-str result :key-fn keyword)
-                       (catch Exception _ []))]
-        {:tasks tasks
-         :count (count tasks)})
-      {:tasks []
-       :count 0
-       :error error})))
+  (try
+    ;; Primary source: DataScript registry (added by on-kanban-done)
+    (let [ds-tasks (try
+                     (->> (ds/get-completed-tasks-this-session)
+                          (map (fn [t]
+                                 {:id (:completed-task/id t)
+                                  :title (:completed-task/title t)
+                                  :completed-at (:completed-task/completed-at t)
+                                  :agent-id (:completed-task/agent-id t)
+                                  :source :datascript})))
+                     (catch Exception e
+                       (log/warn "Failed to query DataScript completed tasks:" (.getMessage e))
+                       []))
+          ;; Fallback source: Emacs memory (kanban-tagged notes)
+          elisp-ephemeral "(hive-mcp-memory-query 'note '(\"kanban\") nil 50 'ephemeral nil)"
+          elisp-short "(hive-mcp-memory-query 'note '(\"kanban\") nil 50 'short-term nil)"
+          elisp (format "(json-encode (append %s %s))" elisp-ephemeral elisp-short)
+          {:keys [success result]} (ec/eval-elisp elisp)
+          emacs-tasks (if success
+                        (try
+                          (->> (json/read-str result :key-fn keyword)
+                               (filter map?)  ;; Guard: prevent "Key must be integer" if non-map items
+                               (map #(assoc % :source :emacs)))
+                          (catch Exception _ []))
+                        [])
+          ;; Combine sources, prefer DataScript (has task IDs)
+          all-tasks (concat ds-tasks emacs-tasks)]
+      {:tasks all-tasks
+       :count (count all-tasks)
+       :ds-count (count ds-tasks)
+       :emacs-count (count emacs-tasks)})
+    (catch Exception e
+      (let [error-data {:type :harvest-failed
+                        :fn "harvest-completed-tasks"
+                        :msg (.getMessage e)}]
+        (log/error e "harvest-completed-tasks failed")
+        ;; Emit structured error for telemetry
+        (emit-harvest-error! "harvest-completed-tasks" (.getMessage e) {})
+        {:tasks []
+         :count 0
+         :ds-count 0
+         :emacs-count 0
+         :error error-data}))))
 
 (defn harvest-git-commits
   "Harvest git commits since session start.
-   
-   Returns: {:commits [string] :count int}"
+
+   Returns: {:commits [string] :count int :error? {...} on failure}
+
+   CLARITY: Telemetry first - emits :system/error on failure."
   []
-  (let [;; Get commits from today (session approximation)
-        elisp "(shell-command-to-string \"git log --since='midnight' --oneline 2>/dev/null\")"
-        {:keys [success result error]} (ec/eval-elisp elisp)]
-    (if success
-      (let [commits (when (and result (not (str/blank? result)))
-                      (str/split-lines (str/trim result)))]
-        {:commits (or commits [])
-         :count (count (or commits []))})
-      {:commits []
-       :count 0
-       :error error})))
+  (try
+    (let [;; Get commits from today (session approximation)
+          elisp "(shell-command-to-string \"git log --since='midnight' --oneline 2>/dev/null\")"
+          {:keys [success result error]} (ec/eval-elisp elisp)]
+      (if success
+        (let [commits (when (and result (not (str/blank? result)))
+                        (str/split-lines (str/trim result)))]
+          {:commits (or commits [])
+           :count (count (or commits []))})
+        (do
+          (log/error "harvest-git-commits: Emacs command failed:" error)
+          {:commits []
+           :count 0
+           :error {:type :harvest-failed
+                   :fn "harvest-git-commits"
+                   :msg error}})))
+    (catch Exception e
+      (let [error-data {:type :harvest-failed
+                        :fn "harvest-git-commits"
+                        :msg (.getMessage e)}]
+        (log/error e "harvest-git-commits failed")
+        ;; Emit structured error for telemetry
+        (emit-harvest-error! "harvest-git-commits" (.getMessage e) {})
+        {:commits []
+         :count 0
+         :error error-data}))))
 
 (defn harvest-all
   "Harvest all session data for wrap crystallization.
-   
+
    Returns: {:progress-notes [...]
              :completed-tasks [...]
              :git-commits [...]
              :recalls {...}
-             :session string}"
+             :session string
+             :errors [...]}  ; aggregated errors from sub-harvests
+
+   CLARITY: Telemetry first - aggregates errors for visibility."
   []
-  (let [progress (harvest-session-progress)
-        tasks (harvest-completed-tasks)
-        commits (harvest-git-commits)
-        recalls (recall/get-buffered-recalls)]
-    {:progress-notes (:notes progress)
-     :completed-tasks (:tasks tasks)
-     :git-commits (:commits commits)
-     :recalls recalls
-     :session (crystal/session-id)
-     :summary {:progress-count (:count progress)
-               :task-count (:count tasks)
-               :commit-count (:count commits)
-               :recall-count (count recalls)}}))
+  (try
+    (let [progress (harvest-session-progress)
+          tasks (harvest-completed-tasks)
+          commits (harvest-git-commits)
+          recalls (try
+                    (recall/get-buffered-recalls)
+                    (catch Exception e
+                      (log/warn "Failed to get buffered recalls:" (.getMessage e))
+                      {}))
+          ;; Aggregate errors from sub-harvests
+          errors (filterv some? [(:error progress)
+                                 (:error tasks)
+                                 (:error commits)])]
+      {:progress-notes (:notes progress)
+       :completed-tasks (:tasks tasks)
+       :git-commits (:commits commits)
+       :recalls recalls
+       :session (crystal/session-id)
+       :summary {:progress-count (:count progress)
+                 :task-count (:count tasks)
+                 :commit-count (:count commits)
+                 :recall-count (count recalls)}
+       :errors (when (seq errors) errors)})
+    (catch Exception e
+      (let [error-data {:type :harvest-failed
+                        :fn "harvest-all"
+                        :msg (.getMessage e)}]
+        (log/error e "harvest-all failed catastrophically")
+        ;; Emit structured error for telemetry
+        (emit-harvest-error! "harvest-all" (.getMessage e) {})
+        {:progress-notes []
+         :completed-tasks []
+         :git-commits []
+         :recalls {}
+         :session (try (crystal/session-id) (catch Exception _ "unknown"))
+         :summary {:progress-count 0
+                   :task-count 0
+                   :commit-count 0
+                   :recall-count 0}
+         :errors [error-data]}))))
 
 ;; =============================================================================
 ;; Crystallization Hook
@@ -222,7 +356,7 @@
    3. Clears ephemeral progress notes
    
    Returns: {:summary-id string :promoted [ids] :cleared [ids]}"
-  [{:keys [progress-notes completed-tasks git-commits recalls] :as harvested}]
+  [{:keys [progress-notes completed-tasks git-commits _recalls] :as harvested}]
   (log/info "Crystallizing session:" (crystal/session-id))
 
   ;; 1. Create session summary

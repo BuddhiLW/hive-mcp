@@ -105,14 +105,24 @@ Options are `ollama' (local), `mock' (testing), or `none' (disabled)."
 ;;;; Helper Functions:
 
 (defun hive-mcp-chroma--project-root ()
-  "Find the hive-mcp project root directory."
+  "Find the hive-mcp project root directory.
+Checks in order:
+1. Cached value
+2. `hive-mcp-root' variable (set in user config)
+3. Computed from load-file-name (fallback)"
   (or hive-mcp-chroma--project-root
       (setq hive-mcp-chroma--project-root
-            (let ((load-path-dir (file-name-directory (or load-file-name
-                                                           buffer-file-name
-                                                           default-directory))))
-              ;; Go up from elisp/addons/ to project root
-              (expand-file-name "../.." load-path-dir)))))
+            (cond
+             ;; Prefer user-configured hive-mcp-root if available
+             ((and (boundp 'hive-mcp-root) hive-mcp-root)
+              hive-mcp-root)
+             ;; Fallback: compute from load path
+             (t
+              (let ((load-path-dir (file-name-directory (or load-file-name
+                                                             buffer-file-name
+                                                             default-directory))))
+                ;; Go up from elisp/addons/ to project root
+                (expand-file-name "../.." load-path-dir)))))))
 
 (defun hive-mcp-chroma--docker-compose-file ()
   "Return the path to docker-compose.yml."
@@ -244,7 +254,9 @@ Options are `ollama' (local), `mock' (testing), or `none' (disabled)."
                                                       (chroma/set-embedding-provider!
                                                         (ollama/->OllamaEmbedder \"%s\"))"
                                                      hive-mcp-chroma-ollama-model))
-                                    ('mock "(chroma/set-embedding-provider! (chroma/->MockEmbedder))")
+                                    ('mock "(require '[hive-mcp.test-fixtures :as fixtures])
+                                            (chroma/set-embedding-provider!
+                                              (fixtures/->MockEmbedder))")
                                     (_ "")))))
      (lambda (response)
        (if (plist-get response :error)

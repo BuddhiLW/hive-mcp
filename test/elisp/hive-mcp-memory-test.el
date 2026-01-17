@@ -265,6 +265,49 @@
   (should-not (hive-mcp-memory--parse-edn-string "false"))
   (should-not (hive-mcp-memory--parse-edn-string "nil")))
 
+;;;; Test: EDN Parsing Edge Cases (CLARITY-Y compliance)
+;; These tests were added after a production bug where comments caused infinite loops.
+;; See ADR: "Prefer Established Libraries Over Custom Parsers"
+
+(ert-deftest hive-mcp-memory-test-parse-edn-with-line-comment ()
+  "Test parsing EDN map with line comment - regression test for infinite loop bug."
+  (let ((result (hive-mcp-memory--parse-edn-string "{:a 1 ;; comment\n :b 2}")))
+    (should (assoc :a result))
+    (should (assoc :b result))
+    (should (= 1 (cdr (assoc :a result))))
+    (should (= 2 (cdr (assoc :b result))))))
+
+(ert-deftest hive-mcp-memory-test-parse-edn-with-leading-comment ()
+  "Test parsing EDN with comment before content."
+  (let ((result (hive-mcp-memory--parse-edn-string ";; header comment\n{:key \"value\"}")))
+    (should (assoc :key result))
+    (should (equal "value" (cdr (assoc :key result))))))
+
+(ert-deftest hive-mcp-memory-test-parse-edn-with-multiple-comments ()
+  "Test parsing EDN with multiple comment lines."
+  (let ((result (hive-mcp-memory--parse-edn-string
+                 ";; comment 1\n;; comment 2\n{:project-id \"test\"\n ;; inline\n :enabled true}")))
+    (should (assoc :project-id result))
+    (should (assoc :enabled result))))
+
+(ert-deftest hive-mcp-memory-test-parse-edn-empty-input ()
+  "Test parsing empty string returns nil."
+  (should-not (hive-mcp-memory--parse-edn-string "")))
+
+(ert-deftest hive-mcp-memory-test-parse-edn-whitespace-only ()
+  "Test parsing whitespace-only string returns nil."
+  (should-not (hive-mcp-memory--parse-edn-string "   \n\t  ")))
+
+(ert-deftest hive-mcp-memory-test-parse-edn-comment-only ()
+  "Test parsing comment-only string returns nil."
+  (should-not (hive-mcp-memory--parse-edn-string ";; just a comment\n")))
+
+(ert-deftest hive-mcp-memory-test-parse-edn-does-not-hang ()
+  "Ensure parser completes within timeout - guards against infinite loops."
+  (with-timeout (2 (ert-fail "Parser hung - possible infinite loop"))
+    (hive-mcp-memory--parse-edn-string
+     "{:project-id \"test\"\n ;; Source directories\n :watch-dirs [\"src\"]\n ;; Enable feature\n :enabled true}")))
+
 ;;;; Test: Entry Scope Matching
 
 (ert-deftest hive-mcp-memory-test-entry-matches-scope-p-global ()

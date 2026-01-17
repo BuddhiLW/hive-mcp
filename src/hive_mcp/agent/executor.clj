@@ -1,15 +1,33 @@
 (ns hive-mcp.agent.executor
   "Tool execution with permission gates.
-   
+
    Application layer use case for executing tool calls with:
    - Permission checking (dangerous tools require approval)
    - Human approval flow via hivemind
-   - Result formatting for conversation history"
+   - Result formatting for conversation history
+   - Agent-id context propagation (P1: drone attribution)"
   (:require [hive-mcp.agent.registry :as registry]
+            [hive-mcp.agent.context :as ctx]
             [hive-mcp.hivemind :as hivemind]
             [hive-mcp.permissions :as permissions]
             [clojure.data.json :as json]
             [taoensso.timbre :as log]))
+
+;;; ============================================================
+;;; Agent Context Re-exports (P1: Drone Attribution)
+;;; ============================================================
+
+;; Re-export from context namespace for backward compatibility
+(def ^:dynamic *current-agent-id* ctx/*current-agent-id*)
+
+(defn current-agent-id
+  "Get the current agent-id from execution context.
+   Delegates to hive-mcp.agent.context/current-agent-id."
+  []
+  (ctx/current-agent-id))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 ;;; ============================================================
 ;;; Permission Gates
@@ -60,15 +78,20 @@
 
 (defn execute-tool-calls
   "Execute a batch of tool calls, respecting permissions.
-   
+
+   Binds ctx/*current-agent-id* during execution so that tools like
+   hivemind_shout can identify the calling agent without requiring
+   explicit agent_id parameter.
+
    Returns vector of tool result messages for conversation history."
   [agent-id tool-calls permissions]
-  (mapv (fn [{:keys [id name arguments]}]
-          (let [approved? (or (not (requires-approval? name permissions))
-                              (request-approval! agent-id name arguments))]
-            (if approved?
-              (let [result (execute-tool name arguments)]
-                (format-tool-result id name result))
-              (format-tool-result id name
-                                  {:success false :error "Rejected by human"}))))
-        tool-calls))
+  (binding [ctx/*current-agent-id* agent-id]
+    (mapv (fn [{:keys [id name arguments]}]
+            (let [approved? (or (not (requires-approval? name permissions))
+                                (request-approval! agent-id name arguments))]
+              (if approved?
+                (let [result (execute-tool name arguments)]
+                  (format-tool-result id name result))
+                (format-tool-result id name
+                                    {:success false :error "Rejected by human"}))))
+          tool-calls)))

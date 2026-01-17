@@ -76,8 +76,48 @@ services:
       - minio
     restart: unless-stopped
 
+  # =============================================================================
+  # Observability Stack (CLARITY-T: Telemetry first)
+  # =============================================================================
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: emacs-mcp-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=7d'
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: emacs-mcp-grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=hivemcp
+      - GF_USERS_ALLOW_SIGN_UP=false
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
 volumes:
   chroma-data:
+    driver: local
+  prometheus-data:
+    driver: local
+  grafana-data:
     driver: local
   milvus-etcd:
     name: emacs-mcp_milvus-etcd

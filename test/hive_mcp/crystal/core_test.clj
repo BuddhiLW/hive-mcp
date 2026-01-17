@@ -166,3 +166,34 @@
           result (core/task-to-progress-note task)]
       (is (map? result))
       (is (string? (:content result))))))
+
+;; =============================================================================
+;; Regression Test: "Key must be integer" error
+;; =============================================================================
+
+(deftest summarize-session-progress-non-map-items-test
+  (testing "BUG FIX: summarize handles non-map items without 'Key must be integer' error"
+    ;; This regression test ensures that if notes contains vectors or strings
+    ;; instead of maps, we don't get "Key must be integer" when accessing (:tags item).
+    ;; The bug occurred when JSON parsing returned nested arrays or malformed data.
+    (let [notes-with-vectors [["nested" "array"]  ;; vector - would throw without guard
+                              {:content "Valid note" :tags ["completed-task"]}
+                              "just a string"      ;; string - would not throw but is invalid
+                              {:content "Another valid" :tags ["other"]}
+                              [1 2 3]]             ;; another vector
+          result (core/summarize-session-progress notes-with-vectors [])]
+      (is (map? result))
+      (is (string? (:content result)))
+      ;; Only valid maps should be processed for task count
+      (is (string? (get-in result [:content])))))
+
+  (testing "summarize filters out non-map items correctly"
+    ;; Only the 1 item with "completed-task" tag should be counted
+    (let [notes [["ignored" "vector"]
+                 {:content "Task done" :tags ["completed-task"]}
+                 "ignored string"
+                 {:content "Not a task" :tags ["note"]}]
+          result (core/summarize-session-progress notes [])
+          content (:content result)]
+      ;; Should contain "Completed Tasks: 1" since only one valid map has completed-task tag
+      (is (re-find #"Completed Tasks: 1" content)))))

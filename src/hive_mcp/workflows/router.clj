@@ -6,8 +6,11 @@
    
    SOLID: Single Responsibility - routing logic only
    CLARITY: L - Layers stay pure (domain logic separate from I/O)
-   CLARITY: R - Represented intent (clear naming)"
-  (:require [taoensso.timbre :as log]))
+   CLARITY: R - Represented intent (clear naming)")
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; Configuration: which workflows have native Clojure implementations
 (def ^:private native-workflows

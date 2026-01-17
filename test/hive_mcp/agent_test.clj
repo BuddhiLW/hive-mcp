@@ -30,8 +30,10 @@
 
 (def expected-dangerous-tools
   "Combined set of tools that drones MUST NOT have access to.
-   Includes file mutation tools + tier-3 tools that drones specifically lack."
-  #{"file_write" "file_edit" "clojure_edit" "bash" "magit_commit" "magit_push"})
+   Includes file mutation tools + tier-3 tools that drones specifically lack.
+   DRY: Derived from expected-file-mutation-tools + additional dangerous tools."
+  (set/union expected-file-mutation-tools
+             #{"bash" "magit_commit" "magit_push"}))
 
 ;; =============================================================================
 ;; Pinning Tests - Tool Definitions
@@ -79,9 +81,9 @@
 
 (deftest drone-cannot-write-files-directly
   (testing "file mutation tools are excluded from drone-allowed-tools"
-    (let [allowed (set drone/allowed-tools)
-          file-mutation-tools #{"file_write" "file_edit" "clojure_edit"}]
-      (is (empty? (set/intersection allowed file-mutation-tools))
+    (let [allowed (set drone/allowed-tools)]
+      ;; DRY: Use expected-file-mutation-tools instead of inline literal
+      (is (empty? (set/intersection allowed expected-file-mutation-tools))
           "Drones must use propose_diff instead of direct file writes"))))
 
 (deftest drone-cannot-execute-shell
@@ -143,6 +145,35 @@
       ;; by examining that delegate! is called with :tools
       (is (some? @#'hive-mcp.agent/delegate-drone!)
           "delegate-drone! should be defined"))))
+
+;; =============================================================================
+;; Integration Test - delegate-drone! Calls drone/delegate!
+;; =============================================================================
+
+(deftest delegate-drone-invokes-drone-delegate
+  (testing "delegate-drone! correctly invokes hive-mcp.agent.drone/delegate!"
+    ;; This test verifies the call chain works without needing external services.
+    ;; We mock drone/delegate! to capture the call arguments.
+    (let [captured-args (atom nil)
+          captured-delegate-fn (atom nil)
+          mock-drone-delegate! (fn [opts delegate-fn]
+                                 (reset! captured-args opts)
+                                 (reset! captured-delegate-fn delegate-fn)
+                                 {:status :completed :result "mocked"})]
+      (with-redefs [hive-mcp.agent.drone/delegate! mock-drone-delegate!]
+        (let [result (hive-mcp.agent/delegate-drone! {:task "test task"
+                                                      :files ["foo.clj"]})]
+          ;; Verify the call went through
+          (is (= :completed (:status result))
+              "Should return the mocked result")
+          ;; Verify opts were passed
+          (is (= "test task" (:task @captured-args))
+              "Task should be passed to drone/delegate!")
+          (is (= ["foo.clj"] (:files @captured-args))
+              "Files should be passed to drone/delegate!")
+          ;; Verify delegate-fn was passed (should be hive-mcp.agent/delegate!)
+          (is (fn? @captured-delegate-fn)
+              "delegate! function should be passed to drone/delegate!"))))))
 
 (comment
   ;; Run tests in REPL

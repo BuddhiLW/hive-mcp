@@ -28,12 +28,10 @@
   (ds/reset-conn!)
   ;; Reset hivemind agent-registry
   (reset! @(resolve 'hive-mcp.hivemind/agent-registry) {})
-  ;; Reset swarm lings-registry (deprecated, for backward compat)
-  (reset! @(resolve 'hive-mcp.tools.swarm.registry/lings-registry) {})
+  ;; Note: lings-registry removed in ADR-002 migration - DataScript is primary
   (f)
   (ds/reset-conn!)
-  (reset! @(resolve 'hive-mcp.hivemind/agent-registry) {})
-  (reset! @(resolve 'hive-mcp.tools.swarm.registry/lings-registry) {}))
+  (reset! @(resolve 'hive-mcp.hivemind/agent-registry) {}))
 
 (use-fixtures :each reset-all-registries)
 

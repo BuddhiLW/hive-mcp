@@ -23,11 +23,20 @@
    [hive-mcp.tools.kondo :as kondo]
    [hive-mcp.tools.scc :as scc]
    [hive-mcp.tools.crystal :as crystal]
+   [hive-mcp.tools.hot :as hot]
+   [hive-mcp.tools.health :as health]
+   [hive-mcp.tools.drone-feedback :as drone-feedback]
+   [hive-mcp.tools.session-complete :as session-complete]
+   [hive-mcp.tools.hive-project :as hive-project]
+   [hive-mcp.tools.telemetry :as telemetry]
    [hive-mcp.hivemind :as hivemind]
    [hive-mcp.channel :as channel]
    [hive-mcp.agent :as agent]
    [hive-mcp.chroma :as chroma]
    [taoensso.timbre :as log]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 ;; =============================================================================
 ;; Capability-Based Kanban Tool Switching
@@ -48,20 +57,27 @@
 
 (def ^:private base-tools
   "Tools that are always included regardless of capability state.
-   Excludes both mem-kanban and org-kanban-native tools."
+   Excludes kanban tools (both mem-kanban and org-kanban) - these are added
+   conditionally in get-filtered-tools based on Chroma availability."
   (vec (concat buffer/tools
                crystal/tools
                memory/tools
                cider/tools
                magit/tools
                projectile/tools
-               kanban/tools  ; elisp org-kanban addon (different from native)
+               ;; kanban/tools removed - now conditional on Chroma availability
                swarm/tools
                prompt/tools
                presets-tools/tools
                diff/tools
                kondo/tools
                scc/tools
+               hot/tools     ; hot reload coordination tools
+               health/tools  ; MCP health check
+               drone-feedback/tools
+               session-complete/tools  ; ling session lifecycle
+               hive-project/tools      ; .hive-project.edn generator
+               telemetry/tools         ; prometheus_query (CLARITY-T)
                hivemind/tools
                channel/channel-tools
                agent/tools)))
@@ -76,23 +92,26 @@
    When Chroma is available:
    - Include mcp_mem_kanban_* tools (memory-based kanban)
    - Include org tools WITHOUT org_kanban_native_* (avoid duplication)
+   - EXCLUDE kanban/tools (elisp org-kanban addon) to prevent LLM confusion
 
    When Chroma is unavailable:
+   - Include kanban/tools (elisp org-kanban addon) as primary kanban
+   - Include org tools WITH org_kanban_native_* (additional fallback)
    - Exclude mcp_mem_kanban_* tools
-   - Include org tools WITH org_kanban_native_* (fallback)
 
    CLARITY: Open/Closed - new capabilities can be added without modifying base tools."
   []
   (let [chroma-up? (chroma/chroma-available?)]
     (log/info "Kanban capability check: Chroma available?" chroma-up?)
     (if chroma-up?
-      ;; Chroma available: use mem-kanban, exclude org-kanban-native
+      ;; Chroma available: use mem-kanban only, no org-kanban tools
       (vec (concat base-tools
                    mem-kanban/tools
                    (org-tools-without-kanban)))
-      ;; Chroma unavailable: use org-kanban-native as fallback
+      ;; Chroma unavailable: use kanban/tools (elisp addon) + org-kanban-native as fallback
       (vec (concat base-tools
-                   org/tools)))))  ; Full org/tools includes kanban-native
+                   kanban/tools  ; elisp org-kanban addon (fallback when Chroma down)
+                   org/tools)))))
 
 (def tools
   "Aggregated tool definitions from domain-specific modules.
@@ -120,6 +139,11 @@
                diff/tools
                kondo/tools
                scc/tools
+               hot/tools     ; hot reload coordination tools
+               health/tools  ; MCP health check
+               drone-feedback/tools
+               session-complete/tools  ; ling session lifecycle
+               hive-project/tools      ; .hive-project.edn generator
                hivemind/tools
                channel/channel-tools
                agent/tools)))

@@ -13,6 +13,10 @@
    - Safe Wrapper: Never throw, always return structured error data"
   (:require [hive-mcp.evaluator :as evaluator]
             [taoensso.timbre :as log]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; ============================================================================
 ;; Core Resilience Functions
@@ -292,25 +296,96 @@
 ;; Circuit Breaker Pattern (Future Enhancement)
 ;; ============================================================================
 
-(comment
-  "Circuit breaker implementation for preventing cascading failures.
+(defprotocol CircuitBreaker
+  "Protocol for circuit breaker state management and execution."
+  (call [this f] "Execute function f if circuit breaker allows it.")
+  (state [this] "Get the current state of the circuit breaker."))
 
-   This is left as a future enhancement. When the evaluator fails repeatedly,
-   the circuit breaker would 'open', preventing further attempts and failing
-   fast until a timeout period expires (the circuit 'closes' again).
+(defrecord CircuitBreakerState
+           [state failure-count last-failure-time options]
+  ;; Record to hold the state and configuration of the circuit breaker.
+  )
 
-   States:
-   - Closed: Normal operation, requests go through
-   - Open: Too many failures, reject requests immediately
-   - Half-Open: Testing if service recovered, allow limited requests
+(defn make-circuit-breaker
+  "Create a new circuit breaker with the given options.
 
-   This would follow the Circuit Breaker pattern from Michael Nygard's
-   'Release It!' and is commonly used in microservices architectures."
+   Options:
+   - :failure-threshold: Number of failures before opening the circuit (default: 5)
+   - :reset-timeout-ms: Time in milliseconds before attempting to close the circuit (default: 30000)
+   - :half-open-max-calls: Maximum number of calls allowed in half-open state (default: 3)"
+  [opts]
+  (let [options (merge {:failure-threshold 5
+                        :reset-timeout-ms 30000
+                        :half-open-max-calls 3}
+                       opts)
+        state (atom :closed)
+        failure-count (atom 0)
+        last-failure-time (atom 0)]
+    (->CircuitBreakerState state failure-count last-failure-time options)))
 
-  (defn make-circuit-breaker [opts]
-    ;; Future implementation
-    )
+(extend-type CircuitBreakerState
+  CircuitBreaker
+  (call [this f]
+    (let [{:keys [failure-threshold reset-timeout-ms half-open-max-calls]} (:options this)
+          current-state @(:state this)
+          _current-failure-count @(:failure-count this)
+          current-last-failure-time @(:last-failure-time this)
+          now (System/currentTimeMillis)]
+      (case current-state
+        :closed
+        (try
+          (let [result (f)]
+            (reset! (:failure-count this) 0)
+            result)
+          (catch Exception e
+            (swap! (:failure-count this) inc)
+            (when (>= @(:failure-count this) failure-threshold)
+              (reset! (:state this) :open)
+              (reset! (:last-failure-time this) now))
+            (throw (ex-info "Circuit breaker: call failed in closed state" {:error (.getMessage e)}))))
 
-  (defn eval-with-circuit-breaker [circuit-breaker evaluator code opts]
-    ;; Future implementation
-    ))
+        :open
+        (let [time-since-failure (- now current-last-failure-time)]
+          (if (>= time-since-failure reset-timeout-ms)
+            (do
+              (reset! (:state this) :half-open)
+              (reset! (:failure-count this) 0)
+              (call this f))
+            (throw (ex-info "Circuit breaker is open" {:state :open}))))
+
+        :half-open
+        (if (< @(:failure-count this) half-open-max-calls)
+          (try
+            (let [result (f)]
+              (reset! (:state this) :closed)
+              (reset! (:failure-count this) 0)
+              result)
+            (catch Exception e
+              (swap! (:failure-count this) inc)
+              (reset! (:state this) :open)
+              (reset! (:last-failure-time this) now)
+              (throw (ex-info "Circuit breaker: call failed in half-open state" {:error (.getMessage e)}))))
+          (throw (ex-info "Circuit breaker: half-open call limit exceeded" {:state :half-open}))))))
+
+  (state [this]
+    @(:state this)))
+
+(defn eval-with-circuit-breaker
+  "Evaluate code using the circuit breaker pattern.
+
+   Parameters:
+   - circuit-breaker: CircuitBreaker instance
+   - evaluator: ReplEvaluator instance
+   - code: String containing code to evaluate
+   - opts: Additional options (currently unused)
+
+   Returns:
+   Map with :success, :result, and optionally :error"
+  [circuit-breaker evaluator code _opts]
+  (try
+    (let [result (call circuit-breaker #(evaluator/eval-code evaluator code))]
+      {:success true
+       :result result})
+    (catch Exception e
+      {:success false
+       :error (.getMessage e)})))

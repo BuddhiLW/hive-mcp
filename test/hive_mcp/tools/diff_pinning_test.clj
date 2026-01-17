@@ -161,6 +161,75 @@
     (is (= 3 (count @diff/pending-diffs)))))
 
 ;; =============================================================================
+;; Test: CLARITY-Y Empty Content Validation
+;; =============================================================================
+
+(deftest test-propose-diff-rejects-empty-new-content
+  (testing "propose_diff rejects empty new_content (CLARITY-Y)"
+    ;; Empty string
+    (let [response (diff/handle-propose-diff
+                    {:file_path "/src/test.clj"
+                     :old_content "(defn foo [] 1)"
+                     :new_content ""
+                     :description "Empty change"
+                     :drone_id "drone-1"})
+          parsed (parse-response-text response)]
+      (is (true? (:isError response)))
+      (is (re-find #"(?i)empty|whitespace" (:error parsed)))
+      (is (= 0 (count @diff/pending-diffs)) "No diff should be stored")))
+
+  (testing "propose_diff rejects whitespace-only new_content"
+    ;; Whitespace only
+    (let [response (diff/handle-propose-diff
+                    {:file_path "/src/test.clj"
+                     :old_content "(defn foo [] 1)"
+                     :new_content "   \n\t  "
+                     :description "Whitespace change"
+                     :drone_id "drone-1"})
+          parsed (parse-response-text response)]
+      (is (true? (:isError response)))
+      (is (re-find #"(?i)empty|whitespace" (:error parsed)))
+      (is (= 0 (count @diff/pending-diffs)) "No diff should be stored"))))
+
+(deftest test-apply-diff-blocks-empty-new-content-defense-in-depth
+  (testing "apply_diff blocks empty new_content even if diff was stored (defense-in-depth)"
+    ;; Manually inject a diff with empty content (simulating a bug bypass)
+    (let [diff-id "test-empty-diff-12345"]
+      (swap! diff/pending-diffs assoc diff-id
+             {:id diff-id
+              :file-path "/src/test.clj"
+              :old-content ""
+              :new-content ""  ;; Empty content - should be blocked
+              :description "Bug bypass test"
+              :drone-id "drone-1"
+              :unified-diff ""
+              :status "pending"
+              :created-at (java.time.Instant/now)})
+      (let [response (diff/handle-apply-diff {:diff_id diff-id})
+            parsed (parse-response-text response)]
+        (is (true? (:isError response)))
+        (is (re-find #"(?i)empty|whitespace" (:error parsed)))
+        ;; Diff should be removed after blocked apply
+        (is (nil? (get @diff/pending-diffs diff-id))))))
+
+  (testing "apply_diff blocks whitespace-only new_content"
+    (let [diff-id "test-whitespace-diff-12345"]
+      (swap! diff/pending-diffs assoc diff-id
+             {:id diff-id
+              :file-path "/src/test.clj"
+              :old-content "(defn foo [] 1)"
+              :new-content "   \n\t  "  ;; Whitespace only
+              :description "Whitespace bypass test"
+              :drone-id "drone-1"
+              :unified-diff ""
+              :status "pending"
+              :created-at (java.time.Instant/now)})
+      (let [response (diff/handle-apply-diff {:diff_id diff-id})
+            parsed (parse-response-text response)]
+        (is (true? (:isError response)))
+        (is (re-find #"(?i)empty|whitespace" (:error parsed)))))))
+
+;; =============================================================================
 ;; Test: handle-list-proposed-diffs
 ;; =============================================================================
 

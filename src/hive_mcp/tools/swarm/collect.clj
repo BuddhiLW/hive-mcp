@@ -12,6 +12,10 @@
             [hive-mcp.validation :as v]
             [clojure.data.json :as json]
             [taoensso.timbre :as log]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; ============================================================
 ;; Response Builders
@@ -166,7 +170,7 @@
 
         ;; Not in journal - fall back to polling
         (loop []
-          (let [elapsed (- (System/currentTimeMillis) start-time)
+          (let [_elapsed (- (System/currentTimeMillis) start-time)
                 ;; Check journal again (event might have arrived during poll wait)
                 journal-check (channel/check-event-journal task_id)]
             (if journal-check

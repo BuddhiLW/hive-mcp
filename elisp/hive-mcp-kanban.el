@@ -23,8 +23,13 @@
 ;;              :created "timestamp"
 ;;              :started nil          ;; set when moved to doing
 ;;              :context "notes"}
-;;    :tags ["kanban" "todo" "priority-high"]
+;;    :tags ["kanban" "todo" "priority-high" "scope:project:<project-id>"]
 ;;    :duration "short-term"}
+;;
+;; Project Scoping:
+;;   Tasks are automatically tagged with "scope:project:<id>" for isolation.
+;;   Project ID is derived from .hive-project.edn or falls back to path hash.
+;;   Query operations filter by scope to ensure project isolation.
 ;;
 
 ;;; Code:
@@ -50,6 +55,21 @@
   "Build tags list from STATUS and PRIORITY."
   (list "kanban" status (format "priority-%s" priority)))
 
+(defun hive-mcp-kanban--build-tags-with-scope (status priority project-id)
+  "Build tags list from STATUS, PRIORITY, and PROJECT-ID.
+Includes scope tag for project isolation.
+If PROJECT-ID is nil, falls back to current project."
+  (let* ((base-tags (hive-mcp-kanban--build-tags status priority))
+         (effective-project (or project-id (hive-mcp-memory--project-id)))
+         (scope-tag (hive-mcp-memory--make-scope-tag 'project effective-project)))
+    (append base-tags (list scope-tag))))
+
+(defun hive-mcp-kanban--extract-scope (entry)
+  "Extract scope tag from ENTRY tags.
+Returns the scope tag string, or nil if not found."
+  (let ((tags (plist-get entry :tags)))
+    (seq-find (lambda (tag) (string-prefix-p "scope:" tag)) tags)))
+
 (defun hive-mcp-kanban--is-kanban-entry-p (entry)
   "Return non-nil if ENTRY is a kanban task."
   (let ((content (plist-get entry :content)))
@@ -62,7 +82,7 @@
   "Create a kanban task in memory with short-term duration.
 TITLE is required. PRIORITY defaults to medium. CONTEXT is optional notes.
 PROJECT-ID specifies the project (defaults to current).
-Returns the created entry."
+Returns the created entry with scope tag for project isolation."
   (let* ((prio (or priority "medium"))
          (status "todo")
          (content (list :task-type "kanban"
@@ -72,7 +92,8 @@ Returns the created entry."
                         :created (hive-mcp-kanban--timestamp)
                         :started nil
                         :context context))
-         (tags (hive-mcp-kanban--build-tags status prio)))
+         ;; Use scoped tags for project isolation
+         (tags (hive-mcp-kanban--build-tags-with-scope status prio project-id)))
     ;; Validate priority
     (unless (member prio hive-mcp-kanban-priorities)
       (error "Invalid priority: %s. Must be one of %s"
@@ -104,7 +125,14 @@ Returns the updated entry, or t if deleted (done)."
       (let* ((content (plist-get entry :content))
              (priority (plist-get content :priority))
              (new-content (plist-put (copy-sequence content) :status new-status))
-             (new-tags (hive-mcp-kanban--build-tags new-status priority)))
+             ;; Preserve existing scope or use provided project-id
+             (existing-scope (hive-mcp-kanban--extract-scope entry))
+             (new-tags (if existing-scope
+                           ;; Preserve existing scope tag
+                           (append (hive-mcp-kanban--build-tags new-status priority)
+                                   (list existing-scope))
+                         ;; Use scoped tags with project-id
+                         (hive-mcp-kanban--build-tags-with-scope new-status priority project-id))))
         ;; Set :started timestamp when moving to "doing"
         (when (string= new-status "doing")
           (setq new-content (plist-put new-content :started (hive-mcp-kanban--timestamp))))
@@ -123,10 +151,14 @@ Returns t if deleted, nil if not found."
   (hive-mcp-memory-delete task-id project-id))
 
 (defun hive-mcp-kanban-list-all (&optional project-id)
-  "List all kanban tasks.
+  "List all kanban tasks for the specified project.
 PROJECT-ID specifies the project (defaults to current).
-Returns list of entries sorted by priority (high first)."
-  (let* ((entries (hive-mcp-memory-query 'note '("kanban") project-id))
+Returns list of entries sorted by priority (high first).
+Only returns tasks scoped to the specified project."
+  (let* ((effective-project (or project-id (hive-mcp-memory--project-id)))
+         (scope-filter (hive-mcp-memory--make-scope-tag 'project effective-project))
+         ;; Pass scope-filter to memory-query (6th parameter)
+         (entries (hive-mcp-memory-query 'note '("kanban") project-id nil nil scope-filter))
          (kanban-entries (seq-filter #'hive-mcp-kanban--is-kanban-entry-p entries)))
     ;; Sort by priority: high > medium > low
     (sort kanban-entries
@@ -137,14 +169,17 @@ Returns list of entries sorted by priority (high first)."
                  (seq-position hive-mcp-kanban-priorities prio-b)))))))
 
 (defun hive-mcp-kanban-list-by-status (status &optional project-id)
-  "List tasks by STATUS (todo, doing, review).
+  "List tasks by STATUS (todo, doing, review) for the specified project.
 PROJECT-ID specifies the project (defaults to current).
-Returns list of entries for that status."
+Returns list of entries for that status, scoped to the project."
   (unless (member status hive-mcp-kanban-statuses)
     (error "Invalid status: %s" status))
   (when (string= status "done")
     (error "Cannot list 'done' tasks - they are deleted on completion"))
-  (let ((entries (hive-mcp-memory-query 'note (list "kanban" status) project-id)))
+  (let* ((effective-project (or project-id (hive-mcp-memory--project-id)))
+         (scope-filter (hive-mcp-memory--make-scope-tag 'project effective-project))
+         ;; Pass scope-filter to memory-query (6th parameter)
+         (entries (hive-mcp-memory-query 'note (list "kanban" status) project-id nil nil scope-filter)))
     (seq-filter #'hive-mcp-kanban--is-kanban-entry-p entries)))
 
 (defun hive-mcp-kanban-stats (&optional project-id)
@@ -184,8 +219,14 @@ Returns the updated entry."
         (setq content (plist-put content :priority priority)))
       (when context
         (setq content (plist-put content :context context)))
-      ;; Rebuild tags with potentially new priority
-      (let ((new-tags (hive-mcp-kanban--build-tags current-status new-priority)))
+      ;; Rebuild tags with potentially new priority, preserving scope
+      (let* ((existing-scope (hive-mcp-kanban--extract-scope entry))
+             (new-tags (if existing-scope
+                           ;; Preserve existing scope tag
+                           (append (hive-mcp-kanban--build-tags current-status new-priority)
+                                   (list existing-scope))
+                         ;; Use scoped tags with project-id
+                         (hive-mcp-kanban--build-tags-with-scope current-status new-priority project-id))))
         (hive-mcp-memory-update task-id
                                  (list :content content
                                        :tags new-tags)

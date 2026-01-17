@@ -6,7 +6,9 @@
    - Handler execution time measurement
    - get-metrics and reset-metrics! functions"
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
-            [hive-mcp.events.core :as ev]))
+            [clojure.string :as str]
+            [hive-mcp.events.core :as ev]
+            [hive-mcp.telemetry.prometheus :as prom]))
 
 ;; =============================================================================
 ;; Test fixture: Reset metrics before each test
@@ -168,3 +170,52 @@
       (is (= 1 (get-in m [:events-by-type :metrics-test-event]))
           "Should have 1 :metrics-test-event")
       (is (pos? (:timings-count m)) "Should have timing recorded"))))
+
+;; =============================================================================
+;; Prometheus Integration Tests (CLARITY-T: Telemetry first)
+;; =============================================================================
+
+(deftest dispatch-records-prometheus-events-total
+  (testing "dispatch increments Prometheus events-total counter"
+    (prom/init!)
+    (ev/reset-all!)
+
+    ;; Register a test event
+    (ev/reg-event :prom-test-event
+                  []
+                  (fn [_coeffects _event]
+                    {:log "Prometheus test"}))
+    (ev/reg-fx :log (fn [_] nil))
+
+    ;; Dispatch the event
+    (ev/dispatch [:prom-test-event {:data "test"}])
+
+    ;; Verify Prometheus metric
+    (let [metrics (prom/metrics-response)]
+      (is (str/includes? metrics "hive_mcp_events_total")
+          "events-total counter present")
+      (is (str/includes? metrics "type=\"prom-test-event\"")
+          "event type label recorded"))))
+
+(deftest dispatch-records-prometheus-request-duration
+  (testing "dispatch records request duration to Prometheus histogram"
+    (prom/init!)
+    (ev/reset-all!)
+
+    ;; Register a test event
+    (ev/reg-event :prom-duration-test
+                  []
+                  (fn [_coeffects _event]
+                    (Thread/sleep 5) ; Add small delay
+                    {:log "Duration test"}))
+    (ev/reg-fx :log (fn [_] nil))
+
+    ;; Dispatch the event
+    (ev/dispatch [:prom-duration-test {}])
+
+    ;; Verify Prometheus histogram
+    (let [metrics (prom/metrics-response)]
+      (is (str/includes? metrics "hive_mcp_request_duration_seconds")
+          "request-duration-seconds histogram present")
+      (is (str/includes? metrics "tool=\"event-dispatch-prom-duration-test\"")
+          "tool label with event-dispatch prefix recorded"))))

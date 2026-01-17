@@ -36,7 +36,12 @@
             [malli.error :as me]
             [hive-mcp.events.schemas :as schemas]
             [hive-mcp.swarm.datascript :as ds]
-            [hive-mcp.channel.websocket :as ws]))
+            [hive-mcp.channel.websocket :as ws]
+            [hive-mcp.telemetry.prometheus :as prom]
+            [hive-mcp.guards :as guards]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 ;; =============================================================================
 ;; State
@@ -409,7 +414,10 @@
    (dispatch event @*event-handlers @*fx-handlers))
   ([event handlers fx-handlers]
    (schemas/validate-event! event) ;; CLARITY: Guard inputs at boundary
-   (let [event-id (first event)]
+   (let [event-id (first event)
+         start-ns (System/nanoTime)]
+     ;; CLARITY-T: Record event to Prometheus
+     (prom/inc-events-total! event-id :info)
      (if-let [{:keys [interceptors handler]} (get handlers event-id)]
        (let [;; Handler interceptor converts coeffects to effects
              handler-interceptor (->interceptor
@@ -421,7 +429,10 @@
              ;; Build full chain: registered interceptors + handler
              full-chain (conj (vec interceptors) handler-interceptor)
              ;; Execute and apply effects
-             result (execute event full-chain)]
+             result (execute event full-chain)
+             ;; CLARITY-T: Record dispatch duration to Prometheus
+             elapsed-sec (/ (- (System/nanoTime) start-ns) 1e9)]
+         (prom/observe-request-duration! (str "event-dispatch-" (name event-id)) elapsed-sec)
          (do-fx result fx-handlers)
          result)
        (throw (ex-info (str "No handler registered for event: " event-id)
@@ -621,6 +632,29 @@
             (fn [{:keys [event data]}]
               (ws/emit! event data)))
 
+    ;; CLARITY-T: Prometheus metrics effect
+    ;; Handles :prometheus effects from event handlers for drone/wave telemetry
+    ;; Effect shape: {:counter :drone_started :labels {:parent "none"}
+    ;;                :histogram {:name :drone_duration_seconds :value 5.0}}
+    (reg-fx :prometheus
+            (fn [effect-data]
+              (try
+                (prom/handle-prometheus-effect! effect-data)
+                (catch Exception e
+                  (println "[prometheus-fx] Failed to record metric:" (.getMessage e))))))
+
+    ;; CLARITY-T: Log effect
+    ;; Handles :log effects from event handlers for structured logging
+    ;; Effect shape: {:level :info :message "Drone started: drone-123"}
+    (reg-fx :log
+            (fn [{:keys [level message]}]
+              (case level
+                :debug (println "[DEBUG]" message)
+                :info  (println "[INFO]" message)
+                :warn  (println "[WARN]" message)
+                :error (println "[ERROR]" message)
+                (println "[LOG]" message))))
+
     ;; Mark as initialized
     (reset! *initialized true)
     (println "[hive-events] Event system initialized with coeffects: :now :random :agent-context :db-snapshot")
@@ -670,12 +704,16 @@
 
 (defn reset-all!
   "Reset all event system state. Primarily for testing.
-   
-   Resets handlers, coeffects, effects, and metrics."
+
+   Resets handlers, coeffects, effects, and metrics.
+
+   CLARITY-Y: Guarded - skipped if coordinator is running to protect production."
   []
-  (clojure.core/reset! *initialized false)
-  (clojure.core/reset! *fx-handlers {})
-  (clojure.core/reset! *cofx-handlers {})
-  (clojure.core/reset! *event-handlers {})
-  (reset-metrics!)
-  nil)
+  (guards/when-not-coordinator
+   "ev/reset-all! blocked"
+   (clojure.core/reset! *initialized false)
+   (clojure.core/reset! *fx-handlers {})
+   (clojure.core/reset! *cofx-handlers {})
+   (clojure.core/reset! *event-handlers {})
+   (reset-metrics!)
+   nil))

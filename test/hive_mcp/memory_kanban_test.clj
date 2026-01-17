@@ -93,14 +93,14 @@
   (testing "Task content map must have required fields"
     ;; Document expected content structure
     (let [expected-fields #{:task-type :title :status :priority :created}
-          sample-content {:task-type "kanban"
-                          :title "Test task"
-                          :status "todo"
-                          :priority "medium"
-                          :created 1234567890}]
-      (is (every? #(contains? sample-content %) expected-fields)
+          _content {:task-type "kanban"
+                    :title "Test task"
+                    :status "todo"
+                    :priority "medium"
+                    :created 1234567890}]
+      (is (every? #(contains? _content %) expected-fields)
           "Content must have all required fields")
-      (is (= "kanban" (:task-type sample-content))
+      (is (= "kanban" (:task-type _content))
           ":task-type must be 'kanban'"))))
 
 (deftest test-valid-statuses
@@ -120,8 +120,8 @@
 
 (deftest test-kanban-tag-required
   (testing "All kanban tasks must have 'kanban' tag"
-    (let [expected-tags ["kanban" "todo" "medium"]]
-      (is (= "kanban" (first expected-tags))
+    (let [_tags ["kanban" "todo" "medium"]]
+      (is (= "kanban" (first _tags))
           "First tag must be 'kanban'"))))
 
 (deftest test-duration-is-short-term
@@ -382,11 +382,11 @@
 
 (deftest test-tags-structure-for-todo
   (testing "Tags for 'todo' status task"
-    (let [expected-tags ["kanban" "todo" "medium"]]
-      (is (= 3 (count expected-tags)))
-      (is (= "kanban" (nth expected-tags 0)))
-      (is (= "todo" (nth expected-tags 1)))
-      (is (= "medium" (nth expected-tags 2))))))
+    (let [_tags ["kanban" "todo" "medium"]]
+      (is (= 3 (count _tags)))
+      (is (= "kanban" (nth _tags 0)))
+      (is (= "todo" (nth _tags 1)))
+      (is (= "medium" (nth _tags 2))))))
 
 (deftest test-tags-structure-for-doing-high
   (testing "Tags for 'doing' status with 'high' priority"
@@ -559,3 +559,92 @@
       (is (string? (:description dir-prop)) "Directory param has description")
       (is (str/includes? (:description dir-prop) "project scope")
           "Description mentions project scoping"))))
+
+;; =============================================================================
+;; 13. Scope Tag Isolation Tests
+;; =============================================================================
+
+(deftest test-scope-tag-format
+  (testing "Scope tags follow scope:project:<id> pattern"
+    (let [valid-scope-tags ["scope:project:my-app"
+                            "scope:project:hive-mcp"
+                            "scope:project:test-proj-123"]
+          invalid-scope-tags ["scope:my-app"
+                              "project:my-app"
+                              "scope:global"]]
+      (doseq [tag valid-scope-tags]
+        (is (str/starts-with? tag "scope:project:")
+            (str "Tag should start with scope:project: - " tag)))
+      (doseq [tag invalid-scope-tags]
+        (is (not (str/starts-with? tag "scope:project:"))
+            (str "Tag should not match project scope pattern - " tag))))))
+
+(deftest test-kanban-tags-with-scope-structure
+  (testing "Kanban tags with scope have 4 elements"
+    ;; New tag structure: ["kanban" status priority "scope:project:<id>"]
+    (let [expected-tags ["kanban" "todo" "priority-high" "scope:project:my-app"]]
+      (is (= 4 (count expected-tags)) "Scoped tags should have 4 elements")
+      (is (= "kanban" (nth expected-tags 0)) "First element is 'kanban'")
+      (is (= "todo" (nth expected-tags 1)) "Second element is status")
+      (is (str/starts-with? (nth expected-tags 2) "priority-") "Third element is priority")
+      (is (str/starts-with? (nth expected-tags 3) "scope:project:") "Fourth element is scope"))))
+
+(deftest test-scope-isolation-documentation
+  (testing "Document scope isolation behavior"
+    ;; Tasks created in project A with scope:project:A
+    ;; should NOT be visible when listing from project B
+    (let [task-project-a {:tags ["kanban" "todo" "priority-high" "scope:project:project-a"]}
+          task-project-b {:tags ["kanban" "todo" "priority-high" "scope:project:project-b"]}
+          query-scope-a "scope:project:project-a"
+          query-scope-b "scope:project:project-b"]
+      ;; Document: task-project-a should match query-scope-a
+      (is (some #(= query-scope-a %) (:tags task-project-a))
+          "Project A task matches Project A scope")
+      ;; Document: task-project-a should NOT match query-scope-b
+      (is (not (some #(= query-scope-b %) (:tags task-project-a)))
+          "Project A task does NOT match Project B scope")
+      ;; Document: task-project-b should match query-scope-b
+      (is (some #(= query-scope-b %) (:tags task-project-b))
+          "Project B task matches Project B scope"))))
+
+(deftest test-scope-preserved-on-move
+  (testing "Scope tag is preserved when moving task between statuses"
+    ;; Document: when moving from todo -> doing, scope tag must be preserved
+    (let [original-tags ["kanban" "todo" "priority-high" "scope:project:my-app"]
+          after-move-tags ["kanban" "doing" "priority-high" "scope:project:my-app"]]
+      ;; Status changes
+      (is (not= (nth original-tags 1) (nth after-move-tags 1))
+          "Status tag changes")
+      ;; Scope preserved
+      (is (= (nth original-tags 3) (nth after-move-tags 3))
+          "Scope tag is preserved")
+      ;; Priority preserved
+      (is (= (nth original-tags 2) (nth after-move-tags 2))
+          "Priority tag is preserved"))))
+
+(deftest test-scope-preserved-on-update
+  (testing "Scope tag is preserved when updating task fields"
+    ;; Document: when updating title/priority, scope tag must be preserved
+    (let [before-update-tags ["kanban" "todo" "priority-medium" "scope:project:my-app"]
+          after-update-tags ["kanban" "todo" "priority-high" "scope:project:my-app"]]
+      ;; Priority changes
+      (is (not= (nth before-update-tags 2) (nth after-update-tags 2))
+          "Priority tag can change")
+      ;; Scope preserved
+      (is (= (nth before-update-tags 3) (nth after-update-tags 3))
+          "Scope tag is preserved"))))
+
+(deftest test-global-tasks-backward-compat
+  (testing "Tasks without scope tags are treated as global (backward compat)"
+    ;; Document: legacy tasks without scope:project:X tags
+    ;; should still be accessible (treated as global)
+    (let [legacy-task {:tags ["kanban" "todo" "priority-medium"]}
+          scoped-task {:tags ["kanban" "todo" "priority-medium" "scope:project:my-app"]}]
+      ;; Legacy task has 3 tags, no scope
+      (is (= 3 (count (:tags legacy-task))))
+      (is (not (some #(str/starts-with? % "scope:") (:tags legacy-task)))
+          "Legacy task has no scope tag")
+      ;; Scoped task has 4 tags, including scope
+      (is (= 4 (count (:tags scoped-task))))
+      (is (some #(str/starts-with? % "scope:") (:tags scoped-task))
+          "Scoped task has scope tag"))))

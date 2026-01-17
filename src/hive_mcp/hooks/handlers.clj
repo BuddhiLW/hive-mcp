@@ -54,6 +54,10 @@
    - Yield safe failure: Nil returns indicate no-op"
   (:require [clojure.string :as str]
             [hive-mcp.events.core :as ev]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; =============================================================================
 ;; Helper Functions
@@ -224,6 +228,7 @@
 ;; Handler Collection
 ;; =============================================================================
 
+#_{:clj-kondo/ignore [:deprecated-var]}
 (def ^:deprecated builtin-handlers
   "DEPRECATED: Use hive-mcp.events.handlers/register-handlers! instead.
 
@@ -259,6 +264,7 @@
    should be initialized via hive-mcp.events.handlers/register-handlers!"
   [registry register-fn]
   (println "WARN: register-builtins! is deprecated. Use hive-mcp.events.handlers/register-handlers! instead.")
+  #_:clj-kondo/ignore
   (doseq [[event handlers] builtin-handlers
           handler handlers]
     (register-fn registry event handler)))

@@ -25,6 +25,10 @@
   (:import [java.net URI]
            [java.net.http HttpClient HttpRequest HttpRequest$BodyPublishers HttpResponse$BodyHandlers]
            [java.time Duration]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;;; ============================================================
 ;;; Configuration
@@ -132,7 +136,7 @@
        (let [test-result (make-request host "/api/tags" nil)]
          (log/info "Connected to Ollama at" host)
          (log/debug "Available models:" (mapv :name (:models test-result))))
-       (catch Exception e
+       (catch Exception _e
          (log/warn "Could not connect to Ollama at" host "- ensure ollama is running")))
      (log/info "Created Ollama embedder with model:" model "dimension:" dimension)
      (->OllamaEmbedder host model dimension))))

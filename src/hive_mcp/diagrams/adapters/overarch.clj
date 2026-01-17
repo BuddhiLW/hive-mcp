@@ -9,6 +9,10 @@
             [clojure.java.shell :refer [sh]]
             [clojure.java.io :as io]
             [clojure.string :as str]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;;; Configuration
 
@@ -44,7 +48,7 @@
 (defn- element->overarch
   "Convert internal element to Overarch EDN format.
    Ensures :id is a namespaced keyword."
-  [{:keys [el id name desc tech external? subtype] :as elem}]
+  [{:keys [el id name desc tech external? subtype] :as _elem}]
   (cond-> {:el (or el :system)
            :id (ensure-namespaced-keyword id)
            :name name}
@@ -56,7 +60,7 @@
 (defn- relation->overarch
   "Convert internal relation to Overarch EDN format.
    Generates :id from from/to if not provided. Ensures all IDs are namespaced."
-  [{:keys [id from to name desc tech] :as rel}]
+  [{:keys [id from to name desc tech] :as _rel}]
   (let [ns-from (ensure-namespaced-keyword from)
         ns-to (ensure-namespaced-keyword to)
         rel-id (ensure-namespaced-keyword
@@ -72,7 +76,7 @@
 (defn- spec->overarch-model
   "Convert diagram spec to Overarch model EDN.
    Returns a set of elements and relations (not a vector)."
-  [{:keys [type title elements relations options]}]
+  [{:keys [_type title elements relations _options] :as _spec}]
   (let [model-elements (map element->overarch elements)
         model-relations (map relation->overarch relations)]
     {:title title
@@ -82,7 +86,7 @@
   "Generate Overarch view definition based on diagram type.
    Uses :ct with refs to all elements and relations.
    Ensures all refs use namespaced keywords."
-  [{:keys [type title elements relations] :as spec}]
+  [{:keys [_type title elements relations] :as _spec}]
   (let [element-refs (mapv (fn [{:keys [id]}]
                              {:ref (ensure-namespaced-keyword id)})
                            elements)
@@ -92,7 +96,7 @@
                                                           "-to-"
                                                           (clojure.core/name to)))))})
                             relations)
-        view-type (case type
+        view-type (case _type
                     :c4-context :context-view
                     :c4-container :container-view
                     :c4-component :component-view
@@ -102,7 +106,7 @@
                     :concept-map :concept-view
                     :context-view)]
     #{{:el view-type
-       :id (keyword "diagram" (str (clojure.core/name type) "-view"))
+       :id (keyword "diagram" (str (clojure.core/name _type) "-view"))
        :title (or title "Diagram")
        :ct (into element-refs relation-refs)}}))
 

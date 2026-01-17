@@ -16,7 +16,8 @@
    - Tests run against in-memory/mock Chroma where possible"
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [clojure.string :as str]
-            [hive-mcp.chroma :as chroma]))
+            [hive-mcp.chroma :as chroma]
+            [hive-mcp.test-fixtures :as fixtures]))
 
 ;; =============================================================================
 ;; Test Fixtures and Helpers
@@ -28,7 +29,7 @@
   "Fixture that sets up mock embedder for testing."
   [f]
   (let [original-provider @@#'chroma/embedding-provider] ;; double deref: Var → atom → value
-    (chroma/set-embedding-provider! (chroma/->MockEmbedder 384))
+    (chroma/set-embedding-provider! (fixtures/->MockEmbedder 384))
     (chroma/configure! {:host "localhost"
                         :port 8000
                         :collection-name *test-collection*})
@@ -78,7 +79,7 @@
 
 (deftest test-mock-embedder-produces-deterministic-vectors
   (testing "Same text produces same embedding"
-    (let [embedder (chroma/->MockEmbedder 384)
+    (let [embedder (fixtures/->MockEmbedder 384)
           text "Test content"
           emb1 (chroma/embed-text embedder text)
           emb2 (chroma/embed-text embedder text)]
@@ -86,14 +87,14 @@
       (is (= 384 (count emb1)))))
 
   (testing "Different text produces different embeddings"
-    (let [embedder (chroma/->MockEmbedder 384)
+    (let [embedder (fixtures/->MockEmbedder 384)
           emb1 (chroma/embed-text embedder "First text")
           emb2 (chroma/embed-text embedder "Second text")]
       (is (not= emb1 emb2)))))
 
 (deftest test-batch-embedding
   (testing "Batch embedding produces correct count"
-    (let [embedder (chroma/->MockEmbedder 384)
+    (let [embedder (fixtures/->MockEmbedder 384)
           texts ["one" "two" "three"]
           embeddings (chroma/embed-batch embedder texts)]
       (is (= 3 (count embeddings)))

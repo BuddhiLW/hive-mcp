@@ -30,6 +30,9 @@
             [clojure.java.io :as io]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 ;;; ============================================================
 ;;; Configuration
@@ -51,31 +54,90 @@
 
 (defonce ^:private collection-cache (atom nil))
 
+(defn- try-get-existing-collection
+  "Try to get existing collection. Returns nil on failure."
+  []
+  (try
+    @(chroma-api/get-collection collection-name)
+    (catch Exception _ nil)))
+
+(defn- delete-collection!
+  "Delete the presets collection. Returns true on success."
+  []
+  (try
+    ;; chroma-api/delete-collection expects a collection object, not just name
+    ;; It extracts (:name collection) from the object
+    (when-let [coll (try-get-existing-collection)]
+      @(chroma-api/delete-collection coll)
+      ;; Give Chroma time to process the deletion
+      (Thread/sleep 50))
+    true
+    (catch Exception _ false)))
+
+(defn- create-collection-with-dimension
+  "Create a new collection with the given dimension.
+   Returns fresh collection reference to avoid stale cache issues."
+  [dim]
+  ;; Verify collection doesn't exist before creating (belt and suspenders)
+  (when-let [stale (try-get-existing-collection)]
+    (log/warn "Stale collection found after delete, forcing re-delete")
+    (delete-collection!))
+  ;; Create the collection
+  @(chroma-api/create-collection
+    collection-name
+    {:metadata {:dimension dim
+                :created-by "hive-mcp"
+                :purpose "swarm-presets"}})
+  ;; IMPORTANT: Get fresh reference - chroma client may cache stale references
+  ;; The create-collection return value may reference the old collection ID
+  (Thread/sleep 50) ;; Allow Chroma to settle
+  (or (try-get-existing-collection)
+      (throw (ex-info "Failed to get collection after creation"
+                      {:collection collection-name :dimension dim}))))
+
 (defn- get-or-create-collection
-  "Get existing presets collection or create new one."
+  "Get existing presets collection or create new one.
+
+   Flex Embedding Dimensions:
+   If the existing collection's dimension doesn't match the current provider,
+   the collection is automatically recreated with the correct dimension.
+   This handles provider switches (e.g., Ollama 768 → OpenRouter 4096).
+
+   COLLECTION-AWARE: Uses chroma/get-provider-for to get the provider
+   configured specifically for this collection (if any), falling back
+   to global provider."
   []
   (if-let [coll @collection-cache]
     coll
-    (let [provider (chroma/get-embedding-provider)]
+    (let [provider (chroma/get-provider-for collection-name)]
       (when-not provider
-        (throw (ex-info "Embedding provider not configured. Call chroma/set-embedding-provider! first."
-                        {:type :no-embedding-provider})))
-      (let [dim (chroma/embedding-dimension provider)
-            existing (try
-                       @(chroma-api/get-collection collection-name)
-                       (catch Exception _ nil))]
+        (throw (ex-info "Embedding provider not configured for presets collection."
+                        {:type :no-embedding-provider
+                         :collection collection-name})))
+      (let [required-dim (chroma/embedding-dimension provider)
+            existing (try-get-existing-collection)]
         (if existing
-          (do
-            (reset! collection-cache existing)
-            (log/info "Using existing presets collection:" collection-name)
-            existing)
-          (let [new-coll @(chroma-api/create-collection
-                           collection-name
-                           {:metadata {:dimension dim
-                                       :created-by "hive-mcp"
-                                       :purpose "swarm-presets"}})]
+          ;; Check dimension match
+          (let [existing-dim (get-in existing [:metadata :dimension])]
+            (if (= existing-dim required-dim)
+              ;; Dimension matches - reuse existing collection
+              (do
+                (reset! collection-cache existing)
+                (log/info "Using existing presets collection:" collection-name "dimension:" existing-dim)
+                existing)
+              ;; Dimension mismatch - recreate collection!
+              (do
+                (log/warn "Embedding dimension changed:" existing-dim "→" required-dim ". Recreating collection.")
+                (delete-collection!)
+                (reset! collection-cache nil)
+                (let [new-coll (create-collection-with-dimension required-dim)]
+                  (reset! collection-cache new-coll)
+                  (log/info "Recreated presets collection:" collection-name "dimension:" required-dim)
+                  new-coll))))
+          ;; No existing collection - create new
+          (let [new-coll (create-collection-with-dimension required-dim)]
             (reset! collection-cache new-coll)
-            (log/info "Created presets collection:" collection-name "dimension:" dim)
+            (log/info "Created presets collection:" collection-name "dimension:" required-dim)
             new-coll))))))
 
 (defn reset-collection-cache!
@@ -162,12 +224,12 @@
 
 (defn index-preset!
   "Index a single preset in Chroma.
-   Returns preset ID on success."
-  [{:keys [id name title content category tags source file-path] :as preset}]
-  (when-not (chroma/embedding-configured?)
-    (throw (ex-info "Embedding provider not configured" {:type :no-embedding-provider})))
+   Returns preset ID on success.
+
+   COLLECTION-AWARE: Uses collection-specific embedding provider."
+  [{:keys [id name title _content category tags source file-path] :as preset}]
   (let [coll (get-or-create-collection)
-        provider (chroma/get-embedding-provider)
+        provider (chroma/get-provider-for collection-name)
         doc-text (preset-to-document preset)
         embedding (chroma/embed-text provider doc-text)]
     @(chroma-api/add coll [{:id id
@@ -184,12 +246,12 @@
     id))
 
 (defn index-presets!
-  "Index multiple presets in batch."
+  "Index multiple presets in batch.
+
+   COLLECTION-AWARE: Uses collection-specific embedding provider."
   [presets]
-  (when-not (chroma/embedding-configured?)
-    (throw (ex-info "Embedding provider not configured" {:type :no-embedding-provider})))
   (let [coll (get-or-create-collection)
-        provider (chroma/get-embedding-provider)
+        provider (chroma/get-provider-for collection-name)
         docs (mapv preset-to-document presets)
         embeddings (chroma/embed-batch provider docs)
         records (mapv (fn [preset doc emb]
@@ -241,12 +303,12 @@
      :limit - Max results (default: 5)
      :category - Filter by category
 
+   COLLECTION-AWARE: Uses collection-specific embedding provider.
+
    Returns seq of {:id, :name, :title, :category, :tags, :distance, :preview}"
   [query-text & {:keys [limit category] :or {limit 5}}]
-  (when-not (chroma/embedding-configured?)
-    (throw (ex-info "Embedding provider not configured" {:type :no-embedding-provider})))
   (let [coll (get-or-create-collection)
-        provider (chroma/get-embedding-provider)
+        provider (chroma/get-provider-for collection-name)
         query-embedding (chroma/embed-text provider query-text)
         where-clause (when category {:category category})
         results @(chroma-api/query coll query-embedding
@@ -289,7 +351,7 @@
                  (when (not= t "")
                    (str/split t #",")))
          :source (get metadata :source)
-         :content document}))
+         :_content document}))
     (catch Exception e
       (log/debug "Failed to get preset from Chroma:" preset-id (.getMessage e))
       nil)))

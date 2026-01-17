@@ -12,6 +12,10 @@
             [hive-mcp.channel :as channel]
             [clojure.data.json :as json]
             [taoensso.timbre :as log]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;;; ============================================================
 ;;; Agent Loop
@@ -100,6 +104,17 @@
                      (conj steps response)
                      (+ tool-calls-made (count calls))
                      (inc step-count)))
+
+            ;; Error response from backend (e.g., empty content validation)
+            ;; CLARITY-Y: Yield safe failure - propagate error instead of silent success
+            :error
+            (do
+              (emit! :agent-error {:step step-count :error (:error response)})
+              (log/warn "Agent received error response" {:error (:error response)})
+              {:status :error
+               :result (:error response)
+               :steps steps
+               :tool_calls_made tool-calls-made})
 
             ;; Unknown response type
             (do

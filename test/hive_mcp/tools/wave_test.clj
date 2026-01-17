@@ -268,3 +268,117 @@
         (is (= plan-id (:plan-id status)))
         (is (= :pending (:status status)))
         (is (= 2 (count (:items status))))))))
+
+;; =============================================================================
+;; P0: ensure-parent-dirs! Tests
+;; =============================================================================
+
+(deftest ensure-parent-dirs-test
+  (testing "creates parent directories for all task files"
+    (let [test-dir (str (System/getProperty "java.io.tmpdir")
+                        "/hive-mcp-test-" (System/currentTimeMillis))
+          tasks [{:file (str test-dir "/deep/nested/file1.clj") :task "task 1"}
+                 {:file (str test-dir "/other/path/file2.clj") :task "task 2"}]]
+      (try
+        ;; Directories shouldn't exist yet
+        (is (not (.exists (java.io.File. (str test-dir "/deep/nested")))))
+        (is (not (.exists (java.io.File. (str test-dir "/other/path")))))
+
+        ;; Call ensure-parent-dirs! (function under test)
+        (wave/ensure-parent-dirs! tasks)
+
+        ;; Directories should now exist
+        (is (.exists (java.io.File. (str test-dir "/deep/nested"))))
+        (is (.exists (java.io.File. (str test-dir "/other/path"))))
+        (finally
+          ;; Cleanup
+          (doseq [dir [(str test-dir "/deep/nested")
+                       (str test-dir "/deep")
+                       (str test-dir "/other/path")
+                       (str test-dir "/other")
+                       test-dir]]
+            (.delete (java.io.File. dir))))))))
+
+(deftest ensure-parent-dirs-nil-file-test
+  (testing "handles tasks with nil file gracefully"
+    (let [tasks [{:file nil :task "task 1"}
+                 {:file "valid/path.clj" :task "task 2"}]]
+      ;; Should not throw
+      (is (nil? (wave/ensure-parent-dirs! tasks))))))
+
+(deftest ensure-parent-dirs-existing-dirs-test
+  (testing "works idempotently with existing directories"
+    (let [existing-dir (System/getProperty "java.io.tmpdir")
+          tasks [{:file (str existing-dir "/file.clj") :task "task 1"}]]
+      ;; Should not throw on existing directory
+      (is (nil? (wave/ensure-parent-dirs! tasks))))))
+
+;; =============================================================================
+;; P2: validate-task-paths Tests
+;; =============================================================================
+
+(deftest validate-task-paths-test
+  (testing "fails fast with invalid paths before spawning drones"
+    (let [tasks [{:file "/nonexistent/deeply/nested/path/file.clj" :task "task 1"}
+                 {:file "/another/invalid/path.clj" :task "task 2"}]]
+      ;; Should throw with :invalid-paths in ex-data
+      (is (thrown-with-msg?
+           clojure.lang.ExceptionInfo
+           #"Invalid paths in wave"
+           (wave/validate-task-paths tasks))))))
+
+(deftest validate-task-paths-valid-test
+  (testing "passes validation for paths with existing parent directories"
+    (let [existing-dir (System/getProperty "java.io.tmpdir")
+          tasks [{:file (str existing-dir "/file.clj") :task "task 1"}]]
+      ;; Should not throw
+      (is (nil? (wave/validate-task-paths tasks))))))
+
+(deftest validate-task-paths-mixed-test
+  (testing "reports all invalid paths in exception data"
+    (let [existing-dir (System/getProperty "java.io.tmpdir")
+          tasks [{:file (str existing-dir "/valid.clj") :task "valid"}
+                 {:file "/invalid/path1.clj" :task "invalid1"}
+                 {:file "/invalid/path2.clj" :task "invalid2"}]]
+      (try
+        (wave/validate-task-paths tasks)
+        (is false "Should have thrown")
+        (catch clojure.lang.ExceptionInfo e
+          (let [invalid-paths (:invalid-paths (ex-data e))]
+            ;; Should contain both invalid paths
+            (is (= 2 (count invalid-paths)))
+            (is (every? #(clojure.string/starts-with? % "/invalid/") invalid-paths))))))))
+
+;; =============================================================================
+;; Integration: handle-dispatch-drone-wave with pre-flight options
+;; =============================================================================
+
+(deftest handle-dispatch-drone-wave-ensure-dirs-option-test
+  (testing "creates parent dirs when :ensure-dirs is true (default)"
+    (let [test-dir (str (System/getProperty "java.io.tmpdir")
+                        "/wave-test-" (System/currentTimeMillis))]
+      (try
+        (with-redefs [wave/execute-wave! (fn [plan-id _opts]
+                                           (ds/create-wave! plan-id))]
+          (let [result (wave/handle-dispatch-drone-wave
+                        {:tasks [{"file" (str test-dir "/new/path/file.clj")
+                                  "task" "test"}]
+                         :ensure_dirs true})]
+            ;; Should have created parent directories
+            (is (.exists (java.io.File. (str test-dir "/new/path"))))))
+        (finally
+          (doseq [dir [(str test-dir "/new/path")
+                       (str test-dir "/new")
+                       test-dir]]
+            (.delete (java.io.File. dir))))))))
+
+(deftest handle-dispatch-drone-wave-validate-paths-option-test
+  (testing "fails fast when :validate-paths is true and paths are invalid"
+    (let [result (wave/handle-dispatch-drone-wave
+                  {:tasks [{"file" "/nonexistent/deep/path/file.clj"
+                            "task" "test"}]
+                   :validate_paths true
+                   :ensure_dirs false})]
+      (let [parsed (json/read-str (:text result) :key-fn keyword)]
+        (is (contains? parsed :error))
+        (is (clojure.string/includes? (:error parsed) "Invalid paths"))))))

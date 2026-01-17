@@ -4,6 +4,9 @@
    Manages task-type to model mappings and preset configurations.
    All state is held in atoms for runtime configurability via MCP."
   (:require [taoensso.timbre :as log]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 ;;; ============================================================
 ;;; Task-Type Model Configuration
@@ -113,14 +116,53 @@
 
 (defn resolve-model
   "Resolve the model to use based on priority:
-   explicit model > preset-derived > task-type > :coding default"
+   explicit model > preset-derived > task-type > :coding default
+
+   Returns the selected model string.
+
+   CLARITY-T: Debug logs the resolution path for traceability."
   [{:keys [model preset task-type]}]
   (let [resolved-task-type (or (when preset (preset->task-type preset))
                                (keyword task-type)
-                               :coding)]
-    (or model
-        (get-model resolved-task-type)
-        (get-model :coding))))
+                               :coding)
+        ;; Determine which source provided the model
+        [resolved-model source] (cond
+                                  model [model :explicit]
+                                  (get-model resolved-task-type)
+                                  [(get-model resolved-task-type) (keyword (str "task-type-" (name resolved-task-type)))]
+                                  :else [(get-model :coding) :default-coding])]
+    ;; CLARITY-T: Trace the resolution path for debugging
+    (log/debug "Model resolution:" {:preset preset
+                                    :task-type task-type
+                                    :resolved-task-type resolved-task-type
+                                    :source source
+                                    :model resolved-model})
+    resolved-model))
+
+(defn resolve-model-with-trace
+  "Like resolve-model but returns the resolution path for debugging.
+
+   Returns map with:
+   - :model       - The resolved model string
+   - :source      - Where the model came from (:explicit :task-type-* :default-coding)
+   - :preset      - Input preset
+   - :task-type   - Resolved task type
+
+   Useful for debugging model selection issues."
+  [{:keys [model preset task-type] :as opts}]
+  (let [resolved-task-type (or (when preset (preset->task-type preset))
+                               (keyword task-type)
+                               :coding)
+        [resolved-model source] (cond
+                                  model [model :explicit]
+                                  (get-model resolved-task-type)
+                                  [(get-model resolved-task-type) (keyword (str "task-type-" (name resolved-task-type)))]
+                                  :else [(get-model :coding) :default-coding])]
+    {:model resolved-model
+     :source source
+     :preset preset
+     :task-type task-type
+     :resolved-task-type resolved-task-type}))
 
 (defn openrouter-backend
   "Create an OpenRouter backend for agent delegation.

@@ -2,7 +2,7 @@
 
 **Your AI finally remembers.**
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-Compatible-green.svg)](https://modelcontextprotocol.io)
 [![Emacs](https://img.shields.io/badge/Emacs-28.1+-purple.svg)](https://www.gnu.org/software/emacs/)
 
@@ -449,7 +449,7 @@ LLMs need exactly what Lisp provides: homoiconicity, runtime metaprogramming, da
 
 ## License
 
-MIT
+[AGPL-3.0-or-later](LICENSE) — Free software, copyleft for network services.
 
 ---
 

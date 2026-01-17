@@ -10,10 +10,121 @@
   (:require [hive-mcp.agent.registry :as registry]
             [hive-mcp.tools.diff :as diff]
             [hive-mcp.hivemind :as hivemind]
+            [hive-mcp.swarm.coordinator :as coordinator]
+            [hive-mcp.events.core :as ev]
             [clojure.data.json :as json]
             [clojure.string :as str]
             [clojure.set]
             [taoensso.timbre :as log]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
+;;; ============================================================
+;;; Error Classification (CLARITY-T: Structured nREPL error telemetry)
+;;; ============================================================
+
+(defn- get-root-cause
+  "Extract root cause from nested exceptions.
+   Checks both Java .getCause() and ex-data :cause key."
+  [ex]
+  (loop [e ex]
+    (let [;; Check Java cause first
+          java-cause (when (instance? Throwable e) (.getCause e))
+          ;; Fall back to ex-data :cause
+          ex-data-cause (when (instance? clojure.lang.IExceptionInfo e)
+                          (:cause (ex-data e)))
+          cause (or java-cause ex-data-cause)]
+      (if cause
+        (recur cause)
+        e))))
+
+(defn- exception-type-name
+  "Get the simple class name of an exception."
+  [ex]
+  (when ex
+    (.getSimpleName (class ex))))
+
+(defn classify-nrepl-error
+  "Classify an exception into structured error categories.
+
+   Returns one of:
+   - :nrepl-connection - Connection failures (refused, not connected)
+   - :nrepl-timeout    - Timeouts (socket timeout, evaluation timeout)
+   - :nrepl-eval-error - Evaluation errors (syntax, runtime, compiler)
+   - :validation       - Input validation errors
+   - :conflict         - File conflict errors
+   - :execution        - General execution errors
+   - :exception        - Unknown/fallback category
+
+   Used by Prometheus drones_failed_total metric with error-type label."
+  [ex]
+  (let [ex-data-map (ex-data ex)
+        message (or (ex-message ex) "")
+        message-lower (str/lower-case message)
+        root-cause (get-root-cause ex)
+        root-type (exception-type-name root-cause)]
+    (cond
+      ;; Check ex-data for explicit type
+      (= :validation (:type ex-data-map))
+      :validation
+
+      (= :conflict (:type ex-data-map))
+      :conflict
+
+      ;; Connection errors
+      (or (= "ConnectException" root-type)
+          (str/includes? message-lower "connection refused")
+          (str/includes? message-lower "cider not connected")
+          (str/includes? message-lower "no nrepl connection")
+          (str/includes? message-lower "failed to connect"))
+      :nrepl-connection
+
+      ;; Timeout errors
+      (or (= "SocketTimeoutException" root-type)
+          (= "TimeoutException" root-type)
+          (str/includes? message-lower "timed out")
+          (str/includes? message-lower "timeout"))
+      :nrepl-timeout
+
+      ;; Evaluation/compilation errors
+      (or (str/includes? message-lower "compilerexception")
+          (str/includes? message-lower "syntax error")
+          (str/includes? message-lower "classnotfoundexception")
+          (str/includes? message-lower "nullpointerexception")
+          (str/includes? message-lower "arithmeticexception")
+          (str/includes? message-lower "unable to resolve symbol"))
+      :nrepl-eval-error
+
+      ;; Fallback
+      :else
+      :exception)))
+
+(defn structure-error
+  "Wrap an exception with structured error data for telemetry.
+
+   Returns a map with:
+   - :error-type  - Classified error category (keyword)
+   - :message     - Human-readable error message
+   - :stacktrace  - Stack trace as string (truncated to 2000 chars)
+   - :ex-data     - Original ex-data from the exception (if any)
+
+   Used for Prometheus metrics and debugging."
+  [ex]
+  (let [error-type (classify-nrepl-error ex)
+        message (or (ex-message ex) (str ex))
+        stacktrace (when ex
+                     (let [sw (java.io.StringWriter.)
+                           pw (java.io.PrintWriter. sw)]
+                       (.printStackTrace ex pw)
+                       (let [trace (str sw)]
+                         ;; Truncate to avoid metric cardinality explosion
+                         (subs trace 0 (min 2000 (count trace))))))
+        ex-data-map (ex-data ex)]
+    {:error-type error-type
+     :message message
+     :stacktrace stacktrace
+     :ex-data ex-data-map}))
 
 ;;; ============================================================
 ;;; Configuration
@@ -62,10 +173,14 @@
                 "\n\n")))))
 
 (defn- format-file-contents
-  "Pre-read file contents so drone has exact content for propose_diff."
-  [files]
+  "Pre-read file contents so drone has exact content for propose_diff.
+
+   Arguments:
+     files        - List of file paths to read
+     project-root - Optional project root override (defaults to diff/get-project-root)"
+  [files & [project-root-override]]
   (when (seq files)
-    (let [project-root (or (diff/get-project-root) "")
+    (let [project-root (or project-root-override (diff/get-project-root) "")
           contents (for [f files]
                      (let [abs-path (if (str/starts-with? f "/")
                                       f
@@ -81,11 +196,16 @@
            (str/join "\n" contents)))))
 
 (defn- augment-task
-  "Augment task with context and file contents."
-  [task files]
+  "Augment task with context and file contents.
+
+   Arguments:
+     task         - Task description
+     files        - List of files to include
+     project-root - Optional project root override for path resolution"
+  [task files & [project-root]]
   (let [context (prepare-context)
         context-str (format-context-str context)
-        file-contents-str (format-file-contents files)]
+        file-contents-str (format-file-contents files project-root)]
     (str context-str
          "## Task\n" task
          (when (seq files)
@@ -98,8 +218,19 @@
 ;;; Diff Management
 ;;; ============================================================
 
+;; LOGGING STRATEGY (CLARITY-T):
+;; This module uses two complementary logging approaches:
+;; 1. Direct log/info/warn for operational details (lock acquisition, diff application)
+;; 2. Events (:drone/*) for lifecycle telemetry (started, completed, failed)
+;; These are NOT redundant - operational logs aid debugging while events provide
+;; structured telemetry for monitoring dashboards and swarm coordination.
+
 (defn- auto-apply-diffs
-  "Auto-apply diffs proposed during drone execution."
+  "Auto-apply diffs proposed during drone execution.
+
+   Returns map with :applied [files] and :failed [{:file :error}].
+
+   CLARITY-T: Logs operational details directly for debugging."
   [drone-id new-diff-ids]
   (when (seq new-diff-ids)
     (let [results (for [diff-id new-diff-ids]
@@ -124,70 +255,151 @@
 
 (defn delegate!
   "Delegate a task to a drone (token-optimized leaf agent).
-   
+
    Automatically:
+   - Acquires file locks via coordinator (conflict prevention)
    - Pre-injects file contents (drone doesn't need to read)
    - Injects catchup context (conventions, decisions, snippets)
    - Uses drone-worker preset for OpenRouter
    - Auto-applies any diffs proposed by the drone
    - Records results to hivemind for review
    - Reports status to parent ling (if parent-id provided) for swarm state sync
-   
+   - Releases file locks on completion (even on error)
+
    Options:
      :task      - Task description (required)
      :files     - List of files the drone will modify (contents pre-injected)
      :preset    - Override preset (default: drone-worker)
      :trace     - Enable progress events (default: true)
      :parent-id - Parent ling's slave-id (for swarm status sync)
-   
-   Returns result map with :status, :result, :agent-id, :files-modified"
-  [{:keys [task files preset trace parent-id]
+     :cwd       - Working directory override for path resolution
+
+   Returns result map with :status, :result, :agent-id, :files-modified
+
+   Throws ex-info if file conflicts detected (files locked by another drone)."
+  [{:keys [task files preset trace parent-id cwd]
     :or {preset "drone-worker"
          trace true}}
    delegate-fn]
   (let [effective-parent-id (or parent-id
                                 (System/getenv "CLAUDE_SWARM_SLAVE_ID"))
-        augmented-task (augment-task task files)
         agent-id (str "drone-" (System/currentTimeMillis))
-        diffs-before (set (keys @diff/pending-diffs))]
+        task-id (str "task-" agent-id)]
 
-    ;; Shout started to parent ling
-    (when effective-parent-id
-      (hivemind/shout! effective-parent-id :started
-                       {:task (str "Drone: " (subs task 0 (min 80 (count task))))
-                        :message (format "Delegated drone %s working" agent-id)}))
+    ;; 1. ATOMIC ACQUIRE LOCKS (Race-Free)
+    ;; CRITICAL: Uses atomic-claim-files! to prevent race condition where
+    ;; two drones could both pass pre-flight check before either claims.
+    ;; This combines check + claim into a single atomic operation.
+    (when (seq files)
+      (let [result (coordinator/atomic-claim-files! task-id agent-id files)]
+        (when-not (:acquired? result)
+          (log/warn "Drone file conflicts detected:" (:conflicts result))
+          ;; Emit failure event for conflict (CLARITY-T)
+          (ev/dispatch [:drone/failed {:drone-id agent-id
+                                       :task-id task-id
+                                       :parent-id effective-parent-id
+                                       :error "File conflicts detected - files locked by another drone"
+                                       :error-type :conflict
+                                       :files files}])
+          (throw (ex-info "File conflicts detected - files locked by another drone"
+                          {:conflicts (:conflicts result)
+                           :drone-id agent-id
+                           :files files})))
+        (log/info "Drone acquired file locks:" agent-id "(" (:files-claimed result) "files)")))
 
-    (let [result (delegate-fn {:backend :openrouter
-                               :preset preset
-                               :task augmented-task
-                               :tools allowed-tools
-                               :trace trace})
-          diffs-after (set (keys @diff/pending-diffs))
-          new-diff-ids (clojure.set/difference diffs-after diffs-before)
-          diff-results (auto-apply-diffs agent-id new-diff-ids)]
+    ;; Track start time for duration metrics (CLARITY-T)
+    (let [start-time (System/currentTimeMillis)]
+      ;; 2. EMIT STARTED EVENT (CLARITY-T: Telemetry first)
+      (ev/dispatch [:drone/started {:drone-id agent-id
+                                    :task-id task-id
+                                    :parent-id effective-parent-id
+                                    :files files
+                                    :task task}])
 
-      ;; Shout completion to parent ling
-      (when effective-parent-id
-        (if (= :completed (:status result))
-          (hivemind/shout! effective-parent-id :completed
-                           {:task (str "Drone: " (subs task 0 (min 80 (count task))))
-                            :message (format "Drone %s completed. Files: %s"
-                                             agent-id
-                                             (str/join ", " (or (:applied diff-results) [])))})
-          (hivemind/shout! effective-parent-id :error
-                           {:task (str "Drone: " (subs task 0 (min 80 (count task))))
-                            :message (format "Drone %s failed: %s" agent-id (:result result))})))
+      (try
+        (let [augmented-task (augment-task task files cwd)
+              diffs-before (set (keys @diff/pending-diffs))]
 
-      ;; Record result for coordinator review
-      (hivemind/record-ling-result! agent-id
-                                    {:task task
-                                     :files files
-                                     :result result
-                                     :diff-results diff-results
-                                     :parent-id effective-parent-id
-                                     :timestamp (System/currentTimeMillis)})
-      (assoc result
-             :agent-id agent-id
-             :parent-id effective-parent-id
-             :files-modified (:applied diff-results)
-             :files-failed (:failed diff-results)))))
+          ;; Shout started to parent ling
+          (when effective-parent-id
+            (hivemind/shout! effective-parent-id :started
+                             {:task (str "Drone: " (subs task 0 (min 80 (count task))))
+                              :message (format "Delegated drone %s working" agent-id)}))
+
+          ;; 3. EXECUTE
+          (let [result (delegate-fn {:backend :openrouter
+                                     :preset preset
+                                     :task augmented-task
+                                     :tools allowed-tools
+                                     :trace trace})
+                diffs-after (set (keys @diff/pending-diffs))
+                new-diff-ids (clojure.set/difference diffs-after diffs-before)
+                diff-results (auto-apply-diffs agent-id new-diff-ids)
+                duration-ms (- (System/currentTimeMillis) start-time)]
+
+            ;; Shout completion to parent ling
+            (when effective-parent-id
+              (if (= :completed (:status result))
+                (hivemind/shout! effective-parent-id :completed
+                                 {:task (str "Drone: " (subs task 0 (min 80 (count task))))
+                                  :message (format "Drone %s completed. Files: %s"
+                                                   agent-id
+                                                   (str/join ", " (or (:applied diff-results) [])))})
+                (hivemind/shout! effective-parent-id :error
+                                 {:task (str "Drone: " (subs task 0 (min 80 (count task))))
+                                  :message (format "Drone %s failed: %s" agent-id (:result result))})))
+
+            ;; 4. EMIT COMPLETION/FAILURE EVENT (CLARITY-T)
+            (if (= :completed (:status result))
+              (ev/dispatch [:drone/completed {:drone-id agent-id
+                                              :task-id task-id
+                                              :parent-id effective-parent-id
+                                              :files-modified (:applied diff-results)
+                                              :files-failed (:failed diff-results)
+                                              :duration-ms duration-ms}])
+              (ev/dispatch [:drone/failed {:drone-id agent-id
+                                           :task-id task-id
+                                           :parent-id effective-parent-id
+                                           :error (str (:result result))
+                                           :error-type :execution
+                                           :files files}]))
+
+            ;; Record result for coordinator review
+            (hivemind/record-ling-result! agent-id
+                                          {:task task
+                                           :files files
+                                           :result result
+                                           :diff-results diff-results
+                                           :parent-id effective-parent-id
+                                           :timestamp (System/currentTimeMillis)})
+            (assoc result
+                   :agent-id agent-id
+                   :task-id task-id
+                   :parent-id effective-parent-id
+                   :files-modified (:applied diff-results)
+                   :files-failed (:failed diff-results)
+                   :duration-ms duration-ms)))
+
+        (catch Exception e
+          ;; 5. EMIT FAILURE EVENT ON EXCEPTION (CLARITY-T)
+          ;; Use structured error classification for proper Prometheus labeling
+          (let [duration-ms (- (System/currentTimeMillis) start-time)
+                structured (structure-error e)]
+            (log/warn "Drone execution failed"
+                      {:drone-id agent-id
+                       :error-type (:error-type structured)
+                       :message (:message structured)})
+            (ev/dispatch [:drone/failed {:drone-id agent-id
+                                         :task-id task-id
+                                         :parent-id effective-parent-id
+                                         :error (:message structured)
+                                         :error-type (:error-type structured)
+                                         :stacktrace (:stacktrace structured)
+                                         :files files}])
+            (throw e)))
+
+        (finally
+          ;; 6. RELEASE LOCKS (always, even on error)
+          (when (seq files)
+            (coordinator/release-task-claims! task-id)
+            (log/info "Drone released file locks:" agent-id)))))))

@@ -164,7 +164,7 @@
 
 (deftest memory-facade-tools-test
   (testing "memory/tools has expected count"
-    (is (= 15 (count memory/tools))))
+    (is (= 16 (count memory/tools))))
 
   (testing "memory/tools has required tool names"
     (let [tool-names (set (map :name memory/tools))]
@@ -172,6 +172,7 @@
       (is (contains? tool-names "mcp_memory_query"))
       (is (contains? tool-names "mcp_memory_query_metadata"))
       (is (contains? tool-names "mcp_memory_get_full"))
+      (is (contains? tool-names "mcp_memory_update_tags"))
       (is (contains? tool-names "mcp_memory_search_semantic"))
       (is (contains? tool-names "mcp_memory_set_duration"))
       (is (contains? tool-names "mcp_memory_promote"))
@@ -190,6 +191,7 @@
     (is (fn? memory/handle-mcp-memory-query))
     (is (fn? memory/handle-mcp-memory-query-metadata))
     (is (fn? memory/handle-mcp-memory-get-full))
+    (is (fn? memory/handle-mcp-memory-update-tags))
     (is (fn? memory/handle-mcp-memory-search-semantic))
     (is (fn? memory/handle-mcp-memory-set-duration))
     (is (fn? memory/handle-mcp-memory-promote))

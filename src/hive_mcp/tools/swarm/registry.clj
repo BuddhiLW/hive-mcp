@@ -14,17 +14,14 @@
             [hive-mcp.swarm.datascript :as ds]
             [clojure.core.async :as async :refer [go-loop <!]]
             [taoensso.timbre :as log]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; ============================================================
 ;; Lings Registry State (Migrated to DataScript - ADR-002)
 ;; ============================================================
-
-;; DEPRECATED: The lings-registry atom has been migrated to DataScript.
-;; Use ds/get-all-slaves, ds/add-slave!, ds/remove-slave! directly.
-;; This atom is kept ONLY for backward compatibility with tests
-;; that directly reference @lings-registry. Will be removed in v0.8.0.
-(defonce ^:deprecated lings-registry
-  (atom {}))
 
 ;; State for event-driven registry synchronization.
 (defonce ^:private registry-sync-state
@@ -52,33 +49,23 @@
   "Register a spawned ling in the registry.
 
    ADR-002: Writes to DataScript as primary store.
-   Also updates deprecated atom for backward compatibility.
 
    SOLID: SRP - Only handles registration, not events."
   [slave-id {:keys [name presets cwd]}]
   ;; Primary: DataScript
   (ds/add-slave! slave-id {:name name
                            :presets (vec (or presets []))
-                           :cwd cwd})
-  ;; Deprecated: Atom (for backward compat with tests referencing @lings-registry)
-  (swap! lings-registry assoc slave-id
-         {:name name
-          :presets presets
-          :cwd cwd
-          :spawned-at (System/currentTimeMillis)}))
+                           :cwd cwd}))
 
 (defn unregister-ling!
   "Remove a ling from the registry.
 
    ADR-002: Removes from DataScript as primary store.
-   Also updates deprecated atom for backward compatibility.
 
    SOLID: SRP - Only handles unregistration, not events."
   [slave-id]
   ;; Primary: DataScript
-  (ds/remove-slave! slave-id)
-  ;; Deprecated: Atom
-  (swap! lings-registry dissoc slave-id))
+  (ds/remove-slave! slave-id))
 
 (defn get-available-lings
   "Get all registered lings.
@@ -91,20 +78,17 @@
   (let [slaves (ds/get-all-slaves)]
     (if (seq slaves)
       (reduce merge {} (map ds-slave->legacy-format slaves))
-      ;; Fallback to atom if DataScript is empty (backward compat for tests)
-      @lings-registry)))
+      {})))
 
 (defn clear-registry!
   "Clear all entries from the registry.
 
-   ADR-002: Clears both DataScript and deprecated atom.
+   ADR-002: Clears DataScript as primary store.
 
    Used when killing all slaves."
   []
   ;; Primary: DataScript
-  (ds/reset-conn!)
-  ;; Deprecated: Atom
-  (reset! lings-registry {}))
+  (ds/reset-conn!))
 
 ;; ============================================================
 ;; Event-Driven Sync (ADR-001 Phase 2)

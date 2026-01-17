@@ -212,3 +212,49 @@
       (is (= :invalid-value (:reason data)))
       (is (= #{:silent :explicit} (:valid data)))
       (is (= :invalid (:received data))))))
+
+;; ============================================================
+;; Case Conversion Tests
+;; ============================================================
+
+(deftest test-snake->kebab
+  (testing "Basic conversion"
+    (is (= "some-key" (v/snake->kebab "some_key")))
+    (is (= "multi-word-key" (v/snake->kebab "multi_word_key"))))
+
+  (testing "No underscores - passthrough"
+    (is (= "already-kebab" (v/snake->kebab "already-kebab")))
+    (is (= "nochange" (v/snake->kebab "nochange"))))
+
+  (testing "Nil handling"
+    (is (nil? (v/snake->kebab nil)))))
+
+(deftest test-normalize-key
+  (testing "Snake_case keyword conversion"
+    (is (= :some-key (v/normalize-key :some_key)))
+    (is (= :agent-id (v/normalize-key :agent_id)))
+    (is (= :file-path (v/normalize-key :file_path))))
+
+  (testing "Already kebab-case - passthrough"
+    (is (= :already-kebab (v/normalize-key :already-kebab))))
+
+  (testing "Non-keyword passthrough"
+    (is (= "string-key" (v/normalize-key "string-key")))
+    (is (= 123 (v/normalize-key 123)))))
+
+(deftest test-normalize-params
+  (testing "Full map conversion"
+    (is (= {:some-key 1 :other-value 2}
+           (v/normalize-params {:some_key 1 :other_value 2}))))
+
+  (testing "Mixed keys - snake and kebab"
+    (is (= {:agent-id "abc" :already-kebab true}
+           (v/normalize-params {:agent_id "abc" :already-kebab true}))))
+
+  (testing "Empty and nil"
+    (is (= {} (v/normalize-params {})))
+    (is (nil? (v/normalize-params nil))))
+
+  (testing "Preserves values unchanged"
+    (is (= {:nested {:inner 1} :list [1 2 3]}
+           (v/normalize-params {:nested {:inner 1} :list [1 2 3]})))))

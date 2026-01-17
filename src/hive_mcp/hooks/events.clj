@@ -14,9 +14,12 @@
 
    SOLID: Single responsibility - event construction only
    CLARITY: Inputs guarded via spec validation"
-  (:require [clojure.spec.alpha :as s]
-            [hive-mcp.specs.hooks :as specs])
+  (:require [hive-mcp.specs.hooks :as specs])
   (:import [java.time Instant]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; =============================================================================
 ;; Validation Helpers
@@ -79,7 +82,7 @@
    Optional:
    - :files - Files involved
    - :data - Additional context"
-  [{:keys [task slave-id] :as context}]
+  [{:keys [_task _slave-id] :as context}]
   (validate-required! context [:task :slave-id] :task-start)
   (create-event :task-start context))
 
@@ -94,7 +97,7 @@
    - :files - Files modified
    - :message - Completion message
    - :data - Additional context"
-  [{:keys [task slave-id] :as context}]
+  [{:keys [_task _slave-id] :as context}]
   (validate-required! context [:task :slave-id] :task-complete)
   (create-event :task-complete context))
 
@@ -110,7 +113,7 @@
 
    Optional:
    - :data - Session context (project, branch, etc.)"
-  [{:keys [slave-id] :as context}]
+  [{:keys [_slave-id] :as context}]
   (validate-required! context [:slave-id] :session-start)
   (create-event :session-start context))
 
@@ -123,7 +126,7 @@
    Optional:
    - :data - Session summary (:wrap-completed, :summary-id, etc.)
    - :message - Closing message"
-  [{:keys [slave-id] :as context}]
+  [{:keys [_slave-id] :as context}]
   (validate-required! context [:slave-id] :session-end)
   (create-event :session-end context))
 
@@ -141,7 +144,7 @@
    Optional:
    - :task - Related task
    - :message - Description of changes"
-  [{:keys [files slave-id] :as context}]
+  [{:keys [_files _slave-id] :as context}]
   (validate-required! context [:files] :file-modified)
   (create-event :file-modified context))
 
@@ -160,7 +163,7 @@
    - :task - Task that failed
    - :message - Error summary
    - :data - Additional error context"
-  [{:keys [error slave-id] :as context}]
+  [{:keys [_error _slave-id] :as context}]
   (validate-required! context [:error :slave-id] :error)
   (create-event :error context))
 
@@ -176,7 +179,7 @@
 
    Optional:
    - :data - Spawn context (:presets, :cwd, :role, etc.)"
-  [{:keys [slave-id] :as context}]
+  [{:keys [_slave-id] :as context}]
   (validate-required! context [:slave-id] :ling-spawn)
   (create-event :ling-spawn context))
 
@@ -189,7 +192,7 @@
    Optional:
    - :message - Termination reason
    - :data - Final state/stats"
-  [{:keys [slave-id] :as context}]
+  [{:keys [_slave-id] :as context}]
   (validate-required! context [:slave-id] :ling-terminate)
   (create-event :ling-terminate context))
 
@@ -219,7 +222,7 @@
    - event: Event map from any event constructor
 
    Returns: Map suitable for hivemind/shout!"
-  [{:keys [event task files message error data slave-id] :as evt}]
+  [{:keys [event task files message error data slave-id] :as _evt}]
   (let [base-payload {:hook-type event}
         ;; Add files if present
         with-files (if (seq files)

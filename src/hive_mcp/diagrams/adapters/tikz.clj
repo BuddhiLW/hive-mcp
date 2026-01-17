@@ -9,6 +9,10 @@
             [clojure.java.shell :refer [sh]]
             [clojure.java.io :as io]
             [clojure.string :as str]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;;; TikZ Templates
 
@@ -91,7 +95,7 @@
 
 (defn- position-for-index
   "Calculate position based on index and layout."
-  [idx total {:keys [direction columns] :or {direction :TB columns 3}}]
+  [idx _total {:keys [direction columns] :or {direction :TB columns 3}}]
   (let [row (quot idx columns)
         col (rem idx columns)
         x-spacing 4
@@ -132,21 +136,13 @@
 
 ;;; Background Groups for C4
 
-(defn- render-background-group
-  "Render a background group/boundary."
-  [{:keys [id name elements]}]
-  (let [node-ids (str/join ") (" (map (comp node-id->tikz :id) elements))]
-    (format "\\begin{scope}[on background layer]
-    \\node[fit=(%s), fill=blue!5, rounded corners, 
-          label={[font=\\footnotesize]above:%s}] {};
-\\end{scope}"
-            node-ids (escape-tex name))))
+
 
 ;;; Main Rendering
 
 (defn- spec->tikz
   "Convert diagram spec to TikZ code."
-  [{:keys [type title elements relations options] :as spec}]
+  [{:keys [_type title elements relations options] :as _spec}]
   (let [elem-count (count elements)
         rendered-elements (map-indexed
                            (fn [idx elem]

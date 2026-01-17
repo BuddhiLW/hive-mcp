@@ -9,6 +9,10 @@
             [clojure.java.shell :refer [sh]]
             [clojure.java.io :as io]
             [clojure.string :as str]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;;; ID Conversion
 
@@ -54,32 +58,32 @@
 
 (defmulti render-element-mermaid
   "Render an element for a specific diagram type."
-  (fn [type elem] type))
+  (fn [type _elem] type))
 
 (defmethod render-element-mermaid :flowchart
   [_ {:keys [id label name shape]}]
   (let [mid (sanitize-id id)
-        text (escape-mermaid (or label name (clojure.core/name id)))]
+        _text (escape-mermaid (or label name (clojure.core/name id)))]
     (case shape
-      :diamond (format "    %s{%s}" mid text)
-      :circle (format "    %s((%s))" mid text)
-      :stadium (format "    %s([%s])" mid text)
-      :database (format "    %s[(%s)]" mid text)
-      :parallelogram (format "    %s[/%s/]" mid text)
-      :hexagon (format "    %s{{%s}}" mid text)
+      :diamond (format "    %s{%s}" mid _text)
+      :circle (format "    %s((%s))" mid _text)
+      :stadium (format "    %s([%s])" mid _text)
+      :database (format "    %s[(%s)]" mid _text)
+      :parallelogram (format "    %s[/%s/]" mid _text)
+      :hexagon (format "    %s{{%s}}" mid _text)
       ;; Default: rectangle with rounded corners
-      (format "    %s[%s]" mid text))))
+      (format "    %s[%s]" mid _text))))
 
 (defmethod render-element-mermaid :sequence
   [_ {:keys [id label name]}]
   (let [mid (sanitize-id id)
-        text (escape-mermaid (or label name (clojure.core/name id)))]
-    (format "    participant %s as %s" mid text)))
+        _text (escape-mermaid (or label name (clojure.core/name id)))]
+    (format "    participant %s as %s" mid _text)))
 
 (defmethod render-element-mermaid :class
   [_ {:keys [id label name methods attributes]}]
   (let [mid (sanitize-id id)
-        text (or label name (clojure.core/name id))
+        _text (or label name (clojure.core/name id))
         method-lines (map #(format "        +%s()" %) (or methods []))
         attr-lines (map #(format "        +%s" %) (or attributes []))]
     (str/join "\n"
@@ -91,8 +95,8 @@
 (defmethod render-element-mermaid :state
   [_ {:keys [id label name]}]
   (let [mid (sanitize-id id)
-        text (escape-mermaid (or label name (clojure.core/name id)))]
-    (format "    %s : %s" mid text)))
+        _text (escape-mermaid (or label name (clojure.core/name id)))]
+    (format "    %s : %s" mid _text)))
 
 (defmethod render-element-mermaid :c4-context
   [_ {:keys [id el name desc external?]}]
@@ -126,14 +130,14 @@
       (format "    Container(%s, \"%s\", \"%s\", \"%s\")" mid n t d))))
 
 (defmethod render-element-mermaid :default
-  [_ elem]
-  (render-element-mermaid :flowchart elem))
+  [_ _elem]
+  (render-element-mermaid :flowchart _elem))
 
 ;;; Relation Rendering
 
 (defmulti render-relation-mermaid
   "Render a relation for a specific diagram type."
-  (fn [type rel] type))
+  (fn [type _rel] type))
 
 (defmethod render-relation-mermaid :flowchart
   [_ {:keys [from to label name style]}]
@@ -196,18 +200,18 @@
     (format "    Rel(%s, %s, \"%s\", \"%s\")" from-id to-id n d)))
 
 (defmethod render-relation-mermaid :c4-container
-  [_ rel]
-  (render-relation-mermaid :c4-context rel))
+  [_ _rel]
+  (render-relation-mermaid :c4-context _rel))
 
 (defmethod render-relation-mermaid :default
-  [_ rel]
-  (render-relation-mermaid :flowchart rel))
+  [_ _rel]
+  (render-relation-mermaid :flowchart _rel))
 
 ;;; Main Rendering
 
 (defn- spec->mermaid
   "Convert diagram spec to Mermaid syntax."
-  [{:keys [type title elements relations options] :as spec}]
+  [{:keys [type title elements relations options] :as _spec}]
   (let [header (diagram-header type options)
         title-directive (when title
                           (format "---\ntitle: %s\n---\n" (escape-mermaid title)))

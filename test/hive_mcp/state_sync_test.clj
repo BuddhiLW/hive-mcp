@@ -20,11 +20,10 @@
   ;; ADR-002: Reset DataScript as primary registry
   (ds/reset-conn!)
   (reset! hivemind/agent-registry {})
-  (reset! swarm/lings-registry {})
+  ;; Note: lings-registry moved to DataScript, no separate atom
   (f)
   (ds/reset-conn!)
-  (reset! hivemind/agent-registry {})
-  (reset! swarm/lings-registry {}))
+  (reset! hivemind/agent-registry {}))
 
 (use-fixtures :each reset-state-fixture)
 
@@ -56,13 +55,12 @@
     ;; When: The ling shouts :started
     (hivemind/shout! "slave-worker-1" :started {:task "Processing data" :message "Beginning work"})
 
-    ;; Then: The agent registry should show status as :started
-    (let [agent-status (get-in @hivemind/agent-registry ["slave-worker-1" :status])]
-      (is (= :started agent-status)
-          "Agent status should be :started after started event"))
+    ;; Then: DataScript should show status as :started (ADR-002: DataScript is source of truth)
+    (let [slave-status (:slave/status (ds/get-slave "slave-worker-1"))]
+      (is (= :started slave-status)
+          "Slave status in DataScript should be :started after started event"))
 
-    ;; AND: A hypothetical get-slave-status function should return "working"
-    ;; This is the FAILING part - this function doesn't exist yet
+    ;; AND: get-slave-working-status should return "working"
     (is (= "working" (swarm/get-slave-working-status "slave-worker-1"))
         "Slave should be marked as 'working' after :started event")))
 
@@ -92,13 +90,12 @@
     ;; When: The ling shouts :completed
     (hivemind/shout! "slave-finisher-1" :completed {:task "Quick task" :message "Done!" :result "success"})
 
-    ;; Then: The agent registry should show status as :completed
-    (let [agent-status (get-in @hivemind/agent-registry ["slave-finisher-1" :status])]
-      (is (= :completed agent-status)
-          "Agent status should be :completed after completed event"))
+    ;; Then: DataScript should show status as :completed (ADR-002: DataScript is source of truth)
+    (let [slave-status (:slave/status (ds/get-slave "slave-finisher-1"))]
+      (is (= :completed slave-status)
+          "Slave status in DataScript should be :completed after completed event"))
 
     ;; AND: The slave should now be "idle" (ready for new work)
-    ;; This is the KEY FAILING test - swarm_status should reflect this
     (is (= "idle" (swarm/get-slave-working-status "slave-finisher-1"))
         "Slave should be marked as 'idle' after :completed event")))
 
@@ -181,3 +178,40 @@
     ;; Latest state should win
     (is (= "working" (swarm/get-slave-working-status "slave-multi"))
         "Latest :started event should set status to working")))
+
+;; =============================================================================
+;; Bug Fix Tests: Registry Sync (Sprint-2)
+;; =============================================================================
+
+(deftest test-dispatch-sets-working-status
+  (testing "When task is dispatched, slave status should be 'working'"
+    ;; Given: A registered ling in idle state
+    (swarm/register-ling! "slave-dispatch-1" {:name "dispatcher" :presets [] :cwd "/tmp"})
+
+    ;; Verify initial state is idle
+    (is (= "idle" (swarm/get-slave-working-status "slave-dispatch-1"))
+        "New slave should start as 'idle'")
+
+    ;; When: A task is dispatched to the slave (simulating sync event)
+    (ds/update-slave! "slave-dispatch-1" {:slave/status :working})
+
+    ;; Then: Slave should now be "working"
+    (is (= "working" (swarm/get-slave-working-status "slave-dispatch-1"))
+        "Slave should be 'working' after task dispatch")))
+
+(deftest test-get-slave-working-status-uses-datascript
+  (testing "get-slave-working-status should query DataScript, not hivemind atom"
+    ;; Given: A registered ling
+    (swarm/register-ling! "slave-ds-1" {:name "ds-test" :presets [] :cwd "/tmp"})
+
+    ;; When: We set status directly in DataScript (bypassing hivemind)
+    (ds/update-slave! "slave-ds-1" {:slave/status :working})
+
+    ;; Then: get-slave-working-status should see it (proves it reads from DS)
+    (is (= "working" (swarm/get-slave-working-status "slave-ds-1"))
+        "Should read status from DataScript")
+
+    ;; And: When DataScript says :completed, status should be "idle"
+    (ds/update-slave! "slave-ds-1" {:slave/status :idle})
+    (is (= "idle" (swarm/get-slave-working-status "slave-ds-1"))
+        "Should reflect DataScript status change")))

@@ -10,6 +10,10 @@
             [hive-mcp.org-clj.transform :as org-transform]
             [hive-mcp.org-clj.render :as org-render]
             [clojure.data.json :as json]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 (defn handle-org-clj-parse
   "Parse an org file and return its structure as JSON."

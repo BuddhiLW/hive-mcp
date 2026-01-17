@@ -21,6 +21,10 @@
 
    SOLID: OCP - New hook types via defmethod, not modification
    CLARITY: Represented intent - Clear hook->event mappings")
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; =============================================================================
 ;; Multimethod for Hook Type Dispatch

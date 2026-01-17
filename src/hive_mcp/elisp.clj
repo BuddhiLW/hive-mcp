@@ -20,6 +20,10 @@
      ;; clojure-elisp integration (experimental)
      (el/emit '(if (> x 0) \"yes\" \"no\"))"
   (:require [clojure.string :as str]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
 
 ;; =============================================================================
 ;; String-Based Helpers (stable, no clojure-elisp dependency)
