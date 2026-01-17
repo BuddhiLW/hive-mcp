@@ -322,16 +322,17 @@
     (reset! shutdown-hook-registered? true)
     (log/info "JVM shutdown hook registered for auto-wrap")))
 
-(defn- read-project-watch-dirs
-  "Read :watch-dirs from .hive-project.edn if present.
-   Falls back to nil if file doesn't exist or :watch-dirs not specified.
-   Priority: env var > .hive-project.edn > default [\"src\"]"
+(defn- read-project-config
+  "Read .hive-project.edn config.
+   Returns {:watch-dirs [...] :hot-reload bool} or nil.
+   :hot-reload defaults to true for backward compatibility."
   []
   (try
     (let [project-file (java.io.File. ".hive-project.edn")]
       (when (.exists project-file)
         (let [config (edn/read-string (slurp project-file))]
-          (:watch-dirs config))))
+          {:watch-dirs (:watch-dirs config)
+           :hot-reload (get config :hot-reload true)})))
     (catch Exception _
       nil)))
 
@@ -427,20 +428,25 @@
         (log/warn "Swarm sync failed to start (non-fatal):" (.getMessage e))))
     ;; Initialize hot-reload watcher with claim-aware coordination
     ;; ADR: State-based debouncing - claimed files buffer until release
-    (try
-      (let [src-dirs (or (some-> (System/getenv "HIVE_MCP_SRC_DIRS")
-                                 (str/split #":"))
-                         (read-project-watch-dirs)
-                         ["src"])
-            claim-checker (hot-events/make-claim-checker logic/get-all-claims)]
-        (hot/init-with-watcher! {:dirs src-dirs
-                                 :claim-checker claim-checker
-                                 :debounce-ms 100})
-        (log/info "Hot-reload watcher started:" {:dirs src-dirs})
-        ;; Register MCP auto-heal listener to refresh tools after reload
-        (register-hot-reload-listener!))
-      (catch Exception e
-        (log/warn "Hot-reload watcher failed to start (non-fatal):" (.getMessage e))))
+    ;; CLARITY-I: Check :hot-reload config before starting watcher
+    (let [project-config (read-project-config)
+          hot-reload-enabled? (get project-config :hot-reload true)]
+      (if hot-reload-enabled?
+        (try
+          (let [src-dirs (or (some-> (System/getenv "HIVE_MCP_SRC_DIRS")
+                                     (str/split #":"))
+                             (:watch-dirs project-config)
+                             ["src"])
+                claim-checker (hot-events/make-claim-checker logic/get-all-claims)]
+            (hot/init-with-watcher! {:dirs src-dirs
+                                     :claim-checker claim-checker
+                                     :debounce-ms 100})
+            (log/info "Hot-reload watcher started:" {:dirs src-dirs})
+            ;; Register MCP auto-heal listener to refresh tools after reload
+            (register-hot-reload-listener!))
+          (catch Exception e
+            (log/warn "Hot-reload watcher failed to start (non-fatal):" (.getMessage e))))
+        (log/info "Hot-reload disabled via .hive-project.edn")))
     ;; Start lings registry sync - keeps Clojure registry in sync with elisp
     ;; ADR-001: Event-driven sync for lings_available to return accurate counts
     (try
