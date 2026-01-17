@@ -101,14 +101,19 @@
    Flex Embedding Dimensions:
    If the existing collection's dimension doesn't match the current provider,
    the collection is automatically recreated with the correct dimension.
-   This handles provider switches (e.g., Ollama 768 → OpenRouter 4096)."
+   This handles provider switches (e.g., Ollama 768 → OpenRouter 4096).
+
+   COLLECTION-AWARE: Uses chroma/get-provider-for to get the provider
+   configured specifically for this collection (if any), falling back
+   to global provider."
   []
   (if-let [coll @collection-cache]
     coll
-    (let [provider (chroma/get-embedding-provider)]
+    (let [provider (chroma/get-provider-for collection-name)]
       (when-not provider
-        (throw (ex-info "Embedding provider not configured. Call chroma/set-embedding-provider! first."
-                        {:type :no-embedding-provider})))
+        (throw (ex-info "Embedding provider not configured for presets collection."
+                        {:type :no-embedding-provider
+                         :collection collection-name})))
       (let [required-dim (chroma/embedding-dimension provider)
             existing (try-get-existing-collection)]
         (if existing
@@ -219,12 +224,12 @@
 
 (defn index-preset!
   "Index a single preset in Chroma.
-   Returns preset ID on success."
+   Returns preset ID on success.
+
+   COLLECTION-AWARE: Uses collection-specific embedding provider."
   [{:keys [id name title _content category tags source file-path] :as preset}]
-  (when-not (chroma/embedding-configured?)
-    (throw (ex-info "Embedding provider not configured" {:type :no-embedding-provider})))
   (let [coll (get-or-create-collection)
-        provider (chroma/get-embedding-provider)
+        provider (chroma/get-provider-for collection-name)
         doc-text (preset-to-document preset)
         embedding (chroma/embed-text provider doc-text)]
     @(chroma-api/add coll [{:id id
@@ -241,12 +246,12 @@
     id))
 
 (defn index-presets!
-  "Index multiple presets in batch."
+  "Index multiple presets in batch.
+
+   COLLECTION-AWARE: Uses collection-specific embedding provider."
   [presets]
-  (when-not (chroma/embedding-configured?)
-    (throw (ex-info "Embedding provider not configured" {:type :no-embedding-provider})))
   (let [coll (get-or-create-collection)
-        provider (chroma/get-embedding-provider)
+        provider (chroma/get-provider-for collection-name)
         docs (mapv preset-to-document presets)
         embeddings (chroma/embed-batch provider docs)
         records (mapv (fn [preset doc emb]
@@ -298,12 +303,12 @@
      :limit - Max results (default: 5)
      :category - Filter by category
 
+   COLLECTION-AWARE: Uses collection-specific embedding provider.
+
    Returns seq of {:id, :name, :title, :category, :tags, :distance, :preview}"
   [query-text & {:keys [limit category] :or {limit 5}}]
-  (when-not (chroma/embedding-configured?)
-    (throw (ex-info "Embedding provider not configured" {:type :no-embedding-provider})))
   (let [coll (get-or-create-collection)
-        provider (chroma/get-embedding-provider)
+        provider (chroma/get-provider-for collection-name)
         query-embedding (chroma/embed-text provider query-text)
         where-clause (when category {:category category})
         results @(chroma-api/query coll query-embedding

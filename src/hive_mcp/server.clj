@@ -10,6 +10,8 @@
             [hive-mcp.channel.websocket :as ws-channel]
             [hive-mcp.swarm.sync :as sync]
             [hive-mcp.embeddings.ollama :as ollama]
+            [hive-mcp.embeddings.service :as embedding-service]
+            [hive-mcp.embeddings.config :as embedding-config]
             [hive-mcp.transport.websocket :as ws]
             [hive-mcp.hooks :as hooks]
             [hive-mcp.crystal.hooks :as crystal-hooks]
@@ -109,14 +111,21 @@
   (routes/debug-tool-handler server-context-atom tool-name))
 
 (defn init-embedding-provider!
-  "Initialize the embedding provider for semantic memory search.
-  Attempts to configure Ollama embeddings for Chroma.
-  Fails gracefully if Ollama or Chroma are not available.
-  
+  "Initialize embedding providers for semantic memory search.
+
+  Sets up:
+  1. Chroma connection (vector database)
+  2. EmbeddingService (per-collection routing)
+  3. Per-collection embedding configuration:
+     - hive-mcp-memory: Ollama (768 dims, fast, local)
+     - hive-mcp-presets: OpenRouter (4096 dims, accurate) if API key available
+  4. Global fallback provider (Ollama)
+
   Configuration via environment variables:
     CHROMA_HOST - Chroma server host (default: localhost)
     CHROMA_PORT - Chroma server port (default: 8000)
-    OLLAMA_HOST - Ollama server URL (default: http://localhost:11434)"
+    OLLAMA_HOST - Ollama server URL (default: http://localhost:11434)
+    OPENROUTER_API_KEY - OpenRouter API key (optional, for presets collection)"
   []
   (try
     ;; Configure Chroma connection - read from env or use defaults
@@ -124,12 +133,44 @@
           chroma-port (or (some-> (System/getenv "CHROMA_PORT") Integer/parseInt) 8000)]
       (chroma/configure! {:host chroma-host :port chroma-port})
       (log/info "Chroma configured:" chroma-host ":" chroma-port))
-    ;; Configure Ollama embedding provider
+
+    ;; Initialize EmbeddingService for per-collection routing
+    (embedding-service/init!)
+
+    ;; Configure per-collection embedding providers
+    ;; Memory collection: Ollama (fast, local, 768 dims)
+    (try
+      (embedding-service/configure-collection!
+       "hive-mcp-memory"
+       (embedding-config/ollama-config))
+      (catch Exception e
+        (log/warn "Could not configure Ollama for memory:" (.getMessage e))))
+
+    ;; Presets collection: OpenRouter (accurate, 4096 dims) if API key available
+    (when (System/getenv "OPENROUTER_API_KEY")
+      (try
+        (embedding-service/configure-collection!
+         "hive-mcp-presets"
+         (embedding-config/openrouter-config))
+        (log/info "Presets collection configured with OpenRouter (4096 dims)")
+        (catch Exception e
+          (log/warn "Could not configure OpenRouter for presets, using Ollama fallback:"
+                    (.getMessage e))
+          ;; Fallback: use Ollama for presets too
+          (try
+            (embedding-service/configure-collection!
+             "hive-mcp-presets"
+             (embedding-config/ollama-config))
+            (catch Exception _ nil)))))
+
+    ;; Set global fallback provider (Ollama) for backward compatibility
     (let [ollama-host (or (System/getenv "OLLAMA_HOST") "http://localhost:11434")
           provider (ollama/->provider {:host ollama-host})]
       (chroma/set-embedding-provider! provider)
-      (log/info "Embedding provider initialized: Ollama at" ollama-host)
-      true)
+      (log/info "Global fallback embedding provider: Ollama at" ollama-host))
+
+    (log/info "EmbeddingService status:" (embedding-service/status))
+    true
     (catch Exception e
       (log/warn "Could not initialize embedding provider:"
                 (.getMessage e)

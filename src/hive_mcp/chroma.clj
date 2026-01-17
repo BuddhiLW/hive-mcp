@@ -30,7 +30,6 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-
 ;;; ============================================================
 ;;; Configuration
 ;;; ============================================================
@@ -90,6 +89,49 @@
   "Get the current embedding provider. Returns nil if not configured."
   []
   @embedding-provider)
+
+;;; ============================================================
+;;; Collection-Aware Embedding API
+;;; ============================================================
+;; These functions delegate to the EmbeddingService for per-collection routing.
+;; They require (embeddings.service/init!) to be called first.
+;; For backward compatibility, they fall back to the global provider.
+
+(defn get-provider-for
+  "Get embedding provider for a specific collection.
+   Delegates to EmbeddingService if initialized, otherwise returns global provider.
+
+   This enables different collections to use different embedding dimensions:
+   - hive-mcp-memory: Ollama (768 dims, fast)
+   - hive-mcp-presets: OpenRouter (4096 dims, accurate)"
+  [collection-name]
+  (try
+    (require 'hive-mcp.embeddings.service)
+    (let [get-provider (resolve 'hive-mcp.embeddings.service/get-provider-for)]
+      (get-provider collection-name))
+    (catch Exception _
+      ;; Fallback to global provider if service not initialized
+      (or @embedding-provider
+          (throw (ex-info "No embedding provider available" {:collection collection-name}))))))
+
+(defn embed-text-for
+  "Embed text using the provider configured for the collection.
+   Falls back to global provider if collection not configured."
+  [collection-name text]
+  (let [provider (get-provider-for collection-name)]
+    (embed-text provider text)))
+
+(defn embed-batch-for
+  "Embed multiple texts using the provider configured for the collection."
+  [collection-name texts]
+  (let [provider (get-provider-for collection-name)]
+    (embed-batch provider texts)))
+
+(defn get-dimension-for
+  "Get embedding dimension for a collection's provider."
+  [collection-name]
+  (let [provider (get-provider-for collection-name)]
+    (embedding-dimension provider)))
 
 ;;; ============================================================
 ;;; DRY Helpers (CLARITY: Composition over modification)
