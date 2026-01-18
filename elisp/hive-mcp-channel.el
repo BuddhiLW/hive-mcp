@@ -412,6 +412,22 @@ Returns base * 2^(attempt-1), capped at max-reconnect-interval."
 ;;;; Swarm Integration Helpers
 
 ;;;###autoload
+(defun hive-mcp-channel-dispatch-local (event-type data)
+  "Dispatch EVENT-TYPE with DATA to local handlers without sending to server.
+EVENT-TYPE can be a keyword (:slave-spawned) or string (\"slave-spawned\").
+DATA is an alist of event properties.
+This enables local elisp components to react to swarm events immediately."
+  (let* ((type-key (if (keywordp event-type)
+                       event-type
+                     (intern (concat ":" event-type))))
+         (handlers (gethash type-key hive-mcp-channel--handlers)))
+    (dolist (handler handlers)
+      (condition-case err
+          (funcall handler data)
+        (error (message "hive-mcp-channel: Local dispatch error for %s: %s"
+                        type-key (error-message-string err)))))))
+
+;;;###autoload
 (defun hive-mcp-channel-emit-swarm-event (event-type data)
   "Emit a swarm event of EVENT-TYPE with DATA."
   (hive-mcp-channel-send

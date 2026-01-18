@@ -32,13 +32,13 @@
             [hive-mcp.tools.swarm.jvm.classifier :as classifier]
             [hive-mcp.tools.swarm.jvm.memory :as memory]
             [hive-mcp.tools.swarm.wave :as wave]
+            [hive-mcp.tools.swarm.validated-wave :as validated-wave]
             [hive-mcp.tools.swarm.team :as team]
             [hive-mcp.swarm.coordinator :as coord]
             [clojure.data.json :as json]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
-
 
 ;; ============================================================
 ;; Backward Compatibility: Re-export Registry API
@@ -168,6 +168,10 @@
 (def handle-get-wave-status
   "Get wave execution status. Delegated to wave module."
   wave/handle-get-wave-status)
+
+(def handle-dispatch-validated-wave
+  "Dispatch validated wave with self-healing. Delegated to validated-wave module."
+  validated-wave/handle-dispatch-validated-wave)
 
 (def handle-team-select
   "Select team composition for task type. Delegated to team module."
@@ -392,6 +396,33 @@
                                           :description "Wave ID returned from dispatch_drone_wave"}}
                   :required ["wave_id"]}
     :handler handle-get-wave-status}
+
+   {:name "dispatch_validated_wave"
+    :description "Dispatch multiple drones with post-execution validation and self-healing. Runs kondo_lint after each iteration, generates fix tasks for errors, and re-dispatches until validation passes or max retries reached. Use this instead of dispatch_drone_wave when you need quality gates on drone output."
+    :inputSchema {:type "object"
+                  :properties {"tasks" {:type "array"
+                                        :items {:type "object"
+                                                :properties {"file" {:type "string"
+                                                                     :description "File path to modify"}
+                                                             "task" {:type "string"
+                                                                     :description "Task description for this file"}}
+                                                :required ["file" "task"]}
+                                        :description "Array of {file, task} objects to execute"}
+                               "validate" {:type "boolean"
+                                           :description "Run clj-kondo lint after execution (default: true)"}
+                               "max_retries" {:type "integer"
+                                              :description "Max retry iterations for validation failures (default: 3)"}
+                               "lint_level" {:type "string"
+                                             :enum ["error" "warning" "info"]
+                                             :description "Lint severity threshold (default: error)"}
+                               "preset" {:type "string"
+                                         :description "Drone preset (default: drone-worker)"}
+                               "trace" {:type "boolean"
+                                        :description "Emit progress events (default: true)"}
+                               "cwd" {:type "string"
+                                      :description "Working directory override for path resolution"}}
+                  :required ["tasks"]}
+    :handler handle-dispatch-validated-wave}
 
    {:name "team_select"
     :description "Select a pre-configured team composition for common task types. Returns ling specs with presets, parallelization strategy, and coordinator checklist. Task types: implementation, refactoring, greenfield, simplification, quality-review, documentation."

@@ -134,6 +134,7 @@
   "Safe tools for drone agents. Drones cannot write files directly - they must use propose_diff."
   ["read_file" "grep" "glob_files" "clojure_eval" "clojure_inspect_project"
    "magit_status" "magit_diff" "magit_log" "magit_branches"
+   "kondo_lint" "kondo_analyze"
    "propose_diff" "hivemind_shout"])
 
 ;;; ============================================================

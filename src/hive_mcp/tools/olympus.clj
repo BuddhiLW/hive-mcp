@@ -11,7 +11,9 @@
    - olympus_tab: Navigate between tabs"
   (:require [hive-mcp.olympus :as olympus]
             [hive-mcp.swarm.datascript.core :as ds]
-            [hive-mcp.events.core :as ev]))
+            [hive-mcp.events.core :as ev]
+            [datascript.core :as d]
+            [clojure.edn :as edn]))
 
 ;;; =============================================================================
 ;;; DataScript Queries
@@ -19,46 +21,89 @@
 
 (defn- get-active-lings
   "Query all active lings from DataScript.
-   Returns sequence of ling maps with :slave/id, :slave/name."
+   Returns sequence of ling maps with :slave/id, :slave/name.
+   Filters to lings at depth=1 (not drones) that aren't in error state."
   []
-  ;; TODO: Implement DataScript query
-  ;; Stub returns empty for now
-  [])
+  (->> (ds/get-all-slaves)
+       ;; Filter to lings (depth 1) - not hivemind (0) or drones (2)
+       (filter #(= 1 (:slave/depth %)))
+       ;; Exclude errored slaves
+       (filter #(not= :error (:slave/status %)))
+       ;; Return only needed fields for Olympus
+       (map #(select-keys % [:slave/id :slave/name :slave/status :slave/cwd]))))
 
 (defn- get-olympus-state
   "Query current Olympus state from DataScript.
-   Returns {:active-tab :layout-mode :ling-positions}."
+   Returns {:active-tab :layout-mode :ling-positions :focused-ling}.
+   Creates default state if singleton doesn't exist."
   []
-  ;; TODO: Implement DataScript query
-  {:active-tab 0
-   :layout-mode :auto
-   :ling-positions {}})
+  (let [conn (ds/ensure-conn)
+        db @conn]
+    (if-let [e (d/entity db [:olympus/id "olympus"])]
+      ;; Existing state - parse ling-positions from EDN string
+      {:active-tab (or (:olympus/active-tab e) 0)
+       :layout-mode (or (:olympus/layout-mode e) :auto)
+       :focused-ling (when-let [ref (:olympus/focused-ling e)]
+                       (:slave/id ref))
+       :ling-positions (if-let [pos-str (:olympus/ling-positions e)]
+                         (try (edn/read-string pos-str)
+                              (catch Exception _ {}))
+                         {})}
+      ;; Default state
+      {:active-tab 0
+       :layout-mode :auto
+       :focused-ling nil
+       :ling-positions {}})))
 
 (defn- save-olympus-state!
   "Persist Olympus state to DataScript.
 
    Arguments:
-   - state: Map with :active-tab :layout-mode :ling-positions"
+   - state: Map with :active-tab :layout-mode :ling-positions :focused-ling
+
+   Uses upsert pattern - singleton is created if it doesn't exist."
   [state]
-  ;; TODO: Implement DataScript transaction
-  nil)
+  (let [conn (ds/ensure-conn)
+        {:keys [active-tab layout-mode ling-positions focused-ling]} state
+        ;; Build transaction data
+        tx-data (cond-> {:olympus/id "olympus"
+                         :olympus/active-tab (or active-tab 0)
+                         :olympus/layout-mode (or layout-mode :auto)}
+                  ;; Serialize ling-positions as EDN string
+                  ling-positions
+                  (assoc :olympus/ling-positions (pr-str ling-positions))
+                  ;; Handle focused-ling ref
+                  focused-ling
+                  (assoc :olympus/focused-ling [:slave/id focused-ling]))]
+    (d/transact! conn [tx-data])
+    state))
 
 ;;; =============================================================================
 ;;; Event Emission
 ;;; =============================================================================
 
 (defn- emit-layout-changed!
-  "Emit event when layout changes (for Emacs to respond)."
+  "Emit event when layout changes (for Emacs to respond).
+   Event format: [:olympus/layout-changed {:layout ... :positions ...}]
+   Safe: catches dispatch errors if handlers not registered."
   [layout positions]
-  (ev/dispatch! {:event/type :olympus/layout-changed
-                 :layout layout
-                 :positions positions}))
+  (try
+    (ev/dispatch [:olympus/layout-changed {:layout layout
+                                           :positions positions}])
+    (catch Exception _
+      ;; Handler not registered yet - that's OK
+      nil)))
 
 (defn- emit-focus-changed!
-  "Emit event when focus changes."
+  "Emit event when focus changes.
+   Event format: [:olympus/focus-changed {:ling-id ...}]
+   Safe: catches dispatch errors if handlers not registered."
   [ling-id]
-  (ev/dispatch! {:event/type :olympus/focus-changed
-                 :ling-id ling-id}))
+  (try
+    (ev/dispatch [:olympus/focus-changed {:ling-id ling-id}])
+    (catch Exception _
+      ;; Handler not registered yet - that's OK
+      nil)))
 
 ;;; =============================================================================
 ;;; Tool Handlers
@@ -206,3 +251,43 @@
    "olympus_focus" handle-olympus-focus
    "olympus_arrange" handle-olympus-arrange
    "olympus_tab" handle-olympus-tab})
+
+;;; =============================================================================
+;;; Tool Definitions (MCP Schema)
+;;; =============================================================================
+
+(def tools
+  "Olympus grid control MCP tool definitions."
+  [{:name "olympus_status"
+    :description "Get current grid layout and ling positions. Returns ling count, layout dimensions (rows/cols or tabs/per-tab), position map, active tab, and layout mode."
+    :inputSchema {:type "object" :properties {}}
+    :handler handle-olympus-status}
+
+   {:name "olympus_focus"
+    :description "Focus/maximize a specific ling or restore grid view. Specify ling-id (direct), position (1-4), or restore=true to unfocus."
+    :inputSchema {:type "object"
+                  :properties {:ling-id {:type "string"
+                                         :description "Specific ling ID to focus"}
+                               :position {:type "integer"
+                                          :description "Position number (1-4) to focus"}
+                               :restore {:type "boolean"
+                                         :description "If true, restore grid view (unfocus)"}}}
+    :handler handle-olympus-focus}
+
+   {:name "olympus_arrange"
+    :description "Trigger grid arrangement with specified layout mode. Forces recalculation of ling positions."
+    :inputSchema {:type "object"
+                  :properties {:mode {:type "string"
+                                      :enum ["auto" "manual" "stacked"]
+                                      :description "Layout mode: auto (default), manual, or stacked"}}}
+    :handler handle-olympus-arrange}
+
+   {:name "olympus_tab"
+    :description "Navigate between tabs (for 5+ lings). Use direction (:next/:prev) or jump to specific tab number."
+    :inputSchema {:type "object"
+                  :properties {:direction {:type "string"
+                                           :enum ["next" "prev"]
+                                           :description "Navigate to next or previous tab"}
+                               :tab {:type "integer"
+                                     :description "Specific tab number to jump to (0-indexed)"}}}
+    :handler handle-olympus-tab}])

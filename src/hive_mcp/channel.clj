@@ -16,8 +16,7 @@
    "
   (:require [hive-mcp.transport :as t]
             [clojure.core.async :as async :refer [chan pub sub unsub close!]]
-            [taoensso.timbre :as log]
-            [hive-mcp.guards :as guards]))
+            [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -101,12 +100,12 @@
   "Stop the channel server.
 
    CLARITY-Y: Yield safe failure - guards against stopping coordinator's server.
-   Uses centralized guards/coordinator-running? check. Logs warning and returns nil
+   Checks local :coordinator-running? state. Logs warning and returns nil
    instead of stopping if coordinator is active. This prevents test fixtures from
    killing the production server when tests run in the same JVM (e.g., via embedded nREPL)."
   []
   (when-let [{:keys [server]} @server-state]
-    (if (guards/coordinator-running?)
+    (if (:coordinator-running? @server-state)
       (log/warn "stop-server! called but coordinator is running - ignoring to protect connections")
       (do
         (t/stop-server! server)
@@ -126,8 +125,7 @@
   "Mark that the coordinator is running, protecting the server from test fixture cleanup.
    Called from server.clj during startup.
 
-   NOTE: This now delegates to centralized guards/coordinator-running? check.
-   Local state is also updated for backward compatibility."
+   Sets :coordinator-running? in local server-state atom."
   []
   ;; Local state update for backward compat (some code may check @server-state)
   (swap! server-state assoc :coordinator-running? true)

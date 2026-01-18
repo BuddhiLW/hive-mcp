@@ -29,6 +29,7 @@
    [hive-mcp.tools.session-complete :as session-complete]
    [hive-mcp.tools.hive-project :as hive-project]
    [hive-mcp.tools.telemetry :as telemetry]
+   [hive-mcp.tools.olympus :as olympus]
    [hive-mcp.hivemind :as hivemind]
    [hive-mcp.channel :as channel]
    [hive-mcp.agent :as agent]
@@ -78,6 +79,7 @@
                session-complete/tools  ; ling session lifecycle
                hive-project/tools      ; .hive-project.edn generator
                telemetry/tools         ; prometheus_query (CLARITY-T)
+               olympus/tools           ; grid layout for swarm visualization
                hivemind/tools
                channel/channel-tools
                agent/tools)))
@@ -144,6 +146,8 @@
                drone-feedback/tools
                session-complete/tools  ; ling session lifecycle
                hive-project/tools      ; .hive-project.edn generator
+               telemetry/tools         ; prometheus_query (CLARITY-T)
+               olympus/tools           ; grid layout for swarm visualization
                hivemind/tools
                channel/channel-tools
                agent/tools)))

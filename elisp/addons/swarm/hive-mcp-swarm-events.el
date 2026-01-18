@@ -35,6 +35,7 @@
 ;; Soft dependency on channel
 (declare-function hive-mcp-channel-connected-p "hive-mcp-channel")
 (declare-function hive-mcp-channel-send "hive-mcp-channel")
+(declare-function hive-mcp-channel-dispatch-local "hive-mcp-channel")
 
 ;;;; Internal State:
 
@@ -54,12 +55,27 @@
 (defun hive-mcp-swarm-events-emit (event-type data)
   "Emit EVENT-TYPE with DATA through the channel if connected.
 EVENT-TYPE should be a string like \"task-completed\".
-DATA is an alist of additional event properties."
-  (when (hive-mcp-swarm-events-channel-available-p)
-    (let ((event `(("type" . ,event-type)
-                   ("timestamp" . ,(truncate (float-time)))
-                   ("session-id" . ,hive-mcp-swarm-events--session-id)
-                   ,@data)))
+DATA is an alist of additional event properties.
+
+Events are both:
+1. Sent to MCP server via channel (if connected)
+2. Dispatched locally to elisp handlers (always)
+
+This enables components like hive-mcp-olympus to react immediately
+to swarm events without waiting for server round-trip."
+  (let ((event `(("type" . ,event-type)
+                 ("timestamp" . ,(truncate (float-time)))
+                 ("session-id" . ,hive-mcp-swarm-events--session-id)
+                 ,@data)))
+    ;; Always dispatch locally for immediate UI updates
+    (when (fboundp 'hive-mcp-channel-dispatch-local)
+      (condition-case err
+          (hive-mcp-channel-dispatch-local event-type event)
+        (error
+         (message "[swarm-events] Local dispatch error: %s"
+                  (error-message-string err)))))
+    ;; Send to server if channel connected
+    (when (hive-mcp-swarm-events-channel-available-p)
       (condition-case err
           (hive-mcp-channel-send event)
         (error
