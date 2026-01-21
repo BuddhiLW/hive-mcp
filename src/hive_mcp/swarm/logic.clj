@@ -22,6 +22,7 @@
 
    RELATIONS (pldb/db-rel)
    =======================
+   Re-exported from logic.predicates:
    - slave:       (slave-id, status) - Worker agent state
    - task:        (task-id, slave-id, status) - Task ownership
    - claims:      (file-path, slave-id) - File ownership for conflict detection
@@ -32,6 +33,7 @@
 
    KEY PREDICATES
    ==============
+   Re-exported from logic.predicates:
    - file-conflicto:    Does another slave own this file?
    - would-deadlocko:   Would adding this dependency create a cycle?
    - reachable-fromo:   Transitive closure of dependency graph
@@ -48,12 +50,14 @@
 
    SEE ALSO
    ========
+   - swarm/logic/predicates.clj - Pure relations and predicates
    - swarm/coordinator.clj - High-level API using this module
    - swarm/datascript.clj  - Entity state management
    - tools/swarm/wave.clj  - Batch execution using compute-batches"
   (:require [clojure.core.logic :as l]
             [clojure.core.logic.pldb :as pldb]
-            [taoensso.timbre :as log]))
+            [taoensso.timbre :as log]
+            [hive-mcp.swarm.logic.predicates :as pred]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
