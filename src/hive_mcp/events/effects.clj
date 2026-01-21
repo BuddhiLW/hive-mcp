@@ -536,11 +536,7 @@
    - :kanban-sync     - Synchronize kanban state (P5-4)
    - :dispatch-task   - Dispatch task to swarm slave (POC-07)
    - :emit-system-error - Structured error telemetry (Telemetry Phase 1)
-   - :kg-add-edge - Create edge in Knowledge Graph
-   - :kg-update-confidence - Update edge confidence score
-   - :kg-increment-confidence - Adjust confidence by delta (Socratic)
-   - :kg-remove-edge - Delete edge from Knowledge Graph
-   - :kg-remove-edges-for-node - Clean up edges for deleted node
+   - KG effects       - See hive-mcp.events.effects.kg
 
    Coeffects registered (POC-08/09/10/11):
    - :now             - Current timestamp in milliseconds
@@ -656,23 +652,9 @@
     (ev/reg-fx :wrap-crystallize handle-wrap-crystallize)
 
     ;; ==========================================================================
-    ;; Knowledge Graph Effects
+    ;; Knowledge Graph Effects (delegated to kg.clj for SRP compliance)
     ;; ==========================================================================
-
-    ;; :kg-add-edge - Create new edge in Knowledge Graph
-    (ev/reg-fx :kg-add-edge handle-kg-add-edge)
-
-    ;; :kg-update-confidence - Update edge confidence score
-    (ev/reg-fx :kg-update-confidence handle-kg-update-confidence)
-
-    ;; :kg-increment-confidence - Adjust confidence by delta (Socratic validation)
-    (ev/reg-fx :kg-increment-confidence handle-kg-increment-confidence)
-
-    ;; :kg-remove-edge - Delete edge from Knowledge Graph
-    (ev/reg-fx :kg-remove-edge handle-kg-remove-edge)
-
-    ;; :kg-remove-edges-for-node - Clean up edges when memory entry deleted
-    (ev/reg-fx :kg-remove-edges-for-node handle-kg-remove-edges-for-node)
+    (kg-effects/register-kg-effects!)
 
     ;; NOTE: :crystal/wrap-notify event handler is registered in
     ;; hive-mcp.events.handlers.crystal/register-handlers! with proper
@@ -681,7 +663,6 @@
     (reset! *registered true)
     (log/info "[hive-events] Coeffects registered: :now :agent-context :db-snapshot :waiting-lings :request-ctx")
     (log/info "[hive-events] Effects registered: :shout :targeted-shout :log :ds-transact :wrap-notify :channel-publish :memory-write :report-metrics :emit-system-error :dispatch :dispatch-n :git-commit :kanban-sync :dispatch-task :kanban-move-done :wrap-crystallize")
-    (log/info "[hive-events] KG effects registered: :kg-add-edge :kg-update-confidence :kg-increment-confidence :kg-remove-edge :kg-remove-edges-for-node")
     true))
 
 (defn reset-registration!
