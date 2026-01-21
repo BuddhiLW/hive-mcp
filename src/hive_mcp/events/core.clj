@@ -38,7 +38,8 @@
             [hive-mcp.swarm.datascript :as ds]
             [hive-mcp.channel.websocket :as ws]
             [hive-mcp.telemetry.prometheus :as prom]
-            [hive-mcp.guards :as guards]))
+            [hive-mcp.guards :as guards]
+            [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -337,7 +338,7 @@
               (if-let [handler (get @*cofx-handlers id)]
                 (update context :coeffects handler)
                 (do
-                  (println "Warning: No coeffect handler for" id)
+                  (log/warn "No coeffect handler for" id)
                   context)))))
   ([id value]
    (->interceptor
@@ -346,7 +347,7 @@
               (if-let [handler (get @*cofx-handlers id)]
                 (update context :coeffects #(handler % value))
                 (do
-                  (println "Warning: No coeffect handler for" id)
+                  (log/warn "No coeffect handler for" id)
                   context))))))
 
 ;; =============================================================================
@@ -374,8 +375,8 @@
          (swap! *metrics update :effects-executed inc)
          (catch Exception e
            (swap! *metrics update :errors inc)
-           (println "Effect" effect-id "failed:" (.getMessage e))))
-       (println "Warning: No effect handler for" effect-id)))
+           (log/error "Effect" effect-id "failed:" (.getMessage e))))
+       (log/warn "No effect handler for" effect-id)))
    context))
 
 ;; =============================================================================
@@ -449,15 +450,16 @@
 ;; =============================================================================
 
 (def debug
-  "Interceptor that logs event and effects for debugging."
+  "Interceptor that logs event and effects for debugging.
+   Uses timbre logging to avoid stdout pollution in MCP context."
   (->interceptor
    :id :debug
    :comment "Logs event in :before, effects in :after"
    :before (fn [context]
-             (println "[DEBUG] Event:" (get-coeffect context :event))
+             (log/debug "Event:" (get-coeffect context :event))
              context)
    :after (fn [context]
-            (println "[DEBUG] Effects:" (:effects context))
+            (log/debug "Effects:" (:effects context))
             context)))
 
 (def metrics
@@ -641,24 +643,26 @@
               (try
                 (prom/handle-prometheus-effect! effect-data)
                 (catch Exception e
-                  (println "[prometheus-fx] Failed to record metric:" (.getMessage e))))))
+                  (log/warn "Prometheus effect failed:" (.getMessage e))))))
 
     ;; CLARITY-T: Log effect
     ;; Handles :log effects from event handlers for structured logging
     ;; Effect shape: {:level :info :message "Drone started: drone-123"}
+    ;; NOTE: Uses timbre logging instead of println to avoid stdout pollution
+    ;; in MCP context (stdout is used for JSON-RPC communication)
     (reg-fx :log
             (fn [{:keys [level message]}]
               (case level
-                :debug (println "[DEBUG]" message)
-                :info  (println "[INFO]" message)
-                :warn  (println "[WARN]" message)
-                :error (println "[ERROR]" message)
-                (println "[LOG]" message))))
+                :debug (log/debug message)
+                :info  (log/info message)
+                :warn  (log/warn message)
+                :error (log/error message)
+                (log/info message))))
 
     ;; Mark as initialized
     (reset! *initialized true)
-    (println "[hive-events] Event system initialized with coeffects: :now :random :agent-context :db-snapshot")
-    (println "[hive-events] Registered effects: :channel-publish"))
+    (log/info "Event system initialized with coeffects: :now :random :agent-context :db-snapshot")
+    (log/info "Registered effects: :channel-publish"))
   @*initialized)
 
 (defn handler-registered?

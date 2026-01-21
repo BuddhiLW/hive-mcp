@@ -18,7 +18,6 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-
 ;; ============================================================
 ;; CIDER Integration Tools (requires hive-mcp-cider addon)
 ;; ============================================================
@@ -45,12 +44,15 @@
         (catch Exception _ nil)))))
 
 (defn- spawn-session-internal
-  "Internal call to spawn a new CIDER session. Returns true on success."
-  [session-name]
-  (let [elisp (el/require-and-call-json 'hive-mcp-cider 'hive-mcp-cider-spawn-session
-                                        session-name nil nil)
-        {:keys [success]} (ec/eval-elisp elisp)]
-    success))
+  "Internal call to spawn a new CIDER session. Returns true on success.
+   Optionally accepts project-dir to ensure session connects to correct nREPL."
+  ([session-name]
+   (spawn-session-internal session-name nil))
+  ([session-name project-dir]
+   (let [elisp (el/require-and-call-json 'hive-mcp-cider 'hive-mcp-cider-spawn-session
+                                         session-name project-dir nil)
+         {:keys [success]} (ec/eval-elisp elisp)]
+     success)))
 
 (defn- find-connected-session
   "Find a session with status 'connected'. Returns session name or nil."
@@ -83,7 +85,11 @@
 
 (defn- ensure-cider-connected
   "Ensure CIDER is connected, auto-spawning a session if needed.
-   Returns {:connected true :session name} on success, {:connected false :error msg} on failure."
+   Returns {:connected true :session name} on success, {:connected false :error msg} on failure.
+
+   When spawning a new session, uses the current project root to ensure
+   CIDER connects to the correct project's nREPL (not a random one from
+   another project)."
   []
   (log/debug "ensure-cider-connected: checking available sessions")
   (let [sessions (list-sessions-internal)]
@@ -92,10 +98,11 @@
       (do
         (log/info "ensure-cider-connected: using existing session" connected-session)
         {:connected true :session connected-session})
-      ;; No connected sessions - spawn a new one
-      (do
-        (log/info "ensure-cider-connected: no connected sessions, spawning 'auto'")
-        (if (spawn-session-internal "auto")
+      ;; No connected sessions - spawn a new one with project context
+      (let [project-dir (try (ec/project-root) (catch Exception _ nil))]
+        (log/info "ensure-cider-connected: no connected sessions, spawning 'auto'"
+                  {:project-dir project-dir})
+        (if (spawn-session-internal "auto" project-dir)
           ;; Wait for session to become ready (up to 5 attempts = 2.5 seconds)
           (if (wait-for-session-ready "auto" 5)
             {:connected true :session "auto"}

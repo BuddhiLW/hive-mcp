@@ -14,9 +14,20 @@
 ;; =============================================================================
 
 (def expected-drone-tools
-  "Tools that drones MUST have access to for their workflow."
-  #{"read_file" "grep" "glob_files" "clojure_eval" "clojure_inspect_project"
+  "Tools that drones MUST have access to for their workflow.
+
+   Note: Uses actual tool names from registry:
+   - cider_eval_silent (not clojure_eval) for nREPL evaluation
+   - cider_doc, cider_info for symbol lookup
+   - kondo_lint, kondo_analyze for static analysis (no nREPL required)"
+  #{"read_file" "grep" "glob_files"
+    ;; Clojure tools (nREPL-based)
+    "cider_eval_silent" "cider_doc" "cider_info"
+    ;; Static analysis
+    "kondo_lint" "kondo_analyze"
+    ;; Git read-only
     "magit_status" "magit_diff" "magit_log" "magit_branches"
+    ;; Drone-specific
     "propose_diff" "hivemind_shout"})
 
 (def expected-file-mutation-tools

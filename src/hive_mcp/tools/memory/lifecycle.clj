@@ -15,12 +15,12 @@
             [hive-mcp.tools.memory.format :as fmt]
             [hive-mcp.tools.memory.duration :as dur]
             [hive-mcp.chroma :as chroma]
+            [hive-mcp.knowledge-graph.edges :as kg-edges]
             [clojure.data.json :as json]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
-
 
 ;; ============================================================
 ;; Set Duration Handler
@@ -73,12 +73,21 @@
 ;; ============================================================
 
 (defn handle-cleanup-expired
-  "Remove all expired memory entries (Chroma-only)."
+  "Remove all expired memory entries (Chroma-only).
+   Also cleans up KG edges for deleted entries to maintain referential integrity."
   [_]
   (log/info "mcp-memory-cleanup-expired")
   (with-chroma
-    (let [count (chroma/cleanup-expired!)]
-      {:type "text" :text (json/write-str {:deleted count})})))
+    (let [{:keys [count deleted-ids]} (chroma/cleanup-expired!)
+          ;; Clean up KG edges for all deleted entries
+          edges-removed (when (seq deleted-ids)
+                          (reduce (fn [total id]
+                                    (+ total (kg-edges/remove-edges-for-node! id)))
+                                  0 deleted-ids))]
+      (when (pos? (or edges-removed 0))
+        (log/info "Cleaned up" edges-removed "KG edges for" count "deleted entries"))
+      {:type "text" :text (json/write-str {:deleted count
+                                           :kg_edges_removed (or edges-removed 0)})})))
 
 ;; ============================================================
 ;; Expiring Soon Handler

@@ -249,10 +249,11 @@
                :task-id (:task-ref t)}))))
 
 (defn get-last-turn-for
-  "Get the most recent turn from a specific participant."
+  "Get the most recent turn addressed to a specific participant.
+   Returns the last turn where this agent was the receiver."
   [dialogue-id slave-id]
   (->> (get-dialogue-turns dialogue-id)
-       (filter #(= (:sender %) slave-id))
+       (filter #(= (:receiver %) slave-id))
        last))
 
 (defn get-participants

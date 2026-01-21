@@ -728,8 +728,9 @@
         (validate-task-paths normalized-tasks))
 
       ;; Proceed with plan and wave execution
-      ;; Note: nREPL pre-flight check removed - drones use OpenRouter, not nREPL.
-      ;; clojure_eval is optional; transient nREPL errors handled gracefully at runtime.
+      ;; Note: nREPL pre-flight check removed - drones use OpenRouter for LLM, not nREPL.
+      ;; Clojure tools (cider_eval_silent, etc.) are optional; transient nREPL errors
+      ;; handled gracefully at runtime via retry logic in execute-drone-task.
       (let [plan-id (create-plan! normalized-tasks preset)
             wave-id (execute-wave! plan-id {:trace (if (nil? trace) true trace)
                                             :cwd cwd})]

@@ -168,10 +168,19 @@
 ;;; ============================================================
 
 (def allowed-tools
-  "Safe tools for drone agents. Drones cannot write files directly - they must use propose_diff."
-  ["read_file" "grep" "glob_files" "clojure_eval" "clojure_inspect_project"
-   "magit_status" "magit_diff" "magit_log" "magit_branches"
+  "Safe tools for drone agents. Drones cannot write files directly - they must use propose_diff.
+
+   Note on Clojure tools:
+   - cider_eval_silent: Fast nREPL evaluation (use for routine code inspection)
+   - kondo_analyze/kondo_lint: Static analysis without nREPL (preferred for analysis)"
+  ["read_file" "grep" "glob_files"
+   ;; Clojure tools (nREPL-based)
+   "cider_eval_silent" "cider_doc" "cider_info"
+   ;; Static analysis (no nREPL required)
    "kondo_lint" "kondo_analyze"
+   ;; Git inspection
+   "magit_status" "magit_diff" "magit_log" "magit_branches"
+   ;; Drone-specific
    "propose_diff" "hivemind_shout"])
 
 ;;; ============================================================

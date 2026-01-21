@@ -12,7 +12,6 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-
 ;; ============================================================
 ;; Entry Type Specs
 ;; ============================================================
@@ -90,6 +89,13 @@
   (s/keys :opt-un [::type ::duration ::tags ::scope ::limit]))
 
 ;; ============================================================
+;; Cleanup Result Specs
+;; ============================================================
+
+(s/def ::count nat-int?)
+(s/def ::deleted-ids (s/coll-of ::id :kind vector?))
+
+;; ============================================================
 ;; Function Specs (fdef)
 ;; ============================================================
 
@@ -108,10 +114,10 @@
   :args (s/cat :query ::query-params)
   :ret (s/coll-of ::memory-entry))
 
-;; cleanup-expired! : -> count
+;; cleanup-expired! : -> {:count nat-int?, :deleted-ids [string...]}
 (s/fdef hive-mcp.chroma/cleanup-expired!
   :args (s/cat)
-  :ret nat-int?)
+  :ret (s/keys :req-un [::count ::deleted-ids]))
 
 ;; entries-expiring-soon : days -> [entry...]
 (s/fdef hive-mcp.chroma/entries-expiring-soon

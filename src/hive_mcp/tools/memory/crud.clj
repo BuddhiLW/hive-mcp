@@ -35,6 +35,15 @@
 ;; Knowledge Graph Edge Creation
 ;; ============================================================
 
+(defn- update-target-incoming!
+  "Update target entry's kg-incoming field with the new edge ID.
+   Appends to existing incoming edges if present."
+  [target-id edge-id]
+  (when-let [target-entry (chroma/get-entry-by-id target-id)]
+    (let [existing-incoming (or (:kg-incoming target-entry) [])
+          updated-incoming (conj existing-incoming edge-id)]
+      (chroma/update-entry! target-id {:kg-incoming updated-incoming}))))
+
 (defn- create-kg-edges!
   "Create KG edges for the given relationships.
 
@@ -45,19 +54,26 @@
      agent-id    - Agent creating the edges (for attribution)
 
    Returns:
-     Vector of created edge IDs"
+     Vector of created edge IDs
+
+   Side effects:
+     - Creates edges in DataScript KG store
+     - Updates target entries' kg-incoming field in Chroma (bidirectional lookup)"
   [entry-id {:keys [kg_implements kg_supersedes kg_depends_on kg_refines]} project-id agent-id]
   (let [created-by (when agent-id (str "agent:" agent-id))
         create-edges (fn [targets relation]
                        (when (seq targets)
                          (mapv (fn [target-id]
-                                 (kg-edges/add-edge!
-                                  {:from entry-id
-                                   :to target-id
-                                   :relation relation
-                                   :scope project-id
-                                   :confidence 1.0
-                                   :created-by created-by}))
+                                 (let [edge-id (kg-edges/add-edge!
+                                                {:from entry-id
+                                                 :to target-id
+                                                 :relation relation
+                                                 :scope project-id
+                                                 :confidence 1.0
+                                                 :created-by created-by})]
+                                   ;; Update target's kg-incoming for bidirectional lookup
+                                   (update-target-incoming! target-id edge-id)
+                                   edge-id))
                                targets)))]
     (vec (concat
           (create-edges kg_implements :implements)
@@ -123,6 +139,9 @@
                          :project-id project-id})
               ;; Create KG edges if any relationships specified
               edge-ids (create-kg-edges! entry-id params project-id agent-id)
+              ;; Store outgoing edge IDs in Chroma for bidirectional lookup
+              _ (when (seq edge-ids)
+                  (chroma/update-entry! entry-id {:kg-outgoing edge-ids}))
               created (chroma/get-entry-by-id entry-id)]
           (log/info "Created memory entry:" entry-id
                     (when (seq edge-ids) (str " with " (count edge-ids) " KG edges")))

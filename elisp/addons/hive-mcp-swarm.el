@@ -507,12 +507,14 @@ Also stops Layer 2 idle detection watcher."
 
 (defun hive-mcp-swarm--format-slave-detail (id slave)
   "Format SLAVE with ID as alist for status API response.
-Returns an alist suitable for JSON serialization as an object."
+Returns an alist suitable for JSON serialization as an object.
+Includes cwd for bootstrap sync to derive project-id (ADR-001 Phase 2)."
   `((slave-id . ,id)
     (name . ,(plist-get slave :name))
     (status . ,(hive-mcp-swarm--get-slave-status-name slave))
     (depth . ,(plist-get slave :depth))
     (parent-id . ,(plist-get slave :parent-id))
+    (cwd . ,(plist-get slave :cwd))
     (current-task . ,(plist-get slave :current-task))
     (tasks-completed . ,(plist-get slave :tasks-completed))))
 

@@ -13,18 +13,24 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-
 ;; ============================================================
 ;; Full Entry Formatting
 ;; ============================================================
 
 (defn entry->json-alist
   "Convert entry map to JSON-serializable format.
-   Removes internal fields like :document."
+   Removes internal fields like :document.
+   Converts kg-outgoing/kg-incoming to snake_case for JSON consistency."
   [entry]
-  (-> entry
-      (update :tags #(or % []))
-      (dissoc :document))) ; Remove internal field
+  (let [base (-> entry
+                 (update :tags #(or % []))
+                 (dissoc :document)) ; Remove internal field
+        ;; Convert KG edge fields from kebab-case to snake_case
+        kg-outgoing (:kg-outgoing base)
+        kg-incoming (:kg-incoming base)]
+    (cond-> (dissoc base :kg-outgoing :kg-incoming)
+      (seq kg-outgoing) (assoc :kg_outgoing_ids kg-outgoing)
+      (seq kg-incoming) (assoc :kg_incoming_ids kg-incoming))))
 
 ;; ============================================================
 ;; Metadata-Only Formatting

@@ -185,7 +185,10 @@
 
 (defn- metadata->entry
   "Convert Chroma metadata format to domain entry map.
-   DRY: Single conversion point for all entry retrieval."
+   DRY: Single conversion point for all entry retrieval.
+
+   Knowledge Graph fields (kg-outgoing, kg-incoming) store edge IDs
+   as comma-separated strings for bidirectional lookup."
   [{:keys [id document metadata]}]
   {:id id
    :type (:type metadata)
@@ -200,6 +203,9 @@
    :helpful-count (:helpful-count metadata)
    :unhelpful-count (:unhelpful-count metadata)
    :project-id (:project-id metadata)
+   ;; Knowledge Graph edge references for bidirectional lookup
+   :kg-outgoing (split-tags (:kg-outgoing metadata))
+   :kg-incoming (split-tags (:kg-incoming metadata))
    :document document})
 
 ;;; ============================================================
@@ -279,7 +285,9 @@
   "Default values for entry metadata fields."
   {:type "note" :tags "" :content-hash "" :duration "long-term"
    :expires "" :access-count 0 :helpful-count 0 :unhelpful-count 0
-   :project-id "global"})
+   :project-id "global"
+   ;; Knowledge Graph edge references (empty = no edges)
+   :kg-outgoing "" :kg-incoming ""})
 
 (defn index-memory-entry!
   "Index a memory entry in Chroma (full storage, not just search).
@@ -287,12 +295,14 @@
    Returns the entry ID on success.
 
    Full metadata stored: type, tags, content, content-hash, created, updated,
-   duration, expires, access-count, helpful-count, unhelpful-count, project-id.
+   duration, expires, access-count, helpful-count, unhelpful-count, project-id,
+   kg-outgoing, kg-incoming.
 
-   Note: Tags are stored as comma-separated string since Chroma metadata
-   only supports scalar values (string, int, float, bool)."
+   Note: Tags and KG edge IDs are stored as comma-separated strings since
+   Chroma metadata only supports scalar values (string, int, float, bool)."
   [{:keys [id content type tags created updated duration expires
-           content-hash access-count helpful-count unhelpful-count project-id]
+           content-hash access-count helpful-count unhelpful-count project-id
+           kg-outgoing kg-incoming]
     :as entry}]
   (require-embedding!)
   (let [coll (get-or-create-collection)
@@ -304,7 +314,10 @@
                   :content-hash content-hash :created (or created now) :updated (or updated now)
                   :duration duration :expires expires :access-count access-count
                   :helpful-count helpful-count :unhelpful-count unhelpful-count
-                  :project-id project-id}
+                  :project-id project-id
+                  ;; Knowledge Graph edge references (stored as comma-separated IDs)
+                  :kg-outgoing (join-tags kg-outgoing)
+                  :kg-incoming (join-tags kg-incoming)}
         meta (merge metadata-defaults (into {} (remove (comp nil? val) provided)))]
     @(chroma/add coll [{:id entry-id :embedding embedding :document doc-text :metadata meta}]
                  :upsert? true)
@@ -385,7 +398,7 @@
 
 (defn cleanup-expired!
   "Delete all expired entries from Chroma.
-   Returns count of deleted entries."
+   Returns map with :count and :deleted-ids for KG edge cleanup."
   []
   (require-embedding!)
   (let [coll (get-or-create-collection)
@@ -393,11 +406,13 @@
         all-entries @(chroma/get coll :include #{:metadatas} :limit 10000)
         expired-ids (->> all-entries
                          (filter #(expired? (:metadata %)))
-                         (map :id))]
+                         (map :id)
+                         vec)]
     (when (seq expired-ids)
       @(chroma/delete coll :ids expired-ids)
       (log/info "Cleaned up" (count expired-ids) "expired entries"))
-    (count expired-ids)))
+    {:count (count expired-ids)
+     :deleted-ids expired-ids}))
 
 (defn- time-between?
   "Check if time is between start (exclusive) and end (exclusive)."
