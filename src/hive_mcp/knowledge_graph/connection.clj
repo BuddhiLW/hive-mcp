@@ -1,80 +1,49 @@
 (ns hive-mcp.knowledge-graph.connection
   "DataScript connection management for Knowledge Graph.
 
-   Provides:
-   - Separate connection from swarm state (different concerns)
-   - Connection lifecycle (create, get, reset)
-   - Shared helper functions (now, gen-edge-id)
-
-   Architecture rationale:
-   - KG is a dedicated DataScript DB, separate from swarm coordination
-   - Enables independent schema evolution
-   - Supports future persistence/serialization (Phase 2)
-
-   SOLID-S: Single Responsibility - connection lifecycle only.
-   SOLID-D: Dependency Inversion - other KG modules depend on this abstraction."
+   Maintains a separate DataScript database for KG edges,
+   following bounded context pattern (separate from Chroma memory storage)."
   (:require [datascript.core :as d]
-            [taoensso.timbre :as log]
-            [hive-mcp.knowledge-graph.schema :as schema]))
-;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
-;;
-;; SPDX-License-Identifier: AGPL-3.0-or-later
+            [hive-mcp.knowledge-graph.schema :refer [kg-schema]]))
 
-;;; =============================================================================
-;;; Connection Management (Thread-Safe Atom)
-;;; =============================================================================
-
-;; Global DataScript connection atom for Knowledge Graph.
-;; Separate from swarm connection - different domain concerns.
-;; Thread-safe via DataScript's internal atom.
-(defonce ^:private conn (atom nil))
+;; Atom holding the DataScript connection for Knowledge Graph.
+;; Initialized lazily via ensure-conn!
+(defonce conn (atom nil))
 
 (defn create-conn
   "Create a new DataScript connection with KG schema.
-   Returns the connection (atom wrapper around db)."
+   Returns the connection."
   []
-  (d/create-conn schema/kg-schema))
-
-(defn get-conn
-  "Get the global KG connection, creating if needed."
-  []
-  (or @conn
-      (do
-        (reset! conn (create-conn))
-        (log/info "Created Knowledge Graph DataScript connection")
-        @conn)))
+  (d/create-conn kg-schema))
 
 (defn reset-conn!
-  "Reset the global KG connection to empty state.
-
-   CAUTION: Destroys all edge data. Use for testing only."
+  "Reset the connection to a fresh database.
+   Useful for testing or clearing state."
   []
-  (reset! conn (create-conn))
-  (log/debug "Knowledge Graph DataScript connection reset"))
+  (reset! conn (create-conn)))
 
-(defn ensure-conn
-  "Ensure connection exists, return it."
+(defn ensure-conn!
+  "Ensure connection is initialized. Creates if nil.
+   Returns the connection."
   []
-  (get-conn))
+  (when (nil? @conn)
+    (reset-conn!))
+  @conn)
 
-;;; =============================================================================
-;;; Helper Functions
-;;; =============================================================================
-
-(defn now
-  "Current timestamp as java.util.Date."
+(defn get-conn
+  "Get the current connection, initializing if needed.
+   Preferred entry point for accessing the KG database."
   []
-  (java.util.Date.))
+  (ensure-conn!))
 
-(defn gen-edge-id
-  "Generate a unique edge ID with timestamp prefix for sortability.
+(defn transact!
+  "Transact data to the KG database.
+   Wraps datascript/transact! with connection management."
+  [tx-data]
+  (d/transact! (get-conn) tx-data))
 
-   Format: edge-<timestamp>-<random-suffix>
-   Example: edge-20260120T143052-a1b2c3
-
-   The timestamp prefix enables chronological sorting of edges."
-  []
-  (let [ts (-> (java.time.LocalDateTime/now)
-               (.format (java.time.format.DateTimeFormatter/ofPattern "yyyyMMdd'T'HHmmss")))
-        suffix (subs (str (java.util.UUID/randomUUID)) 0 6)]
-    (str "edge-" ts "-" suffix)))
+(defn query
+  "Query the KG database.
+   Wraps datascript/q with current database snapshot."
+  [q & inputs]
+  (apply d/q q @(get-conn) inputs))

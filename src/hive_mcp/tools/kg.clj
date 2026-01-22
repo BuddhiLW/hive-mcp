@@ -46,11 +46,11 @@
     (let [rel-kw (keyword relation)]
       (when-not (schema/valid-relation? rel-kw)
         {:error (str "Invalid relation '" relation "'. Valid: "
-                     (pr-str schema/valid-relations))}))
+                     (pr-str schema/relation-types))}))
 
     (keyword? relation)
     (when-not (schema/valid-relation? relation)
-      {:error (str "Invalid relation. Valid: " (pr-str schema/valid-relations))})
+      {:error (str "Invalid relation. Valid: " (pr-str schema/relation-types))})
 
     :else
     {:error "relation must be a string or keyword"}))

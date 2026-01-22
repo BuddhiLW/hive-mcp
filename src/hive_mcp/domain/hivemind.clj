@@ -20,7 +20,6 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-
 ;; =============================================================================
 ;; Specs (internal to domain)
 ;; =============================================================================
@@ -43,7 +42,7 @@
 
 (defrecord HivemindMessage [agent-id event-type message timestamp]
   Object
-  (toString [this]
+  (toString [_this]
     (format "[%s] %s: %s" agent-id (name event-type) (or message ""))))
 
 (defn- normalize-event-type
@@ -128,7 +127,7 @@
 
 (defrecord PiggybackEnvelope [messages cursor-ts]
   Object
-  (toString [this]
+  (toString [_this]
     (format "PiggybackEnvelope[%d messages, cursor=%d]" (count messages) cursor-ts)))
 
 (defn piggyback-envelope

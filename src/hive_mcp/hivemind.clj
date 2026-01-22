@@ -11,13 +11,20 @@
    - hivemind_messages: Get recent messages from specific agent
 
    Architecture: Pure push via channel.clj, accumulated state via atoms.
-   Coordinator queries get-status when ready - no polling loops needed."
+   Coordinator queries get-status when ready - no polling loops needed.
+
+   Project Scoping:
+   - hivemind_status and hivemind_messages accept optional directory param
+   - When directory provided, results are filtered to that project's agents only
+   - Prevents cross-project pollution in multi-project hivemind sessions
+   - Uses hive-mcp.tools.memory.scope/get-current-project-id for resolution"
   (:require [hive-mcp.channel :as channel]
             [hive-mcp.channel.websocket :as ws]
             [hive-mcp.channel.piggyback :as piggyback]
             [hive-mcp.swarm.datascript :as ds]
             [hive-mcp.guards :as guards]
             [hive-mcp.agent.context :as ctx]
+            [hive-mcp.tools.memory.scope :as mem-scope]
             [clojure.core.async :as async :refer [>!! chan timeout alt!!]]
             [clojure.data.json :as json]
             [clojure.set :as set]
@@ -53,14 +60,18 @@
 
 (defn- all-hivemind-messages
   "Provide all hivemind messages to piggyback module.
-   Returns flat seq of {:agent-id :event-type :message :timestamp}."
+   Returns flat seq of {:agent-id :event-type :message :timestamp :project-id}.
+
+   Note: project-id is included for per-project cursor scoping.
+   Messages without project-id default to 'global'."
   []
   (mapcat (fn [[agent-id {:keys [messages]}]]
-            (for [{:keys [event-type message timestamp]} messages]
+            (for [{:keys [event-type message timestamp project-id]} messages]
               {:agent-id agent-id
                :event-type event-type
                :message message
-               :timestamp timestamp}))
+               :timestamp timestamp
+               :project-id (or project-id "global")}))
           @agent-registry))
 
 ;; Register this namespace as the message source for piggyback (DIP)
@@ -133,7 +144,7 @@
   "Broadcast a message to the hivemind coordinator.
 
    event-type: keyword like :progress, :completed, :error, :blocked
-   data: map with event details
+   data: map with event details, optionally including :project-id
 
    Stores up to 10 recent messages per agent for retrieval via hivemind_status.
    Broadcasts via WebSocket (Aleph) for reliable push delivery.
@@ -142,17 +153,34 @@
    - agent-registry atom: message history (hivemind-specific)
    - DataScript: slave status (source of truth for slave data)
 
+   Project-id resolution order:
+   1. Explicit :project-id in data
+   2. Derived from :directory in data
+   3. From slave's :slave/cwd in DataScript
+   4. Fallback to 'global'
+
    Returns true if broadcast succeeded."
   [agent-id event-type data]
   (let [now (System/currentTimeMillis)
+        ;; Derive project-id with fallback chain
+        explicit-project-id (:project-id data)
+        directory (:directory data)
+        slave-cwd (when-let [slave (ds/get-slave agent-id)]
+                    (:slave/cwd slave))
+        project-id (or explicit-project-id
+                       (when directory (mem-scope/get-current-project-id directory))
+                       (when slave-cwd (mem-scope/get-current-project-id slave-cwd))
+                       "global")
         message {:event-type event-type
                  :timestamp now
                  :task (:task data)
                  :message (:message data)
-                 :data (dissoc data :task :message)}
+                 :project-id project-id
+                 :data (dissoc data :task :message :directory :project-id)}
         event {:type (keyword (str "hivemind-" (name event-type)))
                :agent-id agent-id
                :timestamp now
+               :project-id project-id
                :data data}]
     ;; Update agent-registry with message history ONLY (ring buffer, max 10)
     ;; Status/metadata now comes from DataScript
@@ -171,7 +199,7 @@
       (ws/emit! (:type event) (dissoc event :type)))
     ;; Also broadcast via old channel (for backwards compat)
     (channel/broadcast! event)
-    (log/info "Hivemind shout:" agent-id event-type)
+    (log/info "Hivemind shout:" agent-id event-type "project:" project-id)
     true))
 
 (defn ask!
@@ -232,28 +260,37 @@
    ADR-002 AMENDED: DataScript is the source of truth for slave data.
    Message history comes from agent-registry atom (hivemind-specific).
 
-   Returns map of agent-id -> {:status :name :presets :cwd :messages ...}"
-  []
-  (let [;; Get all slaves from DataScript (source of truth)
-        ds-slaves (ds/get-all-slaves)
-        ;; Get message history from local atom
-        msg-history @agent-registry]
-    ;; Build merged map: DataScript data + messages
-    (reduce
-     (fn [acc slave]
-       (let [slave-id (:slave/id slave)
-             messages (get-in msg-history [slave-id :messages] [])
-             last-seen (get-in msg-history [slave-id :last-seen])]
-         (assoc acc slave-id
-                {:status (:slave/status slave)
-                 :name (:slave/name slave)
-                 :presets (vec (:slave/presets slave))
-                 :cwd (:slave/cwd slave)
-                 :current-task (:slave/current-task slave)
-                 :messages messages
-                 :last-seen last-seen})))
-     {}
-     ds-slaves)))
+   Arguments:
+     project-id - Optional project ID to filter agents by. When nil, returns all agents.
+
+   Returns map of agent-id -> {:status :name :presets :cwd :messages :project-id ...}"
+  ([]
+   (build-agents-map nil))
+  ([project-id]
+   (let [;; Get slaves from DataScript (source of truth)
+         ;; Filter by project-id if provided
+         ds-slaves (if project-id
+                     (ds/get-slaves-by-project project-id)
+                     (ds/get-all-slaves))
+         ;; Get message history from local atom
+         msg-history @agent-registry]
+     ;; Build merged map: DataScript data + messages
+     (reduce
+      (fn [acc slave]
+        (let [slave-id (:slave/id slave)
+              messages (get-in msg-history [slave-id :messages] [])
+              last-seen (get-in msg-history [slave-id :last-seen])]
+          (assoc acc slave-id
+                 {:status (:slave/status slave)
+                  :name (:slave/name slave)
+                  :presets (vec (:slave/presets slave))
+                  :cwd (:slave/cwd slave)
+                  :project-id (:slave/project-id slave)
+                  :current-task (:slave/current-task slave)
+                  :messages messages
+                  :last-seen last-seen})))
+      {}
+      ds-slaves))))
 
 (defn get-status
   "Get current hivemind status.
@@ -261,30 +298,37 @@
    ADR-002 AMENDED: :agents now comes from DataScript (source of truth)
    merged with message history from agent-registry atom.
 
+   Arguments:
+     project-id - Optional project ID to filter agents by. When nil, returns all agents.
+
    Returns map with:
    - :agents - map of agent-id -> status (from DataScript + message history)
    - :pending-asks - list of unanswered questions (agent-initiated)
    - :pending-swarm-prompts - list of permission prompts from slaves (push notifications)
    - :channel-connected - whether Emacs is connected (legacy bencode channel)
-   - :ws-connected - whether WebSocket channel is connected (preferred)"
-  []
-  {:agents (build-agents-map)
-   :pending-asks (mapv (fn [[id {:keys [question options agent-id]}]]
-                         {:ask-id id
-                          :agent-id agent-id
-                          :question question
-                          :options options})
-                       @pending-asks)
-   :pending-swarm-prompts (mapv (fn [[slave-id {:keys [prompt timestamp session-id received-at]}]]
-                                  {:slave-id slave-id
-                                   :prompt prompt
-                                   :timestamp timestamp
-                                   :session-id session-id
-                                   :received-at received-at})
-                                @pending-swarm-prompts)
-   :channel-connected (channel/server-connected?)
-   :ws-connected (ws/connected?)
-   :ws-clients (ws/client-count)})
+   - :ws-connected - whether WebSocket channel is connected (preferred)
+   - :project-id - the project filter applied (nil if showing all)"
+  ([]
+   (get-status nil))
+  ([project-id]
+   {:agents (build-agents-map project-id)
+    :project-id project-id
+    :pending-asks (mapv (fn [[id {:keys [question options agent-id]}]]
+                          {:ask-id id
+                           :agent-id agent-id
+                           :question question
+                           :options options})
+                        @pending-asks)
+    :pending-swarm-prompts (mapv (fn [[slave-id {:keys [prompt timestamp session-id received-at]}]]
+                                   {:slave-id slave-id
+                                    :prompt prompt
+                                    :timestamp timestamp
+                                    :session-id session-id
+                                    :received-at received-at})
+                                 @pending-swarm-prompts)
+    :channel-connected (channel/server-connected?)
+    :ws-connected (ws/connected?)
+    :ws-clients (ws/client-count)}))
 
 (defn get-agent-messages
   "Get recent messages from a specific agent.
@@ -330,11 +374,14 @@
     ;; If not already there, add it for backward compatibility
     ;; Note: Use :idle status as :spawned is not in DataScript's valid statuses
     (when-not (ds/get-slave agent-id)
-      (ds/add-slave! agent-id {:name (or (:name metadata) agent-id)
-                               :status :idle
-                               :depth 1
-                               :presets (:presets metadata)
-                               :cwd (:cwd metadata)}))
+      (let [cwd (:cwd metadata)
+            project-id (when cwd (mem-scope/get-current-project-id cwd))]
+        (ds/add-slave! agent-id {:name (or (:name metadata) agent-id)
+                                 :status :idle
+                                 :depth 1
+                                 :presets (:presets metadata)
+                                 :cwd cwd
+                                 :project-id project-id})))
     (log/info "Agent registered in hivemind:" agent-id)
     true))
 
@@ -394,18 +441,22 @@ NOTE: agent_id is auto-detected from CLAUDE_SWARM_SLAVE_ID env var if not provid
                                        :description "Current task description"}
                                "message" {:type "string"
                                           :description "Status message"}
+                               "directory" {:type "string"
+                                            :description "Working directory for project-id derivation. Pass your cwd to scope shouts to your project."}
                                "data" {:type "object"
                                        :description "Additional event data"}}
                   :required ["event_type"]}
-    :handler (fn [{:keys [agent_id event_type task message data]}]
+    :handler (fn [{:keys [agent_id event_type task message directory data]}]
                ;; P1 FIX: Check ctx/current-agent-id for drone context
                ;; Fallback chain: explicit param → context binding → env var → unknown
                (let [effective-id (or agent_id
                                       (ctx/current-agent-id)
                                       (System/getenv "CLAUDE_SWARM_SLAVE_ID")
-                                      "unknown-agent")]
+                                      "unknown-agent")
+                     effective-dir (or directory
+                                       (ctx/current-directory))]
                  (shout! effective-id (keyword event_type)
-                         (merge {:task task :message message} data))
+                         (merge {:task task :message message :directory effective-dir} data))
                  {:type "text" :text (json/write-str {:success true
                                                       :agent_id effective-id})}))}
 
@@ -431,35 +482,48 @@ NOTE: agent_id is auto-detected from CLAUDE_SWARM_SLAVE_ID env var if not provid
                                           :items {:type "string"}
                                           :description "Available options (or omit for free-form)"}
                                "timeout_ms" {:type "integer"
-                                             :description "Timeout in ms (default 300000 = 5 min)"}}
+                                             :description "Timeout in ms (default 300000 = 5 min)"}
+                               "directory" {:type "string"
+                                            :description "Working directory for project-id derivation. Pass your cwd for proper scoping."}}
                   :required ["question"]}
-    :handler (fn [{:keys [agent_id question options timeout_ms]}]
-               ;; P1 FIX: Check ctx/current-agent-id for drone context
+    :handler (fn [{:keys [agent_id question options timeout_ms directory]}]
+               ;; P1 FIX: Check ctx/current-* for drone context
+               ;; Fallback chain: explicit param → context binding → env var → unknown
                (let [effective-id (or agent_id
                                       (ctx/current-agent-id)
                                       (System/getenv "CLAUDE_SWARM_SLAVE_ID")
                                       "unknown-agent")
+                     effective-dir (or directory
+                                       (ctx/current-directory))
                      result (ask! effective-id question options
                                   :timeout-ms (or timeout_ms 300000))]
                  {:type "text"
                   :text (json/write-str
                          (if (:timeout result)
                            {:timeout true :message "No response within timeout"}
-                           {:decision (:decision result) :by (:by result)}))}))}
+                           {:decision (:decision result)
+                            :by (:by result)
+                            :directory effective-dir}))}))}
 
    {:name "hivemind_status"
     :description "Get current hivemind coordinator status.
-                  
+
 Returns:
 - Active agents and their status
 - Pending questions awaiting human decision
-- Channel connection status"
+- Channel connection status
+
+When directory is provided, filters to only show agents belonging to that project.
+This prevents cross-project pollution in multi-project hivemind sessions."
     :inputSchema {:type "object"
-                  :properties {}
+                  :properties {"directory" {:type "string"
+                                            :description "Working directory to scope results to a specific project. Pass your cwd to see only agents from your project."}}
                   :required []}
-    :handler (fn [_]
-               {:type "text"
-                :text (json/write-str (get-status))})}
+    :handler (fn [{:keys [directory]}]
+               (let [effective-dir (or directory (ctx/current-directory))
+                     project-id (when effective-dir (mem-scope/get-current-project-id effective-dir))]
+                 {:type "text"
+                  :text (json/write-str (get-status project-id))}))}
 
    {:name "hivemind_respond"
     :description "Respond to a pending ask from an agent.
@@ -482,10 +546,15 @@ Used by the coordinator to answer agent questions."
     :description "Get recent messages from a specific agent.
 
 Returns up to 10 recent shout messages with their payloads.
-Use this to retrieve message content that agents have broadcast."
+Use this to retrieve message content that agents have broadcast.
+
+When directory is provided, the available-agents list is filtered to that project.
+The specific agent lookup is still allowed even if agent is from another project."
     :inputSchema {:type "object"
                   :properties {"agent_id" {:type "string"
-                                           :description "Agent identifier to get messages from"}}
+                                           :description "Agent identifier to get messages from"}
+                               "directory" {:type "string"
+                                            :description "Working directory to scope available-agents list to a specific project. Pass your cwd to see only agents from your project."}}
                   :required ["agent_id"]}
     :handler (fn [args]
                ;; Support both snake_case and kebab-case keys:
@@ -496,17 +565,35 @@ Use this to retrieve message content that agents have broadcast."
                                   (:agent-id args)
                                   (get args "agent_id")
                                   (get args "agent-id"))
+                     ;; Use ctx/current-directory as fallback for directory
+                     effective-dir (or (:directory args)
+                                       (get args "directory")
+                                       (ctx/current-directory))
+                     ;; Derive project-id for filtering available-agents list
+                     project-id (when effective-dir (mem-scope/get-current-project-id effective-dir))
                      ;; ADR-002 AMENDED: Available agents = union of DataScript + message history
-                     ;; DataScript is source of truth, but include orphans for backward compat
-                     ds-agents (clojure.core/set (map :slave/id (ds/get-all-slaves)))
-                     msg-agents (clojure.core/set (keys @agent-registry))
+                     ;; When project-id provided, filter DataScript agents to that project
+                     ds-agents (if project-id
+                                 (clojure.core/set (ds/get-slave-ids-by-project project-id))
+                                 (clojure.core/set (map :slave/id (ds/get-all-slaves))))
+                     ;; Message history orphans - filter by checking if their messages have matching project-id
+                     msg-agents (if project-id
+                                  (->> @agent-registry
+                                       (filter (fn [[_id {:keys [messages]}]]
+                                                 (some #(= project-id (:project-id %)) messages)))
+                                       (map first)
+                                       set)
+                                  (clojure.core/set (keys @agent-registry)))
                      available-agents (vec (set/union ds-agents msg-agents))]
                  {:type "text"
                   :text (json/write-str
                          (if-let [messages (get-agent-messages agent_id)]
-                           {:agent_id agent_id :messages messages}
+                           {:agent_id agent_id
+                            :messages messages
+                            :project-filter project-id}
                            {:error (str "Agent not found: " agent_id)
-                            :available-agents available-agents}))}))}])
+                            :available-agents available-agents
+                            :project-filter project-id}))}))}])
 ;; REMOVED: hivemind_listen - polling anti-pattern, use event-driven get-status instead
 
 (defn register-tools!

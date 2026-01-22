@@ -80,7 +80,7 @@
 
 (defonce ^{:doc "Function that returns all messages from hivemind.
                  Set via register-message-source! on startup.
-                 Returns: seq of {:agent-id :event-type :message :timestamp}"}
+                 Returns: seq of {:agent-id :event-type :message :timestamp :project-id}"}
   message-source-fn
   (atom nil))
 
@@ -88,19 +88,22 @@
   "Register function that provides hivemind messages.
 
    The function should return a sequence of maps with keys:
-   :agent-id, :event-type, :message, :timestamp
+   :agent-id, :event-type, :message, :timestamp, :project-id
 
    Called by hivemind.clj on initialization to inject itself."
   [source-fn]
   (reset! message-source-fn source-fn))
 
 ;; =============================================================================
-;; Message Cursors (per-agent read tracking)
+;; Message Cursors (per-agent-per-project read tracking)
 ;; =============================================================================
 
-(defonce ^{:doc "Map of agent-id -> last-read-message-id. Per-agent cursors.
-                 Uses monotonic message-id instead of wall-clock timestamp
-                 to avoid issues with clock skew and NTP adjustments."}
+(defonce ^{:doc "Map of [agent-id project-id] -> last-read-timestamp.
+                 Per-agent-per-project cursors ensure cross-project isolation.
+                 Uses timestamp for cursor tracking (monotonic within project).
+
+                 CRITICAL FIX: Without project scoping, coordinator-Y would advance
+                 a global cursor and consume messages meant for coordinator-X."}
   agent-read-cursors
   (atom {}))
 
@@ -113,35 +116,52 @@
   []
   (swap! message-id-counter inc))
 
+(s/def ::project-id (s/nilable string?))
+
 (s/fdef get-messages
-  :args (s/cat :agent-id ::agent-id)
+  :args (s/cat :agent-id ::agent-id
+               :kwargs (s/keys* :opt-un [::project-id]))
   :ret ::messages)
 
 (defn get-messages
-  "Get new hivemind messages since last call for this agent.
+  "Get new hivemind messages since last call for this agent+project.
 
    Token-efficient format: [{:a agent-id :e event-type :m message} ...]
 
-   Each agent has independent cursor - reading marks as read only for that agent.
-   Messages are returned in FIFO order (sorted by timestamp before transformation).
+   Arguments:
+   - agent-id: Identifier for the requesting agent (coordinator)
+   - :project-id: Optional project-id to filter messages. When provided:
+     - Only messages for that project are returned
+     - Only that project's cursor is advanced
+     - Other projects' messages remain available for their coordinators
 
-   Uses monotonic message-id for cursor tracking instead of wall-clock time
-   to avoid issues with clock skew and NTP adjustments.
+   Each agent+project combination has independent cursor. This prevents
+   cross-project shout leakage where coordinator-Y consumes coordinator-X's shouts.
+
+   Messages are returned in FIFO order (sorted by timestamp).
 
    Returns nil if no new messages or message source not registered."
-  [agent-id]
+  [agent-id & {:keys [project-id]}]
   (when-let [source-fn @message-source-fn]
-    (let [last-cursor (get @agent-read-cursors agent-id 0)
+    (let [;; Use composite key [agent-id project-id] for cursor isolation
+          ;; nil project-id falls back to 'global' for backwards compat
+          effective-project (or project-id "global")
+          cursor-key [agent-id effective-project]
+          last-cursor (get @agent-read-cursors cursor-key 0)
           all-msgs (source-fn)
-          ;; Filter messages with timestamp > last cursor position
-          ;; (timestamp is still used for ordering, cursor tracks position)
+          ;; Filter by project-id AND timestamp > last cursor
           new-msgs (->> all-msgs
-                        (filter #(> (:timestamp %) last-cursor))
+                        (filter (fn [msg]
+                                  (and (> (:timestamp msg) last-cursor)
+                                       ;; Filter by project if specified
+                                       (or (nil? project-id)
+                                           (= (:project-id msg) project-id)
+                                           ;; Also include 'global' messages for all projects
+                                           (= (:project-id msg) "global")))))
                         ;; Sort by timestamp BEFORE map to ensure FIFO order
                         (sort-by :timestamp)
                         vec)
-          ;; Update cursor to max timestamp seen (not wall-clock now)
-          ;; This prevents missing messages due to clock skew
+          ;; Update cursor to max timestamp seen
           max-ts (when (seq new-msgs)
                    (apply max (map :timestamp new-msgs)))
           formatted-msgs (mapv (fn [{:keys [agent-id event-type message]}]
@@ -153,7 +173,7 @@
                                new-msgs)]
       ;; Only update cursor if we have new messages
       (when max-ts
-        (swap! agent-read-cursors assoc agent-id max-ts))
+        (swap! agent-read-cursors assoc cursor-key max-ts))
       (when (seq formatted-msgs)
         formatted-msgs))))
 
@@ -163,28 +183,41 @@
    Options:
    - :since - timestamp to fetch from (default: 0 = all)
    - :limit - max messages to return (default: 100)
+   - :project-id - filter by project (default: nil = all projects)
 
    Returns full format with timestamps for inspection. FIFO ordered."
-  [& {:keys [since limit] :or {since 0 limit 100}}]
+  [& {:keys [since limit project-id] :or {since 0 limit 100}}]
   (if-let [source-fn @message-source-fn]
     (->> (source-fn)
-         (filter #(> (:timestamp %) since))
+         (filter (fn [msg]
+                   (and (> (:timestamp msg) since)
+                        (or (nil? project-id)
+                            (= (:project-id msg) project-id)
+                            (= (:project-id msg) "global")))))
          ;; Sort by timestamp BEFORE map for consistent FIFO order
          (sort-by :timestamp)
          (take limit)
-         (mapv (fn [{:keys [agent-id event-type message timestamp]}]
+         (mapv (fn [{:keys [agent-id event-type message timestamp project-id]}]
                  {:a agent-id
                   :e (if (keyword? event-type)
                        (name event-type)
                        event-type)
                   :m message
-                  :ts timestamp})))
+                  :ts timestamp
+                  :p project-id})))
     []))
 
 (defn reset-cursor!
-  "Reset read cursor for an agent. Next get-messages returns all messages."
-  [agent-id]
-  (swap! agent-read-cursors dissoc agent-id))
+  "Reset read cursor for an agent+project. Next get-messages returns all messages.
+
+   Arguments:
+   - agent-id: Agent identifier
+   - :project-id: Optional project-id. When provided, resets only that
+     project's cursor. When nil, resets the 'global' cursor."
+  [agent-id & {:keys [project-id]}]
+  (let [effective-project (or project-id "global")
+        cursor-key [agent-id effective-project]]
+    (swap! agent-read-cursors dissoc cursor-key)))
 
 (defn reset-all-cursors!
   "Reset all read cursors. For testing/debugging."

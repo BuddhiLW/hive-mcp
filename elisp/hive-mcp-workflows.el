@@ -413,12 +413,14 @@ Returns count of successfully moved tasks."
      (append (when (listp notes) notes)
              (when (listp snippets) snippets)))))
 
-(defun hive-mcp-workflow-wrap--gather-git-commits ()
-  "Get commits on current branch from today."
-  (let ((output (shell-command-to-string
-                 "git log --since='midnight' --oneline 2>/dev/null")))
-    (when (and output (not (string-empty-p output)))
-      (split-string output "\n" t))))
+(defun hive-mcp-workflow-wrap--gather-git-commits (&optional directory)
+  "Get commits on current branch from today.
+DIRECTORY overrides `default-directory' if provided."
+  (let ((default-directory (or directory default-directory)))
+    (let ((output (shell-command-to-string
+                   "git log --since='midnight' --oneline 2>/dev/null")))
+      (when (and output (not (string-empty-p output)))
+        (split-string output "\n" t)))))
 
 (defun hive-mcp-workflow-wrap--gather-kanban-activity ()
   "Get in-progress and review kanban tasks."
@@ -437,12 +439,13 @@ Returns count of successfully moved tasks."
         (hive-mcp-channel-get-recent-events 10)
       (error nil))))
 
-(defun hive-mcp-workflow-wrap--gather-session-data ()
+(defun hive-mcp-workflow-wrap--gather-session-data (&optional directory)
   "Auto-gather session data from all available sources.
+DIRECTORY overrides `default-directory' for git operations.
 Returns plist with :recent-notes, :recent-commits,
 :kanban-activity, :ai-interactions."
   (list :recent-notes (hive-mcp-workflow-wrap--gather-recent-notes)
-        :recent-commits (hive-mcp-workflow-wrap--gather-git-commits)
+        :recent-commits (hive-mcp-workflow-wrap--gather-git-commits directory)
         :kanban-activity (hive-mcp-workflow-wrap--gather-kanban-activity)
         :ai-interactions (hive-mcp-workflow-wrap--gather-channel-events)))
 

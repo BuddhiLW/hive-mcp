@@ -15,7 +15,6 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-
 ;; =============================================================================
 ;; Basic Buffer Operations
 ;; =============================================================================
@@ -41,22 +40,6 @@
   [_]
   (log/info "list-buffers")
   {:type "text" :text (ec/buffer-list)})
-
-(defn handle-get-buffer-content
-  "Get content of a specific buffer."
-  [params]
-  (try
-    (v/validate-buffer-request params)
-    (let [{:keys [buffer_name]} params]
-      (log/info "get-buffer-content:" buffer_name)
-      (try
-        {:type "text" :text (ec/buffer-content buffer_name)}
-        (catch Exception e
-          {:type "text" :text (str "Error: " (.getMessage e)) :isError true})))
-    (catch clojure.lang.ExceptionInfo e
-      (if (= :validation (:type (ex-data e)))
-        (v/wrap-validation-error e)
-        (throw e)))))
 
 (defn handle-current-buffer
   "Get current buffer name and file."
@@ -305,14 +288,6 @@
     :description "List all open buffers in Emacs."
     :inputSchema {:type "object" :properties {}}
     :handler handle-list-buffers}
-
-   {:name "get_buffer_content"
-    :description "Get the full content of a specific Emacs buffer."
-    :inputSchema {:type "object"
-                  :properties {"buffer_name" {:type "string"
-                                              :description "Name of the buffer to read"}}
-                  :required ["buffer_name"]}
-    :handler handle-get-buffer-content}
 
    {:name "current_buffer"
     :description "Get the name of the current buffer and its associated file path."

@@ -9,7 +9,9 @@
    DDD: Pure domain functions, no side effects.
 
    Depends on: hive-mcp.agora.schema (dialogue state queries)"
-  (:require [hive-mcp.agora.schema :as schema]))
+  (:require [clojure.set :as set]
+            [clojure.string :as str]
+            [hive-mcp.agora.schema :as schema]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -34,7 +36,7 @@
 
 (def all-valid-signals
   "All valid turn signals."
-  (clojure.set/union equilibrium-signals reset-signals neutral-signals))
+  (set/union equilibrium-signals reset-signals neutral-signals))
 
 ;; =============================================================================
 ;; Default Configuration
@@ -360,7 +362,7 @@
    Returns: keyword signal or :propose (default)"
   [message]
   (if-let [[_ signal-str] (re-find signal-pattern (or message ""))]
-    (let [signal (keyword (clojure.string/lower-case signal-str))]
+    (let [signal (keyword (str/lower-case signal-str))]
       (if (all-valid-signals signal)
         signal
         :propose))  ; Unknown signal defaults to propose

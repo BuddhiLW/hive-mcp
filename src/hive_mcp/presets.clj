@@ -79,7 +79,7 @@
    Returns fresh collection reference to avoid stale cache issues."
   [dim]
   ;; Verify collection doesn't exist before creating (belt and suspenders)
-  (when-let [stale (try-get-existing-collection)]
+  (when-let [_stale (try-get-existing-collection)]
     (log/warn "Stale collection found after delete, forcing re-delete")
     (delete-collection!))
   ;; Create the collection

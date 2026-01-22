@@ -29,7 +29,7 @@
        (when confidence (str " [conf: " confidence "]"))
        (when created-by (str " by " created-by))))
 
-(defn- valid-edge-data?
+(defn- _valid-edge-data?
   "Validate edge data has required fields."
   [{:keys [from to relation]}]
   (and (string? from)

@@ -215,7 +215,7 @@
                         (pr-str (str directory "/")))
                 (el/require-and-call-json 'hive-mcp-projectile
                                           'hive-mcp-projectile-api-project-info))
-        {:keys [success result error]} (ec/eval-elisp elisp)]
+        {:keys [success result]} (ec/eval-elisp elisp)]
     (when success
       (try
         (json/read-str result :key-fn keyword)

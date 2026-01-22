@@ -15,7 +15,6 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-
 ;; =============================================================================
 ;; Instruction Queue (delegated to piggyback)
 ;; =============================================================================
@@ -197,10 +196,17 @@
 ;; Hivemind Message Piggyback (delegated to piggyback)
 ;; =============================================================================
 
-(def get-hivemind-piggyback
-  "Get new hivemind messages since last tool call for specific agent.
-   Delegates to piggyback module. Returns nil if no new messages."
-  piggyback/get-messages)
+(defn get-hivemind-piggyback
+  "Get new hivemind messages since last tool call for specific agent+project.
+   Delegates to piggyback module. Returns nil if no new messages.
+
+   Arguments:
+   - agent-id: Requesting agent's identifier
+   - :project-id: Optional project-id for scoped retrieval
+
+   CRITICAL: project-id scoping prevents cross-project shout leakage."
+  [agent-id & {:keys [project-id]}]
+  (piggyback/get-messages agent-id :project-id project-id))
 
 (def fetch-hivemind-history
   "Get hivemind messages without marking as read. Delegates to piggyback module."
@@ -210,11 +216,16 @@
   "MCP success response with hivemind piggyback for coordinator.
    Includes any new agent shouts since last tool call.
 
-   The agent-id parameter is required to track per-agent read cursors,
-   ensuring each agent only sees messages once."
-  [text & {:keys [agent-id]}]
+   Arguments:
+   - text: Response text
+   - :agent-id: Required to track per-agent read cursors
+   - :project-id: Optional project-id for scoped message retrieval
+
+   CRITICAL: project-id scoping ensures coordinators only see their
+   project's shouts, preventing cross-project message consumption."
+  [text & {:keys [agent-id project-id]}]
   (let [base (mcp-success text :agent-id agent-id)
-        hm (when agent-id (get-hivemind-piggyback agent-id))]
+        hm (when agent-id (get-hivemind-piggyback agent-id :project-id project-id))]
     (if (seq hm)
       (assoc base :_hm hm)
       base)))

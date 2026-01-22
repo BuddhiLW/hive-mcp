@@ -6,13 +6,15 @@
    - Task entities (add, complete, fail)
    - Claim entities (claim, release, batch release)
    - Critical operations guard (kill protection)
+   - Claim TTL (stale detection, auto-expiration)
 
    SOLID-S: Single Responsibility - entity lifecycle only.
    DDD: Repository pattern for swarm entities."
   (:require [datascript.core :as d]
             [taoensso.timbre :as log]
             [hive-mcp.swarm.datascript.schema :as schema]
-            [hive-mcp.swarm.datascript.connection :as conn]))
+            [hive-mcp.swarm.datascript.connection :as conn]
+            [hive-mcp.swarm.datascript.queries :as queries]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -379,3 +381,110 @@
       (doseq [[file] claims]
         (release-claim! file)))
     (count claims)))
+
+;;; =============================================================================
+;;; Claim TTL Functions (Stale Detection & Auto-Expiration)
+;;; =============================================================================
+
+(def ^:const default-stale-threshold-ms
+  "Claims older than 10 minutes are considered stale (600,000 ms)."
+  (* 10 60 1000))
+
+;; Delegate to queries namespace for claim queries
+(def get-claim-info
+  "Get claim information for a file path.
+   Delegates to queries/get-claims-for-file."
+  queries/get-claims-for-file)
+
+(def get-all-claims
+  "Get all active claims with their metadata.
+   Delegates to queries/get-all-claims."
+  queries/get-all-claims)
+
+(defn claim-age-ms
+  "Get the age of a claim in milliseconds.
+
+   Arguments:
+     file-path - Path to check
+
+   Returns:
+     Age in ms, or nil if claim not found"
+  [file-path]
+  (when-let [claim (get-claim-info file-path)]
+    (when-let [created-at (:created-at claim)]
+      (- (conn/now) created-at))))
+
+(defn claim-stale?
+  "Check if a claim is stale (older than threshold).
+
+   Arguments:
+     file-path     - Path to check
+     threshold-ms  - Optional threshold (default: 10 minutes)
+
+   Returns:
+     true if claim exists and is older than threshold"
+  ([file-path]
+   (claim-stale? file-path default-stale-threshold-ms))
+  ([file-path threshold-ms]
+   (when-let [age (claim-age-ms file-path)]
+     (> age threshold-ms))))
+
+(defn get-stale-claims
+  "Get all claims that are older than the threshold.
+
+   Arguments:
+     threshold-ms - Optional threshold (default: 10 minutes)
+
+   Returns:
+     Sequence of stale claim maps with :file, :slave-id, :age-ms, :age-minutes"
+  ([]
+   (get-stale-claims default-stale-threshold-ms))
+  ([threshold-ms]
+   (let [now (conn/now)
+         all-claims (get-all-claims)]
+     (->> all-claims
+          (filter (fn [{:keys [created-at]}]
+                    (when created-at
+                      (> (- now created-at) threshold-ms))))
+          (map (fn [{:keys [created-at] :as claim}]
+                 (let [age-ms (- now created-at)]
+                   (assoc claim
+                          :age-ms age-ms
+                          :age-minutes (Math/round (/ age-ms 60000.0))))))))))
+
+(defn cleanup-stale-claims!
+  "Release all stale claims (older than threshold).
+
+   Arguments:
+     threshold-ms - Optional threshold (default: 10 minutes)
+
+   Returns:
+     Map with :released-count and :released-files"
+  ([]
+   (cleanup-stale-claims! default-stale-threshold-ms))
+  ([threshold-ms]
+   (let [stale (get-stale-claims threshold-ms)
+         files (map :file stale)]
+     (when (seq files)
+       (log/info "Cleaning up" (count files) "stale claims:" (vec files)))
+     (doseq [file files]
+       (release-claim! file))
+     {:released-count (count files)
+      :released-files (vec files)})))
+
+(defn refresh-claim!
+  "Refresh a claim's timestamp to prevent staleness.
+   Use when a long-running operation needs to keep a claim active.
+
+   Arguments:
+     file-path - Path to refresh
+
+   Returns:
+     Transaction report or nil if claim not found"
+  [file-path]
+  (let [c (conn/ensure-conn)
+        db @c]
+    (when-let [eid (:db/id (d/entity db [:claim/file file-path]))]
+      (log/debug "Refreshing claim timestamp:" file-path)
+      (d/transact! c [{:db/id eid
+                       :claim/heartbeat-at (conn/now)}]))))

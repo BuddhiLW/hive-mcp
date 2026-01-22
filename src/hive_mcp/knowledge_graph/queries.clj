@@ -13,7 +13,8 @@
    SOLID-O: Open/Closed - new query types via new functions.
    CLARITY-A: Architectural performance via bounded depth.
    CLARITY-I: Inputs guarded - validates parameters."
-  (:require [hive-mcp.knowledge-graph.edges :as edges]
+  (:require [clojure.set :as set]
+            [hive-mcp.knowledge-graph.edges :as edges]
             [hive-mcp.knowledge-graph.scope :as scope]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -253,7 +254,7 @@
                                      :max-depth max-depth
                                      :scope scope})
         all-transitive (set (map :node-id traversal-results))
-        transitive-only (clojure.set/difference all-transitive direct-nodes)
+        transitive-only (set/difference all-transitive direct-nodes)
 
         ;; Group by relation type
         by-relation (reduce (fn [acc {:keys [node-id edge]}]

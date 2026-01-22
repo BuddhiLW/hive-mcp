@@ -11,12 +11,12 @@
    - Hot-reload support for tools"
   (:require [hive-mcp.tools :as tools]
             [hive-mcp.docs :as docs]
+            [hive-mcp.agent.context :as ctx]
             [taoensso.timbre :as log]
             [clojure.spec.alpha :as s]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
-
 
 ;; =============================================================================
 ;; Specs for Tool Definitions
@@ -81,7 +81,7 @@
     content))
 
 ;; =============================================================================
-;; Agent ID Extraction
+;; Agent ID and Project ID Extraction
 ;; =============================================================================
 
 (defn extract-agent-id
@@ -98,9 +98,50 @@
       (get args "agent-id")
       default))
 
+(defn extract-project-id
+  "Extract project-id from args map, handling various key formats.
+
+   Tries directory-based derivation if explicit project-id not found.
+   Returns nil if no project context available (falls back to 'global' in piggyback).
+
+   Key priority:
+   1. Explicit project_id/project-id
+   2. Derived from directory parameter via scope/get-current-project-id"
+  [args]
+  (or (:project_id args)
+      (:project-id args)
+      (get args "project_id")
+      (get args "project-id")
+      ;; Derive from directory if present
+      (when-let [dir (or (:directory args)
+                         (get args "directory"))]
+        (require 'hive-mcp.tools.memory.scope)
+        ((resolve 'hive-mcp.tools.memory.scope/get-current-project-id) dir))))
+
 ;; =============================================================================
 ;; Composable Handler Wrappers (SRP: Each wrapper single responsibility)
 ;; =============================================================================
+
+(defn wrap-handler-context
+  "Wrap handler to bind request context for tool execution.
+   SRP: Single responsibility - context binding only.
+
+   Extracts agent-id, project-id, directory from args and binds
+   them via hive-mcp.agent.context/with-request-context.
+
+   This enables tool handlers to access context via:
+   - (ctx/current-agent-id)
+   - (ctx/current-project-id)
+   - (ctx/current-directory)"
+  [handler]
+  (fn [args]
+    (let [agent-id (extract-agent-id args nil)
+          project-id (extract-project-id args)
+          directory (or (:directory args) (get args "directory"))]
+      (ctx/with-request-context {:agent-id agent-id
+                                 :project-id project-id
+                                 :directory directory}
+        (handler args)))))
 
 (defn wrap-handler-normalize
   "Wrap handler to normalize its result to content array.
@@ -114,24 +155,32 @@
     (normalize-content (handler args))))
 
 (defn- get-piggyback-messages
-  "Get hivemind piggyback messages for agent.
+  "Get hivemind piggyback messages for agent+project.
    SRP: Single responsibility - piggyback retrieval.
-   Encapsulates dynamic require/resolve pattern."
-  [agent-id]
-  (require 'hive-mcp.tools.core)
-  ((resolve 'hive-mcp.tools.core/get-hivemind-piggyback) agent-id))
+   Encapsulates dynamic require/resolve pattern.
+
+   CRITICAL: project-id scoping prevents cross-project shout leakage.
+   Without it, coordinator-Y would consume shouts meant for coordinator-X."
+  [agent-id project-id]
+  (require 'hive-mcp.channel.piggyback)
+  ((resolve 'hive-mcp.channel.piggyback/get-messages) agent-id :project-id project-id))
 
 (defn wrap-handler-piggyback
   "Wrap handler to attach hivemind piggyback messages.
    SRP: Single responsibility - piggyback embedding only.
 
    Expects handler to return normalized content (vector of items).
-   Extracts agent-id from args, retrieves piggyback, embeds in content."
+   Extracts agent-id and project-id from args, retrieves piggyback,
+   embeds in content.
+
+   CRITICAL: project-id scoping ensures coordinators only see their
+   project's shouts, preventing cross-project message consumption."
   [handler]
   (fn [args]
     (let [content (handler args)
           agent-id (extract-agent-id args "coordinator")
-          piggyback (get-piggyback-messages agent-id)]
+          project-id (extract-project-id args)
+          piggyback (get-piggyback-messages agent-id project-id)]
       (wrap-piggyback content piggyback))))
 
 (defn wrap-handler-response
@@ -156,17 +205,19 @@
    Wraps handler to attach pending hivemind messages via content embedding.
 
    Uses composable handler wrappers (SRP: each wrapper single responsibility):
+   - wrap-handler-context: binds request context for tool execution
    - wrap-handler-normalize: converts result to content array
    - wrap-handler-piggyback: embeds hivemind messages with agent-id extraction
    - wrap-handler-response: builds {:content ...} response
 
    Composition via -> threading enables clear data flow:
-   handler -> normalize -> piggyback -> response"
+   handler -> context -> normalize -> piggyback -> response"
   [{:keys [name description inputSchema handler]}]
   {:name name
    :description description
    :inputSchema inputSchema
    :handler (-> handler
+                wrap-handler-context
                 wrap-handler-normalize
                 wrap-handler-piggyback
                 wrap-handler-response)})

@@ -205,34 +205,61 @@
                                 :modified-files modified-files
                                 :finding-count (count findings)
                                 :execution-failures (count failed-items)}
-              updated-history (conj history iteration-record)]
+              updated-history (conj history iteration-record)
+              ;; Calculate total execution failures across all iterations
+              total-exec-failures (reduce + (map :execution-failures updated-history))]
 
           ;; Decision point: pass, retry, or give up
           (cond
-            ;; No validation requested or no findings → success
+              ;; No validation requested or no lint findings
+              ;; BUT: check for execution failures - those make it partial, not success
             (or (not validate) (empty? findings))
-            (do
-              (log/info "Validated wave completed successfully" {:iterations iteration})
-              (when trace
-                (ev/dispatch [:validated-wave/success {:iterations iteration
-                                                       :wave-id wave-id
-                                                       :duration-ns (- (System/nanoTime) start-time)}]))
-              {:status :success
-               :iterations iteration
-               :final-wave-id wave-id
-               :final-plan-id plan-id
-               :modified-files modified-files
-               :history updated-history})
+            (if (pos? total-exec-failures)
+                ;; Execution failures exist - return partial success, not full success
+              (do
+                (log/warn "Validated wave completed with execution failures"
+                          {:iterations iteration
+                           :execution-failures total-exec-failures})
+                (when trace
+                  (ev/dispatch [:validated-wave/partial
+                                {:iterations iteration
+                                 :execution-failures total-exec-failures
+                                 :duration-ns (- (System/nanoTime) start-time)}]))
+                {:status :partial
+                 :iterations iteration
+                 :final-wave-id wave-id
+                 :final-plan-id plan-id
+                 :modified-files modified-files
+                 :execution-failures total-exec-failures
+                 :history updated-history
+                 :message (format "Lint passed but %d task(s) failed to execute." total-exec-failures)})
+                ;; No execution failures, true success
+              (do
+                (log/info "Validated wave completed successfully" {:iterations iteration})
+                (when trace
+                  (ev/dispatch [:validated-wave/success
+                                {:iterations iteration
+                                 :wave-id wave-id
+                                 :duration-ns (- (System/nanoTime) start-time)}]))
+                {:status :success
+                 :iterations iteration
+                 :final-wave-id wave-id
+                 :final-plan-id plan-id
+                 :modified-files modified-files
+                 :history updated-history}))
 
             ;; Max retries reached → partial success
             (>= iteration max-retries)
             (do
               (log/warn "Validated wave reached max retries" {:iterations iteration
-                                                              :remaining-findings (count findings)})
+                                                              :remaining-findings (count findings)
+                                                              :execution-failures total-exec-failures})
               (when trace
-                (ev/dispatch [:validated-wave/partial {:iterations iteration
-                                                       :remaining-findings (count findings)
-                                                       :duration-ns (- (System/nanoTime) start-time)}]))
+                (ev/dispatch [:validated-wave/partial
+                              {:iterations iteration
+                               :remaining-findings (count findings)
+                               :execution-failures total-exec-failures
+                               :duration-ns (- (System/nanoTime) start-time)}]))
               {:status :partial
                :iterations iteration
                :final-wave-id wave-id
@@ -240,9 +267,10 @@
                :modified-files modified-files
                :findings findings
                :files-with-errors (:files-with-errors validation-result)
+               :execution-failures total-exec-failures
                :history updated-history
-               :message (format "Validation failed after %d iterations. %d lint errors remain."
-                                iteration (count findings))})
+               :message (format "Validation failed after %d iterations. %d lint errors remain. %d task(s) failed to execute."
+                                iteration (count findings) total-exec-failures)})
 
             ;; Findings present and retries remaining → generate fix tasks and retry
             :else
@@ -311,10 +339,17 @@
                 :final_wave_id (:final-wave-id result)
                 :final_plan_id (:final-plan-id result)
                 :modified_files (:modified-files result)}
+               ;; Include execution failures at top level when present
+               (when-let [exec-failures (:execution-failures result)]
+                 {:execution_failures exec-failures})
+               ;; Include partial-specific fields (lint failures)
                (when (= :partial (:status result))
-                 {:remaining_findings (count (:findings result))
-                  :files_with_errors (:files-with-errors result)
-                  :message (:message result)})
+                 (merge
+                  {:message (:message result)}
+                  (when (:findings result)
+                    {:remaining_findings (count (:findings result))
+                     :files_with_errors (:files-with-errors result)})))
+               ;; Always include iteration history for debugging
                (when (seq (:history result))
                  {:iteration_history
                   (mapv #(select-keys % [:iteration :wave-id :finding-count :execution-failures])

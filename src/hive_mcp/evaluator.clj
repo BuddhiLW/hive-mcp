@@ -279,12 +279,21 @@
           ;; Try describe op to check connection
           (write-nrepl-msg out {"op" "describe" "id" msg-id})
 
+          ;; BUGFIX: Use take-until-done like eval-code does, not (take 5).
+          ;; The "describe" op only returns 1-2 messages before "done" status.
+          ;; Using (take 5) would block until timeout, causing false negatives.
           (let [msg-stream (message-seq in)
                 decoded (decode-messages msg-stream)
                 filtered (filter #(= (:id %) msg-id) decoded)
-                responses (doall (take 5 filtered))]
+                responses (doall (take-until-done filtered))
+                ;; Verify we got a valid describe response with ops or versions
+                has-valid-response (some (fn [r]
+                                           (or (:ops r)
+                                               (:versions r)
+                                               (contains? (:status r) "done")))
+                                         responses)]
             (.close socket)
-            (boolean (seq responses))))
+            (boolean (and (seq responses) has-valid-response))))
 
         (catch Exception e
           (log/debug "DirectNreplEvaluator: not connected" (.getMessage e))

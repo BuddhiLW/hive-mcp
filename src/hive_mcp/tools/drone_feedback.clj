@@ -25,12 +25,10 @@
             [hive-mcp.tools.memory.duration :as dur]
             [hive-mcp.tools.core :refer [mcp-json]]
             [hive-mcp.chroma :as chroma]
-            [clojure.data.json :as json]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
-
 
 ;; =============================================================================
 ;; Constants
@@ -88,7 +86,7 @@
    - tool: Name of the tool if applicable
    - context: Task being attempted when feedback was generated
    - agent_id: Drone identifier (auto-detected from CLAUDE_SWARM_SLAVE_ID)"
-  [{:keys [category tool message context agent_id directory] :as params}]
+  [{:keys [category tool _message _context agent_id directory] :as params}]
   (log/info "drone-feedback:" category "tool:" tool)
 
   ;; Validate input

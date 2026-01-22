@@ -26,13 +26,13 @@
    ```"
   (:require [hive-mcp.events.core :as ev]
             [hive-mcp.events.interceptors :as interceptors]
+            [hive-mcp.agent.context :as ctx]
             [clojure.data.json :as json]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
-
 
 ;; =============================================================================
 ;; Validation (CLARITY: Inputs are guarded)
@@ -76,11 +76,14 @@
    - :wrap-crystallize - Persist session to memory
    - :shout            - Broadcast completion"
   [coeffects [_ {:keys [commit-msg task-ids agent-id cwd]}]]
+  ;; Fallback chain: explicit param → request-ctx → coeffect → env var → unknown
   (let [effective-agent (or agent-id
+                            (ctx/current-agent-id)
                             (get-in coeffects [:agent-context :agent-id])
                             (System/getenv "CLAUDE_SWARM_SLAVE_ID")
                             "unknown-ling")
         effective-cwd (or cwd
+                          (ctx/current-directory)
                           (get-in coeffects [:agent-context :cwd])
                           (System/getProperty "user.dir"))
 
@@ -156,13 +159,17 @@
      :text (json/write-str validation-error)}
 
     ;; Dispatch event for execution
+    ;; Fallback chain: explicit param → request-ctx → env var → unknown
     (let [agent-id (or agent_id
+                       (ctx/current-agent-id)
                        (System/getenv "CLAUDE_SWARM_SLAVE_ID")
                        "unknown-ling")
+          effective-dir (or directory
+                            (ctx/current-directory))
           event-data {:commit-msg commit_msg
                       :task-ids (when (seq task_ids) (vec task_ids))
                       :agent-id agent-id
-                      :cwd directory}]
+                      :cwd effective-dir}]
 
       ;; Ensure handler is registered
       (register-handler!)

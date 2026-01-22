@@ -123,7 +123,7 @@
     :positions {ling-id {:row R :col C :tab T}}
     :active-tab N
     :layout-mode :auto|:manual|:stacked}"
-  [params]
+  [_params]
   (let [lings (get-active-lings)
         state (get-olympus-state)
         layout (olympus/calculate-layout (count lings))

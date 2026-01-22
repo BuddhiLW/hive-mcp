@@ -38,9 +38,11 @@
 
    SOLID: SRP - Single responsibility for dialogue dispatch
    CLARITY: L - Layer separation from core dispatch"
-  (:require [hive-mcp.tools.swarm.dispatch :as dispatch]
-            [hive-mcp.events.core :as events]
+  (:require [hive-mcp.agora.schema :as schema]
+            [hive-mcp.tools.swarm.dispatch :as dispatch]
             [hive-mcp.channel.websocket :as ws]
+            [datascript.core :as d]
+            [clojure.data.json :as json]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -70,20 +72,12 @@
   #{:propose :counter})
 
 ;; =============================================================================
-;; State - Dialogues and Turns
+;; State - Delegated to schema.clj (DataScript)
 ;; =============================================================================
 
-;; In-memory dialogue state.
-;; Shape: {dialogue-id {:id          string
-;;                      :participants #{slave-id ...}
-;;                      :topic       string
-;;                      :created-at  inst
-;;                      :turns       [{turn-map} ...]
-;;                      :status      :active|:consensus|:timeout|:ended}}
-(defonce ^:private *dialogues (atom {}))
-
-;; Counter for generating unique dialogue IDs.
-(defonce ^:private *dialogue-counter (atom 0))
+;; NOTE: All dialogue state is now managed by hive-mcp.agora.schema
+;; using DataScript. This namespace provides dialogue-aware dispatch
+;; and Nash equilibrium detection on top of schema's CRUD operations.
 
 ;; =============================================================================
 ;; Signal Parsing
@@ -120,61 +114,40 @@
   (str "[SIGNAL: " (name signal) "] " message))
 
 ;; =============================================================================
-;; Turn Recording
+;; Turn Recording (delegates to schema)
 ;; =============================================================================
 
-(defn- generate-turn-id
-  "Generate unique turn ID."
-  []
-  (str "turn-" (System/currentTimeMillis) "-" (rand-int 10000)))
-
 (defn- record-turn!
-  "Record a turn in the dialogue.
+  "Record a turn in the dialogue via schema's DataScript.
 
-   Turn shape:
-   {:id         string
-    :turn-num   int (1-indexed)
-    :sender     slave-id
+   Turn data:
+   {:sender     slave-id
     :receiver   slave-id
     :message    string (without signal prefix)
-    :signal     keyword
-    :timestamp  inst
-    :task-id    string (populated after dispatch)}"
-  [dialogue-id turn-data]
-  (swap! *dialogues
-         (fn [dialogues]
-           (if-let [dialogue (get dialogues dialogue-id)]
-             (let [turn-num (inc (count (:turns dialogue)))
-                   turn (assoc turn-data
-                               :id (generate-turn-id)
-                               :turn-num turn-num
-                               :timestamp (java.util.Date.))]
-               (assoc-in dialogues [dialogue-id :turns]
-                         (conj (or (:turns dialogue) []) turn)))
-             (do
-               (log/warn "Dialogue not found:" dialogue-id)
-               dialogues)))))
+    :signal     keyword}
+
+   Returns the created turn or nil if dialogue not found."
+  [dialogue-id {:keys [sender receiver message signal]}]
+  (schema/add-turn! dialogue-id
+                    {:sender sender
+                     :receiver receiver
+                     :message message
+                     :signal signal}))
 
 (defn- update-turn-task-id!
-  "Update a turn with the resulting task-id after dispatch."
-  [dialogue-id turn-id task-id]
-  (swap! *dialogues
-         (fn [dialogues]
-           (if-let [dialogue (get dialogues dialogue-id)]
-             (let [turns (:turns dialogue)
-                   updated-turns (mapv #(if (= (:id %) turn-id)
-                                          (assoc % :task-id task-id)
-                                          %)
-                                       turns)]
-               (assoc-in dialogues [dialogue-id :turns] updated-turns))
-             dialogues))))
+  "Update a turn with the resulting task-id after dispatch.
+   NOTE: Currently a no-op as task-ref linking requires entity ID.
+   TODO: Implement via DataScript transaction if needed."
+  [_dialogue-id _turn-id _task-id]
+  ;; Task linking happens at dispatch time via :task-ref in add-turn!
+  nil)
 
 ;; =============================================================================
 ;; Dialogue Lifecycle
 ;; =============================================================================
 
 (defn create-dialogue
-  "Create a new dialogue session.
+  "Create a new dialogue session via schema's DataScript.
 
    Arguments:
    - participants: Vector of slave-ids joining the dialogue
@@ -185,22 +158,17 @@
    Example:
    (create-dialogue {:participants [\"writer-123\" \"critic-456\"]
                      :topic \"Code review for auth module\"})"
-  [{:keys [participants topic] :as opts}]
+  [{:keys [participants topic]}]
   {:pre [(vector? participants) (>= (count participants) 2)]}
-  (let [dialogue-id (str "dialogue-" (swap! *dialogue-counter inc) "-" (System/currentTimeMillis))
-        dialogue {:id dialogue-id
-                  :participants (set participants)
-                  :topic (or topic "Unspecified topic")
-                  :created-at (java.util.Date.)
-                  :turns []
-                  :status :active}]
-    (swap! *dialogues assoc dialogue-id dialogue)
-    (log/info "Created dialogue" dialogue-id "with participants:" participants)
+  (let [{:keys [id]} (schema/create-dialogue!
+                      {:participants participants
+                       :name (or topic "Unspecified topic")
+                       :config {:threshold 0.8 :timeout-ms 300000}})]
     ;; Emit event
-    (ws/emit! :agora/created {:dialogue-id dialogue-id
+    (ws/emit! :agora/created {:dialogue-id id
                               :participants participants
                               :topic topic})
-    dialogue-id))
+    id))
 
 (defn join-dialogue
   "Add a participant to an existing dialogue.
@@ -209,9 +177,12 @@
 
    Returns: true if joined, false if dialogue not found"
   [dialogue-id slave-id]
-  (if-let [dialogue (get @*dialogues dialogue-id)]
-    (do
-      (swap! *dialogues update-in [dialogue-id :participants] conj slave-id)
+  (if-let [_dialogue (schema/get-dialogue dialogue-id)]
+    (let [c (schema/get-conn)
+          db @c
+          eid (:db/id (d/entity db [:agora.dialogue/id dialogue-id]))]
+      (d/transact! c [{:db/id eid
+                       :agora.dialogue/participants slave-id}])
       (log/info "Participant" slave-id "joined dialogue" dialogue-id)
       (ws/emit! :agora/participant-joined {:dialogue-id dialogue-id
                                            :slave-id slave-id})
@@ -228,16 +199,20 @@
 
    Returns: true if left, false if not found"
   [dialogue-id slave-id]
-  (if-let [dialogue (get @*dialogues dialogue-id)]
-    (do
-      (swap! *dialogues update-in [dialogue-id :participants] disj slave-id)
+  (if-let [_dialogue (schema/get-dialogue dialogue-id)]
+    (let [c (schema/get-conn)
+          db @c
+          eid (:db/id (d/entity db [:agora.dialogue/id dialogue-id]))]
+      ;; Retract the participant
+      (d/transact! c [[:db/retract eid :agora.dialogue/participants slave-id]])
       (log/info "Participant" slave-id "left dialogue" dialogue-id)
       (ws/emit! :agora/participant-left {:dialogue-id dialogue-id
                                          :slave-id slave-id})
       ;; Check if dialogue should end (< 2 participants)
-      (let [remaining (count (get-in @*dialogues [dialogue-id :participants]))]
+      (let [updated (schema/get-dialogue dialogue-id)
+            remaining (count (:participants updated))]
         (when (< remaining 2)
-          (swap! *dialogues assoc-in [dialogue-id :status] :ended)
+          (schema/update-dialogue-status! dialogue-id :aborted)
           (log/info "Dialogue" dialogue-id "ended - insufficient participants")))
       true)
     (do
@@ -249,31 +224,49 @@
 ;; =============================================================================
 
 (defn get-dialogue
-  "Get dialogue by ID."
+  "Get dialogue by ID from schema's DataScript."
   [dialogue-id]
-  (get @*dialogues dialogue-id))
+  (when-let [d (schema/get-dialogue dialogue-id)]
+    ;; Adapt schema's shape to dialogue.clj's expected shape
+    {:id (:id d)
+     :participants (set (:participants d))
+     :topic (:name d)
+     :created-at (java.util.Date. (:created d))
+     :status (:status d)}))
 
 (defn get-dialogue-turns
-  "Get all turns in a dialogue."
+  "Get all turns in a dialogue from schema's DataScript."
   [dialogue-id]
-  (get-in @*dialogues [dialogue-id :turns] []))
+  (->> (schema/get-turns dialogue-id)
+       (map (fn [t]
+              {:id (:id t)
+               :turn-num (:turn-number t)
+               :sender (:sender t)
+               :receiver (:receiver t)
+               :message (:message t)
+               :signal (:signal t)
+               :timestamp (java.util.Date. (:timestamp t))
+               :task-id (:task-ref t)}))))
 
 (defn get-last-turn-for
-  "Get the most recent turn from a specific participant."
+  "Get the most recent turn addressed to a specific participant.
+   Returns the last turn where this agent was the receiver."
   [dialogue-id slave-id]
   (->> (get-dialogue-turns dialogue-id)
-       (filter #(= (:sender %) slave-id))
+       (filter #(= (:receiver %) slave-id))
        last))
 
 (defn get-participants
   "Get current participants in a dialogue."
   [dialogue-id]
-  (get-in @*dialogues [dialogue-id :participants] #{}))
+  (if-let [d (schema/get-dialogue dialogue-id)]
+    (set (:participants d))
+    #{}))
 
 (defn dialogue-active?
   "Check if dialogue is still active."
   [dialogue-id]
-  (= :active (get-in @*dialogues [dialogue-id :status])))
+  (= :active (:status (schema/get-dialogue dialogue-id))))
 
 ;; =============================================================================
 ;; Nash Equilibrium Detection (delegated to consensus namespace)
@@ -317,7 +310,7 @@
      {:dialogue-id \"dialogue-123\"
       :to \"critic-456\"
       :message \"[SIGNAL: propose] Here's iteration 2...\"})"
-  [{:keys [dialogue-id from to message timeout_ms files] :as params}]
+  [{:keys [dialogue-id from to message timeout_ms files]}]
   {:pre [(some? dialogue-id) (some? to) (some? message)]}
   (let [sender-id (or from (System/getenv "CLAUDE_SWARM_SLAVE_ID") "unknown")
         ;; Parse signal from message
@@ -345,7 +338,7 @@
 
       ;; Check for Nash equilibrium after recording turn
       (when (nash-equilibrium? dialogue-id)
-        (swap! *dialogues assoc-in [dialogue-id :status] :consensus)
+        (schema/update-dialogue-status! dialogue-id :consensus)
         (log/info "Dialogue" dialogue-id "reached Nash equilibrium (CONSENSUS)")
         (ws/emit! :agora/consensus {:dialogue-id dialogue-id
                                     :turns (count (get-dialogue-turns dialogue-id))}))
@@ -360,7 +353,7 @@
         ;; Update turn with task-id from result (if available)
         (when-let [task-id (try
                              (some-> dispatch-result :result
-                                     (clojure.data.json/read-str :key-fn keyword)
+                                     (json/read-str :key-fn keyword)
                                      :task-id)
                              (catch Exception _ nil))]
           (update-turn-task-id! dialogue-id (:id turn) task-id))
@@ -418,21 +411,23 @@
 ;; =============================================================================
 
 (defn list-dialogues
-  "List all dialogues with summary info."
+  "List all dialogues with summary info from schema's DataScript."
   []
-  (->> @*dialogues
-       vals
-       (map #(select-keys % [:id :topic :status :participants
-                             :created-at]))
+  (->> (schema/list-dialogues)
+       (map (fn [d]
+              {:id (:id d)
+               :topic (:name d)
+               :status (:status d)
+               :created-at (java.util.Date. (:created d))}))
        (sort-by :created-at)
        reverse))
 
 (defn reset-dialogues!
-  "Clear all dialogue state. For testing."
+  "Clear all dialogue state. For testing.
+   Delegates to schema's reset-conn!"
   []
-  (reset! *dialogues {})
-  (reset! *dialogue-counter 0)
-  (log/info "Dialogue state reset"))
+  (schema/reset-conn!)
+  (log/info "Dialogue state reset (via schema)"))
 
 (defn dialogue-summary
   "Get a human-readable summary of a dialogue."

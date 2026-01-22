@@ -29,6 +29,7 @@
             [hive-mcp.emacsclient :as ec]
             [hive-mcp.hivemind :as hivemind]
             [hive-mcp.hooks :as hooks]
+            [hive-mcp.tools.memory.scope :as scope]
             [clojure.core.async :as async :refer [go-loop <!]]
             [clojure.data.json :as json]
             [taoensso.timbre :as log]))
@@ -103,15 +104,19 @@
 ;; =============================================================================
 
 (defn- handle-slave-spawned
-  "Handle slave spawn event. Event: {:slave-id :name :parent-id :depth}"
+  "Handle slave spawn event. Event: {:slave-id :name :parent-id :depth :cwd}
+   Derives project-id from cwd for project-scoped swarm operations."
   [event]
   (let [slave-id (get-field event :slave-id)
         name (get-field event :name slave-id)
         depth (get-field event :depth 1)
-        parent-id (get-field event :parent-id)]
+        parent-id (get-field event :parent-id)
+        cwd (get-field event :cwd)
+        project-id (when cwd (scope/get-current-project-id cwd))]
     (when slave-id
-      (ds/add-slave! slave-id {:status :idle :name name :depth depth :parent parent-id})
-      (log/debug "Sync: registered slave" slave-id "depth:" depth))))
+      (ds/add-slave! slave-id {:status :idle :name name :depth depth
+                               :parent parent-id :cwd cwd :project-id project-id})
+      (log/debug "Sync: registered slave" slave-id "depth:" depth "project-id:" project-id))))
 
 (defn- handle-slave-status
   "Handle slave status change event. Event: {:slave-id :status}"
@@ -231,14 +236,18 @@
 ;; =============================================================================
 
 (defn- register-slave-from-status!
-  "Register a single slave from Emacs status data."
+  "Register a single slave from Emacs status data.
+   Derives project-id from cwd for project-scoped swarm operations."
   [slave]
   (let [slave-id (:slave-id slave)
         status (keyword (:status slave))
         name (or (:name slave) slave-id)
-        depth (or (:depth slave) 1)]
-    (ds/add-slave! slave-id {:status status :name name :depth depth})
-    (log/debug "Sync: bootstrapped slave" slave-id status)))
+        depth (or (:depth slave) 1)
+        cwd (:cwd slave)
+        project-id (when cwd (scope/get-current-project-id cwd))]
+    (ds/add-slave! slave-id {:status status :name name :depth depth
+                             :cwd cwd :project-id project-id})
+    (log/debug "Sync: bootstrapped slave" slave-id status "project-id:" project-id)))
 
 (defn full-sync-from-emacs!
   "One-time full sync from Emacs swarm state. Call on startup to bootstrap."

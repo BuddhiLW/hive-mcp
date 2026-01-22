@@ -11,11 +11,11 @@
             [hive-mcp.chroma :as chroma]
             [clojure.data.json :as json]
             [clojure.string :as str]
+            [clojure.set :as set]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
-
 
 ;; =============================================================================
 ;; Project Context Helpers
@@ -165,6 +165,12 @@
                        (and project-id (not= project-id project-name))
                        (conj (str "scope:project:" project-id)))
 
+              ;; AXIOMS: Query inviolable rules tagged 'axiom' - these MUST be followed
+              ;; exactly as written. Display at TOP before everything else.
+              axioms (query-scoped-entries "convention"
+                                           ["axiom"]
+                                           project-name project-id 10)
+
               ;; PRIORITY: Query swarm conventions with catchup-priority tag FIRST
               ;; These help coordinator trust swarm patterns immediately
               priority-conventions (query-scoped-entries "convention"
@@ -174,10 +180,12 @@
               ;; Query each type from Chroma with scope filtering (pass both name and id)
               sessions (query-scoped-entries "note" ["session-summary"] project-name project-id 3)
               decisions (query-scoped-entries "decision" nil project-name project-id 10)
-              ;; Regular conventions (exclude priority ones to avoid duplicates)
+              ;; Regular conventions (exclude axioms and priority ones to avoid duplicates)
               all-conventions (query-scoped-entries "convention" nil project-name project-id 15)
+              axiom-ids (set (map :id axioms))
               priority-ids (set (map :id priority-conventions))
-              conventions (remove #(contains? priority-ids (:id %)) all-conventions)
+              excluded-ids (set/union axiom-ids priority-ids)
+              conventions (remove #(contains? excluded-ids (:id %)) all-conventions)
               snippets (query-scoped-entries "snippet" nil project-name project-id 5)
 
               ;; Query expiring entries (all types, filter later)
@@ -197,7 +205,16 @@
               ;; Get git info from Emacs
               git-info (gather-git-info directory)
 
-              ;; Convert to metadata format - FULL CONTENT for priority conventions
+              ;; Convert to metadata format - FULL CONTENT for axioms and priority conventions
+              ;; AXIOMS: Inviolable rules - MUST be followed word-for-word
+              axioms-meta (mapv (fn [e]
+                                  {:id (:id e)
+                                   :type "axiom"
+                                   :tags (vec (or (:tags e) []))
+                                   :content (:content e)  ;; Full content - these are inviolable!
+                                   :severity "INVIOLABLE"}) ;; Strong marker
+                                axioms)
+              ;; Priority conventions with full content
               priority-meta (mapv (fn [e]
                                     {:id (:id e)
                                      :type "convention"
@@ -216,20 +233,23 @@
                    :project (or project-name project-id "global")
                    :scopes scopes
                    :git git-info
-                   :counts {:priority-conventions (count priority-meta)
+                   :counts {:axioms (count axioms-meta)
+                            :priority-conventions (count priority-meta)
                             :sessions (count sessions-meta)
                             :decisions (count decisions-meta)
                             :conventions (count conventions-meta)
                             :snippets (count snippets-meta)
                             :expiring (count expiring-meta)}
-                   ;; Priority conventions at TOP with FULL content
+                   ;; AXIOMS at TOP - these are INVIOLABLE, must be followed word-for-word
+                   :axioms axioms-meta
+                   ;; Priority conventions with FULL content
                    :priority-conventions priority-meta
                    :context {:sessions sessions-meta
                              :decisions decisions-meta
                              :conventions conventions-meta
                              :snippets snippets-meta
                              :expiring expiring-meta}
-                   :hint "Priority conventions loaded with full content. Use mcp_memory_get_full for other entries."})})
+                   :hint "AXIOMS are INVIOLABLE - follow them word-for-word. Priority conventions and axioms loaded with full content. Use mcp_memory_get_full for other entries."})})
         (catch Exception e
           (log/error e "native-catchup failed")
           {:type "text"

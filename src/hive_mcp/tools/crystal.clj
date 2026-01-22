@@ -43,9 +43,12 @@
     ;; Use crystal hooks for comprehensive harvesting
     (let [harvested (crystal-hooks/harvest-all {:directory directory})
           ;; Also get elisp-side data for completeness
+          ;; Pass directory to elisp so git operations use correct project
           elisp-result (when (hive-mcp-el-available?)
-                         (let [{:keys [success result]}
-                               (ec/eval-elisp "(json-encode (hive-mcp-api-wrap-gather))")]
+                         (let [elisp-call (if directory
+                                            (format "(json-encode (hive-mcp-api-wrap-gather \"%s\"))" directory)
+                                            "(json-encode (hive-mcp-api-wrap-gather))")
+                               {:keys [success result]} (ec/eval-elisp elisp-call)]
                            (when success
                              (try (json/read-str result :key-fn keyword)
                                   (catch Exception _ nil)))))

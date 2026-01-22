@@ -109,7 +109,7 @@
 ;; Hierarchical Scope Support
 ;; ============================================================
 
-(defn- extract-project-hierarchy
+(defn- _extract-project-hierarchy
   "Extract project hierarchy from a scope tag.
    'scope:project:funeraria:sisf-sync:sisf-caixa-fe' -> ['funeraria' 'sisf-sync' 'sisf-caixa-fe']"
   [scope-tag]
@@ -118,7 +118,7 @@
         (str/replace #"^scope:project:" "")
         (str/split #":"))))
 
-(defn- build-ancestor-scopes
+(defn- _build-ancestor-scopes
   "Build all ancestor scope tags from a project hierarchy.
    ['funeraria' 'sisf-sync' 'sisf-caixa-fe'] ->
    ['scope:project:funeraria'

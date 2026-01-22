@@ -16,6 +16,8 @@
             [hive-mcp.hooks :as hooks]
             [hive-mcp.swarm.datascript :as ds]
             [hive-mcp.events.core :as ev]
+            [hive-mcp.agent.context :as ctx]
+            [hive-mcp.tools.memory.scope :as scope]
             [clojure.data.json :as json]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
@@ -154,6 +156,9 @@
 (defn harvest-session-progress
   "Harvest session progress notes for wrap workflow.
 
+   opts: {:directory string} - Working directory for project scoping.
+         Falls back to ctx/current-directory from request context.
+
    Queries ephemeral notes from current project - no specific tags required.
    This captures all ephemeral notes LLMs created during the session,
    regardless of what tags they used.
@@ -161,42 +166,54 @@
    Returns: {:notes [...] :count int :error? {...} on failure}
 
    CLARITY: Telemetry first - emits :system/error on failure."
-  []
-  (try
-    (let [session-tag (crystal/session-tag)
-          ;; Query ephemeral notes with auto scope filtering (current project + global)
-          ;; Args: type, tags, project-id, limit, duration, scope-filter
-          elisp "(json-encode (hive-mcp-memory-query 'note nil nil 50 'ephemeral nil))"
-          {:keys [success result error]} (ec/eval-elisp elisp)]
-      (if success
-        (let [raw-notes (try (json/read-str result :key-fn keyword)
-                             (catch Exception _ []))
-              ;; Guard: filter to maps only to prevent "Key must be integer" error
-              ;; when accessing (:tags item) on non-map items (vectors, strings, etc.)
-              notes (filterv map? (if (sequential? raw-notes) raw-notes []))]
-          {:notes notes
-           :count (count notes)
-           :session session-tag})
-        (do
-          (log/error "harvest-session-progress: Emacs query failed:" error)
-          {:notes []
-           :count 0
-           :error {:type :harvest-failed
-                   :fn "harvest-session-progress"
-                   :msg error}})))
-    (catch Exception e
-      (let [error-data {:type :harvest-failed
-                        :fn "harvest-session-progress"
-                        :msg (.getMessage e)}]
-        (log/error e "harvest-session-progress failed")
-        ;; Emit structured error for telemetry
-        (emit-harvest-error! "harvest-session-progress" (.getMessage e) {})
-        {:notes []
-         :count 0
-         :error error-data}))))
+  ([] (harvest-session-progress nil))
+  ([{:keys [directory]}]
+   (try
+     (let [;; Priority: explicit param > request context
+           dir (or directory (ctx/current-directory))
+           ;; Derive project-id for scoped memory query
+           project-id (when dir (scope/get-current-project-id dir))
+           session-tag (crystal/session-tag)
+           ;; Query ephemeral notes with explicit project scope
+           ;; Args: type, tags, project-id, limit, duration, scope-filter
+           elisp (if project-id
+                   (format "(json-encode (hive-mcp-memory-query 'note nil %s 50 'ephemeral nil))"
+                           (pr-str project-id))
+                   "(json-encode (hive-mcp-memory-query 'note nil nil 50 'ephemeral nil))")
+           {:keys [success result error]} (ec/eval-elisp elisp)]
+       (if success
+         (let [raw-notes (try (json/read-str result :key-fn keyword)
+                              (catch Exception _ []))
+               ;; Guard: filter to maps only to prevent "Key must be integer" error
+               ;; when accessing (:tags item) on non-map items (vectors, strings, etc.)
+               notes (filterv map? (if (sequential? raw-notes) raw-notes []))]
+           {:notes notes
+            :count (count notes)
+            :session session-tag
+            :project-id project-id})
+         (do
+           (log/error "harvest-session-progress: Emacs query failed:" error)
+           {:notes []
+            :count 0
+            :error {:type :harvest-failed
+                    :fn "harvest-session-progress"
+                    :msg error}})))
+     (catch Exception e
+       (let [error-data {:type :harvest-failed
+                         :fn "harvest-session-progress"
+                         :msg (.getMessage e)}]
+         (log/error e "harvest-session-progress failed")
+         ;; Emit structured error for telemetry
+         (emit-harvest-error! "harvest-session-progress" (.getMessage e) {})
+         {:notes []
+          :count 0
+          :error error-data})))))
 
 (defn harvest-completed-tasks
   "Harvest completed task progress notes for wrap.
+
+   opts: {:directory string} - Working directory for project scoping.
+         Falls back to ctx/current-directory from request context.
 
    Queries from TWO sources:
    1. DataScript registry (primary, reliable)
@@ -205,56 +222,70 @@
    Returns: {:tasks [...] :count int :ds-count int :emacs-count int :error? {...} on failure}
 
    CLARITY: Telemetry first - emits :system/error on failure."
-  []
-  (try
-    ;; Primary source: DataScript registry (added by on-kanban-done)
-    (let [ds-tasks (try
-                     (->> (ds/get-completed-tasks-this-session)
-                          (map (fn [t]
-                                 {:id (:completed-task/id t)
-                                  :title (:completed-task/title t)
-                                  :completed-at (:completed-task/completed-at t)
-                                  :agent-id (:completed-task/agent-id t)
-                                  :source :datascript})))
-                     (catch Exception e
-                       (log/warn "Failed to query DataScript completed tasks:" (.getMessage e))
-                       []))
-          ;; Fallback source: Emacs memory (kanban-tagged notes)
-          elisp-ephemeral "(hive-mcp-memory-query 'note '(\"kanban\") nil 50 'ephemeral nil)"
-          elisp-short "(hive-mcp-memory-query 'note '(\"kanban\") nil 50 'short-term nil)"
-          elisp (format "(json-encode (append %s %s))" elisp-ephemeral elisp-short)
-          {:keys [success result]} (ec/eval-elisp elisp)
-          emacs-tasks (if success
-                        (try
-                          (->> (json/read-str result :key-fn keyword)
-                               (filter map?)  ;; Guard: prevent "Key must be integer" if non-map items
-                               (map #(assoc % :source :emacs)))
-                          (catch Exception _ []))
-                        [])
-          ;; Combine sources, prefer DataScript (has task IDs)
-          all-tasks (concat ds-tasks emacs-tasks)]
-      {:tasks all-tasks
-       :count (count all-tasks)
-       :ds-count (count ds-tasks)
-       :emacs-count (count emacs-tasks)})
-    (catch Exception e
-      (let [error-data {:type :harvest-failed
-                        :fn "harvest-completed-tasks"
-                        :msg (.getMessage e)}]
-        (log/error e "harvest-completed-tasks failed")
+  ([] (harvest-completed-tasks nil))
+  ([{:keys [directory]}]
+   (try
+     ;; Priority: explicit param > request context
+     (let [dir (or directory (ctx/current-directory))
+           ;; Derive project-id for scoped memory query
+           project-id (when dir (scope/get-current-project-id dir))
+           ;; Primary source: DataScript registry (added by on-kanban-done)
+           ds-tasks (try
+                      (->> (ds/get-completed-tasks-this-session)
+                           (map (fn [t]
+                                  {:id (:completed-task/id t)
+                                   :title (:completed-task/title t)
+                                   :completed-at (:completed-task/completed-at t)
+                                   :agent-id (:completed-task/agent-id t)
+                                   :source :datascript})))
+                      (catch Exception e
+                        (log/warn "Failed to query DataScript completed tasks:" (.getMessage e))
+                        []))
+           ;; Fallback source: Emacs memory (kanban-tagged notes)
+           ;; Use project-id for scoped queries when available
+           elisp-ephemeral (if project-id
+                             (format "(hive-mcp-memory-query 'note '(\"kanban\") %s 50 'ephemeral nil)"
+                                     (pr-str project-id))
+                             "(hive-mcp-memory-query 'note '(\"kanban\") nil 50 'ephemeral nil)")
+           elisp-short (if project-id
+                         (format "(hive-mcp-memory-query 'note '(\"kanban\") %s 50 'short-term nil)"
+                                 (pr-str project-id))
+                         "(hive-mcp-memory-query 'note '(\"kanban\") nil 50 'short-term nil)")
+           elisp (format "(json-encode (append %s %s))" elisp-ephemeral elisp-short)
+           {:keys [success result]} (ec/eval-elisp elisp)
+           emacs-tasks (if success
+                         (try
+                           (->> (json/read-str result :key-fn keyword)
+                                (filter map?)  ;; Guard: prevent "Key must be integer" if non-map items
+                                (map #(assoc % :source :emacs)))
+                           (catch Exception _ []))
+                         [])
+           ;; Combine sources, prefer DataScript (has task IDs)
+           all-tasks (concat ds-tasks emacs-tasks)]
+       {:tasks all-tasks
+        :count (count all-tasks)
+        :ds-count (count ds-tasks)
+        :emacs-count (count emacs-tasks)
+        :project-id project-id})
+     (catch Exception e
+       (let [error-data {:type :harvest-failed
+                         :fn "harvest-completed-tasks"
+                         :msg (.getMessage e)}]
+         (log/error e "harvest-completed-tasks failed")
         ;; Emit structured error for telemetry
-        (emit-harvest-error! "harvest-completed-tasks" (.getMessage e) {})
-        {:tasks []
-         :count 0
-         :ds-count 0
-         :emacs-count 0
-         :error error-data}))))
+         (emit-harvest-error! "harvest-completed-tasks" (.getMessage e) {})
+         {:tasks []
+          :count 0
+          :ds-count 0
+          :emacs-count 0
+          :error error-data})))))
 
 (defn harvest-git-commits
   "Harvest git commits since session start.
 
    opts: {:directory string} - Working directory for git operations.
-         If nil, uses Emacs default-directory (may be incorrect for cross-project calls).
+         Falls back to ctx/current-directory from request context.
+         If neither available, uses Emacs default-directory (may be incorrect).
 
    Returns: {:commits [string] :count int :error? {...} on failure}
 
@@ -262,18 +293,21 @@
   ([] (harvest-git-commits nil))
   ([{:keys [directory]}]
    (try
-     (let [;; Get commits from today (session approximation)
+     (let [;; Priority: explicit param > request context > Emacs default
+           dir (or directory (ctx/current-directory))
+           ;; Get commits from today (session approximation)
            ;; Use let-binding to set default-directory when directory is provided
-           elisp (if directory
+           elisp (if dir
                    (format "(let ((default-directory %s)) (shell-command-to-string \"git log --since='midnight' --oneline 2>/dev/null\"))"
-                           (pr-str directory))
+                           (pr-str dir))
                    "(shell-command-to-string \"git log --since='midnight' --oneline 2>/dev/null\")")
            {:keys [success result error]} (ec/eval-elisp elisp)]
        (if success
          (let [commits (when (and result (not (str/blank? result)))
                          (str/split-lines (str/trim result)))]
            {:commits (or commits [])
-            :count (count (or commits []))})
+            :count (count (or commits []))
+            :directory dir})
          (do
            (log/error "harvest-git-commits: Emacs command failed:" error)
            {:commits []
@@ -295,24 +329,27 @@
 (defn harvest-all
   "Harvest all session data for wrap crystallization.
 
-   opts: {:directory string} - Working directory for git operations.
-         Pass caller's cwd to ensure git context comes from correct project.
+   opts: {:directory string} - Working directory for git/memory operations.
+         Falls back to ctx/current-directory from request context.
+         Pass caller's cwd to ensure correct project scoping.
 
    Returns: {:progress-notes [...]
              :completed-tasks [...]
              :git-commits [...]
              :recalls {...}
              :session string
-             :directory string (if provided)
+             :directory string
              :errors [...]}  ; aggregated errors from sub-harvests
 
    CLARITY: Telemetry first - aggregates errors for visibility."
   ([] (harvest-all nil))
-  ([{:keys [directory] :as opts}]
+  ([{:keys [directory] :as _opts}]
    (try
-     (let [progress (harvest-session-progress)
-           tasks (harvest-completed-tasks)
-           commits (harvest-git-commits opts)
+     ;; Priority: explicit param > request context
+     (let [dir (or directory (ctx/current-directory))
+           progress (harvest-session-progress {:directory dir})
+           tasks (harvest-completed-tasks {:directory dir})
+           commits (harvest-git-commits {:directory dir})
            recalls (try
                      (recall/get-buffered-recalls)
                      (catch Exception e
@@ -327,7 +364,7 @@
         :git-commits (:commits commits)
         :recalls recalls
         :session (crystal/session-id)
-        :directory directory
+        :directory dir
         :summary {:progress-count (:count progress)
                   :task-count (:count tasks)
                   :commit-count (:count commits)
@@ -363,33 +400,42 @@
 
 (defn crystallize-session
   "Crystallize session data into long-term memory.
-   
-   Takes harvested data and:
-   1. Creates session summary (short-term)
+
+   Takes harvested data (including :directory for project scoping) and:
+   1. Creates session summary (short-term, scoped to project)
    2. Promotes entries that meet threshold
    3. Clears ephemeral progress notes
-   
-   Returns: {:summary-id string :promoted [ids] :cleared [ids]}"
-  [{:keys [progress-notes completed-tasks git-commits _recalls] :as harvested}]
-  (log/info "Crystallizing session:" (crystal/session-id))
 
-  ;; 1. Create session summary
-  (let [summary (crystal/summarize-session-progress
+   Returns: {:summary-id string :promoted [ids] :cleared [ids] :project-id string}"
+  [{:keys [progress-notes completed-tasks git-commits directory _recalls] :as harvested}]
+  (log/info "Crystallizing session:" (crystal/session-id) (when directory (str "directory:" directory)))
+
+  ;; Derive project-id for scoped memory creation
+  (let [project-id (when directory (scope/get-current-project-id directory))
+        ;; 1. Create session summary
+        summary (crystal/summarize-session-progress
                  (concat progress-notes completed-tasks)
                  git-commits)
         ;; Convert tags to elisp list format
         elisp-tags (tags->elisp-list (:tags summary))
-        elisp (format "(hive-mcp-memory-add 'note %s %s nil 'short-term)"
-                      (pr-str (:content summary))
-                      elisp-tags)
+        ;; Use project-id for scoped memory creation when available
+        elisp (if project-id
+                (format "(hive-mcp-memory-add 'note %s %s %s 'short-term)"
+                        (pr-str (:content summary))
+                        elisp-tags
+                        (pr-str project-id))
+                (format "(hive-mcp-memory-add 'note %s %s nil 'short-term)"
+                        (pr-str (:content summary))
+                        elisp-tags))
         {:keys [success result error]} (ec/eval-elisp elisp)]
     (if success
       (do
-        (log/info "Created session summary:" result)
+        (log/info "Created session summary:" result "project:" project-id)
         ;; 2. Check for entries to promote (based on recall scores)
         ;; TODO: Integrate with recall tracking when we have access patterns
         {:summary-id result
          :session (crystal/session-id)
+         :project-id project-id
          :stats (:summary harvested)})
       (do
         (log/error "Failed to crystallize session:" error)
@@ -406,23 +452,29 @@
    Automatically crystallizes session data (auto-wrap).
    Called by JVM shutdown hook via hooks/trigger-hooks.
 
-   ctx: {:reason string :session string}
+   ctx: {:reason string :session string :directory string}
 
-   Returns: {:success bool :summary-id string}"
-  [ctx]
-  (log/info "Auto-wrap triggered on session-end:" (:reason ctx "shutdown"))
+   Tries to get directory from ctx or request context for proper scoping.
+
+   Returns: {:success bool :summary-id string :project-id string}"
+  [event-ctx]
+  (log/info "Auto-wrap triggered on session-end:" (:reason event-ctx "shutdown"))
   (try
-    (let [harvested (harvest-all)
+    ;; Try to get directory from event context or request context
+    (let [dir (or (:directory event-ctx) (ctx/current-directory))
+          harvested (harvest-all {:directory dir})
           result (crystallize-session harvested)]
       ;; Broadcast wrap completion if channel available
       (when (channel/server-connected?)
         (channel/broadcast! {:type "session-ended"
                              :wrap-completed true
                              :session (:session result)
+                             :project-id (:project-id result)
                              :stats (:stats result)}))
-      (log/info "Auto-wrap completed:" (:summary-id result))
+      (log/info "Auto-wrap completed:" (:summary-id result) "project:" (:project-id result))
       {:success true
        :summary-id (:summary-id result)
+       :project-id (:project-id result)
        :stats (:stats result)})
     (catch Exception e
       (log/error e "Auto-wrap failed on session-end")

@@ -7,14 +7,15 @@
 ;; GRAPH PROTOCOL (DIP - Dependency Inversion)
 (defprotocol IGraph
   "Protocol for graph operations."
-  (nodes [this] "Return all nodes")
-  (edges [this] "Return all edges")
-  (neighbors [this node-id] "Return neighbor node-ids")
-  (add-node [this node] "Add a node, return new graph")
-  (add-edge [this edge] "Add an edge, return new graph")
-  (has-node? [this node-id] "Check if node exists")
-  (has-edge? [this from-id to-id] "Check if edge exists")
-  (get-edge-weight [this from-id to-id] "Get weight of edge, nil if not exists"))
+  (add-node [this node-id node] "Add a node to the graph, return new graph")
+  (remove-node [this node-id] "Remove a node from the graph, return new graph")
+  (add-edge [this from-id to-id weight] "Add an edge, return new graph")
+  (remove-edge [this from-id to-id] "Remove an edge, return new graph")
+  (get-node [this node-id] "Get node by id")
+  (get-neighbors [this node-id] "Get all neighbors as map of node-id -> weight")
+  (get-edges [this node-id] "Get all edges from a node as vector")
+  (node-count [this] "Get total number of nodes")
+  (edge-count [this] "Get total number of edges"))
 
 ;; PURE HELPER FUNCTIONS
 (defn make-node

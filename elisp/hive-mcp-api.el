@@ -520,15 +520,16 @@ Returns structured result suitable for JSON encoding."
         '((error . "catchup-workflow-not-available")))
     '((error . "catchup-workflow-failed"))))
 
-(declare-function hive-mcp-workflow-wrap--gather-session-data "hive-mcp-workflows")
+(declare-function hive-mcp-workflow-wrap--gather-session-data "hive-mcp-workflows" (&optional directory))
 
-(defun hive-mcp-api-wrap-gather ()
+(defun hive-mcp-api-wrap-gather (&optional directory)
   "Gather session data for wrap workflow.
+DIRECTORY overrides `default-directory' for git operations.
 Returns plist with gathered data from memory, git, kanban, and channel.
 Use before wrap to preview/confirm data before storing."
   (hive-mcp-with-fallback
       (if (fboundp 'hive-mcp-workflow-wrap--gather-session-data)
-          (let ((result (hive-mcp-workflow-wrap--gather-session-data)))
+          (let ((result (hive-mcp-workflow-wrap--gather-session-data directory)))
             (hive-mcp-transform-plist-to-alist result))
         '((error . "wrap-gather-not-available")))
     '((error . "wrap-gather-failed"))))

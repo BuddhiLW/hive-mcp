@@ -32,6 +32,8 @@
    [hive-mcp.tools.hive-project :as hive-project]
    [hive-mcp.tools.telemetry :as telemetry]
    [hive-mcp.tools.olympus :as olympus]
+   [hive-mcp.tools.agora :as agora]
+   [hive-mcp.tools.seeds :as seeds]
    [hive-mcp.hivemind :as hivemind]
    [hive-mcp.channel :as channel]
    [hive-mcp.agent :as agent]
@@ -84,6 +86,8 @@
                hive-project/tools      ; .hive-project.edn generator
                telemetry/tools         ; prometheus_query (CLARITY-T)
                olympus/tools           ; grid layout for swarm visualization
+               agora/tools             ; Agora multi-ling dialogue (Nash equilibrium)
+               seeds/tools             ; Seed memory import from markdown files
                hivemind/tools
                channel/channel-tools
                agent/tools)))
@@ -154,6 +158,8 @@
                hive-project/tools      ; .hive-project.edn generator
                telemetry/tools         ; prometheus_query (CLARITY-T)
                olympus/tools           ; grid layout for swarm visualization
+               agora/tools             ; Agora multi-ling dialogue (Nash equilibrium)
+               seeds/tools             ; Seed memory import from markdown files
                hivemind/tools
                channel/channel-tools
                agent/tools)))

@@ -16,8 +16,7 @@
      (openai-config {:model \"text-embedding-3-large\"})
 
    Usage with EmbeddingService:
-     (service/configure-collection! \"my-collection\" (config/ollama-config))"
-  (:require [taoensso.timbre :as log]))
+     (service/configure-collection! \"my-collection\" (config/ollama-config))")
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later

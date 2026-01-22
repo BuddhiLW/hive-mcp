@@ -149,7 +149,7 @@
    - :task-type   - Resolved task type
 
    Useful for debugging model selection issues."
-  [{:keys [model preset task-type] :as opts}]
+  [{:keys [model preset task-type] :as _opts}]
   (let [resolved-task-type (or (when preset (preset->task-type preset))
                                (keyword task-type)
                                :coding)

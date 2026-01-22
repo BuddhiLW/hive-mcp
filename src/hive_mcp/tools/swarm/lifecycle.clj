@@ -84,6 +84,47 @@
   [ops]
   (str/join ", " (map name ops)))
 
+;; ============================================================
+;; Ownership Validation (Cross-Project Kill Prevention)
+;; ============================================================
+
+(defn- can-kill-ownership?
+  "Check if caller can kill target ling based on project ownership.
+
+   Rules:
+   - Caller without project context (coordinator) can kill anything
+   - Legacy lings without project-id can be killed by anyone
+   - Otherwise, caller's project-id must match target's project-id
+
+   Arguments:
+     caller-project-id - Project ID of the caller (nil for coordinator)
+     target-slave-id   - ID of the slave to check
+
+   Returns:
+     {:can-kill? bool :reason string :caller-project string :target-project string}"
+  [caller-project-id target-slave-id]
+  (let [target-slave (ds/get-slave target-slave-id)
+        target-project-id (:slave/project-id target-slave)]
+    (cond
+      ;; Caller without project context (coordinator) can kill anything
+      (nil? caller-project-id)
+      {:can-kill? true :reason "coordinator-context"}
+
+      ;; Legacy lings without project-id can be killed by anyone
+      (nil? target-project-id)
+      {:can-kill? true :reason "legacy-ling"}
+
+      ;; Same project - allowed
+      (= caller-project-id target-project-id)
+      {:can-kill? true :reason "same-project"}
+
+      ;; Cross-project kill attempt - denied
+      :else
+      {:can-kill? false
+       :reason "cross-project"
+       :caller-project caller-project-id
+       :target-project target-project-id})))
+
 (defn- check-any-critical-ops
   "Check if any slaves have critical operations blocking kill-all.
    Returns {:can-kill? bool :blocked-slaves [{:id :ops}...]}"
@@ -104,30 +145,45 @@
 (defn- kill-single-slave!
   "Kill a single slave by ID. Returns MCP response.
 
-   CLARITY: SRP - Extracted from handle-swarm-kill for reuse."
-  [slave_id]
-  (let [{:keys [can-kill? blocking-ops]} (ds/can-kill? slave_id)]
-    (if can-kill?
-      ;; Safe to kill
-      (let [elisp (format "(json-encode (hive-mcp-swarm-api-kill \"%s\"))"
-                          (v/escape-elisp-string slave_id))
-            {:keys [success result error timed-out]} (ec/eval-elisp-with-timeout elisp 3000)]
-        (cond
-          timed-out
-          {:success false :error "timeout" :slave-id slave_id}
+   Checks both critical ops guard AND project ownership.
+   Pass caller-project-id as nil for coordinator (no project context).
 
-          success
-          (do
-            ;; Clear from both registries: DataScript + hivemind agent-registry
-            (hivemind/clear-agent! slave_id)
-            {:success true :result result :slave-id slave_id})
+   CLARITY: SRP - Extracted from handle-swarm-kill for reuse.
+   CLARITY: I - Inputs guarded (ownership + critical ops)"
+  ([slave_id]
+   (kill-single-slave! slave_id nil))
+  ([slave_id caller-project-id]
+   ;; First check ownership (cross-project kill prevention)
+   (let [{:keys [can-kill? reason caller-project target-project]} (can-kill-ownership? caller-project-id slave_id)]
+     (if-not can-kill?
+       ;; Blocked by ownership mismatch
+       {:success false
+        :error (format "cross-project kill denied: caller=%s target=%s" caller-project target-project)
+        :slave-id slave_id
+        :reason reason}
+       ;; Ownership OK, now check critical ops
+       (let [{crit-can-kill? :can-kill? :keys [blocking-ops]} (ds/can-kill? slave_id)]
+         (if crit-can-kill?
+           ;; Safe to kill
+           (let [elisp (format "(json-encode (hive-mcp-swarm-api-kill \"%s\"))"
+                               (v/escape-elisp-string slave_id))
+                 {:keys [success result error timed-out]} (ec/eval-elisp-with-timeout elisp 3000)]
+             (cond
+               timed-out
+               {:success false :error "timeout" :slave-id slave_id}
 
-          :else
-          {:success false :error error :slave-id slave_id}))
-      ;; Blocked by critical ops
-      {:success false
-       :error (format "critical ops: %s" (format-blocking-ops blocking-ops))
-       :slave-id slave_id})))
+               success
+               (do
+                 ;; Clear from both registries: DataScript + hivemind agent-registry
+                 (hivemind/clear-agent! slave_id)
+                 {:success true :result result :slave-id slave_id})
+
+               :else
+               {:success false :error error :slave-id slave_id}))
+           ;; Blocked by critical ops
+           {:success false
+            :error (format "critical ops: %s" (format-blocking-ops blocking-ops))
+            :slave-id slave_id}))))))
 
 (defn handle-swarm-kill
   "Kill a slave or all slaves.
@@ -138,103 +194,94 @@
    Critical ops: :wrap (session crystallization), :commit (git),
    :dispatch (task dispatch in progress).
 
+   OWNERSHIP GUARD: Prevents cross-project kills.
+   - Caller with directory context can only kill lings from same project
+   - Caller without directory (coordinator) can kill any ling
+   - Legacy lings without project-id can be killed by anyone
+
    PROJECT-SCOPED KILL: When slave_id='all' and directory is provided,
    only kills lings belonging to that project (not all lings globally).
 
    Parameters:
    - slave_id: ID of slave to kill, or \"all\" to kill all
-   - directory: Working directory to scope kill (optional, for 'all' only)
+   - directory: Working directory to scope kill (optional).
+                For single kills, enforces ownership check.
+                For 'all', filters to project-owned lings only.
 
    CLARITY: Y - Yield safe failure with timeout handling
-   CLARITY: I - Inputs guarded (critical ops check)
+   CLARITY: I - Inputs guarded (ownership + critical ops check)
    SOLID: SRP - Only handles kill operation"
   [{:keys [slave_id directory]}]
   (core/with-swarm
-    ;; Kill Guard: Check for critical operations before proceeding
-    (if (= slave_id "all")
-      ;; Kill all (optionally project-scoped)
-      (let [project-id (when directory (scope/get-current-project-id directory))
-            ;; Get slave IDs to kill (project-scoped or all)
-            slave-ids (if project-id
-                        (ds/get-slave-ids-by-project project-id)
-                        (keys (registry/get-available-lings)))
-            {:keys [can-kill? blocked-slaves]} (check-any-critical-ops slave-ids)]
-        (cond
-          ;; No lings to kill
-          (empty? slave-ids)
-          (core/mcp-success {:killed 0
-                             :project-id project-id
-                             :message (if project-id
-                                        (format "No lings found for project '%s'" project-id)
-                                        "No lings to kill")})
+    ;; Derive caller's project-id for ownership checks
+    (let [caller-project-id (when directory (scope/get-current-project-id directory))]
+      (if (= slave_id "all")
+        ;; Kill all (optionally project-scoped)
+        (let [;; Get slave IDs to kill (project-scoped or all)
+              slave-ids (if caller-project-id
+                          (ds/get-slave-ids-by-project caller-project-id)
+                          (keys (registry/get-available-lings)))
+              {:keys [can-kill? blocked-slaves]} (check-any-critical-ops slave-ids)]
+          (cond
+            ;; No lings to kill
+            (empty? slave-ids)
+            (core/mcp-success {:killed 0
+                               :project-id caller-project-id
+                               :message (if caller-project-id
+                                          (format "No lings found for project '%s'" caller-project-id)
+                                          "No lings to kill")})
 
-          ;; Blocked by critical ops
-          (not can-kill?)
-          (core/mcp-error
-           (format "KILL BLOCKED: Cannot kill slaves with critical operations in progress. Blocked slaves: %s"
-                   (str/join ", " (map (fn [{:keys [id ops]}]
-                                         (format "%s (%s)" id (format-blocking-ops ops)))
-                                       blocked-slaves))))
+            ;; Blocked by critical ops
+            (not can-kill?)
+            (core/mcp-error
+             (format "KILL BLOCKED: Cannot kill slaves with critical operations in progress. Blocked slaves: %s"
+                     (str/join ", " (map (fn [{:keys [id ops]}]
+                                           (format "%s (%s)" id (format-blocking-ops ops)))
+                                         blocked-slaves))))
 
-          ;; Project-scoped kill: kill each ling individually
-          project-id
-          (let [results (mapv kill-single-slave! slave-ids)
-                killed (filter :success results)
-                failed (remove :success results)]
-            ;; Update Prometheus gauge
-            (let [current-count (count (registry/get-available-lings))]
-              (prom/set-lings-active! (max 0 (- current-count (count killed)))))
-            (core/mcp-success {:killed (count killed)
-                               :failed (count failed)
-                               :project-id project-id
-                               :details {:killed (mapv :slave-id killed)
-                                         :failed (mapv #(select-keys % [:slave-id :error]) failed)}}))
+            ;; Project-scoped kill: kill each ling individually (with ownership check)
+            caller-project-id
+            (let [results (mapv #(kill-single-slave! % caller-project-id) slave-ids)
+                  killed (filter :success results)
+                  failed (remove :success results)]
+              ;; Update Prometheus gauge
+              (let [current-count (count (registry/get-available-lings))]
+                (prom/set-lings-active! (max 0 (- current-count (count killed)))))
+              (core/mcp-success {:killed (count killed)
+                                 :failed (count failed)
+                                 :project-id caller-project-id
+                                 :details {:killed (mapv :slave-id killed)
+                                           :failed (mapv #(select-keys % [:slave-id :error]) failed)}}))
 
-          ;; Global kill-all (no directory provided)
-          :else
-          (let [elisp "(json-encode (hive-mcp-swarm-api-kill-all))"
-                {:keys [success result error timed-out]} (ec/eval-elisp-with-timeout elisp 3000)]
-            (cond
-              timed-out
-              (core/mcp-timeout-error "Kill operation" :extra-data {:slave_id slave_id})
+            ;; Global kill-all (no directory provided - coordinator context)
+            :else
+            (let [elisp "(json-encode (hive-mcp-swarm-api-kill-all))"
+                  {:keys [success result error timed-out]} (ec/eval-elisp-with-timeout elisp 3000)]
+              (cond
+                timed-out
+                (core/mcp-timeout-error "Kill operation" :extra-data {:slave_id slave_id})
 
-              success
-              (do
-                ;; Clear all registries: DataScript + hivemind agent-registry
-                ;; Bug fix (task 9871bcf4): hivemind_status showed stale entries
-                (registry/clear-registry!)
-                (reset! hivemind/agent-registry {})
-                ;; CLARITY-T: Reset Prometheus gauge to 0
-                (prom/set-lings-active! 0)
-                (core/mcp-success result))
+                success
+                (do
+                  ;; Clear all registries: DataScript + hivemind agent-registry
+                  ;; Bug fix (task 9871bcf4): hivemind_status showed stale entries
+                  (registry/clear-registry!)
+                  (reset! hivemind/agent-registry {})
+                  ;; CLARITY-T: Reset Prometheus gauge to 0
+                  (prom/set-lings-active! 0)
+                  (core/mcp-success result))
 
-              :else
-              (core/mcp-error (str "Error: " error))))))
-      ;; Single slave kill
-      (let [{:keys [can-kill? blocking-ops]} (ds/can-kill? slave_id)]
-        (if can-kill?
-          ;; Safe to kill
-          (let [elisp (format "(json-encode (hive-mcp-swarm-api-kill \"%s\"))"
-                              (v/escape-elisp-string slave_id))
-                {:keys [success result error timed-out]} (ec/eval-elisp-with-timeout elisp 3000)]
-            (cond
-              timed-out
-              (core/mcp-timeout-error "Kill operation" :extra-data {:slave_id slave_id})
-
-              success
-              (do
-                ;; Clear from both registries: DataScript + hivemind agent-registry
-                ;; Bug fix (task 9871bcf4): hivemind_status showed stale entries
-                (hivemind/clear-agent! slave_id)
-                ;; CLARITY-T: Decrement Prometheus gauge (estimate current - 1)
-                (let [current-count (count (registry/get-available-lings))]
-                  (prom/set-lings-active! (max 0 (dec current-count))))
-                (core/mcp-success result))
-
-              :else
-              (core/mcp-error (str "Error: " error))))
-          ;; Blocked by critical ops
-          (core/mcp-error
-           (format "KILL BLOCKED: Cannot kill slave '%s' - critical operation(s) in progress: %s. Wait for completion or use force if necessary."
-                   slave_id
-                   (format-blocking-ops blocking-ops))))))))
+                :else
+                (core/mcp-error (str "Error: " error))))))
+        ;; Single slave kill - use ownership-aware kill-single-slave!
+        (let [{:keys [success error] :as result} (kill-single-slave! slave_id caller-project-id)]
+          (if success
+            (do
+              ;; CLARITY-T: Decrement Prometheus gauge (estimate current - 1)
+              (let [current-count (count (registry/get-available-lings))]
+                (prom/set-lings-active! (max 0 (dec current-count))))
+              (core/mcp-success (:result result)))
+            ;; Return appropriate error (ownership or critical-ops)
+            (core/mcp-error
+             (format "KILL BLOCKED: Cannot kill slave '%s' - %s"
+                     slave_id error))))))))

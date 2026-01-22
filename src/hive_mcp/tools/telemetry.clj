@@ -9,7 +9,6 @@
    CLARITY-Y: Graceful degradation on connection failures."
   (:require [hive-mcp.tools.core :refer [mcp-json]]
             [clj-http.client :as http]
-            [clojure.data.json :as json]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>

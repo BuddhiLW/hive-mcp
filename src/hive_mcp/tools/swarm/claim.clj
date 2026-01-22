@@ -4,10 +4,11 @@
    Provides visibility and manual control over file claims:
    - claim_list: Show all active claims with staleness warnings
    - claim_clear: Release a claim by file path
+   - claim_cleanup: Release all stale claims (auto-expiration)
 
    SOLID: SRP - File claim tools only
    CLARITY: I - Inputs validated at boundary, Y - Safe failure for missing claims"
-  (:require [hive-mcp.swarm.logic :as logic]
+  (:require [hive-mcp.swarm.datascript.lings :as lings]
             [hive-mcp.events.core :as events]
             [clojure.data.json :as json]
             [taoensso.timbre :as log]))
@@ -16,41 +17,33 @@
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 ;; =============================================================================
-;; Claim Timestamps (for staleness detection)
+;; Timestamp Recording (for coordinator dual-storage pattern)
 ;; =============================================================================
-;; The core.logic pldb doesn't store timestamps, so we track them separately.
-;; This atom maps file-path -> timestamp-ms when claim was registered.
-
-(defonce ^:private claim-timestamps
-  (atom {}))
 
 (defn record-claim-timestamp!
-  "Record when a claim was made. Called from coordinator when registering claims."
-  [file-path]
-  (swap! claim-timestamps assoc file-path (System/currentTimeMillis)))
+  "Record a claim timestamp in DataScript for staleness tracking.
+   Called by coordinator after adding claim to logic DB.
+
+   The coordinator uses dual storage:
+   - logic/add-claim! → core.logic pldb (in-memory, for conflict resolution)
+   - record-claim-timestamp! → DataScript (persistent, for staleness detection)
+
+   Arguments:
+     file-path - File being claimed
+     slave-id  - Slave making the claim (optional, defaults to unknown)"
+  ([file-path]
+   (record-claim-timestamp! file-path "unknown"))
+  ([file-path slave-id]
+   (lings/claim-file! file-path slave-id)))
 
 (defn remove-claim-timestamp!
-  "Remove timestamp record when claim is released."
+  "Remove a claim from DataScript when task completes.
+   Called by coordinator when releasing task claims.
+
+   Arguments:
+     file-path - File to release"
   [file-path]
-  (swap! claim-timestamps dissoc file-path))
-
-(defn get-claim-timestamp
-  "Get timestamp for a claim, or nil if not tracked."
-  [file-path]
-  (get @claim-timestamps file-path))
-
-(defn clear-all-timestamps!
-  "Clear all timestamp records. Call when resetting claims."
-  []
-  (reset! claim-timestamps {}))
-
-;; =============================================================================
-;; Constants
-;; =============================================================================
-
-(def ^:private stale-threshold-ms
-  "Claims older than 10 minutes are considered stale (600,000 ms)."
-  (* 10 60 1000))
+  (lings/release-claim! file-path))
 
 ;; =============================================================================
 ;; Handlers
@@ -58,15 +51,14 @@
 
 (defn- format-claim
   "Format a claim with timestamp and staleness info."
-  [{:keys [file slave-id]} now]
-  (let [timestamp (get-claim-timestamp file)
-        age-ms (when timestamp (- now timestamp))
+  [{:keys [file slave-id created-at]} now]
+  (let [age-ms (when created-at (- now created-at))
         age-min (when age-ms (/ age-ms 60000.0))
-        stale? (and age-ms (> age-ms stale-threshold-ms))]
+        stale? (and age-ms (> age-ms lings/default-stale-threshold-ms))]
     (cond-> {:file file
              :owner slave-id}
-      timestamp (assoc :claimed-at timestamp
-                       :age-minutes (when age-min (Math/round ^double age-min)))
+      created-at (assoc :claimed-at created-at
+                        :age-minutes (when age-min (Math/round ^double age-min)))
       stale? (assoc :stale true
                     :warning (str "Claim is " (Math/round ^double age-min) " minutes old (>10 min)")))))
 
@@ -74,7 +66,7 @@
   "Handler for claim_list tool.
    Lists all active file claims with timestamps and staleness warnings."
   [_params]
-  (let [claims (logic/get-all-claims)
+  (let [claims (lings/get-all-claims)
         now (System/currentTimeMillis)
         formatted (mapv #(format-claim % now) claims)
         stale-count (count (filter :stale formatted))]
@@ -93,21 +85,20 @@
   (if (empty? file_path)
     {:type "text"
      :text (json/write-str {:error "file_path is required"})}
-    (let [claim (logic/get-claim-for-file file_path)]
+    (let [claim (lings/get-claim-info file_path)]
       (if claim
-        (let [timestamp (get-claim-timestamp file_path)
-              now (System/currentTimeMillis)
-              age-ms (when timestamp (- now timestamp))
+        (let [now (System/currentTimeMillis)
+              created-at (:created-at claim)
+              age-ms (when created-at (- now created-at))
               age-min (when age-ms (/ age-ms 60000.0))
-              stale? (and age-ms (> age-ms stale-threshold-ms))]
+              stale? (and age-ms (> age-ms lings/default-stale-threshold-ms))]
           ;; Require force flag if claim is not stale (safety measure)
           (if (or force stale?)
             (do
-              (logic/release-claim-for-file! file_path)
-              (remove-claim-timestamp! file_path)
+              (lings/release-claim! file_path)
               ;; Emit event for claim release (enables queue processing)
-              (events/dispatch :claim/file-released {:file file_path
-                                                     :released-by "manual-clear"})
+              (events/dispatch [:claim/file-released {:file file_path
+                                                      :released-by "manual-clear"}])
               (log/info "claim_clear: Released claim for" file_path "from" (:slave-id claim))
               {:type "text"
                :text (json/write-str
@@ -127,6 +118,46 @@
          :text (json/write-str
                 {:success false
                  :message (str "No claim exists for file: " file_path)})}))))
+
+(defn handle-claim-cleanup
+  "Handler for claim_cleanup tool.
+   Releases all stale claims (auto-expiration)."
+  [{:keys [threshold_minutes dry_run]}]
+  (let [threshold-ms (if threshold_minutes
+                       (* threshold_minutes 60 1000)
+                       lings/default-stale-threshold-ms)
+        stale-claims (lings/get-stale-claims threshold-ms)]
+    (if (empty? stale-claims)
+      {:type "text"
+       :text (json/write-str
+              {:success true
+               :message "No stale claims found"
+               :threshold-minutes (/ threshold-ms 60000)})}
+      (if dry_run
+        ;; Dry run - just report what would be cleaned
+        {:type "text"
+         :text (json/write-str
+                {:dry-run true
+                 :would-release (count stale-claims)
+                 :stale-claims (mapv (fn [{:keys [file slave-id age-minutes]}]
+                                       {:file file
+                                        :owner slave-id
+                                        :age-minutes age-minutes})
+                                     stale-claims)
+                 :hint "Run with dry_run=false to actually release these claims"})}
+        ;; Actual cleanup
+        (let [result (lings/cleanup-stale-claims! threshold-ms)]
+          ;; Emit events for each released claim
+          (doseq [file (:released-files result)]
+            (events/dispatch [:claim/file-released {:file file
+                                                    :released-by "auto-cleanup"}]))
+          (log/info "claim_cleanup: Released" (:released-count result) "stale claims")
+          {:type "text"
+           :text (json/write-str
+                  {:success true
+                   :released-count (:released-count result)
+                   :released-files (:released-files result)
+                   :threshold-minutes (/ threshold-ms 60000)})})))))
 
 ;; =============================================================================
 ;; Tool Definitions
@@ -149,4 +180,14 @@
                                "force" {:type "boolean"
                                         :description "Force release even if claim is not stale (default: false)"}}
                   :required ["file_path"]}
-    :handler handle-claim-clear}])
+    :handler handle-claim-clear}
+
+   {:name "claim_cleanup"
+    :description "Release all stale claims (auto-expiration). Claims older than threshold are automatically released. Use dry_run=true to preview what would be cleaned."
+    :inputSchema {:type "object"
+                  :properties {"threshold_minutes" {:type "number"
+                                                    :description "Staleness threshold in minutes (default: 10)"}
+                               "dry_run" {:type "boolean"
+                                          :description "If true, only report stale claims without releasing (default: false)"}}
+                  :required []}
+    :handler handle-claim-cleanup}])

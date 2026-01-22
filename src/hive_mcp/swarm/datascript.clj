@@ -51,9 +51,9 @@
 (def create-conn connection/create-conn)
 (def get-conn connection/get-conn)
 (def reset-conn! connection/reset-conn!)
-(defn- ensure-conn [] (connection/ensure-conn))
+(defn- _ensure-conn [] (connection/ensure-conn))
 (def now connection/now)
-(defn- gen-id
+(defn- _gen-id
   ([] (connection/gen-id))
   ([prefix] (connection/gen-id prefix)))
 

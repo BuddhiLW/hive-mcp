@@ -49,7 +49,7 @@ BB_MCP_DIR="${BB_MCP_DIR:-$HOME/PP/bb-mcp}"
 
 if [[ ! -d "$BB_MCP_DIR" ]]; then
     err "bb-mcp not found at $BB_MCP_DIR"
-    echo "  Clone from: https://github.com/your-user/bb-mcp" >&2
+    echo "  Clone from: https://github.com/hive-agi/bb-mcp" >&2
     echo "  Or set BB_MCP_DIR environment variable" >&2
     exit 1
 fi

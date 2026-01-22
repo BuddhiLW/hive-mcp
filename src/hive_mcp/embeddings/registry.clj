@@ -19,7 +19,6 @@
      ;; Register custom factory
      (register-factory! :my-provider my-factory-fn)"
   (:require [hive-mcp.embeddings.config :as config]
-            [hive-mcp.chroma :as chroma]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
