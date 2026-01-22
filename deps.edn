@@ -62,12 +62,12 @@
                              :exclusions [org.apache.logging.log4j/log4j-slf4j2-impl]}
 
         ;; hive-events - re-frame inspired event system for JVM
-        ;; Git submodule for local development
-        io.github.hive/events {:local/root "hive-events"}
+        io.github.hive-agi/hive-events
+        {:git/tag "v0.1.0" :git/sha "240a09e"}
 
         ;; hive-hot - unified hot-reload with events integration
-        ;; Symlinked for local development
-        io.github.hive/hot {:local/root "hive-hot"}
+        io.github.hive-agi/hive-hot
+        {:git/tag "v0.1.1" :git/sha "65530d1"}
 
         ;; Prometheus metrics - iapetos provides idiomatic Clojure wrapper
         ;; CLARITY-T: Telemetry first - observable system
