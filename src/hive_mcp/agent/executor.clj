@@ -18,7 +18,9 @@
 ;;; ============================================================
 
 ;; Re-export from context namespace for backward compatibility
-(def ^:dynamic *current-agent-id* ctx/*current-agent-id*)
+;; DEPRECATED: Use ctx/current-agent-id function or ctx/with-request-context macro
+#_{:clj-kondo/ignore [:deprecated-var]}
+(def ^:dynamic ^:deprecated *current-agent-id* ctx/*current-agent-id*)
 
 (defn current-agent-id
   "Get the current agent-id from execution context.
@@ -79,13 +81,13 @@
 (defn execute-tool-calls
   "Execute a batch of tool calls, respecting permissions.
 
-   Binds ctx/*current-agent-id* during execution so that tools like
+   Binds request context during execution so that tools like
    hivemind_shout can identify the calling agent without requiring
    explicit agent_id parameter.
 
    Returns vector of tool result messages for conversation history."
   [agent-id tool-calls permissions]
-  (binding [ctx/*current-agent-id* agent-id]
+  (ctx/with-request-context {:agent-id agent-id}
     (mapv (fn [{:keys [id name arguments]}]
             (let [approved? (or (not (requires-approval? name permissions))
                                 (request-approval! agent-id name arguments))]

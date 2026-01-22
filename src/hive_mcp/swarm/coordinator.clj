@@ -148,20 +148,21 @@
     :files-claimed N}  - count of files claimed (0 if conflicts)"
   [task-id slave-id files]
   (when (seq files)
-    (locking (logic/get-logic-db-atom)
-      (let [conflicts (logic/check-file-conflicts slave-id files)]
-        (if (seq conflicts)
-          {:acquired? false
-           :conflicts (vec conflicts)
-           :files-claimed 0}
-          (do
-            (doseq [f files]
-              (logic/add-claim! f slave-id)
-              (logic/add-task-file! task-id f)
-              (claim-tools/record-claim-timestamp! f slave-id))
-            {:acquired? true
-             :conflicts []
-             :files-claimed (count files)}))))))
+    (let [lock-obj (logic/get-logic-db-atom)]
+      (locking lock-obj
+        (let [conflicts (logic/check-file-conflicts slave-id files)]
+          (if (seq conflicts)
+            {:acquired? false
+             :conflicts (vec conflicts)
+             :files-claimed 0}
+            (do
+              (doseq [f files]
+                (logic/add-claim! f slave-id)
+                (logic/add-task-file! task-id f)
+                (claim-tools/record-claim-timestamp! f slave-id))
+              {:acquired? true
+               :conflicts []
+               :files-claimed (count files)})))))))
 
 ;; =============================================================================
 ;; Pre-Flight Check API

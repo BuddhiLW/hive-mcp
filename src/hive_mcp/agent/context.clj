@@ -90,6 +90,7 @@
      4. \"unknown-agent\" - last resort"
   []
   (or (:agent-id *request-ctx*)
+      #_{:clj-kondo/ignore [:deprecated-var]}
       *current-agent-id*))
 
 (defn current-project-id

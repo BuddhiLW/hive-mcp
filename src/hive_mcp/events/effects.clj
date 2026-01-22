@@ -440,7 +440,7 @@
               elisp (format "(json-encode (hive-mcp-api-kanban-move %s \"done\" %s))"
                             (str "\"" task-id "\"")
                             dir-arg)
-              {:keys [success error]} (require '[hive-mcp.emacsclient :as ec])
+              {:keys [_success _error]} (require '[hive-mcp.emacsclient :as ec])
               result (when (resolve 'hive-mcp.emacsclient/eval-elisp)
                        ((resolve 'hive-mcp.emacsclient/eval-elisp) elisp))]
           (if (:success result)

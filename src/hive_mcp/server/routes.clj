@@ -137,12 +137,10 @@
   (fn [args]
     (let [agent-id (extract-agent-id args nil)
           project-id (extract-project-id args)
-          directory (or (:directory args) (get args "directory"))
-          request-ctx (ctx/make-request-ctx {:agent-id agent-id
-                                             :project-id project-id
-                                             :directory directory})]
-      (binding [ctx/*request-ctx* request-ctx
-                ctx/*current-agent-id* agent-id]
+          directory (or (:directory args) (get args "directory"))]
+      (ctx/with-request-context {:agent-id agent-id
+                                 :project-id project-id
+                                 :directory directory}
         (handler args)))))
 
 (defn wrap-handler-normalize

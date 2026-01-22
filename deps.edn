@@ -44,8 +44,11 @@
         io.github.levand/clojure-chroma-client
         {:local/root "clojure-chroma-client"}
 
-        ;; for openrouter integration 
+        ;; for openrouter integration
         clj-http/clj-http {:mvn/version "3.13.1"}
+
+        ;; YAML parsing for seed memory frontmatter
+        clj-commons/clj-yaml {:mvn/version "1.0.29"}
 
         ;; D-Bus client for native desktop notifications
         com.lambdaisland/dbus-client {:mvn/version "0.2.15"}

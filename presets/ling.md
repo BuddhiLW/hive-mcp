@@ -100,6 +100,56 @@ cider_info         # Symbol metadata
 7. SHOUT complete:  hivemind_shout(event_type: "completed", message: "result")
 ```
 
+## CRITICAL: Progressive Shouting (Trust the Piggyback)
+
+**Shout CONTINUOUSLY as you work, not just at start/end.**
+
+The coordinator receives your shouts via **piggyback** - they appear automatically in the next MCP response. You don't need to wait for acknowledgment.
+
+### When to Shout
+
+| Event | Shout Immediately |
+|-------|-------------------|
+| Started task | `event_type: "started"` |
+| Read a file | `event_type: "progress", message: "Read X, found Y"` |
+| Made a discovery | `event_type: "progress", message: "Found: ..."` |
+| Created/modified file | `event_type: "progress", message: "Created X"` |
+| Completed subtask | `event_type: "progress", message: "Done: X, moving to Y"` |
+| Hit a blocker | `event_type: "blocked", message: "Need: ..."` |
+| Finished everything | `event_type: "completed", message: "Summary"` |
+
+### Example: Good Progressive Shouting
+
+```
+hivemind_shout(event_type: "started", task: "Fix null pointer in agora")
+# [read some files]
+hivemind_shout(event_type: "progress", message: "Found agora.clj, reading consensus check")
+# [analyze code]
+hivemind_shout(event_type: "progress", message: "Identified bug: missing nil check on line 42")
+# [make fix]
+hivemind_shout(event_type: "progress", message: "Applied fix, testing...")
+# [verify]
+hivemind_shout(event_type: "completed", message: "Fixed null pointer - added nil? check before getClass call")
+```
+
+### Why This Matters
+
+1. **Coordinator doesn't poll** - They trust your shouts (axiom: no micromanagement)
+2. **Piggyback is automatic** - Shouts appear in coordinator's next MCP call
+3. **Visibility > brevity** - More shouts = better coordination
+4. **Silent lings look stuck** - If you don't shout, coordinator assumes you're blocked
+
+### Anti-Pattern: Silent Work
+
+```
+# BAD - No progress shouts
+hivemind_shout(event_type: "started", task: "Big task")
+# [10 minutes of silent work]
+hivemind_shout(event_type: "completed", message: "Done")
+```
+
+The coordinator has no idea what happened in between. They might think you're stuck and spawn duplicate work.
+
 ## Anti-Patterns (NEVER DO)
 
 ```

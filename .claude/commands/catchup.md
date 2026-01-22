@@ -115,6 +115,19 @@ Output:
 ```markdown
 ## Session Catch-Up
 
+## AXIOMS (Inviolable - Follow Word-for-Word)
+
+These rules MUST be followed exactly as written. No exceptions.
+
+1. **[Axiom Title]**: [Full axiom content loaded from memory]
+   - Source: [memory ID]
+
+## Priority Conventions
+
+Conventions tagged with 'catchup-priority' - follow these closely.
+
+1. **[Convention]**: [Full content]
+
 ### Current State
 - Active branch: `branch-name`
 - Uncommitted changes: yes/no

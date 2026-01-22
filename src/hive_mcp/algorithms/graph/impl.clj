@@ -7,12 +7,11 @@
 ;; Adjacency List Graph Implementation
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(defrecord AdjacencyListGraph [nodes adj-map]
-  "Adjacency list graph representation.
-  
-  Fields:
-  - nodes: map of node-id -> Node
-  - adj-map: map of node-id -> vector of {:to node-id :weight number}")
+;; Adjacency list graph representation.
+;; Fields:
+;; - nodes: map of node-id -> Node
+;; - adj-map: map of node-id -> vector of {:to node-id :weight number}
+(defrecord AdjacencyListGraph [nodes adj-map])
 
 (extend-type AdjacencyListGraph
   domain/IGraph

@@ -162,7 +162,7 @@
    6. Store in DataScript (for post-mortem)
 
    Returns: event-id string for correlation"
-  [{:keys [type severity message context recoverable?] :as event}]
+  [{:keys [type _severity _message _context recoverable?] :as event}]
   ;; 1. Validate
   (validate-event! event)
 

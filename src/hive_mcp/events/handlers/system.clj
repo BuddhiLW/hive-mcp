@@ -29,7 +29,7 @@
                    :source \"hooks/harvest-session-progress\"
                    :message \"Emacs unreachable\"
                    :context {:fn \"...\"}}]"
-  [coeffects [_ error-data]]
+  [_coeffects [_ error-data]]
   (log/debug "[SYSTEM] Error event received:" (:error-type error-data))
   {:emit-system-error error-data})
 
