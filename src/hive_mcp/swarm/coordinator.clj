@@ -158,7 +158,7 @@
             (doseq [f files]
               (logic/add-claim! f slave-id)
               (logic/add-task-file! task-id f)
-              (claim-tools/record-claim-timestamp! f))
+              (claim-tools/record-claim-timestamp! f slave-id))
             {:acquired? true
              :conflicts []
              :files-claimed (count files)}))))))
@@ -227,7 +227,7 @@
     (doseq [f files]
       (logic/add-claim! f slave-id)
       (logic/add-task-file! task-id f)
-      (claim-tools/record-claim-timestamp! f))
+      (claim-tools/record-claim-timestamp! f slave-id))
     (log/info "Registered" (count files) "file claims for task" task-id)))
 
 (defn release-task-claims!

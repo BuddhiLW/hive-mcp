@@ -17,6 +17,35 @@
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 ;; =============================================================================
+;; Timestamp Recording (for coordinator dual-storage pattern)
+;; =============================================================================
+
+(defn record-claim-timestamp!
+  "Record a claim timestamp in DataScript for staleness tracking.
+   Called by coordinator after adding claim to logic DB.
+
+   The coordinator uses dual storage:
+   - logic/add-claim! → core.logic pldb (in-memory, for conflict resolution)
+   - record-claim-timestamp! → DataScript (persistent, for staleness detection)
+
+   Arguments:
+     file-path - File being claimed
+     slave-id  - Slave making the claim (optional, defaults to unknown)"
+  ([file-path]
+   (record-claim-timestamp! file-path "unknown"))
+  ([file-path slave-id]
+   (lings/claim-file! file-path slave-id)))
+
+(defn remove-claim-timestamp!
+  "Remove a claim from DataScript when task completes.
+   Called by coordinator when releasing task claims.
+
+   Arguments:
+     file-path - File to release"
+  [file-path]
+  (lings/release-claim! file-path))
+
+;; =============================================================================
 ;; Handlers
 ;; =============================================================================
 
