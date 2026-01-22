@@ -44,17 +44,16 @@ export BB_MCP_DIR="$HOME/bb-mcp"
 **Option A: Automated with [hive-mcp-cli](https://github.com/hive-agi/hive-mcp-cli) (Recommended)**
 
 ```bash
-# Install CLI (requires Go 1.21+)
+# 1. Install CLI and MCP server (requires Go 1.21+)
 go install github.com/hive-agi/hive-mcp-cli/cmd/hive@latest
+go install github.com/hive-agi/hive-mcp-cli/cmd/hive-setup-mcp@latest
 
-# Run setup (clones repos, installs deps, configures everything)
-hive setup
+# 2. Register MCP server with Claude
+claude mcp add hive-setup --scope user -- hive-setup-mcp
 
-# Verify installation
-hive doctor
+# 3. Start Claude and ask: "Help me setup hive-mcp"
+claude
 ```
-
-The CLI automates: cloning repos, shell config, Clojure deps, Emacs setup, Docker/Chroma, and MCP registration. See [hive-mcp-cli](https://github.com/hive-agi/hive-mcp-cli) for details.
 
 **Option B: Manual**
 
