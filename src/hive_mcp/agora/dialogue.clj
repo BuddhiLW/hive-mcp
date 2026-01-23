@@ -302,24 +302,42 @@
    - from: Sender slave-id (defaults to env CLAUDE_SWARM_SLAVE_ID)
    - to: Receiver slave-id (required)
    - message: Message content, may include [SIGNAL: X] prefix
+   - signal: Optional explicit signal (keyword or string), takes priority over message parsing
+
+   Signal priority: explicit :signal param > parsed from message prefix > default :propose
 
    Returns: Result from swarm-dispatch with dialogue metadata
 
    Example:
+   ;; With message prefix (backward compatible)
    (dialogue-dispatch
      {:dialogue-id \"dialogue-123\"
       :to \"critic-456\"
-      :message \"[SIGNAL: propose] Here's iteration 2...\"})"
-  [{:keys [dialogue-id from to message timeout_ms files]}]
+      :message \"[SIGNAL: propose] Here's iteration 2...\"})
+
+   ;; With explicit signal (data-driven)
+   (dialogue-dispatch
+     {:dialogue-id \"dialogue-123\"
+      :to \"critic-456\"
+      :signal :approve
+      :message \"LGTM, ship it!\"})"
+  [{:keys [dialogue-id from to message timeout_ms files signal]}]
   {:pre [(some? dialogue-id) (some? to) (some? message)]}
   (let [sender-id (or from (System/getenv "CLAUDE_SWARM_SLAVE_ID") "unknown")
-        ;; Parse signal from message
-        [signal cleaned-message] (parse-signal message)
+        ;; Signal priority: explicit param > parsed from message > default :propose
+        explicit-signal (when signal
+                          (let [s (if (keyword? signal) signal (keyword signal))]
+                            (when (contains? signals s) s)))
+        [parsed-signal cleaned-message] (if explicit-signal
+                                          ;; Skip prefix parsing when explicit signal provided
+                                          [nil message]
+                                          (parse-signal message))
+        final-signal (or explicit-signal parsed-signal :propose)
         ;; Create turn data
         turn-data {:sender sender-id
                    :receiver to
                    :message cleaned-message
-                   :signal signal}]
+                   :signal final-signal}]
 
     ;; Validate dialogue exists and is active
     (when-not (dialogue-active? dialogue-id)
@@ -334,7 +352,7 @@
                              :turn-num (:turn-num turn)
                              :from sender-id
                              :to to
-                             :signal signal})
+                             :signal final-signal})
 
       ;; Check for Nash equilibrium after recording turn
       (when (nash-equilibrium? dialogue-id)
@@ -349,6 +367,16 @@
                               :prompt message
                               :timeout_ms timeout_ms
                               :files files})]
+
+        ;; Emit turn-dispatched event for relay handler
+        (ws/emit! :agora/turn-dispatched
+                  {:dialogue-id dialogue-id
+                   :from sender-id
+                   :to to
+                   :turn-num (:turn-num turn)
+                   :signal final-signal
+                   :message cleaned-message
+                   :topic (:topic (get-dialogue dialogue-id))})
 
         ;; Update turn with task-id from result (if available)
         (when-let [task-id (try

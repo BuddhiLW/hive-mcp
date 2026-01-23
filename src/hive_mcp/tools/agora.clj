@@ -65,23 +65,30 @@
 (defn handle-agora-dispatch
   "Dispatch a message within an Agora dialogue.
 
-   Message should include [SIGNAL: X] prefix for Nash equilibrium tracking:
-   - [SIGNAL: propose] - Introduce change (resets equilibrium)
-   - [SIGNAL: counter] - Disagree with reasoning (resets equilibrium)
-   - [SIGNAL: approve] - Accept current state (+1 equilibrium)
-   - [SIGNAL: no-change] - No changes needed (+1 equilibrium)
-   - [SIGNAL: defer] - Yield to another's judgment (neutral)
+   Signal can be provided explicitly via :signal parameter, or parsed from
+   [SIGNAL: X] prefix in message. Explicit signal takes priority.
+
+   Valid signals (Nash equilibrium tracking):
+   - propose   - Introduce change (resets equilibrium)
+   - counter   - Disagree with reasoning (resets equilibrium)
+   - approve   - Accept current state (+1 equilibrium)
+   - no-change - No changes needed (+1 equilibrium)
+   - defer     - Yield to another's judgment (neutral)
+
+   If neither explicit signal nor prefix provided, defaults to :propose.
 
    Auto-checks Nash equilibrium after recording turn.
 
    Returns: {:dialogue-id, :turn, :signal, :consensus-status}."
-  [{:keys [dialogue_id to message from timeout_ms files]}]
+  [{:keys [dialogue_id to message from timeout_ms files signal]}]
   (try
-    (let [result (dialogue/dialogue-dispatch
+    (let [signal-kw (when signal (keyword signal))
+          result (dialogue/dialogue-dispatch
                   {:dialogue-id dialogue_id
                    :from from
                    :to to
                    :message message
+                   :signal signal-kw
                    :timeout_ms timeout_ms
                    :files files})
           ;; Check consensus status after dispatch
@@ -221,14 +228,17 @@
     :handler handle-agora-create-dialogue}
 
    {:name "agora_dispatch"
-    :description "Dispatch a message within an Agora dialogue. Message should include [SIGNAL: X] prefix for Nash equilibrium tracking. Signals: propose (reset), counter (reset), approve (+1), no-change (+1), defer (neutral). Auto-checks consensus after turn."
+    :description "Dispatch a message within an Agora dialogue. Signal can be provided via `signal` parameter (recommended) or parsed from [SIGNAL: X] prefix in message (backward compatible). Signals: propose (reset), counter (reset), approve (+1), no-change (+1), defer (neutral). Auto-checks consensus after turn."
     :inputSchema {:type "object"
                   :properties {:dialogue_id {:type "string"
                                              :description "ID of the dialogue"}
                                :to {:type "string"
                                     :description "Target ling slave-id to receive the message"}
                                :message {:type "string"
-                                         :description "Message content with [SIGNAL: X] prefix (e.g., '[SIGNAL: approve] LGTM')"}
+                                         :description "Message content. Signal can be included as [SIGNAL: X] prefix for backward compatibility, or use the `signal` parameter instead (recommended)."}
+                               :signal {:type "string"
+                                        :enum ["propose" "counter" "approve" "no-change" "defer"]
+                                        :description "Optional signal. Takes priority over message prefix. If omitted, parsed from message prefix or defaults to 'propose'."}
                                :from {:type "string"
                                       :description "Sender slave-id (defaults to CLAUDE_SWARM_SLAVE_ID env)"}
                                :timeout_ms {:type "number"
