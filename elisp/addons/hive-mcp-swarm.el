@@ -723,12 +723,14 @@ Returns list of alists suitable for JSON serialization."
 
 ;;;; API for MCP Tools:
 
-(defun hive-mcp-swarm-api-spawn (name presets &optional cwd terminal)
+(defun hive-mcp-swarm-api-spawn (name presets &optional cwd terminal kanban-task-id)
   "API: Spawn slave NAME with PRESETS in CWD using TERMINAL backend.
+KANBAN-TASK-ID optionally links this ling to a kanban task for lifecycle tracking.
 Returns slave-id on success, or error plist on failure."
   (hive-mcp-with-fallback
       (hive-mcp-swarm-spawn name :presets presets :cwd cwd
-                            :terminal (when terminal (intern terminal)))
+                            :terminal (when terminal (intern terminal))
+                            :kanban-task-id kanban-task-id)
     `(:error "spawn-failed" :name ,name :reason "unknown")))
 
 (defun hive-mcp-swarm-api-dispatch (slave-id prompt &optional timeout-ms)

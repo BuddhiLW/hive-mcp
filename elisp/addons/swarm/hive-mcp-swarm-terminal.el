@@ -96,8 +96,17 @@ Ensures terminal processes text before return is sent."
   :group 'hive-mcp-swarm-terminal)
 
 (defcustom hive-mcp-swarm-terminal-prompt-marker "❯"
-  "Marker indicating Claude CLI is ready for input."
+  "Marker indicating Claude CLI is ready for input.
+This is the universal Claude Code prompt character."
   :type 'string
+  :group 'hive-mcp-swarm-terminal)
+
+(defcustom hive-mcp-swarm-terminal-ready-search-window 1500
+  "Number of characters from buffer end to search for ready marker.
+Claude Code UI includes separator lines (────) and status displays
+after the prompt marker, which can push it 600+ chars from buffer end.
+Default 1500 ensures marker is found in typical UI configurations."
+  :type 'integer
   :group 'hive-mcp-swarm-terminal)
 
 (defcustom hive-mcp-swarm-terminal-auto-shout t
@@ -387,12 +396,23 @@ and emit auto-shout events."
        (error "Unknown terminal backend: %s" backend)))))
 
 (defun hive-mcp-swarm-terminal-ready-p (buffer)
-  "Check if terminal BUFFER is ready for input (non-blocking check)."
+  "Check if terminal BUFFER is ready for input (non-blocking check).
+Searches for the Claude Code prompt marker (❯) within the last
+`hive-mcp-swarm-terminal-ready-search-window' characters.
+
+Claude Code UI structure can push the ❯ marker 600+ chars from buffer end:
+  ❯ [prompt line with padding]
+  ──────────────── [separator line ~200 chars]
+  [status/mode info]
+  [trailing whitespace]
+
+Uses a 1500 char search window by default to reliably find the marker."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
       (save-excursion
         (goto-char (point-max))
-        (let ((search-start (max (point-min) (- (point-max) 500))))
+        (let ((search-start (max (point-min)
+                                 (- (point-max) hive-mcp-swarm-terminal-ready-search-window))))
           (search-backward hive-mcp-swarm-terminal-prompt-marker
                            search-start t))))))
 
