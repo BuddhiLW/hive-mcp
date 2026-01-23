@@ -95,7 +95,7 @@
    (parse-signal \"No signal here\")
    => [:propose \"No signal here\"]  ; default to :propose"
   [message]
-  (if-let [[_ signal-str rest] (re-matches #"(?i)\[SIGNAL:\s*([\w-]+)\]\s*(.*)" message)]
+  (if-let [[_ signal-str rest] (re-matches #"(?i)\[SIGNAL:\s*([\w-]+)\]\s*([\s\S]*)" message)]
     (let [signal (keyword (str/lower-case signal-str))]
       (if (contains? signals signal)
         [signal (str/trim rest)]
