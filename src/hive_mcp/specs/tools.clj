@@ -16,7 +16,6 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-
 ;; =============================================================================
 ;; Tool Result Specs (MCP Protocol Compliant)
 ;; =============================================================================
@@ -110,7 +109,7 @@
 
 ;; Memory entry types
 (s/def ::memory-type
-  #{"note" "snippet" "convention" "decision" "conversation"})
+  #{"note" "snippet" "convention" "decision" "conversation" "axiom"})
 
 ;; Tags (optional array of strings)
 (s/def ::tag (s/and string? #(not (str/blank? %))))

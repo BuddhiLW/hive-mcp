@@ -21,13 +21,16 @@
   (:require [hive-mcp.channel :as channel]
             [hive-mcp.channel.websocket :as ws]
             [hive-mcp.channel.piggyback :as piggyback]
-            [hive-mcp.swarm.datascript :as ds]
+            [hive-mcp.swarm.protocol :as proto]
+            [hive-mcp.swarm.datascript.registry :as registry]
+            [hive-mcp.swarm.logic :as logic]
             [hive-mcp.guards :as guards]
             [hive-mcp.agent.context :as ctx]
             [hive-mcp.tools.memory.scope :as mem-scope]
             [clojure.core.async :as async :refer [>!! chan timeout alt!!]]
             [clojure.data.json :as json]
             [clojure.set :as set]
+            [hive-mcp.events.core :as events]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -165,7 +168,7 @@
         ;; Derive project-id with fallback chain
         explicit-project-id (:project-id data)
         directory (:directory data)
-        slave-cwd (when-let [slave (ds/get-slave agent-id)]
+        slave-cwd (when-let [slave (proto/get-slave registry/default-registry agent-id)]
                     (:slave/cwd slave))
         project-id (or explicit-project-id
                        (when directory (mem-scope/get-current-project-id directory))
@@ -192,14 +195,20 @@
                 :last-seen now})))
     ;; Update DataScript status if slave exists there
     ;; This keeps DataScript in sync with hivemind events
-    (when (ds/get-slave agent-id)
-      (ds/update-slave! agent-id {:slave/status event-type}))
+    (when (proto/get-slave registry/default-registry agent-id)
+      (proto/update-slave! registry/default-registry agent-id {:slave/status event-type}))
     ;; Broadcast to Emacs via WebSocket (primary - reliable)
     (when (ws/connected?)
       (ws/emit! (:type event) (dissoc event :type)))
     ;; Also broadcast via old channel (for backwards compat)
     (channel/broadcast! event)
     (log/info "Hivemind shout:" agent-id event-type "project:" project-id)
+    ;; Auto-trigger crystallization on ling completion
+    (when (= event-type :completed)
+      (events/dispatch {:type :ling/completed
+                        :agent-id agent-id
+                        :project-id project-id
+                        :data data}))
     true))
 
 (defn ask!
@@ -270,8 +279,8 @@
    (let [;; Get slaves from DataScript (source of truth)
          ;; Filter by project-id if provided
          ds-slaves (if project-id
-                     (ds/get-slaves-by-project project-id)
-                     (ds/get-all-slaves))
+                     (proto/get-slaves-by-project registry/default-registry project-id)
+                     (proto/get-all-slaves registry/default-registry))
          ;; Get message history from local atom
          msg-history @agent-registry]
      ;; Build merged map: DataScript data + messages
@@ -340,7 +349,7 @@
    hasn't shouted, or nil if agent not found in either source."
   [agent-id]
   (let [msg-history-entry (get @agent-registry agent-id)
-        ds-slave (ds/get-slave agent-id)]
+        ds-slave (proto/get-slave registry/default-registry agent-id)]
     (cond
       ;; Has messages in history
       msg-history-entry (:messages msg-history-entry)
@@ -373,15 +382,16 @@
     ;; Ensure agent exists in DataScript (source of truth)
     ;; If not already there, add it for backward compatibility
     ;; Note: Use :idle status as :spawned is not in DataScript's valid statuses
-    (when-not (ds/get-slave agent-id)
+    (when-not (proto/get-slave registry/default-registry agent-id)
       (let [cwd (:cwd metadata)
             project-id (when cwd (mem-scope/get-current-project-id cwd))]
-        (ds/add-slave! agent-id {:name (or (:name metadata) agent-id)
-                                 :status :idle
-                                 :depth 1
-                                 :presets (:presets metadata)
-                                 :cwd cwd
-                                 :project-id project-id})))
+        (proto/add-slave! registry/default-registry agent-id
+                          {:name (or (:name metadata) agent-id)
+                           :status :idle
+                           :depth 1
+                           :presets (:presets metadata)
+                           :cwd cwd
+                           :project-id project-id})))
     (log/info "Agent registered in hivemind:" agent-id)
     true))
 
@@ -390,12 +400,20 @@
 
    ADR-002 AMENDED: Clears from both:
    - agent-registry atom (message history)
-   - DataScript (source of truth for slave data)"
+   - DataScript (source of truth for slave data)
+   - core.logic claims (file locks for conflict detection)
+
+   GHOST CLAIMS FIX: Previously only DataScript claims were released,
+   leaving 'ghost claims' in core.logic that blocked other drones.
+   Now releases claims from BOTH storage systems."
   [agent-id]
   ;; Clear message history
   (swap! agent-registry dissoc agent-id)
-  ;; Clear from DataScript
-  (ds/remove-slave! agent-id)
+  ;; Release core.logic claims FIRST (prevents ghost claims)
+  ;; This is critical - these claims are used for conflict detection
+  (logic/release-claims-for-slave! agent-id)
+  ;; Clear from DataScript (also releases DataScript claims via lings/remove-slave!)
+  (proto/remove-slave! registry/default-registry agent-id)
   (log/info "Agent cleared from hivemind:" agent-id))
 
 (defn clear-agent-registry!
@@ -574,8 +592,8 @@ The specific agent lookup is still allowed even if agent is from another project
                      ;; ADR-002 AMENDED: Available agents = union of DataScript + message history
                      ;; When project-id provided, filter DataScript agents to that project
                      ds-agents (if project-id
-                                 (clojure.core/set (ds/get-slave-ids-by-project project-id))
-                                 (clojure.core/set (map :slave/id (ds/get-all-slaves))))
+                                 (clojure.core/set (map :slave/id (proto/get-slaves-by-project registry/default-registry project-id)))
+                                 (clojure.core/set (map :slave/id (proto/get-all-slaves registry/default-registry))))
                      ;; Message history orphans - filter by checking if their messages have matching project-id
                      msg-agents (if project-id
                                   (->> @agent-registry
