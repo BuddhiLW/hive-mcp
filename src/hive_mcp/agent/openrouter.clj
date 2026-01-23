@@ -15,7 +15,6 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-
 (def ^:private api-url "https://openrouter.ai/api/v1/chat/completions")
 
 (def ^:private timeout-ms
@@ -212,11 +211,16 @@
     ;; Telemetry is handled by chat-request
     (let [response (chat-request api-key model messages tools)
           choice (get-in response [:choices 0 :message])
+          usage (:usage response)  ;; OpenRouter includes usage in response
           result (parse-response choice)]
       (log/debug "OpenRouter response parsed" {:model model :type (:type result)})
       (when (= :error (:type result))
         (log/warn "OpenRouter empty response detected" {:model model :error (:error result)}))
-      result))
+      ;; Include usage info in result for metrics tracking
+      (cond-> result
+        usage (assoc :usage {:input (:prompt_tokens usage)
+                             :output (:completion_tokens usage)
+                             :total (:total_tokens usage)}))))
 
   (model-name [_] model))
 
