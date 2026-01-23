@@ -12,6 +12,7 @@
             [hive-mcp.events.core :as ev]
             [hive-mcp.events.effects]
             [hive-mcp.agent.context :as ctx]
+            [hive-mcp.knowledge-graph.edges :as kg-edges]
             [clojure.data.json :as json]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -23,6 +24,50 @@
   []
   (let [{:keys [success result]} (ec/eval-elisp "(featurep 'hive-mcp)")]
     (and success (= result "t"))))
+
+(defn- extract-source-ids
+  "Extract memory entry IDs from harvested session data.
+
+   Sources include:
+   - progress-notes: ephemeral notes created during session
+   - completed-tasks: kanban tasks that moved to DONE
+
+   Returns a vector of non-nil IDs suitable for KG edge creation."
+  [{:keys [progress-notes completed-tasks]}]
+  (->> (concat progress-notes completed-tasks)
+       (keep :id)  ; Extract :id, filter nils
+       (distinct)
+       (vec)))
+
+(defn- create-derived-from-edges!
+  "Create :derived-from KG edges linking a summary to its source entries.
+
+   Edges flow: summary-id → source-id (summary was derived from sources)
+
+   Args:
+   - summary-id: The ID of the created session summary
+   - source-ids: Vector of source memory entry IDs
+   - project-id: Project scope for the edges
+   - agent-id: Agent that created the summary (optional)
+
+   Returns: {:created-count n :edge-ids [ids]} or {:error msg} on failure"
+  [summary-id source-ids project-id agent-id]
+  (when (and summary-id (seq source-ids))
+    (try
+      (let [edge-ids (for [source-id source-ids]
+                       (kg-edges/add-edge!
+                        {:from summary-id
+                         :to source-id
+                         :relation :derived-from
+                         :scope project-id
+                         :created-by agent-id}))]
+        (log/info "Created" (count edge-ids) ":derived-from KG edges for summary" summary-id)
+        {:created-count (count edge-ids)
+         :edge-ids (vec edge-ids)})
+      (catch Exception e
+        (log/warn "Failed to create :derived-from KG edges:" (.getMessage e))
+        {:error (.getMessage e)
+         :created-count 0}))))
 
 (defn handle-wrap-gather
   "Gather session data for wrap workflow without storing.
@@ -114,7 +159,7 @@
              :text (json/write-str (assoc result :project-id project-id))
              :isError true})
 
-          ;; Success path - proceed with wrap_notify and return
+          ;; Success path - proceed with KG edges, wrap_notify, and return
           (let [;; Warn if falling back past request-ctx (likely wrong for lings)
                 _ (when (and (nil? agent_id) (nil? ctx-agent-id) env-agent-id)
                     (log/warn "wrap-crystallize: agent_id not passed explicitly and no request-ctx,"
@@ -124,7 +169,13 @@
                     (log/warn "wrap-crystallize: No agent_id provided, no request-ctx, and CLAUDE_SWARM_SLAVE_ID not set"
                               "- defaulting to 'coordinator'. Lings should pass agent_id explicitly."))
                 ;; Ensure stats is a map (defensive against JSON decode issues)
-                safe-stats (if (map? (:stats result)) (:stats result) {})]
+                safe-stats (if (map? (:stats result)) (:stats result) {})
+                ;; Phase 2 KG Integration: Create :derived-from edges
+                ;; Links session summary to its source entries (notes, tasks)
+                summary-id (:summary-id result)
+                source-ids (extract-source-ids harvested)
+                kg-result (when (and summary-id (seq source-ids))
+                            (create-derived-from-edges! summary-id source-ids project-id effective-agent))]
             ;; Emit wrap_notify via hive-events for Crystal Convergence
             (try
               (ev/dispatch [:crystal/wrap-notify
@@ -138,7 +189,8 @@
               (catch Exception e
                 (log/warn "wrap-crystallize: failed to emit wrap_notify:" (.getMessage e))))
             {:type "text"
-             :text (json/write-str (assoc result :project-id project-id))})))
+             :text (json/write-str (cond-> (assoc result :project-id project-id)
+                                     kg-result (assoc :kg-edges kg-result)))})))
       (catch Exception e
         (log/error e "wrap-crystallize failed")
         {:type "text"
