@@ -8,11 +8,11 @@
    - preset_* - preset configuration"
   (:require [hive-mcp.agent.config :as config]
             [hive-mcp.tools.core :refer [mcp-error mcp-json]]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
-
 
 ;;; ============================================================
 ;;; Tool Handlers
@@ -39,16 +39,61 @@
 
 (defn handle-delegate-drone
   "MCP tool handler for delegate_drone.
-   Requires delegate-drone-fn to be passed in to avoid circular dependency."
-  [delegate-drone-fn {:keys [task files preset trace parent_id]}]
+   Requires delegate-drone-fn to be passed in to avoid circular dependency.
+
+   CLARITY-Y: Graceful error handling - never silently fail.
+   CLARITY-T: Structured logging for Loki ingestion."
+  [delegate-drone-fn {:keys [task files preset trace parent_id cwd]}]
   (if (str/blank? task)
     (mcp-error "Task is required")
-    (let [result (delegate-drone-fn {:task task
-                                     :files files
-                                     :preset (or preset "drone-worker")
-                                     :trace (if (nil? trace) true trace)
-                                     :parent-id parent_id})]
-      (mcp-json result))))
+    (try
+      (let [result (delegate-drone-fn {:task task
+                                       :files files
+                                       :preset (or preset "drone-worker")
+                                       :trace (if (nil? trace) true trace)
+                                       :parent-id parent_id
+                                       :cwd cwd})]
+        ;; Ensure we always return a structured response
+        (if (nil? result)
+          (mcp-error "Drone returned nil - execution may have failed silently")
+          (mcp-json (assoc result
+                           :status (or (:status result) :unknown)
+                           :message (or (:message result)
+                                        (if (= :completed (:status result))
+                                          "Drone completed successfully"
+                                          "Drone execution finished"))))))
+      (catch clojure.lang.ExceptionInfo e
+        ;; Structured error from delegate! (conflicts, validation, etc.)
+        (let [data (ex-data e)
+              error-type (or (:error-type data) :delegation-error)]
+          ;; CLARITY-T: Structured JSON logging for Loki ingestion
+          (log/error {:event :delegate-drone/failed
+                      :error-type error-type
+                      :error (ex-message e)
+                      :drone-id (:drone-id data)
+                      :conflicts (:conflicts data)
+                      :files files
+                      :task-preview (subs task 0 (min 100 (count task)))})
+          (mcp-json {:status :failed
+                     :error (ex-message e)
+                     :error-type error-type
+                     :conflicts (:conflicts data)
+                     :drone-id (:drone-id data)
+                     :files (:files data)})))
+      (catch Exception e
+        ;; Unexpected error - log and return structured response
+        ;; CLARITY-T: Structured JSON logging for Loki ingestion
+        (let [stacktrace-str (pr-str (.getStackTrace e))]
+          (log/error {:event :delegate-drone/unexpected-error
+                      :error (ex-message e)
+                      :exception-class (.getName (class e))
+                      :files files
+                      :task-preview (subs task 0 (min 100 (count task)))
+                      :stacktrace (subs stacktrace-str 0 (min 500 (count stacktrace-str)))})
+          (mcp-json {:status :failed
+                     :error (str "Drone delegation failed: " (ex-message e))
+                     :error-type :unexpected
+                     :exception-class (.getName (class e))}))))))
 
 ;;; ============================================================
 ;;; Tool Definitions
