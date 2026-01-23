@@ -84,16 +84,19 @@ to swarm events without waiting for server round-trip."
 
 ;;;; Typed Event Emitters:
 
-(defun hive-mcp-swarm-events-emit-slave-spawned (slave-id name presets &optional cwd)
-  "Emit slave-spawned event for SLAVE-ID with NAME, PRESETS, and CWD.
+(defun hive-mcp-swarm-events-emit-slave-spawned (slave-id name presets &optional cwd kanban-task-id)
+  "Emit slave-spawned event for SLAVE-ID with NAME, PRESETS, CWD, and KANBAN-TASK-ID.
 CWD is the working directory of the slave (optional but recommended for
-registry sync per ADR-001 Phase 2)."
+registry sync per ADR-001 Phase 2).
+KANBAN-TASK-ID is the optional kanban task this ling is linked to."
   (hive-mcp-swarm-events-emit
    "slave-spawned"
    `(("slave-id" . ,slave-id)
      ("name" . ,name)
      ("presets" . ,(or presets []))
-     ("cwd" . ,(or cwd "")))))
+     ("cwd" . ,(or cwd ""))
+     ,@(when kanban-task-id
+         `(("kanban-task-id" . ,kanban-task-id))))))
 
 (defun hive-mcp-swarm-events-emit-slave-killed (slave-id)
   "Emit slave-killed event for SLAVE-ID."
@@ -236,6 +239,33 @@ which will:
    `(("slave-id" . ,slave-id)
      ("reason" . ,(or reason "task-completed"))
      ("session-id" . ,hive-mcp-swarm-events--session-id))))
+
+(defun hive-mcp-swarm-events-emit-dispatch-dropped (slave-id reason prompt-preview retries queued-at)
+  "Emit dispatch-dropped event for SLAVE-ID with failure details.
+This is emitted when a queued dispatch is dropped after max retries.
+
+REASON is a string describing why the dispatch was dropped:
+- \"max-retries-exceeded\": Terminal never became ready within retry limit
+- \"slave-dead\": Slave buffer was killed before dispatch could complete
+
+PROMPT-PREVIEW is a truncated version of the prompt (first 100 chars).
+RETRIES is the number of retry attempts made.
+QUEUED-AT is the epoch time when the dispatch was queued.
+
+This event is CRITICAL - the coordinator and user need to know a task
+was lost and may need manual re-dispatch."
+  (let ((wait-time (- (float-time) (or queued-at (float-time)))))
+    (hive-mcp-swarm-events-emit
+     "dispatch-dropped"
+     `(("slave-id" . ,slave-id)
+       ("reason" . ,(or reason "unknown"))
+       ("prompt-preview" . ,(if (> (length prompt-preview) 100)
+                                (concat (substring prompt-preview 0 97) "...")
+                              prompt-preview))
+       ("retries" . ,(or retries 0))
+       ("queued-at" . ,(or queued-at 0))
+       ("wait-time-secs" . ,wait-time)
+       ("urgency" . "high")))))
 
 ;;;; Session Management:
 

@@ -235,6 +235,33 @@
                         :urgency urgency})
       (log/warn "Sync: prompt-stall from" slave-id "- idle" idle-secs "secs"))))
 
+(defn- handle-dispatch-dropped
+  "Handle dispatch-dropped event. Event: {:slave-id :reason :prompt-preview :retries :wait-time-secs}
+   This critical event indicates a queued dispatch was lost after max retries."
+  [event]
+  (let [slave-id (get-field event :slave-id)
+        reason (get-field event :reason "unknown")
+        prompt-preview (get-field event :prompt-preview "")
+        retries (get-field event :retries 0)
+        wait-time (get-field event :wait-time-secs 0)]
+    (when slave-id
+      ;; Shout to hivemind so coordinator is notified
+      (hivemind/shout! slave-id :error
+                       {:task "dispatch-dropped"
+                        :message (format "DISPATCH DROPPED: %s - reason: %s, retries: %d, wait: %.1fs. Prompt: %s"
+                                         slave-id reason retries wait-time prompt-preview)
+                        :reason reason
+                        :retries retries
+                        :wait-time-secs wait-time
+                        :urgency "high"})
+      ;; Dispatch to hive-events for potential hooks/effects
+      (dispatch-event! [:task/dispatch-dropped {:slave-id slave-id
+                                                :reason reason
+                                                :prompt-preview prompt-preview
+                                                :retries retries}])
+      (log/error "Sync: DISPATCH DROPPED for" slave-id "- reason:" reason
+                 "retries:" retries "wait:" wait-time "secs"))))
+
 ;; =============================================================================
 ;; Event Subscription Management
 ;; =============================================================================
@@ -247,7 +274,8 @@
    :task-completed handle-task-completed
    :task-failed handle-task-failed
    :prompt-shown handle-prompt-shown
-   :prompt-stall handle-prompt-stall})
+   :prompt-stall handle-prompt-stall
+   :dispatch-dropped handle-dispatch-dropped})
 
 (defn- subscribe-to-event!
   "Subscribe to a single event type with handler."

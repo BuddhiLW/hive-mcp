@@ -24,6 +24,7 @@
 (declare-function hive-mcp-swarm-terminal-ready-p "hive-mcp-swarm-terminal")
 (declare-function hive-mcp-swarm-terminal-wait-ready "hive-mcp-swarm-terminal")
 (declare-function hive-mcp-swarm-slaves-generate-task-id "hive-mcp-swarm-slaves")
+(declare-function hive-mcp-swarm-events-emit-dispatch-dropped "hive-mcp-swarm-events")
 
 ;; Dependencies on main module (variables)
 (defvar hive-mcp-swarm--slaves)
@@ -165,6 +166,28 @@ Returns nil if queue is empty."
     (and (buffer-live-p buffer)
          (hive-mcp-swarm-terminal-ready-p buffer))))
 
+(defun hive-mcp-swarm--notify-dispatch-dropped (slave-id reason prompt retries queued-at)
+  "Notify coordinator and user that a dispatch was dropped.
+SLAVE-ID is the target slave.
+REASON is why the dispatch was dropped (\"max-retries-exceeded\" or \"slave-dead\").
+PROMPT is the original prompt text.
+RETRIES is the number of retry attempts.
+QUEUED-AT is when the dispatch was queued (epoch time).
+
+This fixes the silent drop bug by:
+1. Emitting a dispatch-dropped event via channel (for MCP/coordinator)
+2. Displaying a warning to the user (visible in *Warnings* buffer)"
+  ;; Emit event for MCP/coordinator (load events module if available)
+  (when (require 'hive-mcp-swarm-events nil t)
+    (hive-mcp-swarm-events-emit-dispatch-dropped
+     slave-id reason prompt retries queued-at))
+  ;; Show user-facing warning
+  (display-warning
+   'hive-mcp-swarm
+   (format "DISPATCH DROPPED: %s - %s after %d retries. Prompt: %.50s..."
+           slave-id reason retries (or prompt ""))
+   :warning))
+
 (defun hive-mcp-swarm--process-queue-entry (entry)
   "Process a single queue ENTRY, dispatching if terminal ready.
 Returns:
@@ -177,17 +200,22 @@ Returns:
          (timeout (plist-get entry :timeout))
          (priority (plist-get entry :priority))
          (context (plist-get entry :context))
+         (queued-at (plist-get entry :queued-at))
          (slave (gethash slave-id hive-mcp-swarm--slaves)))
     (cond
      ;; Slave doesn't exist or buffer dead - fail
      ((or (not slave)
           (not (buffer-live-p (plist-get slave :buffer))))
       (message "[swarm-tasks] Queue: %s slave dead, dropping dispatch" slave-id)
+      (hive-mcp-swarm--notify-dispatch-dropped
+       slave-id "slave-dead" prompt retries queued-at)
       :failed)
      ;; Max retries exceeded - fail
      ((>= retries hive-mcp-swarm-dispatch-max-retries)
       (message "[swarm-tasks] Queue: %s max retries (%d) exceeded, dropping"
                slave-id retries)
+      (hive-mcp-swarm--notify-dispatch-dropped
+       slave-id "max-retries-exceeded" prompt retries queued-at)
       :failed)
      ;; Terminal ready - dispatch!
      ((hive-mcp-swarm--slave-ready-p slave-id)
@@ -202,6 +230,8 @@ Returns:
         (error
          (message "[swarm-tasks] Queue: %s dispatch error: %s"
                   slave-id (error-message-string err))
+         (hive-mcp-swarm--notify-dispatch-dropped
+          slave-id "dispatch-error" prompt retries queued-at)
          :failed)))
      ;; Not ready - retry
      (t
