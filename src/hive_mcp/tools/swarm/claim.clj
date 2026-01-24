@@ -6,9 +6,15 @@
    - claim_clear: Release a claim by file path
    - claim_cleanup: Release all stale claims (auto-expiration)
 
+   DUAL STORAGE NOTE:
+   Claims are stored in both core.logic (for conflict detection) and
+   DataScript (for staleness tracking). This module provides visibility
+   into both systems to help diagnose ghost claims.
+
    SOLID: SRP - File claim tools only
    CLARITY: I - Inputs validated at boundary, Y - Safe failure for missing claims"
   (:require [hive-mcp.swarm.datascript.lings :as lings]
+            [hive-mcp.swarm.logic :as logic]
             [hive-mcp.events.core :as events]
             [clojure.data.json :as json]
             [taoensso.timbre :as log]))
@@ -64,54 +70,103 @@
 
 (defn handle-claim-list
   "Handler for claim_list tool.
-   Lists all active file claims with timestamps and staleness warnings."
+   Lists all active file claims from BOTH storage systems with timestamps and staleness warnings.
+
+   DUAL STORAGE VISIBILITY:
+   - datascript-claims: Claims in DataScript (with timestamps for staleness)
+   - logic-claims: Claims in core.logic (used for conflict detection)
+   - ghost-claims: Claims in logic but not DataScript (the 'ghost claim' bug symptom)
+
+   If ghost-claims is non-empty, there's a storage mismatch that may cause
+   'file already claimed' errors when claim_list shows 0 claims."
   [_params]
-  (let [claims (lings/get-all-claims)
+  (let [;; Get claims from both storage systems
+        ds-claims (lings/get-all-claims)
+        logic-claims (logic/get-all-claims)
         now (System/currentTimeMillis)
-        formatted (mapv #(format-claim % now) claims)
-        stale-count (count (filter :stale formatted))]
-    (log/info "claim_list: " (count claims) " claims, " stale-count " stale")
+
+        ;; Format DataScript claims with timestamps
+        formatted-ds (mapv #(format-claim % now) ds-claims)
+        stale-count (count (filter :stale formatted-ds))
+
+        ;; Find ghost claims (in logic but not in DataScript)
+        ds-files (set (map :file ds-claims))
+        ghost-claims (->> logic-claims
+                          (remove #(contains? ds-files (:file %)))
+                          (mapv (fn [{:keys [file slave-id]}]
+                                  {:file file
+                                   :owner slave-id
+                                   :ghost true
+                                   :warning "Claim exists in logic but not DataScript - may cause false conflicts"})))]
+    (log/info "claim_list:" (count ds-claims) "DataScript claims,"
+              (count logic-claims) "logic claims,"
+              (count ghost-claims) "ghost claims,"
+              stale-count "stale")
     {:type "text"
      :text (json/write-str
-            {:claims formatted
-             :total (count claims)
+            {:claims formatted-ds
+             :total (count ds-claims)
              :stale-count stale-count
-             :stale-threshold-minutes 10})}))
+             :stale-threshold-minutes 10
+             ;; GHOST CLAIMS DIAGNOSTIC
+             :logic-claims-count (count logic-claims)
+             :ghost-claims ghost-claims
+             :ghost-count (count ghost-claims)
+             :storage-in-sync (empty? ghost-claims)})}))
 
 (defn handle-claim-clear
   "Handler for claim_clear tool.
-   Releases a claim by file path."
+   Releases a claim by file path from BOTH storage systems.
+
+   GHOST CLAIMS FIX: Also checks core.logic for claims that may not
+   be in DataScript (ghost claims). If a claim exists only in logic,
+   it's released from there too."
   [{:keys [file_path force]}]
   (if (empty? file_path)
     {:type "text"
      :text (json/write-str {:error "file_path is required"})}
-    (let [claim (lings/get-claim-info file_path)]
-      (if claim
+    (let [ds-claim (lings/get-claim-info file_path)
+          logic-claim (logic/get-claim-for-file file_path)
+          ;; Claim exists if in either storage
+          has-claim? (or ds-claim logic-claim)]
+      (if has-claim?
         (let [now (System/currentTimeMillis)
-              created-at (:created-at claim)
+              ;; Use DataScript timestamp if available
+              created-at (:created-at ds-claim)
               age-ms (when created-at (- now created-at))
               age-min (when age-ms (/ age-ms 60000.0))
-              stale? (and age-ms (> age-ms lings/default-stale-threshold-ms))]
-          ;; Require force flag if claim is not stale (safety measure)
-          (if (or force stale?)
+              stale? (and age-ms (> age-ms lings/default-stale-threshold-ms))
+              ;; Get owner from whichever storage has it
+              owner (or (:slave-id ds-claim) (:slave-id logic-claim))
+              ;; Ghost claim = in logic but not DataScript
+              ghost? (and logic-claim (not ds-claim))]
+          ;; Require force flag if claim is not stale AND not a ghost (safety measure)
+          ;; Ghost claims can always be cleared (they're the bug symptom)
+          (if (or force stale? ghost?)
             (do
-              (lings/release-claim! file_path)
+              ;; Release from BOTH storage systems
+              (when ds-claim
+                (lings/release-claim! file_path))
+              (when logic-claim
+                (logic/remove-claim! file_path (:slave-id logic-claim)))
               ;; Emit event for claim release (enables queue processing)
               (events/dispatch [:claim/file-released {:file file_path
                                                       :released-by "manual-clear"}])
-              (log/info "claim_clear: Released claim for" file_path "from" (:slave-id claim))
+              (log/info "claim_clear: Released claim for" file_path "from" owner
+                        (when ghost? "(was ghost claim)"))
               {:type "text"
                :text (json/write-str
                       {:success true
                        :released {:file file_path
-                                  :owner (:slave-id claim)
+                                  :owner owner
                                   :was-stale stale?
+                                  :was-ghost ghost?
                                   :age-minutes (when age-min (Math/round ^double age-min))}})})
             {:type "text"
              :text (json/write-str
                     {:error "Claim is not stale. Use force=true to override."
                      :claim {:file file_path
-                             :owner (:slave-id claim)
+                             :owner owner
                              :age-minutes (when age-min (Math/round ^double age-min))}
                      :hint "Active claims may be in use. Only force-clear if you're sure the owner is stuck."})}))
         {:type "text"

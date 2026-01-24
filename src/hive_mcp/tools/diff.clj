@@ -39,6 +39,31 @@
 ;; Atom storing pending diff proposals. Map of diff-id -> diff-data.
 (defonce pending-diffs (atom {}))
 
+;; Forward declarations for functions defined later but used in wave helpers
+(declare handle-apply-diff handle-reject-diff)
+
+;; =============================================================================
+;; Auto-Approve Rules Configuration
+;; =============================================================================
+
+(def default-auto-approve-rules
+  "Default rules for auto-approving diff proposals.
+
+   A diff is auto-approved only if ALL conditions are met:
+   - max-lines-changed: Maximum total lines added + deleted
+   - no-deletions-only: Reject changes that only delete code
+   - require-description: Require non-empty description
+   - allowed-path-patterns: Regex patterns for allowed file paths"
+  {:max-lines-changed 100
+   :no-deletions-only true
+   :require-description true
+   :allowed-path-patterns [#".*\.clj[sx]?$"    ; Clojure files
+                           #".*\.edn$"         ; EDN config
+                           #".*\.md$"          ; Markdown docs
+                           #".*\.json$"]})     ; JSON config
+
+(defonce auto-approve-rules (atom default-auto-approve-rules))
+
 (defn clear-pending-diffs!
   "Clear pending diffs. GUARDED - no-op if coordinator running.
 
@@ -74,19 +99,21 @@
                     (map #(str "+" %) new-lines))))))
 
 (defn create-diff-proposal
-  "Create a diff proposal map from input parameters."
-  [{:keys [file_path old_content new_content description drone_id]}]
+  "Create a diff proposal map from input parameters.
+   Optionally includes wave-id for batch review tracking."
+  [{:keys [file_path old_content new_content description drone_id wave_id]}]
   (let [diff-id (generate-diff-id)
         unified (compute-unified-diff old_content new_content file_path)]
-    {:id diff-id
-     :file-path file_path
-     :old-content old_content
-     :new-content new_content
-     :description (or description "No description provided")
-     :drone-id (or drone_id "unknown")
-     :unified-diff unified
-     :status "pending"
-     :created-at (java.time.Instant/now)}))
+    (cond-> {:id diff-id
+             :file-path file_path
+             :old-content old_content
+             :new-content new_content
+             :description (or description "No description provided")
+             :drone-id (or drone_id "unknown")
+             :unified-diff unified
+             :status "pending"
+             :created-at (java.time.Instant/now)}
+      wave_id (assoc :wave-id wave_id))))
 
 (defn validate-propose-params
   "Validate parameters for propose_diff. Returns nil if valid, error message if not.
@@ -178,6 +205,292 @@
        (let [resolved (io/file project-root file-path)
              canonical-path (.getCanonicalPath resolved)]
          {:valid true :resolved-path canonical-path})))))
+
+;; =============================================================================
+;; Auto-Approve Validation
+;; =============================================================================
+
+(defn- count-line-changes
+  "Count total lines changed (added + deleted) in a diff."
+  [old-content new-content]
+  (let [old-lines (count (str/split-lines (or old-content "")))
+        new-lines (count (str/split-lines (or new-content "")))]
+    (+ (max 0 (- old-lines new-lines))  ; deleted lines
+       (max 0 (- new-lines old-lines))))) ; added lines
+
+(defn- deletions-only?
+  "Check if the change only deletes content without adding anything."
+  [old-content new-content]
+  (and (not (str/blank? old-content))
+       (or (str/blank? new-content)
+           (< (count new-content) (/ (count old-content) 2)))))
+
+(defn- path-matches-patterns?
+  "Check if file path matches any of the allowed patterns."
+  [file-path patterns]
+  (if (empty? patterns)
+    true  ; No patterns = allow all
+    (some #(re-matches % file-path) patterns)))
+
+(defn auto-approve-diff?
+  "Check if a diff meets auto-approve criteria.
+
+   Arguments:
+     diff  - Diff proposal map
+     rules - Optional rules (defaults to @auto-approve-rules)
+
+   Returns {:approved true} or {:approved false :reason \"...\"}."
+  ([diff] (auto-approve-diff? diff @auto-approve-rules))
+  ([{:keys [old-content new-content file-path description]} rules]
+   (let [{:keys [max-lines-changed no-deletions-only
+                 require-description allowed-path-patterns]} rules
+         line-changes (count-line-changes old-content new-content)]
+     (cond
+       ;; Check line count
+       (and max-lines-changed (> line-changes max-lines-changed))
+       {:approved false
+        :reason (str "Too many lines changed: " line-changes " > " max-lines-changed)}
+
+       ;; Check deletions-only
+       (and no-deletions-only (deletions-only? old-content new-content))
+       {:approved false
+        :reason "Change only deletes content - requires manual review"}
+
+       ;; Check description
+       (and require-description (str/blank? description))
+       {:approved false
+        :reason "Missing description - requires manual review"}
+
+       ;; Check path pattern
+       (and (seq allowed-path-patterns)
+            (not (path-matches-patterns? file-path allowed-path-patterns)))
+       {:approved false
+        :reason (str "File path not in allowed patterns: " file-path)}
+
+       ;; All checks passed
+       :else
+       {:approved true}))))
+
+;; =============================================================================
+;; Wave Batch Operations
+;; =============================================================================
+
+(defn get-wave-diffs
+  "Get all pending diffs for a specific wave-id."
+  [wave-id]
+  (->> (vals @pending-diffs)
+       (filter #(= wave-id (:wave-id %)))
+       (vec)))
+
+(defn review-wave-diffs
+  "Get a summary of all diffs proposed by a wave for review.
+
+   Returns map with:
+     :wave-id     - The wave ID
+     :count       - Number of diffs
+     :diffs       - List of diff summaries (without old/new content)
+     :auto-approve-results - Which diffs would pass auto-approve"
+  [wave-id]
+  (let [diffs (get-wave-diffs wave-id)
+        summaries (mapv (fn [d]
+                          {:id (:id d)
+                           :file-path (:file-path d)
+                           :description (:description d)
+                           :drone-id (:drone-id d)
+                           :unified-diff (:unified-diff d)
+                           :status (:status d)
+                           :created-at (str (:created-at d))})
+                        diffs)
+        auto-results (mapv (fn [d]
+                             {:id (:id d)
+                              :file-path (:file-path d)
+                              :auto-approve (auto-approve-diff? d)})
+                           diffs)]
+    {:wave-id wave-id
+     :count (count diffs)
+     :diffs summaries
+     :auto-approve-results auto-results}))
+
+(defn approve-wave-diffs!
+  "Approve and apply all diffs from a wave.
+
+   Arguments:
+     wave-id    - Wave ID to approve diffs for
+     diff-ids   - Optional specific diff IDs to approve (nil = all)
+
+   Returns map with :applied and :failed lists."
+  ([wave-id] (approve-wave-diffs! wave-id nil))
+  ([wave-id diff-ids]
+   (let [wave-diffs (get-wave-diffs wave-id)
+         to-apply (if diff-ids
+                    (filter #(contains? (set diff-ids) (:id %)) wave-diffs)
+                    wave-diffs)
+         results (for [{:keys [id]} to-apply]
+                   (let [response (handle-apply-diff {:diff_id id})
+                         parsed (try (json/read-str (:text response) :key-fn keyword)
+                                     (catch Exception _ nil))]
+                     (if (:isError response)
+                       {:status :failed :id id :error (:error parsed)}
+                       {:status :applied :id id :file (:file-path parsed)})))
+         {applied :applied failed :failed} (group-by :status results)]
+     (log/info "Approved wave diffs" {:wave-id wave-id
+                                      :applied (count applied)
+                                      :failed (count failed)})
+     {:applied (vec applied)
+      :failed (vec failed)})))
+
+(defn reject-wave-diffs!
+  "Reject all diffs from a wave.
+
+   Arguments:
+     wave-id - Wave ID to reject diffs for
+     reason  - Reason for rejection
+
+   Returns count of rejected diffs."
+  [wave-id reason]
+  (let [wave-diffs (get-wave-diffs wave-id)]
+    (doseq [{:keys [id]} wave-diffs]
+      (handle-reject-diff {:diff_id id :reason reason}))
+    (log/info "Rejected wave diffs" {:wave-id wave-id :count (count wave-diffs) :reason reason})
+    {:rejected (count wave-diffs)
+     :wave-id wave-id
+     :reason reason}))
+
+(defn auto-approve-wave-diffs!
+  "Auto-approve diffs that meet criteria, flag others for manual review.
+
+   Arguments:
+     wave-id - Wave ID to process
+
+   Returns map with :auto-approved, :manual-review, and :failed lists."
+  [wave-id]
+  (let [wave-diffs (get-wave-diffs wave-id)
+        categorized (for [d wave-diffs]
+                      (assoc d :auto-check (auto-approve-diff? d)))
+        auto-approvable (filter #(get-in % [:auto-check :approved]) categorized)
+        manual-review (remove #(get-in % [:auto-check :approved]) categorized)
+        ;; Apply auto-approved diffs
+        apply-results (for [{:keys [id]} auto-approvable]
+                        (let [response (handle-apply-diff {:diff_id id})
+                              parsed (try (json/read-str (:text response) :key-fn keyword)
+                                          (catch Exception _ nil))]
+                          (if (:isError response)
+                            {:status :failed :id id :error (:error parsed)}
+                            {:status :applied :id id})))
+        {applied :applied failed :failed} (group-by :status apply-results)]
+    (log/info "Auto-approved wave diffs" {:wave-id wave-id
+                                          :auto-approved (count applied)
+                                          :manual-review (count manual-review)
+                                          :failed (count failed)})
+    {:auto-approved (vec applied)
+     :manual-review (mapv (fn [d]
+                            {:id (:id d)
+                             :file-path (:file-path d)
+                             :reason (get-in d [:auto-check :reason])})
+                          manual-review)
+     :failed (vec failed)}))
+
+;; =============================================================================
+;; Multi-Drone Batch Operations
+;; =============================================================================
+
+(defn batch-review-diffs
+  "Get all pending diffs from multiple drones for batch review.
+
+   Arguments:
+     drone-ids - Collection of drone IDs (or nil for all pending diffs)
+
+   Returns list of diffs sorted by timestamp, with auto-approve analysis."
+  ([] (batch-review-diffs nil))
+  ([drone-ids]
+   (let [all-diffs (vals @pending-diffs)
+         filtered (if (seq drone-ids)
+                    (filter #(contains? (set drone-ids) (:drone-id %)) all-diffs)
+                    all-diffs)]
+     (->> filtered
+          (sort-by :created-at)
+          (mapv (fn [d]
+                  {:id (:id d)
+                   :file-path (:file-path d)
+                   :description (:description d)
+                   :drone-id (:drone-id d)
+                   :wave-id (:wave-id d)
+                   :unified-diff (:unified-diff d)
+                   :created-at (str (:created-at d))
+                   :auto-approve-check (auto-approve-diff? d)}))))))
+
+(defn get-auto-approve-rules
+  "Get current auto-approve rules with descriptions.
+
+   Returns the rules map with human-readable format."
+  []
+  (let [rules @auto-approve-rules]
+    {:max-lines-changed (:max-lines-changed rules)
+     :must-pass-lint false  ; Not implemented yet - future enhancement
+     :no-deletions-only (:no-deletions-only rules)
+     :require-description (:require-description rules)
+     :allowed-path-patterns (mapv str (:allowed-path-patterns rules))}))
+
+(defn safe-to-auto-approve?
+  "Check if diff meets auto-approve criteria.
+
+   Alias for auto-approve-diff? with more descriptive name.
+   Returns true if diff can be safely auto-approved."
+  ([diff] (safe-to-auto-approve? diff @auto-approve-rules))
+  ([diff rules]
+   (:approved (auto-approve-diff? diff rules))))
+
+(defn approve-safe-diffs!
+  "Auto-approve diffs from multiple drones that meet safety criteria.
+
+   Arguments:
+     drone-ids - Collection of drone IDs (or nil for all pending diffs)
+     opts      - Optional map with:
+                 :rules - Custom rules (defaults to @auto-approve-rules)
+                 :dry-run - If true, only report what would be approved
+
+   Returns map with:
+     :auto-approved - Diffs that were approved and applied
+     :manual-review - Diffs that need manual review (with reasons)
+     :failed        - Diffs that failed to apply"
+  ([] (approve-safe-diffs! nil {}))
+  ([drone-ids] (approve-safe-diffs! drone-ids {}))
+  ([drone-ids {:keys [rules dry-run] :or {rules @auto-approve-rules dry-run false}}]
+   (let [diffs (batch-review-diffs drone-ids)
+         categorized (for [d diffs
+                           :let [check (auto-approve-diff?
+                                        (get @pending-diffs (:id d))
+                                        rules)]]
+                       (assoc d :auto-check check))
+         auto-approvable (filter #(get-in % [:auto-check :approved]) categorized)
+         manual-review (remove #(get-in % [:auto-check :approved]) categorized)]
+     (if dry-run
+       ;; Dry run - just report what would happen
+       {:dry-run true
+        :would-approve (mapv #(select-keys % [:id :file-path :drone-id]) auto-approvable)
+        :manual-review (mapv #(select-keys % [:id :file-path :drone-id :auto-check]) manual-review)}
+       ;; Actual execution - apply safe diffs
+       (let [apply-results (for [{:keys [id]} auto-approvable]
+                             (let [response (handle-apply-diff {:diff_id id})
+                                   parsed (try (json/read-str (:text response) :key-fn keyword)
+                                               (catch Exception _ nil))]
+                               (if (:isError response)
+                                 {:status :failed :id id :error (:error parsed)}
+                                 {:status :applied :id id :file-path (:file-path parsed)})))
+             {applied :applied failed :failed} (group-by :status apply-results)]
+         (log/info "Batch approve-safe-diffs!" {:drones (count (set (map :drone-id diffs)))
+                                                :total (count diffs)
+                                                :auto-approved (count applied)
+                                                :manual-review (count manual-review)
+                                                :failed (count failed)})
+         {:auto-approved (vec applied)
+          :manual-review (mapv (fn [d]
+                                 {:id (:id d)
+                                  :file-path (:file-path d)
+                                  :drone-id (:drone-id d)
+                                  :reason (get-in d [:auto-check :reason])})
+                               manual-review)
+          :failed (vec failed)})))))
 
 ;; =============================================================================
 ;; Application: Handlers
@@ -378,6 +691,97 @@
       (mcp-json (-> diff
                     (update :created-at str))))))
 
+(defn handle-review-wave-diffs
+  "Handle review_wave_diffs tool call.
+   Returns summary of all diffs from a wave with auto-approve analysis."
+  [{:keys [wave_id]}]
+  (log/debug "review_wave_diffs called" {:wave_id wave_id})
+  (if (str/blank? wave_id)
+    (mcp-error-json "Missing required field: wave_id")
+    (try
+      (let [result (review-wave-diffs wave_id)]
+        (mcp-json result))
+      (catch Exception e
+        (log/error e "Failed to review wave diffs")
+        (mcp-error-json (str "Failed to review wave diffs: " (.getMessage e)))))))
+
+(defn handle-approve-wave-diffs
+  "Handle approve_wave_diffs tool call.
+   Applies all or selected diffs from a wave."
+  [{:keys [wave_id diff_ids]}]
+  (log/debug "approve_wave_diffs called" {:wave_id wave_id :diff_ids diff_ids})
+  (if (str/blank? wave_id)
+    (mcp-error-json "Missing required field: wave_id")
+    (try
+      (let [result (approve-wave-diffs! wave_id diff_ids)]
+        (mcp-json result))
+      (catch Exception e
+        (log/error e "Failed to approve wave diffs")
+        (mcp-error-json (str "Failed to approve wave diffs: " (.getMessage e)))))))
+
+(defn handle-reject-wave-diffs
+  "Handle reject_wave_diffs tool call.
+   Rejects all diffs from a wave."
+  [{:keys [wave_id reason]}]
+  (log/debug "reject_wave_diffs called" {:wave_id wave_id :reason reason})
+  (if (str/blank? wave_id)
+    (mcp-error-json "Missing required field: wave_id")
+    (try
+      (let [result (reject-wave-diffs! wave_id (or reason "Rejected by coordinator"))]
+        (mcp-json result))
+      (catch Exception e
+        (log/error e "Failed to reject wave diffs")
+        (mcp-error-json (str "Failed to reject wave diffs: " (.getMessage e)))))))
+
+(defn handle-auto-approve-wave-diffs
+  "Handle auto_approve_wave_diffs tool call.
+   Auto-approves diffs meeting criteria, flags others for manual review."
+  [{:keys [wave_id]}]
+  (log/debug "auto_approve_wave_diffs called" {:wave_id wave_id})
+  (if (str/blank? wave_id)
+    (mcp-error-json "Missing required field: wave_id")
+    (try
+      (let [result (auto-approve-wave-diffs! wave_id)]
+        (mcp-json result))
+      (catch Exception e
+        (log/error e "Failed to auto-approve wave diffs")
+        (mcp-error-json (str "Failed to auto-approve: " (.getMessage e)))))))
+
+(defn handle-batch-review-diffs
+  "Handle batch_review_diffs tool call.
+   Returns all pending diffs from multiple drones for batch review."
+  [{:keys [drone_ids]}]
+  (log/debug "batch_review_diffs called" {:drone_ids drone_ids})
+  (try
+    (let [ids (when (seq drone_ids) (vec drone_ids))
+          result (batch-review-diffs ids)]
+      (mcp-json {:count (count result)
+                 :diffs result
+                 :rules (get-auto-approve-rules)}))
+    (catch Exception e
+      (log/error e "Failed to batch review diffs")
+      (mcp-error-json (str "Failed to batch review: " (.getMessage e))))))
+
+(defn handle-approve-safe-diffs
+  "Handle approve_safe_diffs tool call.
+   Auto-approve diffs from multiple drones that meet safety criteria."
+  [{:keys [drone_ids dry_run]}]
+  (log/debug "approve_safe_diffs called" {:drone_ids drone_ids :dry_run dry_run})
+  (try
+    (let [ids (when (seq drone_ids) (vec drone_ids))
+          result (approve-safe-diffs! ids {:dry-run (boolean dry_run)})]
+      (mcp-json result))
+    (catch Exception e
+      (log/error e "Failed to approve safe diffs")
+      (mcp-error-json (str "Failed to approve safe diffs: " (.getMessage e))))))
+
+(defn handle-get-auto-approve-rules
+  "Handle get_auto_approve_rules tool call.
+   Returns the current auto-approve rules configuration."
+  [_params]
+  (log/debug "get_auto_approve_rules called")
+  (mcp-json (get-auto-approve-rules)))
+
 ;; =============================================================================
 ;; Tool Definitions
 ;; =============================================================================
@@ -431,4 +835,68 @@
                   :properties {"diff_id" {:type "string"
                                           :description "ID of the diff to inspect"}}
                   :required ["diff_id"]}
-    :handler handle-get-diff-details}])
+    :handler handle-get-diff-details}
+
+   {:name "review_wave_diffs"
+    :description "Review all diffs proposed by a wave. Returns summary with auto-approve analysis. Use this after dispatch_validated_wave to see what changes drones proposed."
+    :inputSchema {:type "object"
+                  :properties {"wave_id" {:type "string"
+                                          :description "Wave ID to review diffs for"}}
+                  :required ["wave_id"]}
+    :handler handle-review-wave-diffs}
+
+   {:name "approve_wave_diffs"
+    :description "Approve and apply all or selected diffs from a wave. Call after reviewing with review_wave_diffs."
+    :inputSchema {:type "object"
+                  :properties {"wave_id" {:type "string"
+                                          :description "Wave ID to approve diffs for"}
+                               "diff_ids" {:type "array"
+                                           :items {:type "string"}
+                                           :description "Optional: specific diff IDs to approve (omit for all)"}}
+                  :required ["wave_id"]}
+    :handler handle-approve-wave-diffs}
+
+   {:name "reject_wave_diffs"
+    :description "Reject all diffs from a wave without applying. Use when the wave produced incorrect changes."
+    :inputSchema {:type "object"
+                  :properties {"wave_id" {:type "string"
+                                          :description "Wave ID to reject diffs for"}
+                               "reason" {:type "string"
+                                         :description "Reason for rejection (helpful for learning)"}}
+                  :required ["wave_id"]}
+    :handler handle-reject-wave-diffs}
+
+   {:name "auto_approve_wave_diffs"
+    :description "Auto-approve diffs meeting criteria, flag others for manual review. Uses configurable rules (max lines, no deletions-only, etc.)."
+    :inputSchema {:type "object"
+                  :properties {"wave_id" {:type "string"
+                                          :description "Wave ID to process"}}
+                  :required ["wave_id"]}
+    :handler handle-auto-approve-wave-diffs}
+
+   {:name "batch_review_diffs"
+    :description "Get all pending diffs from multiple drones for batch review. Returns diffs sorted by timestamp with auto-approve analysis."
+    :inputSchema {:type "object"
+                  :properties {"drone_ids" {:type "array"
+                                            :items {:type "string"}
+                                            :description "Optional: drone IDs to filter (omit for all pending diffs)"}}
+                  :required []}
+    :handler handle-batch-review-diffs}
+
+   {:name "approve_safe_diffs"
+    :description "Auto-approve diffs from multiple drones that meet safety criteria. Diffs not meeting criteria are flagged for manual review."
+    :inputSchema {:type "object"
+                  :properties {"drone_ids" {:type "array"
+                                            :items {:type "string"}
+                                            :description "Optional: drone IDs to filter (omit for all pending diffs)"}
+                               "dry_run" {:type "boolean"
+                                          :description "If true, only report what would be approved without actually applying"}}
+                  :required []}
+    :handler handle-approve-safe-diffs}
+
+   {:name "get_auto_approve_rules"
+    :description "Get current auto-approve rules configuration. Shows max-lines-changed, no-deletions-only, require-description, and allowed-path-patterns."
+    :inputSchema {:type "object"
+                  :properties {}
+                  :required []}
+    :handler handle-get-auto-approve-rules}])

@@ -7,9 +7,11 @@
    - :drone/failed    - Drone execution failed
 
    CLARITY-T: Telemetry first - structured events for monitoring
+   CLARITY-Y: Yield safe failure - records patterns for smart routing
    SOLID: SRP - Drone lifecycle only"
   (:require [hive-mcp.events.core :as ev]
             [hive-mcp.events.interceptors :as interceptors]
+            [hive-mcp.agent.drone.feedback :as feedback]
             [clojure.string :as str]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -67,20 +69,33 @@
     :parent-id     \"swarm-ling-123\" (optional)
     :files-modified [\"src/foo.clj\"]
     :files-failed   [{:file \"path\" :error \"reason\"}]
-    :duration-ms   5000}
+    :duration-ms   5000
+    :model         \"mistralai/devstral-2512:free\" (optional)
+    :task-type     :coding | :refactor | :fix (optional)}
 
    Produces effects:
    - :channel-publish - Broadcast drone-completed to WebSocket clients
    - :log             - Log drone completion message (includes failure details)
    - :prometheus      - Increment drone_completed counter, record duration
 
-   CLARITY-T: Diff failures are now included in log for visibility."
-  [_coeffects [_ {:keys [drone-id task-id parent-id files-modified files-failed duration-ms]}]]
+   CLARITY-T: Diff failures are now included in log for visibility.
+   CLARITY-Y: Records pattern for smart routing decisions."
+  [_coeffects [_ {:keys [drone-id task-id parent-id files-modified files-failed
+                         duration-ms model task-type] :as event-data}]]
   (let [;; Format failure details for log message (CLARITY-T: escalate diff failures)
         failure-details (when (seq files-failed)
                           (->> files-failed
                                (map #(str (:file %) ": " (:error %)))
                                (str/join ", ")))]
+
+    ;; CLARITY-Y: Record success pattern for feedback loop
+    (when (and model task-type)
+      (feedback/record-pattern! (keyword task-type)
+                                model
+                                :success
+                                {:duration-ms duration-ms
+                                 :agent-id drone-id}))
+
     {:channel-publish {:event :drone-completed
                        :data {:drone-id drone-id
                               :task-id task-id
@@ -118,14 +133,30 @@
     :error       \"Connection timeout\"
     :error-type  :nrepl-connection | :nrepl-timeout | :validation | :conflict | :execution | :unknown
     :files       [\"src/foo.clj\"]
-    :duration-ms 5000 (optional)}
+    :duration-ms 5000 (optional)
+    :model       \"mistralai/devstral-2512:free\" (optional)
+    :task-type   :coding | :refactor | :fix (optional)}
 
    Produces effects:
    - :channel-publish - Broadcast drone-failed to WebSocket clients
    - :log             - Log drone failure message
    - :prometheus      - Increment drone_failed counter with drone_id label
-                      - Record duration histogram with status=failed"
-  [_coeffects [_ {:keys [drone-id task-id parent-id error error-type files duration-ms]}]]
+                      - Record duration histogram with status=failed
+
+   CLARITY-Y: Records failure pattern for smart routing decisions."
+  [_coeffects [_ {:keys [drone-id task-id parent-id error error-type files
+                         duration-ms model task-type] :as event-data}]]
+
+  ;; CLARITY-Y: Record failure pattern for feedback loop
+  (when (and model task-type)
+    (let [result-class (feedback/classify-result {:status :failed
+                                                  :error (or error "unknown")})]
+      (feedback/record-pattern! (keyword task-type)
+                                model
+                                result-class
+                                {:duration-ms duration-ms
+                                 :agent-id drone-id})))
+
   {:channel-publish {:event :drone-failed
                      :data {:drone-id drone-id
                             :task-id task-id

@@ -27,6 +27,7 @@
   (:require [hive-mcp.events.core :as ev]
             [hive-mcp.events.interceptors :as interceptors]
             [hive-mcp.agent.context :as ctx]
+            [hive-mcp.swarm.datascript :as ds]
             [clojure.data.json :as json]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
@@ -136,6 +137,24 @@
 ;; MCP Tool Handler
 ;; =============================================================================
 
+(defn- get-ling-kanban-task-id
+  "Look up the kanban-task-id for a ling from DataScript.
+   Returns nil if ling not found or no kanban-task-id is set."
+  [agent-id]
+  (when agent-id
+    (when-let [slave (ds/get-slave agent-id)]
+      (:slave/kanban-task-id slave))))
+
+(defn- merge-kanban-task-ids
+  "Merge explicit task_ids with ling's kanban-task-id if not already included.
+   Ensures the ling's linked kanban task is auto-completed on session_complete."
+  [explicit-task-ids ling-kanban-task-id]
+  (let [explicit-set (set (or explicit-task-ids []))]
+    (if (and ling-kanban-task-id
+             (not (contains? explicit-set ling-kanban-task-id)))
+      (conj (vec (or explicit-task-ids [])) ling-kanban-task-id)
+      (vec (or explicit-task-ids [])))))
+
 (defn handle-session-complete
   "Complete a ling session: commit changes, move tasks to done, crystallize wrap.
 
@@ -146,6 +165,9 @@
    - task_ids: Array of kanban task IDs to mark done
    - agent_id: Ling's slave ID (auto-detected from env if not provided)
    - directory: Working directory for git/kanban scoping
+
+   Note: If the ling was spawned with a kanban_task_id, it will be
+   automatically added to the task_ids for completion (if not already present).
 
    Returns:
    - {:status \"ok\", :agent_id \"...\", :tasks_completed N}
@@ -166,10 +188,16 @@
                        "unknown-ling")
           effective-dir (or directory
                             (ctx/current-directory))
+          ;; Look up ling's linked kanban-task-id and merge it
+          ling-kanban-task-id (get-ling-kanban-task-id agent-id)
+          merged-task-ids (merge-kanban-task-ids task_ids ling-kanban-task-id)
           event-data {:commit-msg commit_msg
-                      :task-ids (when (seq task_ids) (vec task_ids))
+                      :task-ids (when (seq merged-task-ids) merged-task-ids)
                       :agent-id agent-id
                       :cwd effective-dir}]
+
+      (when ling-kanban-task-id
+        (log/info "session-complete: auto-adding ling's kanban-task-id:" ling-kanban-task-id))
 
       ;; Ensure handler is registered
       (register-handler!)
@@ -181,7 +209,8 @@
       {:type "text"
        :text (json/write-str {:status "ok"
                               :agent_id agent-id
-                              :tasks_completed (count (or task_ids []))
+                              :tasks_completed (count merged-task-ids)
+                              :linked_kanban_task ling-kanban-task-id
                               :commit_msg commit_msg})})))
 
 ;; =============================================================================

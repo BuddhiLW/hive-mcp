@@ -1,11 +1,16 @@
 (ns hive-mcp.tools.drone-feedback
-  "MCP tool for drones to report feedback on their execution.
+  "MCP tools for drone feedback and execution pattern learning.
 
    CLARITY Framework:
    - C: Composition - builds on existing memory infrastructure
    - L: Layers pure - validation separate from storage
    - I: Inputs guarded - validates category and required fields
    - T: Telemetry first - logs feedback for coordinator review
+   - Y: Yield safe - routes away from failing model/task combos
+
+   Two types of feedback:
+   1. Subjective feedback (tool-missing, workflow-friction, etc.)
+   2. Execution patterns (model/task success/failure rates)
 
    Drones use this to report:
    - tool-missing: Needed functionality not available
@@ -24,6 +29,7 @@
             [hive-mcp.tools.memory.format :as fmt]
             [hive-mcp.tools.memory.duration :as dur]
             [hive-mcp.tools.core :refer [mcp-json]]
+            [hive-mcp.agent.drone.feedback :as fb]
             [hive-mcp.chroma :as chroma]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -143,8 +149,68 @@
 ;; Tool Definition
 ;; =============================================================================
 
+;; =============================================================================
+;; Pattern Analysis Handlers
+;; =============================================================================
+
+(defn handle-drone-pattern-stats
+  "Get aggregated statistics about drone execution patterns.
+
+   Returns model performance, task success rates, problematic combos,
+   and top performers. Use for weekly analysis and model selection."
+  [{:keys [directory]}]
+  (log/info "drone-pattern-stats for:" (or directory "current project"))
+  (let [stats (fb/aggregate-weekly-stats {:directory directory})]
+    (mcp-json stats)))
+
+(defn handle-drone-pattern-recommendations
+  "Get recommendations for improving drone success rates.
+
+   Analyzes problematic model/task combinations and suggests
+   prompt improvements or model switches."
+  [{:keys [directory]}]
+  (log/info "drone-pattern-recommendations for:" (or directory "current project"))
+  (let [recommendations (fb/generate-recommendations {:directory directory})]
+    (mcp-json {:recommendations recommendations})))
+
+(defn handle-drone-model-recommend
+  "Recommend a model for a specific task type based on historical patterns.
+
+   Uses success rates to pick the best performing model from
+   available options."
+  [{:keys [task_type models directory]}]
+  (log/info "drone-model-recommend for:" task_type "models:" models)
+  (if (or (nil? task_type) (nil? models) (empty? models))
+    (mcp-json {:error "Required: task_type and models (array of model names)"})
+    (let [task-kw (keyword task_type)
+          recommended (fb/recommend-model task-kw models {:directory directory})
+          stats (fb/get-success-rate task-kw recommended {:directory directory})]
+      (mcp-json {:recommended-model recommended
+                 :task-type task_type
+                 :stats stats}))))
+
+(defn handle-drone-should-avoid
+  "Check if a model/task combination should be avoided.
+
+   Returns true if the combo has consistently failed (>=3 samples,
+   <30% success rate)."
+  [{:keys [task_type model directory]}]
+  (log/info "drone-should-avoid:" task_type "/" model)
+  (if (or (nil? task_type) (nil? model))
+    (mcp-json {:error "Required: task_type and model"})
+    (let [avoid? (fb/should-avoid-combo? (keyword task_type) model {:directory directory})
+          stats (fb/get-success-rate (keyword task_type) model {:directory directory})]
+      (mcp-json {:should-avoid avoid?
+                 :task-type task_type
+                 :model model
+                 :stats stats}))))
+
+;; =============================================================================
+;; Tool Definitions
+;; =============================================================================
+
 (def tools
-  "Tool definitions for drone feedback handlers."
+  "Tool definitions for drone feedback and pattern handlers."
   [{:name "drone_feedback"
     :description "Submit feedback about drone task execution. Report what worked, what didn't, and suggestions for improvement. Feedback is stored for coordinator review during /catchup or /wrap."
     :inputSchema {:type "object"
@@ -159,4 +225,43 @@
                                "context" {:type "string"
                                           :description "Task you were trying to accomplish"}}
                   :required ["category" "message"]}
-    :handler handle-drone-feedback}])
+    :handler handle-drone-feedback}
+
+   {:name "drone_pattern_stats"
+    :description "Get aggregated statistics about drone execution patterns. Returns success rates by model, by task type, problematic combos, and top performers. Use for weekly analysis."
+    :inputSchema {:type "object"
+                  :properties {"directory" {:type "string"
+                                            :description "Working directory for project scoping"}}}
+    :handler handle-drone-pattern-stats}
+
+   {:name "drone_pattern_recommendations"
+    :description "Get recommendations for improving drone success rates. Analyzes problematic model/task combinations and suggests prompt improvements."
+    :inputSchema {:type "object"
+                  :properties {"directory" {:type "string"
+                                            :description "Working directory for project scoping"}}}
+    :handler handle-drone-pattern-recommendations}
+
+   {:name "drone_model_recommend"
+    :description "Recommend a model for a specific task type based on historical success patterns. Pass available models and get the best performer."
+    :inputSchema {:type "object"
+                  :properties {"task_type" {:type "string"
+                                            :description "Task type keyword (e.g., 'coding', 'refactor', 'fix')"}
+                               "models" {:type "array"
+                                         :items {:type "string"}
+                                         :description "Available model identifiers to choose from"}
+                               "directory" {:type "string"
+                                            :description "Working directory for project scoping"}}
+                  :required ["task_type" "models"]}
+    :handler handle-drone-model-recommend}
+
+   {:name "drone_should_avoid"
+    :description "Check if a model/task combination should be avoided based on past failures. Returns true if combo has >=3 samples with <30% success rate."
+    :inputSchema {:type "object"
+                  :properties {"task_type" {:type "string"
+                                            :description "Task type keyword"}
+                               "model" {:type "string"
+                                        :description "Model identifier to check"}
+                               "directory" {:type "string"
+                                            :description "Working directory for project scoping"}}
+                  :required ["task_type" "model"]}
+    :handler handle-drone-should-avoid}])

@@ -32,17 +32,18 @@
    Arguments:
      slave-id  - Unique identifier (required)
      opts      - Map with optional keys:
-                 :name       - Human-readable name (defaults to slave-id)
-                 :status     - Initial status (default :idle)
-                 :depth      - Hierarchy depth (default 1 for ling)
-                 :parent     - Parent slave-id string
-                 :presets    - Collection of preset names
-                 :cwd        - Working directory
-                 :project-id - Project ID for scoping (derived from cwd)
+                 :name           - Human-readable name (defaults to slave-id)
+                 :status         - Initial status (default :idle)
+                 :depth          - Hierarchy depth (default 1 for ling)
+                 :parent         - Parent slave-id string
+                 :presets        - Collection of preset names
+                 :cwd            - Working directory
+                 :project-id     - Project ID for scoping (derived from cwd)
+                 :kanban-task-id - Optional kanban task ID this ling is working on
 
    Returns:
      Transaction report with :tempids"
-  [slave-id {:keys [name status depth parent presets cwd project-id]
+  [slave-id {:keys [name status depth parent presets cwd project-id kanban-task-id]
              :or {status :idle depth 1}}]
   {:pre [(string? slave-id)
          (contains? schema/slave-statuses status)]}
@@ -56,8 +57,10 @@
                   cwd (assoc :slave/cwd cwd)
                   project-id (assoc :slave/project-id project-id)
                   (seq presets) (assoc :slave/presets (vec presets))
-                  parent (assoc :slave/parent [:slave/id parent]))]
-    (log/debug "Adding slave:" slave-id "status:" status "project-id:" project-id)
+                  parent (assoc :slave/parent [:slave/id parent])
+                  kanban-task-id (assoc :slave/kanban-task-id kanban-task-id))]
+    (log/debug "Adding slave:" slave-id "status:" status "project-id:" project-id
+               (when kanban-task-id (str "kanban-task:" kanban-task-id)))
     (d/transact! c [tx-data])))
 
 (defn update-slave!
@@ -276,6 +279,30 @@
                                  :task/status status
                                  :task/completed-at (conn/now)}]
                          retract-current (conj retract-current)))))))
+
+(defn update-task!
+  "Update an existing task's attributes.
+
+   Arguments:
+     task-id  - Task to update
+     updates  - Map of attributes to update (uses :task/* keys)
+
+   Returns:
+     Transaction report or nil if task not found
+
+   Common updates:
+     {:task/status :completed :task/completed-at (conn/now)}
+     {:task/status :error}"
+  [task-id updates]
+  (let [c (conn/ensure-conn)
+        db @c]
+    (when-let [eid (:db/id (d/entity db [:task/id task-id]))]
+      (let [tx-data (cond-> (assoc updates :db/id eid)
+                      ;; Convert slave string to lookup ref if present
+                      (:task/slave updates)
+                      (update :task/slave (fn [s] [:slave/id s])))]
+        (log/debug "Updating task:" task-id "with:" (keys updates))
+        (d/transact! c [tx-data])))))
 
 ;;; =============================================================================
 ;;; Claim CRUD Functions

@@ -22,7 +22,6 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-
 ;;; =============================================================================
 ;;; Re-exports from schema
 ;;; =============================================================================
@@ -67,6 +66,7 @@
 (def add-task! lings/add-task!)
 (def complete-task! lings/complete-task!)
 (def fail-task! lings/fail-task!)
+(def update-task! lings/update-task!)
 
 ;; Claim operations
 (def claim-file! lings/claim-file!)

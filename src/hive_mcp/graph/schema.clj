@@ -18,7 +18,6 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-
 ;;; -----------------------------------------------------------------------------
 ;;; Friction Types (Enum values)
 ;;; -----------------------------------------------------------------------------
@@ -49,12 +48,13 @@
 
 (def memory-types
   "Valid memory entry types (from Emacs memory store).
-   
+
    :note       - General notes and observations
    :snippet    - Code snippets or examples
    :convention - Agreed-upon practices
-   :decision   - Architectural or design decisions"
-  #{:note :snippet :convention :decision})
+   :decision   - Architectural or design decisions
+   :axiom      - Foundational, inviolable principles (loaded first by catchup)"
+  #{:note :snippet :convention :decision :axiom})
 
 ;;; -----------------------------------------------------------------------------
 ;;; Memory Duration Types (Enum values)

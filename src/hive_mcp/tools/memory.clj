@@ -65,10 +65,10 @@
 
 (def tools
   [{:name "mcp_memory_add"
-    :description "Add an entry to project memory (Chroma storage). Types: note, snippet, convention, decision. Optionally specify duration for TTL: ephemeral (1 day), short (7 days), medium (30 days), long (90 days), permanent (never expires). For ling attribution, pass agent_id to tag entry with agent:<id>. Knowledge Graph: Use kg_* params to create edges linking this entry to existing entries (implements, supersedes, depends-on, refines)."
+    :description "Add an entry to project memory (Chroma storage). Types: note, snippet, convention, decision, axiom. Optionally specify duration for TTL: ephemeral (1 day), short (7 days), medium (30 days), long (90 days), permanent (never expires). For ling attribution, pass agent_id to tag entry with agent:<id>. Knowledge Graph: Use kg_* params to create edges linking this entry to existing entries (implements, supersedes, depends-on, refines)."
     :inputSchema {:type "object"
                   :properties {"type" {:type "string"
-                                       :enum ["note" "snippet" "convention" "decision"]
+                                       :enum ["note" "snippet" "convention" "decision" "axiom"]
                                        :description "Type of memory entry"}
                                "content" {:type "string"
                                           :description "Content of the memory entry"}
@@ -98,10 +98,10 @@
     :handler handle-mcp-memory-add}
 
    {:name "mcp_memory_query"
-    :description "Query project memory by type with scope filtering (Chroma storage). Returns stored notes, snippets, conventions, or decisions filtered by scope (auto-filters by current project + global unless specified)."
+    :description "Query project memory by type with scope filtering (Chroma storage). Returns stored notes, snippets, conventions, decisions, or axioms filtered by scope (auto-filters by current project + global unless specified)."
     :inputSchema {:type "object"
                   :properties {"type" {:type "string"
-                                       :enum ["note" "snippet" "convention" "decision" "conversation"]
+                                       :enum ["note" "snippet" "convention" "decision" "conversation" "axiom"]
                                        :description "Type of memory entries to query"}
                                "tags" {:type "array"
                                        :items {:type "string"}
@@ -122,7 +122,7 @@
     :description "Query project memory by type, returning only metadata (id, type, preview, tags, created). Use this for efficient browsing - returns ~10x fewer tokens than full query. Follow up with mcp_memory_get_full to fetch specific entries."
     :inputSchema {:type "object"
                   :properties {"type" {:type "string"
-                                       :enum ["note" "snippet" "convention" "decision" "conversation"]
+                                       :enum ["note" "snippet" "convention" "decision" "conversation" "axiom"]
                                        :description "Type of memory entries to query"}
                                "tags" {:type "array"
                                        :items {:type "string"}
@@ -163,7 +163,7 @@
                                "limit" {:type "integer"
                                         :description "Maximum number of results to return (default: 10)"}
                                "type" {:type "string"
-                                       :enum ["note" "snippet" "convention" "decision"]
+                                       :enum ["note" "snippet" "convention" "decision" "axiom"]
                                        :description "Optional filter by memory type"}}
                   :required ["query"]}
     :handler handle-mcp-memory-search-semantic}

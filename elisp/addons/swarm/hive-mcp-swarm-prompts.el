@@ -45,7 +45,14 @@
 
 (defcustom hive-mcp-swarm-prompts-patterns
   '("Allow\\|Deny" "Yes\\|No" "(y/n)" "[Y/n]" "[y/N]"
-    "Do you want to" "Would you like to" "Proceed\\?")
+    "Do you want to" "Would you like to" "Proceed\\?"
+    "Allow .* tool"                ;; Claude Code tool prompts
+    "permission"                   ;; Generic permission requests
+    "approve\\|reject"             ;; Approve/reject variants
+    "continue\\?"                  ;; Continue prompts
+    "Accept"                       ;; Accept prompts
+    "Allow once\\|Allow always"    ;; Claude Code specific
+    "Press Enter\\|Press any key") ;; Interactive prompts
   "Patterns that indicate a permission/confirmation prompt."
   :type '(repeat string)
   :group 'hive-mcp-swarm-prompts)
@@ -126,9 +133,11 @@ Returns plist (:text TEXT :pos POS) or nil."
 ;; Helper predicates for prompt processing (CLARITY-L: self-documenting code)
 
 (defun hive-mcp-swarm-prompts--slave-active-p (slave buffer)
-  "Return t if SLAVE with BUFFER is actively working and ready for prompts."
+  "Return t if SLAVE with BUFFER is ready for prompts.
+Accepts working, idle, or spawning status - DataScript updates are async
+so status may lag behind actual terminal state."
   (and (buffer-live-p buffer)
-       (eq (plist-get slave :status) 'working)))
+       (memq (plist-get slave :status) '(working idle spawning))))
 
 (defun hive-mcp-swarm-prompts--prompt-is-new-p (prompt-pos last-pos)
   "Return t if PROMPT-POS indicates a new prompt after LAST-POS."
@@ -192,13 +201,17 @@ CLARITY: L - Bottom-up reading via extracted per-slave helper."
 ;;;; Human Mode:
 
 (defun hive-mcp-swarm-prompts--send-desktop-notification (title body)
-  "Send desktop notification with TITLE and BODY via notify-send."
-  (when (and hive-mcp-swarm-prompts-desktop-notify
-             (executable-find "notify-send"))
-    (start-process "swarm-notify" nil "notify-send"
-                   "--urgency=critical"
-                   "--app-name=Swarm"
-                   title body)))
+  "Send desktop notification with TITLE and BODY via notify-send.
+Falls back to beep + message if notify-send unavailable."
+  (if (and hive-mcp-swarm-prompts-desktop-notify
+           (executable-find "notify-send"))
+      (start-process "swarm-notify" nil "notify-send"
+                     "--urgency=critical"
+                     "--app-name=Swarm"
+                     title body)
+    ;; Fallback: beep + message
+    (ding t)
+    (message "🐝 SWARM: %s - %s" title body)))
 
 (defun hive-mcp-swarm-prompts--display-prompt (slave-id prompt-text)
   "Display PROMPT-TEXT from SLAVE-ID in the prompts buffer."

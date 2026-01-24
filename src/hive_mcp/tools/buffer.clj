@@ -215,7 +215,10 @@
   (hooks/dispatch-before name args)
   ;; Route to appropriate executor
   (let [result (case (router/route-workflow name)
-                 :native (catchup/handle-native-catchup args)
+                 :native (case name
+                           "catchup" (catchup/handle-native-catchup args)
+                           "wrap" (catchup/handle-native-wrap args)
+                           (catchup/handle-native-catchup args))
                  :elisp (if (hive-mcp-el-available?)
                           (let [elisp (if args
                                         (format "(json-encode (hive-mcp-api-run-workflow %s %s))"

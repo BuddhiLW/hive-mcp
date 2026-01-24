@@ -19,11 +19,20 @@
    - Phase 2: Elisp queries DataScript via MCP (future)
    - Phase 3: Single source of truth achieved (future)
 
+   ADR-004 (ISwarmRegistry Migration):
+   - Uses ISwarmRegistry protocol for swarm state operations
+   - Enables future backend swapping (Datomic, XTDB)
+   - Extended operations (claims, connection) via registry helpers
+
    DRY Patterns (Sprint-2):
    - `get-field`: Unified event field extraction (string or keyword keys)
    - `dispatch-event!`: Safe event dispatch with error handling
    - Handler functions use consistent field extraction pattern"
-  (:require [hive-mcp.swarm.datascript :as ds]
+  (:require [hive-mcp.swarm.protocol :as proto]
+            [hive-mcp.swarm.datascript.registry :as registry]
+            [hive-mcp.swarm.datascript.lings :as lings]
+            [hive-mcp.swarm.datascript.connection :as conn]
+            [hive-mcp.swarm.datascript.queries :as queries]
             [hive-mcp.swarm.coordinator :as coord]
             [hive-mcp.channel :as channel]
             [hive-mcp.emacsclient :as ec]
@@ -46,6 +55,21 @@
          :subscriptions []}))
 
 (defonce ^:private hooks-registry-atom (atom nil))
+
+;; ISwarmRegistry instance for protocol-based swarm operations
+(defonce ^:private swarm-registry-atom (atom nil))
+
+(defn set-swarm-registry!
+  "Inject the swarm registry implementation.
+   If not set, uses default DataScript registry."
+  [registry]
+  (reset! swarm-registry-atom registry)
+  (log/info "Sync: swarm registry injected"))
+
+(defn get-swarm-registry
+  "Get the injected swarm registry, or default DataScript registry."
+  []
+  (or @swarm-registry-atom (registry/get-default-registry)))
 
 (defn set-hooks-registry!
   "Inject the hooks registry from server.clj to avoid cyclic dependency."
@@ -112,29 +136,32 @@
         depth (get-field event :depth 1)
         parent-id (get-field event :parent-id)
         cwd (get-field event :cwd)
-        project-id (when cwd (scope/get-current-project-id cwd))]
+        project-id (when cwd (scope/get-current-project-id cwd))
+        reg (get-swarm-registry)]
     (when slave-id
-      (ds/add-slave! slave-id {:status :idle :name name :depth depth
-                               :parent parent-id :cwd cwd :project-id project-id})
+      (proto/add-slave! reg slave-id {:status :idle :name name :depth depth
+                                      :parent parent-id :cwd cwd :project-id project-id})
       (log/debug "Sync: registered slave" slave-id "depth:" depth "project-id:" project-id))))
 
 (defn- handle-slave-status
   "Handle slave status change event. Event: {:slave-id :status}"
   [event]
   (let [slave-id (get-field event :slave-id)
-        status (some-> (get-field event :status) keyword)]
+        status (some-> (get-field event :status) keyword)
+        reg (get-swarm-registry)]
     (when (and slave-id status)
-      (ds/update-slave! slave-id {:slave/status status})
+      (proto/update-slave! reg slave-id {:slave/status status})
       (log/debug "Sync: updated slave status" slave-id "->" status))))
 
 (defn- handle-slave-killed
   "Handle slave killed event. Event: {:slave-id}
    EVENTS-07: Dispatches :ling/completed BEFORE removing from DataScript."
   [event]
-  (let [slave-id (get-field event :slave-id)]
+  (let [slave-id (get-field event :slave-id)
+        reg (get-swarm-registry)]
     (when slave-id
       (dispatch-event! [:ling/completed {:slave-id slave-id :reason "terminated"}])
-      (ds/remove-slave! slave-id)
+      (proto/remove-slave! reg slave-id)
       (log/debug "Sync: removed slave" slave-id))))
 
 (defn- handle-task-dispatched
@@ -145,13 +172,15 @@
   [event]
   (let [task-id (get-field event :task-id)
         slave-id (get-field event :slave-id)
-        files (get-field event :files [])]
+        files (get-field event :files [])
+        reg (get-swarm-registry)]
     (when (and task-id slave-id)
-      (ds/add-task! task-id slave-id {:status :dispatched :files files})
+      (proto/add-task! reg task-id slave-id {:status :dispatched :files files})
       ;; ADR-002 FIX: Set slave status to :working on dispatch
-      (ds/update-slave! slave-id {:slave/status :working})
+      (proto/update-slave! reg slave-id {:slave/status :working})
+      ;; claim-file! is not in ISwarmRegistry - use lings directly
       (doseq [f files]
-        (ds/claim-file! f slave-id task-id))
+        (lings/claim-file! f slave-id task-id))
       (log/debug "Sync: registered task" task-id "with" (count files) "files, slave now :working"))))
 
 (defn- handle-task-completed
@@ -161,7 +190,8 @@
   (let [task-id (get-field event :task-id)
         slave-id (get-field event :slave-id)]
     (when task-id
-      (ds/complete-task! task-id)
+      ;; complete-task! has full semantics (release claims, update stats) - use lings directly
+      (lings/complete-task! task-id)
       (dispatch-event! [:task/complete {:task-id task-id :agent-id slave-id :result :completed}])
       (trigger-task-complete-hooks! task-id slave-id)
       (when-let [ready (seq (coord/process-queue!))]
@@ -173,7 +203,8 @@
   [event]
   (let [task-id (get-field event :task-id)]
     (when task-id
-      (ds/fail-task! task-id :error)
+      ;; fail-task! has full semantics (release claims) - use lings directly
+      (lings/fail-task! task-id :error)
       (coord/process-queue!)
       (log/debug "Sync: task failed" task-id))))
 
@@ -204,6 +235,33 @@
                         :urgency urgency})
       (log/warn "Sync: prompt-stall from" slave-id "- idle" idle-secs "secs"))))
 
+(defn- handle-dispatch-dropped
+  "Handle dispatch-dropped event. Event: {:slave-id :reason :prompt-preview :retries :wait-time-secs}
+   This critical event indicates a queued dispatch was lost after max retries."
+  [event]
+  (let [slave-id (get-field event :slave-id)
+        reason (get-field event :reason "unknown")
+        prompt-preview (get-field event :prompt-preview "")
+        retries (get-field event :retries 0)
+        wait-time (get-field event :wait-time-secs 0)]
+    (when slave-id
+      ;; Shout to hivemind so coordinator is notified
+      (hivemind/shout! slave-id :error
+                       {:task "dispatch-dropped"
+                        :message (format "DISPATCH DROPPED: %s - reason: %s, retries: %d, wait: %.1fs. Prompt: %s"
+                                         slave-id reason retries wait-time prompt-preview)
+                        :reason reason
+                        :retries retries
+                        :wait-time-secs wait-time
+                        :urgency "high"})
+      ;; Dispatch to hive-events for potential hooks/effects
+      (dispatch-event! [:task/dispatch-dropped {:slave-id slave-id
+                                                :reason reason
+                                                :prompt-preview prompt-preview
+                                                :retries retries}])
+      (log/error "Sync: DISPATCH DROPPED for" slave-id "- reason:" reason
+                 "retries:" retries "wait:" wait-time "secs"))))
+
 ;; =============================================================================
 ;; Event Subscription Management
 ;; =============================================================================
@@ -216,7 +274,8 @@
    :task-completed handle-task-completed
    :task-failed handle-task-failed
    :prompt-shown handle-prompt-shown
-   :prompt-stall handle-prompt-stall})
+   :prompt-stall handle-prompt-stall
+   :dispatch-dropped handle-dispatch-dropped})
 
 (defn- subscribe-to-event!
   "Subscribe to a single event type with handler."
@@ -244,16 +303,18 @@
         name (or (:name slave) slave-id)
         depth (or (:depth slave) 1)
         cwd (:cwd slave)
-        project-id (when cwd (scope/get-current-project-id cwd))]
-    (ds/add-slave! slave-id {:status status :name name :depth depth
-                             :cwd cwd :project-id project-id})
+        project-id (when cwd (scope/get-current-project-id cwd))
+        reg (get-swarm-registry)]
+    (proto/add-slave! reg slave-id {:status status :name name :depth depth
+                                    :cwd cwd :project-id project-id})
     (log/debug "Sync: bootstrapped slave" slave-id status "project-id:" project-id)))
 
 (defn full-sync-from-emacs!
   "One-time full sync from Emacs swarm state. Call on startup to bootstrap."
   []
   (log/info "Starting full sync from Emacs...")
-  (ds/reset-conn!)
+  ;; reset-conn! is connection management, not in ISwarmRegistry
+  (conn/reset-conn!)
   (let [elisp "(json-encode (hive-mcp-swarm-api-status))"
         {:keys [success result error]} (ec/eval-elisp-with-timeout elisp 5000)]
     (if success
@@ -298,7 +359,8 @@
   []
   {:running (:running @sync-state)
    :subscription-count (count (:subscriptions @sync-state))
-   :db-stats (ds/db-stats)})
+   ;; db-stats is a debug function, not in ISwarmRegistry
+   :db-stats (queries/db-stats)})
 
 (comment
   ;; Development REPL examples
@@ -306,5 +368,6 @@
   (sync-status)
   (handle-slave-spawned {:slave-id "test-slave-1" :name "test" :depth 1})
   (handle-task-dispatched {:task-id "task-1" :slave-id "test-slave-1" :files ["/src/core.clj"]})
-  (ds/dump-db)
+  ;; Debug utilities - not in ISwarmRegistry
+  (queries/dump-db)
   (stop-sync!))

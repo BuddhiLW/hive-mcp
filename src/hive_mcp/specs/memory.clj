@@ -17,7 +17,7 @@
 ;; ============================================================
 
 (s/def ::entry-type
-  #{:note :snippet :convention :decision :conversation})
+  #{:note :snippet :convention :decision :conversation :axiom})
 
 (s/def ::duration
   #{:ephemeral :short :medium :long :permanent})
@@ -145,7 +145,7 @@
 ;; ============================================================
 
 (defn entry-type-gen []
-  (gen/elements [:note :snippet :convention :decision :conversation]))
+  (gen/elements [:note :snippet :convention :decision :conversation :axiom]))
 
 (defn duration-gen []
   (gen/elements [:ephemeral :short :medium :long :permanent]))

@@ -121,6 +121,29 @@
            [?e :slave/id ?sid]]
          db project-id)))
 
+(defn get-slave-by-kanban-task
+  "Get the slave that is assigned to a kanban task.
+
+   Arguments:
+     kanban-task-id - Kanban task ID to look up
+
+   Returns:
+     Map with slave attributes or nil if no slave is assigned to this task"
+  [kanban-task-id]
+  (let [c (conn/ensure-conn)
+        db @c
+        eid (d/q '[:find ?e .
+                   :in $ ?task-id
+                   :where
+                   [?e :slave/kanban-task-id ?task-id]]
+                 db kanban-task-id)]
+    (when eid
+      (let [e (d/entity db eid)]
+        (-> (into {} e)
+            (dissoc :db/id)
+            (update :slave/parent #(when % (:slave/id %)))
+            (update :slave/current-task #(when % (:task/id %))))))))
+
 ;;; =============================================================================
 ;;; Task Query Functions
 ;;; =============================================================================

@@ -47,3 +47,7 @@ pdfs/
 
 # deprecated kanban
 kanban.org
+
+# Drone test artifacts
+test/drone_test_file_*.clj
+test/drone-test-file-*.txt

@@ -59,6 +59,12 @@
 (def ^:private wave-duration-seconds-name :hive-mcp/wave-duration-seconds)
 (def ^:private wave-failures-total-name :hive-mcp/wave-failures-total)
 
+;; Model-specific drone metrics (CLARITY-T: model performance tracking for OpenRouter selection)
+(def ^:private drone-model-execution-total-name :hive-mcp/drone-model-execution-total)
+(def ^:private drone-model-duration-seconds-name :hive-mcp/drone-model-duration-seconds)
+(def ^:private drone-model-retry-total-name :hive-mcp/drone-model-retry-total)
+(def ^:private drone-tokens-total-name :hive-mcp/drone-tokens-total)
+
 ;;; =============================================================================
 ;;; Collector Definitions
 ;;; =============================================================================
@@ -192,6 +198,43 @@
     :labels [:wave-id :reason]}))
 
 ;;; =============================================================================
+;;; Model-Specific Drone Metrics Collectors (CLARITY-T: OpenRouter model optimization)
+;;; =============================================================================
+
+;; Counter: Drone executions by model (labels: :model :status :task-type)
+;; Use this to compare success rates across models and task types
+(def ^:private drone-model-execution-total-collector
+  (prometheus/counter
+   drone-model-execution-total-name
+   {:description "Total drone executions by model, status, and task type"
+    :labels [:model :status :task-type]}))
+
+;; Histogram: Drone duration by model (labels: :model)
+;; Use this to compare latency across different models
+(def ^:private drone-model-duration-seconds-collector
+  (prometheus/histogram
+   drone-model-duration-seconds-name
+   {:description "Drone execution duration by model"
+    :labels [:model]
+    :buckets [1.0 5.0 10.0 30.0 60.0 120.0 300.0 600.0]}))
+
+;; Counter: Drone retries by model and reason (labels: :model :reason)
+;; Track retry patterns to identify unreliable models
+(def ^:private drone-model-retry-total-collector
+  (prometheus/counter
+   drone-model-retry-total-name
+   {:description "Total drone retries by model and reason"
+    :labels [:model :reason]}))
+
+;; Counter: Token usage by model and direction (labels: :model :direction)
+;; Track input/output token consumption per model for cost analysis
+(def ^:private drone-tokens-total-collector
+  (prometheus/counter
+   drone-tokens-total-name
+   {:description "Total tokens used by model and direction (input/output)"
+    :labels [:model :direction]}))
+
+;;; =============================================================================
 ;;; Registry Initialization
 ;;; =============================================================================
 
@@ -223,7 +266,12 @@
          wave-success-rate-collector
          wave-items-total-collector
          wave-duration-seconds-collector
-         wave-failures-total-collector))))
+         wave-failures-total-collector
+         ;; Model-specific drone metrics (CLARITY-T)
+         drone-model-execution-total-collector
+         drone-model-duration-seconds-collector
+         drone-model-retry-total-collector
+         drone-tokens-total-collector))))
 
 ;;; =============================================================================
 ;;; Convenience Functions (SRP: Each function handles one metric type)
@@ -397,6 +445,122 @@
          duration# (/ (- (System/nanoTime) start#) 1e9)]
      (observe-wave-duration! duration#)
      result#))
+
+;;; =============================================================================
+;;; Model-Specific Drone Metrics (CLARITY-T: OpenRouter model performance tracking)
+;;; =============================================================================
+
+(defn inc-drone-model-execution!
+  "Increment drone model execution counter.
+   model: OpenRouter model name (e.g., \"mistralai/devstral-2512:free\")
+   status: :success or :failure
+   task-type: :coding, :arch, :docs, etc."
+  [model status task-type]
+  (prometheus/inc
+   (@registry drone-model-execution-total-name
+              {:model (str model)
+               :status (name (or status :unknown))
+               :task-type (name (or task-type :unknown))})))
+
+(defn observe-drone-model-duration!
+  "Observe drone execution duration by model.
+   model: OpenRouter model name
+   seconds: duration in seconds (double)"
+  [model seconds]
+  (when (and model seconds)
+    (prometheus/observe
+     (@registry drone-model-duration-seconds-name {:model (str model)})
+     seconds)))
+
+(defn inc-drone-model-retry!
+  "Increment drone retry counter by model and reason.
+   model: OpenRouter model name
+   reason: :timeout, :empty-response, :rate-limit, :api-error, etc."
+  [model reason]
+  (prometheus/inc
+   (@registry drone-model-retry-total-name
+              {:model (str model)
+               :reason (name (or reason :unknown))})))
+
+(defn inc-drone-tokens!
+  "Increment token usage counter by model and direction.
+   model: OpenRouter model name
+   direction: :input or :output
+   count: number of tokens"
+  [model direction count]
+  (when (and model count (pos? count))
+    (prometheus/inc
+     (@registry drone-tokens-total-name
+                {:model (str model)
+                 :direction (name direction)})
+     count)))
+
+(defn record-retry!
+  "Record a retry attempt for telemetry.
+
+   Arguments:
+     opts map with keys:
+       :drone-id       - Drone identifier (optional)
+       :attempt        - Retry attempt number (0-indexed)
+       :error-category - Error category (:transient, :permanent, :model-fallback, :unknown)
+       :action         - Recovery action (:retry, :retry-with-fallback, :fail)
+       :model          - Model that was being used (optional)
+
+   Records to Prometheus:
+     - drone_model_retry_total (counter)
+
+   CLARITY-T: Retry telemetry for observability of recovery patterns."
+  [{:keys [drone-id attempt error-category action model]}]
+  (let [reason (or error-category :unknown)]
+    (when model
+      (inc-drone-model-retry! model reason))
+    ;; Also increment generic errors counter for recoverable errors
+    (when (contains? #{:retry :retry-with-fallback} action)
+      (inc-errors-total! reason true))))
+
+(defn record-drone-result!
+  "Record comprehensive drone execution result for model performance tracking.
+
+   Arguments:
+     result-map with keys:
+       :model      - OpenRouter model name (required)
+       :task-type  - Task type keyword (:coding, :arch, :docs)
+       :success?   - Boolean indicating success/failure
+       :duration-ms - Execution duration in milliseconds
+       :tokens     - Map with :input and :output token counts (optional)
+       :retry?     - Whether this was a retry attempt (optional)
+       :retry-reason - Reason for retry if applicable (optional)
+
+   Records to Prometheus:
+     - drone_model_execution_total (counter)
+     - drone_model_duration_seconds (histogram)
+     - drone_tokens_total (counter, if tokens provided)
+     - drone_model_retry_total (counter, if retry? is true)
+
+   Example:
+     (record-drone-result! {:model \"mistralai/devstral-2512:free\"
+                           :task-type :coding
+                           :success? true
+                           :duration-ms 15000
+                           :tokens {:input 1500 :output 800}})"
+  [{:keys [model task-type success? duration-ms tokens retry? retry-reason]}]
+  ;; Record execution count
+  (inc-drone-model-execution! model (if success? :success :failure) task-type)
+
+  ;; Record duration
+  (when duration-ms
+    (observe-drone-model-duration! model (/ duration-ms 1000.0)))
+
+  ;; Record token usage
+  (when tokens
+    (when-let [input-tokens (:input tokens)]
+      (inc-drone-tokens! model :input input-tokens))
+    (when-let [output-tokens (:output tokens)]
+      (inc-drone-tokens! model :output output-tokens)))
+
+  ;; Record retry if applicable
+  (when retry?
+    (inc-drone-model-retry! model retry-reason)))
 
 ;;; =============================================================================
 ;;; Generic Effect Handler Support (CLARITY-T: Effect system integration)

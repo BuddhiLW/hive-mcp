@@ -29,6 +29,8 @@
             [hive-mcp.swarm.coordinator :as coordinator]
             [hive-mcp.channel :as channel]
             [hive-mcp.agent.context :as ctx]
+            [hive-mcp.validation :as v]
+            [hive-mcp.emacsclient :as ec]
             [clojure.java.shell :as shell]
             [datascript.core :as d]
             [taoensso.timbre :as log]))
@@ -41,6 +43,7 @@
 ;; =============================================================================
 
 (defonce ^:private memory-write-handler (atom nil))
+(defonce ^:private wrap-crystallize-handler (atom nil))
 
 (defn set-memory-write-handler!
   "Set the handler function for :memory-write effect.
@@ -50,6 +53,17 @@
      (set-memory-write-handler! memory-crud/handle-add)"
   [f]
   (reset! memory-write-handler f))
+
+(defn set-wrap-crystallize-handler!
+  "Set the handler function for :wrap-crystallize effect.
+   Called during server initialization to wire tools layer.
+
+   DIP: Events layer uses this injection point instead of importing tools/crystal.
+
+   Example:
+     (set-wrap-crystallize-handler! crystal/handle-wrap-crystallize)"
+  [f]
+  (reset! wrap-crystallize-handler f))
 
 ;; =============================================================================
 ;; Effect: :shout
@@ -459,20 +473,22 @@
    Triggers the wrap crystallize workflow to persist session learnings
    to long-term memory. Part of the session_complete workflow.
 
+   DIP: Uses injected handler (set via set-wrap-crystallize-handler!)
+   to avoid layer inversion (events importing tools).
+
    Expected data shape:
    {:agent-id \"ling-123\"}
 
    Example:
    {:wrap-crystallize {:agent-id \"swarm-ling-worker-456\"}}"
   [{:keys [agent-id]}]
-  (try
-    ;; Dynamically require to avoid circular deps
-    (require '[hive-mcp.tools.crystal :as crystal])
-    (when-let [handler (resolve 'hive-mcp.tools.crystal/handle-wrap-crystallize)]
-      (handler {:agent_id agent-id}))
-    (log/info "[EVENT] Wrap crystallize completed for:" agent-id)
-    (catch Exception e
-      (log/error "[EVENT] Wrap crystallize failed:" (.getMessage e)))))
+  (if-let [handler @wrap-crystallize-handler]
+    (try
+      (handler {:agent_id agent-id})
+      (log/info "[EVENT] Wrap crystallize completed for:" agent-id)
+      (catch Exception e
+        (log/error "[EVENT] Wrap crystallize failed:" (.getMessage e))))
+    (log/warn "[EVENT] Wrap crystallize handler not configured - call set-wrap-crystallize-handler! during initialization")))
 
 ;; =============================================================================
 ;; Effect: :dispatch-task (POC-07)
@@ -511,6 +527,36 @@
         (log/error "[EVENT] Task dispatch failed:" (.getMessage e))))))
 
 ;; =============================================================================
+;; Effect: :swarm-send-prompt (Agora Turn Relay)
+;; =============================================================================
+
+(defn- handle-swarm-send-prompt
+  "Execute a :swarm-send-prompt effect - send prompt to ling terminal.
+
+   Sends a prompt directly to a ling's terminal for Agora dialogue relay.
+   Uses elisp hive-mcp-swarm-send-to-terminal function.
+
+   Expected data shape:
+   {:slave-id \"swarm-ling-123\"
+    :prompt   \"The prompt to send\"}
+
+   Example:
+   {:swarm-send-prompt {:slave-id \"swarm-ling-critic\"
+                        :prompt \"[AGORA] Please review...\"}}"
+  [{:keys [slave-id prompt]}]
+  (when (and slave-id prompt)
+    (try
+      (let [elisp (format "(hive-mcp-swarm-send-to-terminal \"%s\" \"%s\")"
+                          (v/escape-elisp-string slave-id)
+                          (v/escape-elisp-string prompt))
+            {:keys [success error]} (ec/eval-elisp elisp)]
+        (if success
+          (log/info "[EVENT] Sent Agora prompt to ling:" slave-id)
+          (log/warn "[EVENT] Failed to send Agora prompt to" slave-id ":" error)))
+      (catch Exception e
+        (log/error "[EVENT] Swarm send-prompt error:" (.getMessage e))))))
+
+;; =============================================================================
 ;; Registration
 ;; =============================================================================
 
@@ -535,6 +581,7 @@
    - :git-commit      - Stage files and create git commit (P5-2)
    - :kanban-sync     - Synchronize kanban state (P5-4)
    - :dispatch-task   - Dispatch task to swarm slave (POC-07)
+   - :swarm-send-prompt - Send prompt to ling terminal (Agora Turn Relay)
    - :emit-system-error - Structured error telemetry (Telemetry Phase 1)
    - KG effects       - See hive-mcp.events.effects.kg
 
@@ -645,6 +692,9 @@
     ;; :dispatch-task - Dispatch task to swarm slave (POC-07)
     (ev/reg-fx :dispatch-task handle-dispatch-task)
 
+    ;; :swarm-send-prompt - Send prompt to ling terminal (Agora Turn Relay)
+    (ev/reg-fx :swarm-send-prompt handle-swarm-send-prompt)
+
     ;; :kanban-move-done - Move kanban tasks to done (Session Complete)
     (ev/reg-fx :kanban-move-done handle-kanban-move-done)
 
@@ -662,7 +712,7 @@
 
     (reset! *registered true)
     (log/info "[hive-events] Coeffects registered: :now :agent-context :db-snapshot :waiting-lings :request-ctx")
-    (log/info "[hive-events] Effects registered: :shout :targeted-shout :log :ds-transact :wrap-notify :channel-publish :memory-write :report-metrics :emit-system-error :dispatch :dispatch-n :git-commit :kanban-sync :dispatch-task :kanban-move-done :wrap-crystallize")
+    (log/info "[hive-events] Effects registered: :shout :targeted-shout :log :ds-transact :wrap-notify :channel-publish :memory-write :report-metrics :emit-system-error :dispatch :dispatch-n :git-commit :kanban-sync :dispatch-task :swarm-send-prompt :kanban-move-done :wrap-crystallize")
     true))
 
 (defn reset-registration!

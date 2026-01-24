@@ -137,6 +137,10 @@
 
    Uses locking on logic-db to ensure check+claim is atomic.
 
+   DUAL DB SYNC FIX: Ensures slave is registered in core.logic pldb BEFORE
+   claiming files. This prevents race conditions where drones are in DataScript
+   but not in logic-db, causing ghost claims and conflict detection failures.
+
    Arguments:
    - task-id:  Unique task identifier
    - slave-id: Slave/drone claiming the files
@@ -150,6 +154,11 @@
   (when (seq files)
     (let [lock-obj (logic/get-logic-db-atom)]
       (locking lock-obj
+        ;; DUAL DB SYNC: Register slave in logic-db FIRST if not present
+        ;; This ensures conflict detection works correctly
+        (when-not (logic/slave-exists? slave-id)
+          (logic/add-slave! slave-id :active)
+          (log/debug "Registered slave in logic-db during claim:" slave-id))
         (let [conflicts (logic/check-file-conflicts slave-id files)]
           (if (seq conflicts)
             {:acquired? false
@@ -222,9 +231,15 @@
 
 (defn register-task-claims!
   "Register file claims for a dispatched task.
-   Call this after successful dispatch."
+   Call this after successful dispatch.
+
+   DUAL DB SYNC: Ensures slave is registered in logic-db before claiming."
   [task-id slave-id files]
   (when (seq files)
+    ;; DUAL DB SYNC: Register slave in logic-db FIRST if not present
+    (when-not (logic/slave-exists? slave-id)
+      (logic/add-slave! slave-id :active)
+      (log/debug "Registered slave in logic-db during task claim:" slave-id))
     (doseq [f files]
       (logic/add-claim! f slave-id)
       (logic/add-task-file! task-id f)

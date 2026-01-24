@@ -12,6 +12,8 @@
    - handlers.drone   - Drone lifecycle (:drone/started, :drone/completed, :drone/failed)
    - handlers.claim   - File claims (:claim/file-released, :claim/notify-waiting)
    - handlers.hot-reload - Hot reload lifecycle (:hot/reload-start, :hot/reload-success, :file/changed)
+   - handlers.kg     - Knowledge Graph (:kg/edge-created, :kg/edge-updated, :kg/edge-removed, :kg/node-promoted)
+   - handlers.agora  - Agora events (:agora/turn-dispatched, :agora/timeout)
 
    ## Usage
    ```clojure
@@ -49,6 +51,12 @@
    - :hot/reload-start      - Hot reload process started
    - :hot/reload-success    - Hot reload completed successfully
    - :file/changed          - File modification detected by watcher
+   - :kg/edge-created       - New KG edge added
+   - :kg/edge-updated       - KG edge confidence changed
+   - :kg/edge-removed       - KG edge deleted
+   - :kg/node-promoted      - Knowledge promoted to parent scope
+   - :agora/turn-dispatched - Agora turn dispatched
+   - :agora/timeout         - Agora timeout
 
    SOLID: SRP - Facade delegates to domain-specific modules
    CLARITY: R - Represented intent through clear module structure"
@@ -62,7 +70,9 @@
             [hive-mcp.events.handlers.drone :as drone]
             [hive-mcp.events.handlers.claim :as claim]
             [hive-mcp.events.handlers.system :as system]
-            [hive-mcp.events.handlers.hot-reload :as hot-reload]))
+            [hive-mcp.events.handlers.hot-reload :as hot-reload]
+            [hive-mcp.events.handlers.kg :as kg]
+            [hive-mcp.events.handlers.agora :as agora]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -90,6 +100,8 @@
    - claim/register-handlers!   - File claims
    - system/register-handlers!  - System telemetry (Phase 1)
    - hot-reload/register-handlers! - Hot reload lifecycle
+   - kg/register-handlers!       - Knowledge Graph edges
+   - agora/register-handlers!    - Agora events
 
    Returns true if handlers were registered, false if already registered."
   []
@@ -106,9 +118,11 @@
     (claim/register-handlers!)
     (system/register-handlers!)
     (hot-reload/register-handlers!)
+    (kg/register-handlers!)
+    (agora/register-handlers!)
 
     (reset! *registered true)
-    (println "[hive-events] Handlers registered: :task/complete :task/shout-complete :git/commit-modified :ling/started :ling/completed :ling/ready-for-wrap :session/end :session/wrap :kanban/sync :kanban/done :crystal/wrap-request :crystal/wrap-notify :wave/start :wave/item-done :wave/complete :validated-wave/start :validated-wave/iteration-start :validated-wave/success :validated-wave/partial :validated-wave/retry :drone/started :drone/completed :drone/failed :claim/file-released :claim/notify-waiting :system/error :hot/reload-start :hot/reload-success :file/changed")
+    (println "[hive-events] Handlers registered: :task/complete :task/shout-complete :git/commit-modified :ling/started :ling/completed :ling/ready-for-wrap :session/end :session/wrap :kanban/sync :kanban/done :crystal/wrap-request :crystal/wrap-notify :wave/start :wave/item-done :wave/complete :validated-wave/start :validated-wave/iteration-start :validated-wave/success :validated-wave/partial :validated-wave/retry :drone/started :drone/completed :drone/failed :claim/file-released :claim/notify-waiting :system/error :hot/reload-start :hot/reload-success :file/changed :kg/edge-created :kg/edge-updated :kg/edge-removed :kg/node-promoted :agora/turn-dispatched :agora/timeout")
     true))
 
 (defn reset-registration!

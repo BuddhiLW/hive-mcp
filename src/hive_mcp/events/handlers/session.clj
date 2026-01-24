@@ -13,7 +13,6 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-
 ;; =============================================================================
 ;; Handler: :session/end (EVENTS-06)
 ;; =============================================================================
@@ -53,28 +52,35 @@
 (defn handle-session-wrap
   "Handler for :session/wrap events.
 
-   Triggers the wrap workflow at session end for crystallizing session learnings.
+   Triggers wrap crystallization at session end to persist session learnings.
 
    Expects event data:
-   {:session-id  \"session-abc\"
-    :project     \"hive-mcp\"
-    :start-time  \"2024-01-01T10:00:00Z\"}
+   {:session-id   \"session-abc\"
+    :slave-id     \"swarm-ling-123\"
+    :project      \"hive-mcp\"
+    :triggered-by \"auto-wrap\" | \"manual\"
+    :reason       \"task-completed\" | etc}
 
    Produces effects:
-   - :log          - Log wrap trigger
-   - :run-workflow - Trigger :wrap workflow with params"
-  [coeffects [_ {:keys [session-id project start-time]}]]
-  (let [agent-id (or (get-in coeffects [:agent-context :agent-id])
+   - :log              - Log wrap trigger
+   - :wrap-crystallize - Persist session learnings to memory
+
+   FIX: GAP-1 - Previously used :run-workflow which was never registered.
+   Now directly emits :wrap-crystallize to ensure auto-wrap actually persists."
+  [coeffects [_ {:keys [session-id slave-id project triggered-by reason]}]]
+  (let [agent-id (or slave-id
+                     (get-in coeffects [:agent-context :agent-id])
                      (System/getenv "CLAUDE_SWARM_SLAVE_ID")
                      "unknown-agent")
         effective-session-id (or session-id
                                  (str "session:" (java.time.LocalDate/now) ":" agent-id))]
     {:log {:level :info
-           :message (str "Triggering wrap workflow for session: " effective-session-id)}
-     :run-workflow {:workflow :wrap
-                    :params {:session-id effective-session-id
-                             :project project
-                             :start-time start-time}}}))
+           :message (str "Auto-wrap crystallizing session: " effective-session-id
+                         " (triggered-by: " (or triggered-by "unknown")
+                         ", reason: " (or reason "session-wrap") ")")}
+     :wrap-crystallize {:agent-id agent-id
+                        :session-id effective-session-id
+                        :project project}}))
 
 ;; =============================================================================
 ;; Registration

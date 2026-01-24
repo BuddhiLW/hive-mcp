@@ -17,23 +17,19 @@ services:
   # Core: Chroma Vector Database (default, always starts)
   # =============================================================================
   chroma:
-    image: chromadb/chroma:0.4.24
+    image: chromadb/chroma:latest
     container_name: hive-mcp-chroma
     ports:
       - "8000:8000"
     volumes:
-      - chroma-data:/chroma/chroma
+      - chroma-data:/data
     environment:
       - IS_PERSISTENT=TRUE
       - ANONYMIZED_TELEMETRY=FALSE
     restart: unless-stopped
-    healthcheck:
-      # Chroma image lacks curl/nc, use wget
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8000/api/v1/heartbeat"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
+    # Health check disabled - chromadb/chroma:latest lacks curl/wget/python
+    # Monitor via: curl http://localhost:8000/api/v2/heartbeat
+    # Or via nREPL: (chroma/embedding-configured?)
 
   # =============================================================================
   # Optional: Milvus Vector Database (profile: milvus)

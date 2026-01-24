@@ -34,6 +34,8 @@
    [hive-mcp.tools.olympus :as olympus]
    [hive-mcp.tools.agora :as agora]
    [hive-mcp.tools.seeds :as seeds]
+   [hive-mcp.tools.cost :as cost]
+   [hive-mcp.tools.routing :as routing]
    [hive-mcp.hivemind :as hivemind]
    [hive-mcp.channel :as channel]
    [hive-mcp.agent :as agent]
@@ -88,6 +90,8 @@
                olympus/tools           ; grid layout for swarm visualization
                agora/tools             ; Agora multi-ling dialogue (Nash equilibrium)
                seeds/tools             ; Seed memory import from markdown files
+               cost/tools              ; Token cost tracking and budget management
+               routing/tools           ; Smart model routing for drones
                hivemind/tools
                channel/channel-tools
                agent/tools)))
@@ -160,6 +164,8 @@
                olympus/tools           ; grid layout for swarm visualization
                agora/tools             ; Agora multi-ling dialogue (Nash equilibrium)
                seeds/tools             ; Seed memory import from markdown files
+               cost/tools              ; Token cost tracking and budget management
+               routing/tools           ; Smart model routing for drones
                hivemind/tools
                channel/channel-tools
                agent/tools)))

@@ -21,6 +21,7 @@
             [hive-mcp.tools.core :refer [mcp-json]]
             [hive-mcp.chroma :as chroma]
             [hive-mcp.knowledge-graph.edges :as kg-edges]
+            [hive-mcp.agent.context :as ctx]
             [clojure.data.json :as json]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -101,52 +102,53 @@
    Edges are stored in DataScript with full provenance (scope, agent, timestamp)."
   [{:keys [type content tags duration directory agent_id
            kg_implements kg_supersedes kg_depends_on kg_refines] :as params}]
-  (log/info "mcp-memory-add:" type "directory:" directory "agent_id:" agent_id)
-  (with-chroma
-    (let [project-id (scope/get-current-project-id directory)
-          ;; Agent tagging for convergence tracking
-          agent-id (or agent_id (System/getenv "CLAUDE_SWARM_SLAVE_ID"))
-          agent-tag (when agent-id (str "agent:" agent-id))
-          base-tags (or tags [])
-          tags-with-agent (if agent-tag (conj base-tags agent-tag) base-tags)
-          ;; Add KG relationship metadata as tags for Chroma filtering
-          kg-tags (cond-> []
-                    (seq kg_implements) (conj "kg:has-implements")
-                    (seq kg_supersedes) (conj "kg:has-supersedes")
-                    (seq kg_depends_on) (conj "kg:has-depends-on")
-                    (seq kg_refines) (conj "kg:has-refines"))
-          tags-with-kg (into tags-with-agent kg-tags)
-          tags-with-scope (scope/inject-project-scope tags-with-kg project-id)
-          content-hash (chroma/content-hash content)
-          duration-str (or duration "long")
-          expires (dur/calculate-expires duration-str)
-          ;; Check for duplicate
-          existing (chroma/find-duplicate type content-hash :project-id project-id)]
-      (if existing
-        ;; Duplicate found - merge tags and return existing
-        (let [merged-tags (distinct (concat (:tags existing) tags-with-scope))
-              updated (chroma/update-entry! (:id existing) {:tags merged-tags})]
-          (log/info "Duplicate found, merged tags:" (:id existing))
-          (mcp-json (fmt/entry->json-alist updated)))
-        ;; Create new entry
-        (let [entry-id (chroma/index-memory-entry!
-                        {:type type
-                         :content content
-                         :tags tags-with-scope
-                         :content-hash content-hash
-                         :duration duration-str
-                         :expires (or expires "")
-                         :project-id project-id})
-              ;; Create KG edges if any relationships specified
-              edge-ids (create-kg-edges! entry-id params project-id agent-id)
-              ;; Store outgoing edge IDs in Chroma for bidirectional lookup
-              _ (when (seq edge-ids)
-                  (chroma/update-entry! entry-id {:kg-outgoing edge-ids}))
-              created (chroma/get-entry-by-id entry-id)]
-          (log/info "Created memory entry:" entry-id
-                    (when (seq edge-ids) (str " with " (count edge-ids) " KG edges")))
-          (mcp-json (cond-> (fmt/entry->json-alist created)
-                      (seq edge-ids) (assoc :kg_edges_created edge-ids))))))))
+  (let [directory (or directory (ctx/current-directory))]
+    (log/info "mcp-memory-add:" type "directory:" directory "agent_id:" agent_id)
+    (with-chroma
+      (let [project-id (scope/get-current-project-id directory)
+            ;; Agent tagging for convergence tracking
+            agent-id (or agent_id (System/getenv "CLAUDE_SWARM_SLAVE_ID"))
+            agent-tag (when agent-id (str "agent:" agent-id))
+            base-tags (or tags [])
+            tags-with-agent (if agent-tag (conj base-tags agent-tag) base-tags)
+            ;; Add KG relationship metadata as tags for Chroma filtering
+            kg-tags (cond-> []
+                      (seq kg_implements) (conj "kg:has-implements")
+                      (seq kg_supersedes) (conj "kg:has-supersedes")
+                      (seq kg_depends_on) (conj "kg:has-depends-on")
+                      (seq kg_refines) (conj "kg:has-refines"))
+            tags-with-kg (into tags-with-agent kg-tags)
+            tags-with-scope (scope/inject-project-scope tags-with-kg project-id)
+            content-hash (chroma/content-hash content)
+            duration-str (or duration "long")
+            expires (dur/calculate-expires duration-str)
+            ;; Check for duplicate
+            existing (chroma/find-duplicate type content-hash :project-id project-id)]
+        (if existing
+          ;; Duplicate found - merge tags and return existing
+          (let [merged-tags (distinct (concat (:tags existing) tags-with-scope))
+                updated (chroma/update-entry! (:id existing) {:tags merged-tags})]
+            (log/info "Duplicate found, merged tags:" (:id existing))
+            (mcp-json (fmt/entry->json-alist updated)))
+          ;; Create new entry
+          (let [entry-id (chroma/index-memory-entry!
+                          {:type type
+                           :content content
+                           :tags tags-with-scope
+                           :content-hash content-hash
+                           :duration duration-str
+                           :expires (or expires "")
+                           :project-id project-id})
+                ;; Create KG edges if any relationships specified
+                edge-ids (create-kg-edges! entry-id params project-id agent-id)
+                ;; Store outgoing edge IDs in Chroma for bidirectional lookup
+                _ (when (seq edge-ids)
+                    (chroma/update-entry! entry-id {:kg-outgoing edge-ids}))
+                created (chroma/get-entry-by-id entry-id)]
+            (log/info "Created memory entry:" entry-id
+                      (when (seq edge-ids) (str " with " (count edge-ids) " KG edges")))
+            (mcp-json (cond-> (fmt/entry->json-alist created)
+                        (seq edge-ids) (assoc :kg_edges_created edge-ids)))))))))
 
 ;; ============================================================
 ;; Query Handler
@@ -180,26 +182,27 @@
    When directory is provided, uses that path to determine project scope
    instead of relying on Emacs's current buffer (fixes /wrap scoping issue)."
   [{:keys [type tags limit duration scope directory]}]
-  (log/info "mcp-memory-query:" type "scope:" scope "directory:" directory)
-  (with-chroma
-    (let [project-id (scope/get-current-project-id directory)
-          limit-val (or limit 20)
-          ;; Query from Chroma
-          entries (chroma/query-entries :type type
-                                        :project-id (when (nil? scope) project-id)
-                                        :limit (* limit-val 5)) ; Over-fetch for filtering
-          ;; Apply hierarchical scope filter
-          scope-filter (scope/derive-hierarchy-scope-filter scope)
-          filtered (if scope-filter
-                     (filter #(scope/matches-hierarchy-scopes? % scope-filter) entries)
-                     entries)
-          ;; Apply tag filter
-          tag-filtered (apply-tag-filter filtered tags)
-          ;; Apply duration filter
-          dur-filtered (apply-duration-filter tag-filtered duration)
-          ;; Apply limit
-          results (take limit-val dur-filtered)]
-      (mcp-json (mapv fmt/entry->json-alist results)))))
+  (let [directory (or directory (ctx/current-directory))]
+    (log/info "mcp-memory-query:" type "scope:" scope "directory:" directory)
+    (with-chroma
+      (let [project-id (scope/get-current-project-id directory)
+            limit-val (or limit 20)
+            ;; Query from Chroma
+            entries (chroma/query-entries :type type
+                                          :project-id (when (nil? scope) project-id)
+                                          :limit (* limit-val 5)) ; Over-fetch for filtering
+            ;; Apply hierarchical scope filter
+            scope-filter (scope/derive-hierarchy-scope-filter scope)
+            filtered (if scope-filter
+                       (filter #(scope/matches-hierarchy-scopes? % scope-filter) entries)
+                       entries)
+            ;; Apply tag filter
+            tag-filtered (apply-tag-filter filtered tags)
+            ;; Apply duration filter
+            dur-filtered (apply-duration-filter tag-filtered duration)
+            ;; Apply limit
+            results (take limit-val dur-filtered)]
+        (mcp-json (mapv fmt/entry->json-alist results))))))
 
 ;; ============================================================
 ;; Query Metadata Handler
@@ -213,16 +216,17 @@
    When directory is provided, uses that path to determine project scope
    instead of relying on Emacs's current buffer (fixes /wrap scoping issue)."
   [{:keys [type tags limit scope directory]}]
-  (log/info "mcp-memory-query-metadata:" type "scope:" scope "directory:" directory)
-  (with-chroma
-    (let [;; Reuse query logic - pass directory through
-          {:keys [text isError]} (handle-query
-                                  {:type type :tags tags :limit limit :scope scope :directory directory})]
-      (if isError
-        {:type "text" :text text :isError true}
-        (let [entries (json/read-str text :key-fn keyword)
-              metadata (mapv fmt/entry->metadata entries)]
-          (mcp-json metadata))))))
+  (let [directory (or directory (ctx/current-directory))]
+    (log/info "mcp-memory-query-metadata:" type "scope:" scope "directory:" directory)
+    (with-chroma
+      (let [;; Reuse query logic - pass directory through
+            {:keys [text isError]} (handle-query
+                                    {:type type :tags tags :limit limit :scope scope :directory directory})]
+        (if isError
+          {:type "text" :text text :isError true}
+          (let [entries (json/read-str text :key-fn keyword)
+                metadata (mapv fmt/entry->metadata entries)]
+            (mcp-json metadata)))))))
 
 ;; ============================================================
 ;; Get Full Handler (with KG Edge Inclusion)

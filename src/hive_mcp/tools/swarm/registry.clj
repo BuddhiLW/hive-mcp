@@ -53,14 +53,15 @@
    Derives project-id from cwd for project-scoped operations.
 
    SOLID: SRP - Only handles registration, not events."
-  [slave-id {:keys [name presets cwd]}]
+  [slave-id {:keys [name presets cwd kanban-task-id]}]
   ;; Derive project-id from cwd for project-scoped operations (e.g., swarm_kill 'all')
   (let [project-id (when cwd (scope/get-current-project-id cwd))]
     ;; Primary: DataScript
     (ds/add-slave! slave-id {:name name
                              :presets (vec (or presets []))
                              :cwd cwd
-                             :project-id project-id})))
+                             :project-id project-id
+                             :kanban-task-id kanban-task-id})))
 
 (defn unregister-ling!
   "Remove a ling from the registry.
@@ -101,7 +102,7 @@
 
 (defn- handle-ling-registered
   "Handle slave-spawned event from elisp (registry sync).
-   Event: {:slave-id :name :presets :cwd}
+   Event: {:slave-id :name :presets :cwd :kanban-task-id}
    Registers the ling in BOTH registries:
    - lings-registry (for swarm operations)
    - hivemind agent-registry (for hivemind_messages)
@@ -112,9 +113,11 @@
         name (or (get event "name") (:name event))
         presets (or (get event "presets") (:presets event) [])
         cwd (or (get event "cwd") (:cwd event))
-        metadata {:name name :presets presets :cwd cwd}]
+        kanban-task-id (or (get event "kanban-task-id") (:kanban-task-id event))
+        metadata {:name name :presets presets :cwd cwd :kanban-task-id kanban-task-id}]
     (when slave-id
-      (log/info "Registry sync: registering ling" slave-id "via event")
+      (log/info "Registry sync: registering ling" slave-id "via event"
+                (when kanban-task-id (str "kanban-task:" kanban-task-id)))
       ;; Register in swarm lings registry
       (register-ling! slave-id metadata)
       ;; Also register in hivemind agent-registry (bug fix!)

@@ -106,6 +106,7 @@
 (def get-slaves-by-status queries/get-slaves-by-status)
 (def get-slaves-by-project queries/get-slaves-by-project)
 (def get-slave-ids-by-project queries/get-slave-ids-by-project)
+(def get-slave-by-kanban-task queries/get-slave-by-kanban-task)
 
 ;; Task queries
 (def get-task queries/get-task)

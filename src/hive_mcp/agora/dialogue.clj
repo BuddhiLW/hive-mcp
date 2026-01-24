@@ -80,30 +80,72 @@
 ;; and Nash equilibrium detection on top of schema's CRUD operations.
 
 ;; =============================================================================
+;; Natural Language Signal Detection
+;; =============================================================================
+
+(def natural-approval-patterns
+  "Patterns that indicate natural language approval/agreement."
+  [#"(?i)\bI\s+(?:accept|approve|agree)\b"
+   #"(?i)\blgtm\b"
+   #"(?i)\blooks?\s+good\b"
+   #"(?i)\bconsensus\s+reached\b"
+   #"(?i)\bno\s+(?:changes?|objections?)\b"
+   #"(?i)\bship\s+it\b"
+   #"(?i)\b(?:sounds?|seems?)\s+(?:good|great|fine)\b"])
+
+(def natural-counter-patterns
+  "Patterns that indicate natural language disagreement/objection."
+  [#"(?i)\bI\s+(?:disagree|object|reject)\b"
+   #"(?i)\bhave\s+(?:concerns?|issues?|problems?)\b"
+   #"(?i)\bwon'?t\s+work\b"
+   #"(?i)\bneed\s+(?:to\s+)?(?:change|reconsider|rethink)\b"])
+
+(defn detect-natural-signal
+  "Detect signal from natural language. Returns nil if no match.
+
+   Examples:
+   (detect-natural-signal \"I accept this approach\")  ;=> :approve
+   (detect-natural-signal \"LGTM!\")                   ;=> :approve
+   (detect-natural-signal \"Here is my analysis\")    ;=> nil"
+  [message]
+  (cond
+    (some #(re-find % message) natural-approval-patterns) :approve
+    (some #(re-find % message) natural-counter-patterns) :counter
+    :else nil))
+
+;; =============================================================================
 ;; Signal Parsing
 ;; =============================================================================
 
 (defn parse-signal
-  "Parse [SIGNAL: X] prefix from message.
+  "Parse signal from message. Priority: prefix > natural-language > default.
 
-   Returns tuple: [signal cleaned-message]
+   Returns tuple: [signal cleaned-message detection-method]
 
    Examples:
    (parse-signal \"[SIGNAL: propose] Here's my change\")
-   => [:propose \"Here's my change\"]
+   => [:propose \"Here's my change\" :prefix]
 
-   (parse-signal \"No signal here\")
-   => [:propose \"No signal here\"]  ; default to :propose"
+   (parse-signal \"LGTM, ship it!\")
+   => [:approve \"LGTM, ship it!\" :natural]
+
+   (parse-signal \"Here's my analysis\")
+   => [:propose \"Here's my analysis\" :default]"
   [message]
-  (if-let [[_ signal-str rest] (re-matches #"(?i)\[SIGNAL:\s*([\w-]+)\]\s*(.*)" message)]
+  (if-let [[_ signal-str rest] (re-matches #"(?i)\[SIGNAL:\s*([\w-]+)\]\s*([\s\S]*)" message)]
     (let [signal (keyword (str/lower-case signal-str))]
       (if (contains? signals signal)
-        [signal (str/trim rest)]
+        [signal (str/trim rest) :prefix]
         (do
           (log/warn "Unknown signal" signal-str "- defaulting to :propose")
-          [:propose message])))
-    ;; No signal prefix - default to :propose (most common case)
-    [:propose message]))
+          [:propose message :default])))
+    ;; No signal prefix - try natural language detection
+    (if-let [natural-signal (detect-natural-signal message)]
+      (do
+        (log/debug "Detected natural language signal:" natural-signal "from message:" (subs message 0 (min 50 (count message))))
+        [natural-signal message :natural])
+      ;; No natural language match - default to :propose
+      [:propose message :default])))
 
 (defn format-signal
   "Format a signal into message prefix.
@@ -231,7 +273,7 @@
     {:id (:id d)
      :participants (set (:participants d))
      :topic (:name d)
-     :created-at (java.util.Date. (:created d))
+     :created-at (when-let [ts (:created d)] (java.util.Date. ts))
      :status (:status d)}))
 
 (defn get-dialogue-turns
@@ -245,7 +287,7 @@
                :receiver (:receiver t)
                :message (:message t)
                :signal (:signal t)
-               :timestamp (java.util.Date. (:timestamp t))
+               :timestamp (when-let [ts (:timestamp t)] (java.util.Date. ts))
                :task-id (:task-ref t)}))))
 
 (defn get-last-turn-for
@@ -302,28 +344,55 @@
    - from: Sender slave-id (defaults to env CLAUDE_SWARM_SLAVE_ID)
    - to: Receiver slave-id (required)
    - message: Message content, may include [SIGNAL: X] prefix
+   - signal: Optional explicit signal (keyword or string), takes priority over message parsing
+
+   Signal priority: explicit :signal param > parsed from message prefix > default :propose
 
    Returns: Result from swarm-dispatch with dialogue metadata
 
    Example:
+   ;; With message prefix (backward compatible)
    (dialogue-dispatch
      {:dialogue-id \"dialogue-123\"
       :to \"critic-456\"
-      :message \"[SIGNAL: propose] Here's iteration 2...\"})"
-  [{:keys [dialogue-id from to message timeout_ms files]}]
+      :message \"[SIGNAL: propose] Here's iteration 2...\"})
+
+   ;; With explicit signal (data-driven)
+   (dialogue-dispatch
+     {:dialogue-id \"dialogue-123\"
+      :to \"critic-456\"
+      :signal :approve
+      :message \"LGTM, ship it!\"})"
+  [{:keys [dialogue-id from to message timeout_ms files signal]}]
   {:pre [(some? dialogue-id) (some? to) (some? message)]}
   (let [sender-id (or from (System/getenv "CLAUDE_SWARM_SLAVE_ID") "unknown")
-        ;; Parse signal from message
-        [signal cleaned-message] (parse-signal message)
+        ;; Signal priority: explicit param > parsed from message > natural language > default :propose
+        explicit-signal (when signal
+                          (let [s (if (keyword? signal) signal (keyword signal))]
+                            (when (contains? signals s) s)))
+        [parsed-signal cleaned-message detection-method] (if explicit-signal
+                                                           ;; Skip parsing when explicit signal provided
+                                                           [nil message :explicit]
+                                                           (parse-signal message))
+        final-signal (or explicit-signal parsed-signal :propose)
+        final-detection (if explicit-signal :explicit detection-method)
         ;; Create turn data
         turn-data {:sender sender-id
                    :receiver to
                    :message cleaned-message
-                   :signal signal}]
+                   :signal final-signal}]
 
     ;; Validate dialogue exists and is active
     (when-not (dialogue-active? dialogue-id)
-      (throw (ex-info "Dialogue not active" {:dialogue-id dialogue-id})))
+      (let [dialogue (schema/get-dialogue dialogue-id)
+            status (:status dialogue)]
+        (throw (ex-info (case status
+                          :consensus "Dialogue already reached consensus"
+                          :timeout "Dialogue timed out"
+                          :aborted "Dialogue was aborted"
+                          "Dialogue not active")
+                        {:dialogue-id dialogue-id
+                         :status status}))))
 
     ;; Record turn before dispatch
     (record-turn! dialogue-id turn-data)
@@ -334,7 +403,7 @@
                              :turn-num (:turn-num turn)
                              :from sender-id
                              :to to
-                             :signal signal})
+                             :signal final-signal})
 
       ;; Check for Nash equilibrium after recording turn
       (when (nash-equilibrium? dialogue-id)
@@ -350,6 +419,16 @@
                               :timeout_ms timeout_ms
                               :files files})]
 
+        ;; Emit turn-dispatched event for relay handler
+        (ws/emit! :agora/turn-dispatched
+                  {:dialogue-id dialogue-id
+                   :from sender-id
+                   :to to
+                   :turn-num (:turn-num turn)
+                   :signal final-signal
+                   :message cleaned-message
+                   :topic (:topic (get-dialogue dialogue-id))})
+
         ;; Update turn with task-id from result (if available)
         (when-let [task-id (try
                              (some-> dispatch-result :result
@@ -361,7 +440,8 @@
         ;; Return enriched result
         {:dialogue-id dialogue-id
          :turn (:turn-num turn)
-         :signal signal
+         :signal final-signal
+         :signal-detection final-detection
          :dispatch-result dispatch-result}))))
 
 ;; =============================================================================
@@ -418,7 +498,7 @@
               {:id (:id d)
                :topic (:name d)
                :status (:status d)
-               :created-at (java.util.Date. (:created d))}))
+               :created-at (when-let [ts (:created d)] (java.util.Date. ts))}))
        (sort-by :created-at)
        reverse))
 

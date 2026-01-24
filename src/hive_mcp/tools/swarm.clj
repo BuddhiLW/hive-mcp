@@ -14,6 +14,7 @@
    - swarm.jvm       - JVM process cleanup
    - swarm.wave      - Batch drone wave execution
    - swarm.team      - Team composition selection
+   - swarm.health    - Drone health monitoring and auto-recovery
 
    SOLID: Facade pattern - thin delegation to focused modules.
    CLARITY: L - Layers stay pure (facade separate from implementation)."
@@ -34,7 +35,9 @@
             [hive-mcp.tools.swarm.wave :as wave]
             [hive-mcp.tools.swarm.validated-wave :as validated-wave]
             [hive-mcp.tools.swarm.team :as team]
+            [hive-mcp.tools.swarm.health :as health]
             [hive-mcp.swarm.coordinator :as coord]
+            [hive-mcp.agent.drone.cache :as drone-cache]
             [clojure.data.json :as json]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -178,6 +181,34 @@
   team/handle-team-select)
 
 ;; ============================================================
+;; Drone Health Monitoring (delegated to health module)
+;; ============================================================
+
+(def handle-drone-health-status
+  "Get drone health status. Delegated to health module."
+  health/handle-drone-health-status)
+
+(def handle-recover-drone
+  "Manually recover stuck drone. Delegated to health module."
+  health/handle-recover-drone)
+
+(def handle-drone-health-control
+  "Control drone health monitoring. Delegated to health module."
+  health/handle-drone-health-control)
+
+(def init-drone-health!
+  "Initialize drone health monitoring. Delegated to health module."
+  health/init!)
+
+(def record-drone-heartbeat!
+  "Record drone heartbeat. Delegated to health module."
+  health/record-heartbeat!)
+
+(def get-drone-health
+  "Get drone health status. Delegated to health module."
+  health/get-wave-health)
+
+;; ============================================================
 ;; JVM Process Cleanup (delegated to jvm module)
 ;; ============================================================
 
@@ -242,7 +273,9 @@
                                "role" {:type "string"
                                        :description "Predefined role (tester, reviewer, documenter, etc.)"}
                                "terminal" {:type "string"
-                                           :description "Terminal type: vterm or eat (default: vterm)"}}
+                                           :description "Terminal type: vterm or eat (default: vterm)"}
+                               "kanban_task_id" {:type "string"
+                                                 :description "Optional kanban task ID to link this ling with. Enables task-aware lifecycle (auto-move task to done when ling wraps via session_complete)."}}
                   :required ["name"]}
     :handler handle-swarm-spawn}
 
@@ -285,12 +318,14 @@
     :handler handle-swarm-list-presets}
 
    {:name "swarm_kill"
-    :description "Kill a slave instance or all slaves. When slave_id='all' and directory is provided, only kills lings belonging to that project (project-scoped kill)."
+    :description "Kill a slave instance or all slaves. When slave_id='all' and directory is provided, only kills lings belonging to that project (project-scoped kill). Cross-project kills are blocked by default for security."
     :inputSchema {:type "object"
                   :properties {"slave_id" {:type "string"
                                            :description "ID of slave to kill, or \"all\" to kill all slaves"}
                                "directory" {:type "string"
-                                            :description "Working directory to scope kill (optional). When provided with slave_id='all', only kills lings belonging to that project."}}
+                                            :description "Working directory to scope kill (optional). When provided with slave_id='all', only kills lings belonging to that project."}
+                               "force_cross_project" {:type "boolean"
+                                                      :description "Allow cross-project kill (default: false). Set to true only when you explicitly need to kill a ling from another project."}}
                   :required ["slave_id"]}
     :handler handle-swarm-kill}
 
@@ -437,4 +472,75 @@
                                "auto_spawn" {:type "boolean"
                                              :description "Execute spawns immediately (default: false)"}}
                   :required ["task_type"]}
-    :handler handle-team-select}])
+    :handler handle-team-select}
+
+   ;; Drone Health Monitoring Tools
+   {:name "drone_health_status"
+    :description "Get current drone health status including active, alert, and stuck drones. Use to monitor drone wave execution and identify problems. Shows timeout thresholds: alert at 2 min, auto-kill at 5 min."
+    :inputSchema {:type "object"
+                  :properties {"wave_id" {:type "string"
+                                          :description "Optional wave ID to filter results"}}
+                  :required []}
+    :handler handle-drone-health-status}
+
+   {:name "drone_recover"
+    :description "Manually recover a stuck drone by releasing its file claims and killing the process. Use when auto-recovery hasn't triggered or you need immediate intervention."
+    :inputSchema {:type "object"
+                  :properties {"drone_id" {:type "string"
+                                           :description "ID of the drone to recover"}
+                               "retry" {:type "boolean"
+                                        :description "Whether to queue task for retry (default: false)"}}
+                  :required ["drone_id"]}
+    :handler handle-recover-drone}
+
+   {:name "drone_health_control"
+    :description "Start or stop the background drone health monitoring loop. Monitoring checks every 30 seconds, alerts at 2 minutes of no progress, auto-kills stuck drones at 5 minutes."
+    :inputSchema {:type "object"
+                  :properties {"action" {:type "string"
+                                         :enum ["start" "stop"]
+                                         :description "Action to perform: 'start' or 'stop' monitoring"}}
+                  :required ["action"]}
+    :handler handle-drone-health-control}
+
+   ;; Drone Cache Tools
+   {:name "drone_cache_stats"
+    :description "Get drone result cache statistics including hit rate, entries, evictions, and time saved. Use to monitor cache efficiency and decide if TTL adjustments are needed."
+    :inputSchema {:type "object"
+                  :properties {}
+                  :required []}
+    :handler (fn [_]
+               {:type "text"
+                :text (json/write-str (drone-cache/cache-stats))})}
+
+   {:name "drone_cache_clear"
+    :description "Clear all cached drone results. Use when you need to force fresh execution of all tasks, or for debugging cache-related issues."
+    :inputSchema {:type "object"
+                  :properties {}
+                  :required []}
+    :handler (fn [_]
+               (let [cleared (drone-cache/clear-cache!)]
+                 {:type "text"
+                  :text (json/write-str {:cleared cleared
+                                         :message (str "Cleared " cleared " cache entries")})}))}
+
+   {:name "drone_cache_invalidate"
+    :description "Invalidate cache entries for specific files. Use when you know files have changed outside of drone execution and cached results are stale."
+    :inputSchema {:type "object"
+                  :properties {"files" {:type "array"
+                                        :items {:type "string"}
+                                        :description "List of file paths to invalidate cached results for"}}
+                  :required ["files"]}
+    :handler (fn [{:keys [files]}]
+               (let [invalidated (drone-cache/invalidate-cache! files)]
+                 {:type "text"
+                  :text (json/write-str {:invalidated invalidated
+                                         :files files})}))}
+
+   {:name "drone_cache_list"
+    :description "List all cached task fingerprints with metadata. Use for debugging to see what's cached and when entries expire."
+    :inputSchema {:type "object"
+                  :properties {}
+                  :required []}
+    :handler (fn [_]
+               {:type "text"
+                :text (json/write-str {:cached-tasks (drone-cache/list-cached-tasks)})})}])

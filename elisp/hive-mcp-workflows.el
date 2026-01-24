@@ -401,11 +401,13 @@ Returns count of successfully moved tasks."
         (hive-mcp-kanban-stats)
       (error nil))))
 
-(defun hive-mcp-workflow-wrap--gather-recent-notes ()
-  "Get memory entries (notes/snippets) created today."
+(defun hive-mcp-workflow-wrap--gather-recent-notes (&optional directory)
+  "Get memory entries (notes/snippets) created today.
+DIRECTORY specifies the project directory for scoping queries."
   (let* ((today (format-time-string "%Y-%m-%d"))
-         (notes (ignore-errors (hive-mcp-memory-query 'note nil 20)))
-         (snippets (ignore-errors (hive-mcp-memory-query 'snippet nil 20))))
+         (project-id (when directory (hive-mcp-memory-project-id directory)))
+         (notes (ignore-errors (hive-mcp-memory-query 'note nil project-id 20)))
+         (snippets (ignore-errors (hive-mcp-memory-query 'snippet nil project-id 20))))
     (seq-filter
      (lambda (entry)
        (when-let* ((created (plist-get entry :created)))
@@ -422,12 +424,14 @@ DIRECTORY overrides `default-directory' if provided."
       (when (and output (not (string-empty-p output)))
         (split-string output "\n" t)))))
 
-(defun hive-mcp-workflow-wrap--gather-kanban-activity ()
-  "Get in-progress and review kanban tasks."
+(defun hive-mcp-workflow-wrap--gather-kanban-activity (&optional directory)
+  "Get in-progress and review kanban tasks.
+DIRECTORY specifies the project directory for scoping queries."
   (when (fboundp 'hive-mcp-kanban-list-tasks)
     (condition-case nil
-        (list :in-progress (hive-mcp-kanban-list-tasks "inprogress")
-              :review (hive-mcp-kanban-list-tasks "inreview"))
+        (let ((project-id (when directory (hive-mcp-memory-project-id directory))))
+          (list :in-progress (hive-mcp-kanban-list-tasks project-id "inprogress")
+                :review (hive-mcp-kanban-list-tasks project-id "inreview")))
       (error nil))))
 
 (defun hive-mcp-workflow-wrap--gather-channel-events ()
@@ -441,12 +445,12 @@ DIRECTORY overrides `default-directory' if provided."
 
 (defun hive-mcp-workflow-wrap--gather-session-data (&optional directory)
   "Auto-gather session data from all available sources.
-DIRECTORY overrides `default-directory' for git operations.
+DIRECTORY specifies the project directory for git operations and project scoping.
 Returns plist with :recent-notes, :recent-commits,
 :kanban-activity, :ai-interactions."
-  (list :recent-notes (hive-mcp-workflow-wrap--gather-recent-notes)
+  (list :recent-notes (hive-mcp-workflow-wrap--gather-recent-notes directory)
         :recent-commits (hive-mcp-workflow-wrap--gather-git-commits directory)
-        :kanban-activity (hive-mcp-workflow-wrap--gather-kanban-activity)
+        :kanban-activity (hive-mcp-workflow-wrap--gather-kanban-activity directory)
         :ai-interactions (hive-mcp-workflow-wrap--gather-channel-events)))
 
 (defun hive-mcp-workflow-wrap--merge-args (gathered provided)

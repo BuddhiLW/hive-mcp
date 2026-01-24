@@ -44,18 +44,21 @@
    - cwd: Working directory for the slave
    - role: Predefined role
    - terminal: Terminal type (vterm/eat)
+   - kanban_task_id: Optional kanban task ID to link this ling with
 
    CLARITY: I - Inputs validated (name required)
    SOLID: SRP - Only handles spawn, not registration"
-  [{:keys [name presets cwd _role terminal]}]
+  [{:keys [name presets cwd _role terminal kanban_task_id]}]
   (core/with-swarm
     (let [presets-str (when (seq presets)
                         (format "'(%s)" (str/join " " (map #(format "\"%s\"" %) presets))))
-          elisp (format "(json-encode (hive-mcp-swarm-api-spawn \"%s\" %s %s %s))"
+          ;; Include kanban_task_id in elisp call if provided
+          elisp (format "(json-encode (hive-mcp-swarm-api-spawn \"%s\" %s %s %s %s))"
                         (v/escape-elisp-string (or name "slave"))
                         (or presets-str "nil")
                         (if cwd (format "\"%s\"" (v/escape-elisp-string cwd)) "nil")
-                        (if terminal (format "\"%s\"" terminal) "nil"))
+                        (if terminal (format "\"%s\"" terminal) "nil")
+                        (if kanban_task_id (format "\"%s\"" (v/escape-elisp-string kanban_task_id)) "nil"))
           ;; Use 10s timeout for spawn as it may take longer
           {:keys [success result error timed-out]} (ec/eval-elisp-with-timeout elisp 10000)]
       (cond
@@ -92,38 +95,46 @@
   "Check if caller can kill target ling based on project ownership.
 
    Rules:
+   - Force flag bypasses ownership check (explicit cross-project kill)
    - Caller without project context (coordinator) can kill anything
    - Legacy lings without project-id can be killed by anyone
    - Otherwise, caller's project-id must match target's project-id
 
    Arguments:
-     caller-project-id - Project ID of the caller (nil for coordinator)
-     target-slave-id   - ID of the slave to check
+     caller-project-id    - Project ID of the caller (nil for coordinator)
+     target-slave-id      - ID of the slave to check
+     force-cross-project? - If true, bypass ownership check (default: false)
 
    Returns:
      {:can-kill? bool :reason string :caller-project string :target-project string}"
-  [caller-project-id target-slave-id]
-  (let [target-slave (ds/get-slave target-slave-id)
-        target-project-id (:slave/project-id target-slave)]
-    (cond
-      ;; Caller without project context (coordinator) can kill anything
-      (nil? caller-project-id)
-      {:can-kill? true :reason "coordinator-context"}
+  ([caller-project-id target-slave-id]
+   (can-kill-ownership? caller-project-id target-slave-id false))
+  ([caller-project-id target-slave-id force-cross-project?]
+   (let [target-slave (ds/get-slave target-slave-id)
+         target-project-id (:slave/project-id target-slave)]
+     (cond
+       ;; Force flag explicitly bypasses ownership check
+       force-cross-project?
+       {:can-kill? true :reason "force-cross-project"}
 
-      ;; Legacy lings without project-id can be killed by anyone
-      (nil? target-project-id)
-      {:can-kill? true :reason "legacy-ling"}
+       ;; Caller without project context (coordinator) can kill anything
+       (nil? caller-project-id)
+       {:can-kill? true :reason "coordinator-context"}
 
-      ;; Same project - allowed
-      (= caller-project-id target-project-id)
-      {:can-kill? true :reason "same-project"}
+       ;; Legacy lings without project-id can be killed by anyone
+       (nil? target-project-id)
+       {:can-kill? true :reason "legacy-ling"}
 
-      ;; Cross-project kill attempt - denied
-      :else
-      {:can-kill? false
-       :reason "cross-project"
-       :caller-project caller-project-id
-       :target-project target-project-id})))
+       ;; Same project - allowed
+       (= caller-project-id target-project-id)
+       {:can-kill? true :reason "same-project"}
+
+       ;; Cross-project kill attempt - denied
+       :else
+       {:can-kill? false
+        :reason "cross-project"
+        :caller-project caller-project-id
+        :target-project target-project-id}))))
 
 (defn- check-any-critical-ops
   "Check if any slaves have critical operations blocking kill-all.
@@ -147,14 +158,17 @@
 
    Checks both critical ops guard AND project ownership.
    Pass caller-project-id as nil for coordinator (no project context).
+   Pass force-cross-project? as true to bypass ownership check.
 
    CLARITY: SRP - Extracted from handle-swarm-kill for reuse.
    CLARITY: I - Inputs guarded (ownership + critical ops)"
   ([slave_id]
-   (kill-single-slave! slave_id nil))
+   (kill-single-slave! slave_id nil false))
   ([slave_id caller-project-id]
+   (kill-single-slave! slave_id caller-project-id false))
+  ([slave_id caller-project-id force-cross-project?]
    ;; First check ownership (cross-project kill prevention)
-   (let [{:keys [can-kill? reason caller-project target-project]} (can-kill-ownership? caller-project-id slave_id)]
+   (let [{:keys [can-kill? reason caller-project target-project]} (can-kill-ownership? caller-project-id slave_id force-cross-project?)]
      (if-not can-kill?
        ;; Blocked by ownership mismatch
        {:success false
@@ -198,6 +212,7 @@
    - Caller with directory context can only kill lings from same project
    - Caller without directory (coordinator) can kill any ling
    - Legacy lings without project-id can be killed by anyone
+   - force_cross_project: true bypasses ownership check (explicit override)
 
    PROJECT-SCOPED KILL: When slave_id='all' and directory is provided,
    only kills lings belonging to that project (not all lings globally).
@@ -207,14 +222,17 @@
    - directory: Working directory to scope kill (optional).
                 For single kills, enforces ownership check.
                 For 'all', filters to project-owned lings only.
+   - force_cross_project: If true, allows killing lings from other projects.
+                          Use with caution - bypasses security guard.
 
    CLARITY: Y - Yield safe failure with timeout handling
    CLARITY: I - Inputs guarded (ownership + critical ops check)
    SOLID: SRP - Only handles kill operation"
-  [{:keys [slave_id directory]}]
+  [{:keys [slave_id directory force_cross_project]}]
   (core/with-swarm
     ;; Derive caller's project-id for ownership checks
-    (let [caller-project-id (when directory (scope/get-current-project-id directory))]
+    (let [caller-project-id (when directory (scope/get-current-project-id directory))
+          force? (boolean force_cross_project)]
       (if (= slave_id "all")
         ;; Kill all (optionally project-scoped)
         (let [;; Get slave IDs to kill (project-scoped or all)
@@ -241,7 +259,7 @@
 
             ;; Project-scoped kill: kill each ling individually (with ownership check)
             caller-project-id
-            (let [results (mapv #(kill-single-slave! % caller-project-id) slave-ids)
+            (let [results (mapv #(kill-single-slave! % caller-project-id force?) slave-ids)
                   killed (filter :success results)
                   failed (remove :success results)]
               ;; Update Prometheus gauge
@@ -274,7 +292,7 @@
                 :else
                 (core/mcp-error (str "Error: " error))))))
         ;; Single slave kill - use ownership-aware kill-single-slave!
-        (let [{:keys [success error] :as result} (kill-single-slave! slave_id caller-project-id)]
+        (let [{:keys [success error] :as result} (kill-single-slave! slave_id caller-project-id force?)]
           (if success
             (do
               ;; CLARITY-T: Decrement Prometheus gauge (estimate current - 1)

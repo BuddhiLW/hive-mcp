@@ -11,12 +11,11 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-
 ;; Configuration: which workflows have native Clojure implementations
 (def ^:private native-workflows
   "Workflows that bypass elisp and use native Clojure implementation.
    These typically need direct access to Clojure-side resources (Chroma, DataScript)."
-  #{"catchup"})
+  #{"catchup" "wrap"})
 
 (defn route-workflow
   "Determine where a workflow should execute.
@@ -31,7 +30,7 @@
    Examples:
    ```clojure
    (route-workflow \"catchup\")  ;; => :native
-   (route-workflow \"wrap\")     ;; => :elisp
+   (route-workflow \"wrap\")     ;; => :native
    ```"
   [workflow-name]
   (if (contains? native-workflows workflow-name)

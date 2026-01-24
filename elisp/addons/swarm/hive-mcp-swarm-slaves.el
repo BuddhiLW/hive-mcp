@@ -156,7 +156,7 @@ Kill some slaves with `hive-mcp-swarm-kill' before spawning more."
 
 ;;;; Spawn Functions:
 
-(cl-defun hive-mcp-swarm-slaves-spawn (name &key presets cwd role terminal backend model)
+(cl-defun hive-mcp-swarm-slaves-spawn (name &key presets cwd role terminal backend model kanban-task-id)
   "Spawn a new Claude slave with NAME - FULLY ASYNC.
 
 PRESETS is a list of preset names to apply (e.g., \\='(\"tdd\" \"clarity\")).
@@ -165,6 +165,7 @@ ROLE is a predefined role that maps to presets AND tier (backend/model).
 TERMINAL overrides `hive-mcp-swarm-terminal' for this spawn.
 BACKEND explicitly sets the backend (claude-code-ide, vterm, eat, ollama).
 MODEL sets the model for ollama backend (devstral, devstral-small, deepseek-r1:7b).
+KANBAN-TASK-ID is the optional kanban task ID to link this ling with.
 
 When ROLE is specified without explicit BACKEND/MODEL, uses tier mapping
 from `hive-mcp-swarm-tier-mapping' for two-tier orchestration:
@@ -219,6 +220,7 @@ Poll the slave's :status to check progress: spawning -> starting -> idle."
                    :cwd work-dir
                    :depth spawn-depth
                    :parent-id parent-id
+                   :kanban-task-id kanban-task-id  ; Linked kanban task (optional)
                    :current-task nil
                    :task-queue '()
                    :tasks-completed 0
@@ -235,7 +237,8 @@ Poll the slave's :status to check progress: spawning -> starting -> idle."
              parent-id)
 
     ;; Emit slave-spawned event via channel (ADR-001 Phase 2: include cwd for registry sync)
-    (hive-mcp-swarm-events-emit-slave-spawned slave-id name presets work-dir)
+    ;; Also include kanban-task-id for task-aware lifecycle
+    (hive-mcp-swarm-events-emit-slave-spawned slave-id name presets work-dir kanban-task-id)
 
     ;; FULLY ASYNC: Defer ALL work to timer so we return IMMEDIATELY
     (run-with-timer

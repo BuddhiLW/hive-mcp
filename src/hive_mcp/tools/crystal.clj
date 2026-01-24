@@ -11,6 +11,8 @@
             [hive-mcp.tools.memory.scope :as scope]
             [hive-mcp.events.core :as ev]
             [hive-mcp.events.effects]
+            [hive-mcp.agent.context :as ctx]
+            [hive-mcp.knowledge-graph.edges :as kg-edges]
             [clojure.data.json :as json]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -22,6 +24,50 @@
   []
   (let [{:keys [success result]} (ec/eval-elisp "(featurep 'hive-mcp)")]
     (and success (= result "t"))))
+
+(defn- extract-source-ids
+  "Extract memory entry IDs from harvested session data.
+
+   Sources include:
+   - progress-notes: ephemeral notes created during session
+   - completed-tasks: kanban tasks that moved to DONE
+
+   Returns a vector of non-nil IDs suitable for KG edge creation."
+  [{:keys [progress-notes completed-tasks]}]
+  (->> (concat progress-notes completed-tasks)
+       (keep :id)  ; Extract :id, filter nils
+       (distinct)
+       (vec)))
+
+(defn- create-derived-from-edges!
+  "Create :derived-from KG edges linking a summary to its source entries.
+
+   Edges flow: summary-id → source-id (summary was derived from sources)
+
+   Args:
+   - summary-id: The ID of the created session summary
+   - source-ids: Vector of source memory entry IDs
+   - project-id: Project scope for the edges
+   - agent-id: Agent that created the summary (optional)
+
+   Returns: {:created-count n :edge-ids [ids]} or {:error msg} on failure"
+  [summary-id source-ids project-id agent-id]
+  (when (and summary-id (seq source-ids))
+    (try
+      (let [edge-ids (for [source-id source-ids]
+                       (kg-edges/add-edge!
+                        {:from summary-id
+                         :to source-id
+                         :relation :derived-from
+                         :scope project-id
+                         :created-by agent-id}))]
+        (log/info "Created" (count edge-ids) ":derived-from KG edges for summary" summary-id)
+        {:created-count (count edge-ids)
+         :edge-ids (vec edge-ids)})
+      (catch Exception e
+        (log/warn "Failed to create :derived-from KG edges:" (.getMessage e))
+        {:error (.getMessage e)
+         :created-count 0}))))
 
 (defn handle-wrap-gather
   "Gather session data for wrap workflow without storing.
@@ -35,37 +81,40 @@
    Params:
    - directory: Working directory for git operations. Pass caller's cwd to ensure
      git status/commits come from the correct project, not the MCP server's directory.
+     Falls back to *request-ctx* directory if not provided.
 
    Returns gathered data for confirmation before crystallization."
   [{:keys [directory] :as _params}]
-  (log/info "wrap-gather with crystal harvesting" (when directory (str "directory:" directory)))
-  (try
-    ;; Use crystal hooks for comprehensive harvesting
-    (let [harvested (crystal-hooks/harvest-all {:directory directory})
-          ;; Also get elisp-side data for completeness
-          ;; Pass directory to elisp so git operations use correct project
-          elisp-result (when (hive-mcp-el-available?)
-                         (let [elisp-call (if directory
-                                            (format "(json-encode (hive-mcp-api-wrap-gather \"%s\"))" directory)
-                                            "(json-encode (hive-mcp-api-wrap-gather))")
-                               {:keys [success result]} (ec/eval-elisp elisp-call)]
-                           (when success
-                             (try (json/read-str result :key-fn keyword)
-                                  (catch Exception _ nil)))))
-          ;; Merge both sources
-          combined {:crystal harvested
-                    :elisp elisp-result
-                    :session (:session harvested)
-                    :summary (merge (:summary harvested)
-                                    {:has-elisp-data (some? elisp-result)})}]
-      {:type "text"
-       :text (json/write-str combined)})
-    (catch Exception e
-      (log/error e "wrap-gather failed")
-      {:type "text"
-       :text (json/write-str {:error (.getMessage e)
-                              :fallback "Use elisp-only gather"})
-       :isError true})))
+  ;; Fallback chain: explicit param → request-ctx
+  (let [effective-dir (or directory (ctx/current-directory))]
+    (log/info "wrap-gather with crystal harvesting" (when effective-dir (str "directory:" effective-dir)))
+    (try
+      ;; Use crystal hooks for comprehensive harvesting
+      (let [harvested (crystal-hooks/harvest-all {:directory effective-dir})
+            ;; Also get elisp-side data for completeness
+            ;; Pass directory to elisp so git operations use correct project
+            elisp-result (when (hive-mcp-el-available?)
+                           (let [elisp-call (if effective-dir
+                                              (format "(json-encode (hive-mcp-api-wrap-gather \"%s\"))" effective-dir)
+                                              "(json-encode (hive-mcp-api-wrap-gather))")
+                                 {:keys [success result]} (ec/eval-elisp elisp-call)]
+                             (when success
+                               (try (json/read-str result :key-fn keyword)
+                                    (catch Exception _ nil)))))
+            ;; Merge both sources
+            combined {:crystal harvested
+                      :elisp elisp-result
+                      :session (:session harvested)
+                      :summary (merge (:summary harvested)
+                                      {:has-elisp-data (some? elisp-result)})}]
+        {:type "text"
+         :text (json/write-str combined)})
+      (catch Exception e
+        (log/error e "wrap-gather failed")
+        {:type "text"
+         :text (json/write-str {:error (.getMessage e)
+                                :fallback "Use elisp-only gather"})
+         :isError true}))))
 
 (defn handle-wrap-crystallize
   "Crystallize session data into long-term memory.
@@ -81,50 +130,72 @@
      coordinator's JVM, so System/getenv reads coordinator's env, NOT the ling's.
      Lings MUST pass their CLAUDE_SWARM_SLAVE_ID explicitly via this parameter
      to ensure proper attribution in wrap-queue and HIVEMIND piggyback messages.
+     Falls back to *request-ctx* agent-id if not provided.
    - directory: Working directory for project scoping. Pass your cwd to ensure
      wrap is tagged with correct project-id for scoped permeation.
+     Falls back to *request-ctx* directory if not provided.
 
    Call after wrap-gather when ready to persist."
   [{:keys [agent_id directory] :as _params}]
-  (log/info "wrap-crystallize" (when agent_id (str "agent-id:" agent_id))
-            (when directory (str "directory:" directory)))
-  (try
-    (let [harvested (crystal-hooks/harvest-all {:directory directory})
-          result (crystal-hooks/crystallize-session harvested)
-          ;; Priority: explicit param > env var > fallback
-          ;; CRITICAL: Lings MUST pass agent_id param since MCP server has coordinator's env
-          env-agent-id (System/getenv "CLAUDE_SWARM_SLAVE_ID")
-          agent-id (or agent_id env-agent-id "coordinator")
-          ;; Derive project-id from directory for scoped permeation
-          project-id (scope/get-current-project-id directory)
-          ;; Warn if falling back to env var (likely wrong for lings)
-          _ (when (and (nil? agent_id) env-agent-id)
-              (log/warn "wrap-crystallize: agent_id not passed explicitly, falling back to env var"
-                        env-agent-id "- this may show as coordinator for ling calls"))
-          ;; Warn if defaulting to "coordinator"
-          _ (when (and (nil? agent_id) (nil? env-agent-id))
-              (log/warn "wrap-crystallize: No agent_id provided and CLAUDE_SWARM_SLAVE_ID not set"
-                        "- defaulting to 'coordinator'. Lings should pass agent_id explicitly."))
-          ;; Ensure stats is a map (defensive against JSON decode issues)
-          safe-stats (if (map? (:stats result)) (:stats result) {})]
-      ;; Emit wrap_notify via hive-events for Crystal Convergence
-      (try
-        (ev/dispatch [:crystal/wrap-notify
-                      {:agent-id agent-id
-                       :session-id (:session result)
-                       :project-id project-id
-                       :created-ids (when-let [sid (:summary-id result)] [sid])
-                       :stats safe-stats}])
-        (log/info "wrap-crystallize: emitted wrap_notify for" agent-id "project:" project-id)
-        (catch Exception e
-          (log/warn "wrap-crystallize: failed to emit wrap_notify:" (.getMessage e))))
-      {:type "text"
-       :text (json/write-str (assoc result :project-id project-id))})
-    (catch Exception e
-      (log/error e "wrap-crystallize failed")
-      {:type "text"
-       :text (json/write-str {:error (.getMessage e)})
-       :isError true})))
+  ;; Fallback chain: explicit param → request-ctx → env var → default
+  (let [effective-dir (or directory (ctx/current-directory))
+        ctx-agent-id (ctx/current-agent-id)
+        env-agent-id (System/getenv "CLAUDE_SWARM_SLAVE_ID")
+        effective-agent (or agent_id ctx-agent-id env-agent-id "coordinator")]
+    (log/info "wrap-crystallize" (str "agent-id:" effective-agent)
+              (when effective-dir (str "directory:" effective-dir)))
+    (try
+      (let [harvested (crystal-hooks/harvest-all {:directory effective-dir})
+            result (crystal-hooks/crystallize-session harvested)
+            ;; Derive project-id from directory for scoped permeation
+            project-id (scope/get-current-project-id effective-dir)]
+
+        ;; FIX: Check if crystallize-session returned an error
+        ;; This happens when Chroma fails (e.g., embedding not configured)
+        (if (:error result)
+          (do
+            (log/error "wrap-crystallize: crystallize-session failed:" (:error result))
+            {:type "text"
+             :text (json/write-str (assoc result :project-id project-id))
+             :isError true})
+
+          ;; Success path - proceed with KG edges, wrap_notify, and return
+          (let [;; Warn if falling back past request-ctx (likely wrong for lings)
+                _ (when (and (nil? agent_id) (nil? ctx-agent-id) env-agent-id)
+                    (log/warn "wrap-crystallize: agent_id not passed explicitly and no request-ctx,"
+                              "falling back to env var" env-agent-id "- this may show as coordinator for ling calls"))
+                ;; Warn if defaulting to "coordinator"
+                _ (when (and (nil? agent_id) (nil? ctx-agent-id) (nil? env-agent-id))
+                    (log/warn "wrap-crystallize: No agent_id provided, no request-ctx, and CLAUDE_SWARM_SLAVE_ID not set"
+                              "- defaulting to 'coordinator'. Lings should pass agent_id explicitly."))
+                ;; Ensure stats is a map (defensive against JSON decode issues)
+                safe-stats (if (map? (:stats result)) (:stats result) {})
+                ;; Phase 2 KG Integration: Create :derived-from edges
+                ;; Links session summary to its source entries (notes, tasks)
+                summary-id (:summary-id result)
+                source-ids (extract-source-ids harvested)
+                kg-result (when (and summary-id (seq source-ids))
+                            (create-derived-from-edges! summary-id source-ids project-id effective-agent))]
+            ;; Emit wrap_notify via hive-events for Crystal Convergence
+            (try
+              (ev/dispatch [:crystal/wrap-notify
+                            {:agent-id effective-agent
+                             :session-id (:session result)
+                             :project-id project-id
+                             :created-ids (when-let [sid (:summary-id result)] [sid])
+                             :stats safe-stats}])
+              (log/info "wrap-crystallize: emitted wrap_notify for" effective-agent "project:" project-id
+                        "summary-id:" (:summary-id result))
+              (catch Exception e
+                (log/warn "wrap-crystallize: failed to emit wrap_notify:" (.getMessage e))))
+            {:type "text"
+             :text (json/write-str (cond-> (assoc result :project-id project-id)
+                                     kg-result (assoc :kg-edges kg-result)))})))
+      (catch Exception e
+        (log/error e "wrap-crystallize failed")
+        {:type "text"
+         :text (json/write-str {:error (.getMessage e)})
+         :isError true}))))
 
 (defn handle-permeate-crystals
   "Process wrap queue entries from ling sessions.

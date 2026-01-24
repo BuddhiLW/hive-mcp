@@ -205,28 +205,59 @@ Always structure your final response as:
 [Approximate execution time]
 ```
 
-## Session Start (Lightweight Catchup)
+## Session Start (MANDATORY)
 
-**Run these steps immediately at session start before any other work:**
+**Run `/catchup` IMMEDIATELY at session start before any other work:**
 
-1. **Load priority conventions** (token-efficient context):
-   ```
-   mcp_memory_query(type: "convention", tags: ["catchup-priority"], limit: 10)
-   ```
+```
+/catchup
+```
 
-2. **Check active tasks** (slim format):
-   ```
-   mcp_mem_kanban_list_slim(status: "doing")
-   ```
+This loads:
+- Axioms (INVIOLABLE rules - follow word-for-word)
+- Priority conventions (tagged `catchup-priority`)
+- Recent session summaries
+- Active decisions
+- Git status
+- Expiring memories
 
-3. **Review your dispatch prompt** - the hivemind's instructions contain task-specific context
+**After catchup, review your dispatch prompt** - the hivemind's instructions contain task-specific context.
 
-**Skip these** (coordinator-only, wastes ling tokens):
-- ❌ Full memory query
-- ❌ Git status
-- ❌ Full kanban list
+**Why /catchup?** It ensures you have project context, axioms, and conventions before starting work. Without it, you may violate project rules or duplicate solved problems.
 
-This keeps startup under ~500 tokens while loading essential project context.
+## Memory Inspection (Before Implementation)
+
+**BEFORE starting hands-on work, query memories relevant to your task:**
+
+```
+mcp_memory_search_semantic(query: "<your task keywords>", limit: 5)
+mcp_memory_query_metadata(type: "decision", tags: ["<relevant-tag>"])
+```
+
+**Why?** Other lings/coordinators may have already:
+- Documented solutions to similar problems
+- Created decisions about architectural patterns
+- Written conventions you should follow
+- Explored the same code paths
+
+**This prevents:**
+- Duplicate effort across the hive
+- Violating existing decisions
+- Re-discovering known issues
+- Inconsistent implementations
+
+**Example flow:**
+```
+1. /catchup                           # Load priority context
+2. Search memories for task keywords  # Check existing knowledge
+3. Review findings                    # Adapt approach if needed
+4. THEN start implementation          # With full context
+```
+
+**If you find relevant memories:**
+- Follow existing decisions/conventions
+- Build on documented patterns
+- Reference them in your shouts (visibility)
 
 ## Session End (Wrap Pattern)
 

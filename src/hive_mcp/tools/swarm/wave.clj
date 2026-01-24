@@ -16,6 +16,7 @@
             [hive-mcp.swarm.logic :as logic]
             [hive-mcp.events.core :as ev]
             [hive-mcp.agent :as agent]
+            [hive-mcp.agent.cost :as cost]
             [hive-mcp.telemetry.prometheus :as prom]
             [hive-mcp.telemetry.health :as health]
             [clojure.core.async :as async :refer [go go-loop <! >! <!! chan close!]]
@@ -190,23 +191,30 @@
   "Execute a single drone task without retry.
 
    Arguments:
-     item   - Change item map
-     preset - Drone preset
-     cwd    - Optional working directory override for path resolution
+     item            - Change item map
+     preset          - Drone preset
+     cwd             - Optional working directory override for path resolution
+     skip-auto-apply - When true, drone proposes diffs without auto-applying
+     wave-id         - Wave ID for tagging proposed diffs
 
    Returns:
-     Map with :success :result or :error"
-  [{:keys [change-item/id change-item/file change-item/task]} preset cwd]
+     Map with :success :result or :error, and :proposed-diff-ids when skip-auto-apply"
+  [{:keys [change-item/id change-item/file change-item/task]} preset cwd skip-auto-apply wave-id]
   (let [result (agent/delegate-drone!
                 {:task (str "File: " file "\n\nTask: " task)
                  :files [file]
                  :preset preset
                  :trace true
-                 :cwd cwd})]
+                 :cwd cwd
+                 :skip-auto-apply skip-auto-apply
+                 :wave-id wave-id})]
     (if (= :completed (:status result))
-      {:success true
-       :item-id id
-       :result (:result result)}
+      (cond-> {:success true
+               :item-id id
+               :result (:result result)}
+        ;; Include proposed diff IDs when in review mode
+        (seq (:proposed-diff-ids result))
+        (assoc :proposed-diff-ids (:proposed-diff-ids result)))
       {:success false
        :item-id id
        :error (or (:result result) "Drone execution failed")})))
@@ -215,9 +223,11 @@
   "Execute a single drone task with retry for transient nREPL failures.
 
    Arguments:
-     item   - Change item map
-     preset - Drone preset
-     cwd    - Optional working directory override for path resolution
+     item            - Change item map
+     preset          - Drone preset
+     cwd             - Optional working directory override for path resolution
+     skip-auto-apply - When true, drone proposes diffs without auto-applying
+     wave-id         - Wave ID for tagging proposed diffs
 
    Retry behavior:
      - Retries up to max-retries times for transient nREPL errors
@@ -225,20 +235,20 @@
      - Permanent errors fail immediately without retry
 
    Returns:
-     Map with :success :result or :error"
-  [{:keys [change-item/id change-item/file change-item/task] :as item} preset cwd]
+     Map with :success :result or :error, and :proposed-diff-ids when skip-auto-apply"
+  [{:keys [change-item/id change-item/file change-item/task] :as item} preset cwd skip-auto-apply wave-id]
   (let [{:keys [max-retries initial-delay-ms backoff-multiplier max-delay-ms]} drone-retry-config]
     (loop [attempt 1
            delay-ms initial-delay-ms]
       (log/info "Executing drone task for item:" id "file:" file "cwd:" cwd
-                {:attempt attempt :max-attempts (inc max-retries)})
+                {:attempt attempt :max-attempts (inc max-retries) :review-mode skip-auto-apply})
 
       ;; Update status to dispatched (only on first attempt)
       (when (= attempt 1)
         (ds/update-item-status! id :dispatched))
 
       (let [result (try
-                     (execute-drone-task-once item preset cwd)
+                     (execute-drone-task-once item preset cwd skip-auto-apply wave-id)
                      (catch Exception e
                        {:success false
                         :item-id id
@@ -293,9 +303,20 @@
 ;;; =============================================================================
 
 (defn- item->work-unit
-  "Convert item to work unit for async processing."
-  [item preset cwd]
-  {:item item :preset preset :cwd cwd})
+  "Convert item to work unit for async processing.
+
+   Arguments:
+     item            - Change item map
+     preset          - Drone preset
+     cwd             - Working directory override
+     skip-auto-apply - When true, drones propose diffs without auto-applying
+     wave-id         - Wave ID for tagging proposed diffs"
+  [item preset cwd skip-auto-apply wave-id]
+  {:item item
+   :preset preset
+   :cwd cwd
+   :skip-auto-apply skip-auto-apply
+   :wave-id wave-id})
 
 ;;; =============================================================================
 ;;; Batch Execution Helpers (SLAP: Extract functions for single abstraction level)
@@ -337,7 +358,7 @@
   "Spawn worker goroutines for bounded concurrency.
 
    Arguments:
-     work-ch   - Channel providing work units
+     work-ch   - Channel providing work units (includes skip-auto-apply and wave-id)
      result-ch - Channel to send results to
      wave-id   - Wave ID for state updates
      trace     - Whether to emit events
@@ -348,10 +369,10 @@
   [work-ch result-ch wave-id trace concurrency item-count]
   (dotimes [_ (min concurrency item-count)]
     (go-loop []
-      (when-let [{:keys [item preset cwd]} (<! work-ch)]
+      (when-let [{:keys [item preset cwd skip-auto-apply wave-id]} (<! work-ch)]
         (let [item-id (:change-item/id item)
               exec-result (try
-                            (execute-drone-task item preset cwd)
+                            (execute-drone-task item preset cwd skip-auto-apply wave-id)
                             (catch Exception e
                               ;; CLARITY-T: Structured JSON logging for Loki
                               (log/error {:event :wave/worker-exception
@@ -394,11 +415,20 @@
   "Execute a single batch of items with bounded concurrency.
    Returns channel that emits {:completed N :failed N} when batch is done.
 
+   Arguments:
+     batch-items     - Items to execute
+     preset          - Drone preset
+     cwd             - Working directory override
+     concurrency     - Max concurrent workers
+     wave-id         - Wave ID for state tracking
+     trace           - Whether to emit events
+     skip-auto-apply - When true, drones propose diffs without auto-applying
+
    SLAP: Uses extracted helper functions for single abstraction level:
    - spawn-workers! handles worker goroutine creation
    - collect-results handles result aggregation
    - update-item-state! handles DataScript + event updates"
-  [batch-items preset cwd concurrency wave-id trace]
+  [batch-items preset cwd concurrency wave-id trace skip-auto-apply]
   (let [result-ch (chan)
         item-count (count batch-items)]
     (go
@@ -408,7 +438,7 @@
         ;; Producer: push all items to work channel
         (go
           (doseq [item batch-items]
-            (>! work-ch (item->work-unit item preset cwd)))
+            (>! work-ch (item->work-unit item preset cwd skip-auto-apply wave-id)))
           (close! work-ch))
 
         ;; Spawn workers (SLAP: delegated to extracted function)
@@ -425,7 +455,12 @@
 
    Arguments:
      plan-id     - Plan to execute
-     opts        - Map with :concurrency (default 3), :trace (default true), :cwd (optional)
+     opts        - Map with:
+                   :concurrency     - Max concurrent drones (default 3)
+                   :trace           - Emit events (default true)
+                   :cwd             - Working directory override (optional)
+                   :skip-auto-apply - When true, drones propose diffs without auto-applying.
+                                      Use for review-before-apply workflow. (default false)
 
    Returns:
      Wave-id after execution completes.
@@ -435,10 +470,16 @@
      - Test files wait for their source files (dependency inference)
      - Batches execute sequentially; items within a batch execute in parallel
 
+   Review Mode (skip-auto-apply: true):
+     - Drones propose diffs via propose_diff instead of file_write
+     - Diffs are tagged with wave-id for batch review
+     - Use review_wave_diffs, approve_wave_diffs, auto_approve_wave_diffs after execution
+
    CRITICAL FIX: Uses synchronous execution (<!! blocking take) to ensure
    all batches complete before returning. Previous async (go) implementation
    returned immediately while execution happened in detached context."
-  [plan-id & [{:keys [concurrency trace cwd] :or {concurrency default-concurrency trace true}}]]
+  [plan-id & [{:keys [concurrency trace cwd skip-auto-apply]
+               :or {concurrency default-concurrency trace true skip-auto-apply false}}]]
   (let [wave-start-time (System/nanoTime)  ;; CLARITY-T: Timing for wave duration metric
         plan (ds/get-plan plan-id)]
     (when-not plan
@@ -453,6 +494,9 @@
 
       (let [preset (:change-plan/preset plan)
             wave-id (ds/create-wave! plan-id {:concurrency concurrency})]
+
+        ;; PHASE 0: START COST TRACKING (CLARITY-T: Budget management)
+        (cost/start-wave-tracking! wave-id)
 
         ;; Update plan status
         (ds/update-plan-status! plan-id :in-progress)
@@ -544,6 +588,13 @@
                   (ds/complete-wave! wave-id final-status)
                   (ds/update-plan-status! plan-id (if (pos? total-failed) :failed :completed))
 
+                  ;; COMPLETE COST TRACKING (CLARITY-T: Budget management)
+                  (let [wave-cost (cost/complete-wave-tracking! wave-id)]
+                    (log/info {:event :wave/cost-summary
+                               :wave-id wave-id
+                               :total-tokens (:total-tokens wave-cost)
+                               :drone-count (:drone-count wave-cost)}))
+
                   (when trace
                     (ev/dispatch [:wave/complete {:plan-id plan-id
                                                   :wave-id wave-id
@@ -570,7 +621,8 @@
 
                   ;; Execute batch and BLOCK until completion (<!! instead of <!)
                   (let [{:keys [completed failed]} (<!! (execute-batch! batch-items preset cwd
-                                                                        concurrency wave-id trace))]
+                                                                        concurrency wave-id trace
+                                                                        skip-auto-apply))]
                     (recur (rest remaining-batches)
                            (+ total-completed completed)
                            (+ total-failed failed)

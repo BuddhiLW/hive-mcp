@@ -18,6 +18,8 @@
             [hive-mcp.events.core :as ev]
             [hive-mcp.agent.context :as ctx]
             [hive-mcp.tools.memory.scope :as scope]
+            [hive-mcp.tools.memory.duration :as dur]
+            [hive-mcp.chroma :as chroma]
             [clojure.data.json :as json]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
@@ -392,54 +394,51 @@
 ;; Crystallization Hook
 ;; =============================================================================
 
-(defn- tags->elisp-list
-  "Convert Clojure tags vector to elisp list format.
-   [\"a\" \"b\"] -> '(\"a\" \"b\")"
-  [tags]
-  (str "'(" (str/join " " (map pr-str tags)) ")"))
-
 (defn crystallize-session
-  "Crystallize session data into long-term memory.
+  "Crystallize session data into long-term memory (Chroma storage).
 
    Takes harvested data (including :directory for project scoping) and:
-   1. Creates session summary (short-term, scoped to project)
+   1. Creates session summary (short-term, scoped to project) in Chroma
    2. Promotes entries that meet threshold
    3. Clears ephemeral progress notes
+
+   FIX: Now stores directly to Chroma instead of elisp memory layer.
+   This ensures wrap data persists in the vector database.
 
    Returns: {:summary-id string :promoted [ids] :cleared [ids] :project-id string}"
   [{:keys [progress-notes completed-tasks git-commits directory _recalls] :as harvested}]
   (log/info "Crystallizing session:" (crystal/session-id) (when directory (str "directory:" directory)))
 
   ;; Derive project-id for scoped memory creation
-  (let [project-id (when directory (scope/get-current-project-id directory))
+  (let [project-id (or (when directory (scope/get-current-project-id directory)) "global")
         ;; 1. Create session summary
         summary (crystal/summarize-session-progress
                  (concat progress-notes completed-tasks)
                  git-commits)
-        ;; Convert tags to elisp list format
-        elisp-tags (tags->elisp-list (:tags summary))
-        ;; Use project-id for scoped memory creation when available
-        elisp (if project-id
-                (format "(hive-mcp-memory-add 'note %s %s %s 'short-term)"
-                        (pr-str (:content summary))
-                        elisp-tags
-                        (pr-str project-id))
-                (format "(hive-mcp-memory-add 'note %s %s nil 'short-term)"
-                        (pr-str (:content summary))
-                        elisp-tags))
-        {:keys [success result error]} (ec/eval-elisp elisp)]
-    (if success
-      (do
-        (log/info "Created session summary:" result "project:" project-id)
+        content (:content summary)
+        tags (scope/inject-project-scope (or (:tags summary) []) project-id)
+        ;; Calculate expiration (short-term = 7 days)
+        expires (dur/calculate-expires "short")]
+    (try
+      ;; Store directly to Chroma (FIX: was using elisp before)
+      (let [entry-id (chroma/index-memory-entry!
+                      {:type "note"
+                       :content content
+                       :tags tags
+                       :duration "short"
+                       :expires (or expires "")
+                       :project-id project-id
+                       :content-hash (chroma/content-hash content)})]
+        (log/info "Created session summary in Chroma:" entry-id "project:" project-id)
         ;; 2. Check for entries to promote (based on recall scores)
         ;; TODO: Integrate with recall tracking when we have access patterns
-        {:summary-id result
+        {:summary-id entry-id
          :session (crystal/session-id)
          :project-id project-id
          :stats (:summary harvested)})
-      (do
-        (log/error "Failed to crystallize session:" error)
-        {:error error
+      (catch Exception e
+        (log/error e "Failed to crystallize session to Chroma")
+        {:error (.getMessage e)
          :session (crystal/session-id)}))))
 
 ;; =============================================================================

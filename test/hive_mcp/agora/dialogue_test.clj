@@ -28,39 +28,40 @@
 
 (deftest parse-signal-with-prefix-test
   (testing "parse-signal extracts signal from [SIGNAL: X] prefix"
-    (is (= [:propose "Here's my change"]
+    (is (= [:propose "Here's my change" :prefix]
            (dialogue/parse-signal "[SIGNAL: propose] Here's my change")))
-    (is (= [:approve "LGTM"]
+    (is (= [:approve "LGTM" :prefix]
            (dialogue/parse-signal "[SIGNAL: approve] LGTM")))
-    (is (= [:no-change "Nothing to add"]
+    (is (= [:no-change "Nothing to add" :prefix]
            (dialogue/parse-signal "[SIGNAL: no-change] Nothing to add")))
-    (is (= [:counter "Alternative approach"]
+    (is (= [:counter "Alternative approach" :prefix]
            (dialogue/parse-signal "[SIGNAL: counter] Alternative approach")))
-    (is (= [:defer "I'll let others decide"]
+    (is (= [:defer "I'll let others decide" :prefix]
            (dialogue/parse-signal "[SIGNAL: defer] I'll let others decide")))))
 
 (deftest parse-signal-case-insensitive-test
   (testing "parse-signal is case-insensitive"
-    (is (= [:propose "test"]
+    (is (= [:propose "test" :prefix]
            (dialogue/parse-signal "[SIGNAL: PROPOSE] test")))
-    (is (= [:approve "test"]
+    (is (= [:approve "test" :prefix]
            (dialogue/parse-signal "[SIGNAL: Approve] test")))
-    (is (= [:no-change "test"]
+    (is (= [:no-change "test" :prefix]
            (dialogue/parse-signal "[SIGNAL: NO-CHANGE] test")))))
 
 (deftest parse-signal-no-prefix-test
-  (testing "parse-signal defaults to :propose when no prefix"
-    (is (= [:propose "Just a regular message"]
+  (testing "parse-signal defaults to :propose when no prefix and no natural language match"
+    (is (= [:propose "Just a regular message" :default]
            (dialogue/parse-signal "Just a regular message")))
-    (is (= [:propose ""]
+    (is (= [:propose "" :default]
            (dialogue/parse-signal "")))))
 
 (deftest parse-signal-invalid-signal-test
   (testing "parse-signal defaults to :propose for unknown signals"
     ;; Unknown signal should fall through with warning, keep original message
-    (let [[signal message] (dialogue/parse-signal "[SIGNAL: unknown] text")]
+    (let [[signal message detection] (dialogue/parse-signal "[SIGNAL: unknown] text")]
       (is (= :propose signal))
-      (is (= "[SIGNAL: unknown] text" message)))))
+      (is (= "[SIGNAL: unknown] text" message))
+      (is (= :default detection)))))
 
 (deftest format-signal-test
   (testing "format-signal creates [SIGNAL: X] prefix"
@@ -231,6 +232,54 @@
         (is (= 2 (:turn-count summary)))
         (is (= :counter (:last-signal summary)))
         (is (false? (:consensus? summary)))))))
+
+;;; =============================================================================
+;;; Signal Set Tests
+;;; =============================================================================
+
+;;; =============================================================================
+;;; Natural Language Signal Detection Tests
+;;; =============================================================================
+
+(deftest detect-natural-signal-test
+  (testing "detects approval patterns"
+    (is (= :approve (dialogue/detect-natural-signal "I accept this approach")))
+    (is (= :approve (dialogue/detect-natural-signal "I approve of this change")))
+    (is (= :approve (dialogue/detect-natural-signal "I agree with the proposal")))
+    (is (= :approve (dialogue/detect-natural-signal "LGTM!")))
+    (is (= :approve (dialogue/detect-natural-signal "looks good to me")))
+    (is (= :approve (dialogue/detect-natural-signal "This looks good")))
+    (is (= :approve (dialogue/detect-natural-signal "No objections here")))
+    (is (= :approve (dialogue/detect-natural-signal "ship it!")))
+    (is (= :approve (dialogue/detect-natural-signal "Sounds good to me"))))
+
+  (testing "detects counter patterns"
+    (is (= :counter (dialogue/detect-natural-signal "I disagree with this")))
+    (is (= :counter (dialogue/detect-natural-signal "I object to the proposal")))
+    (is (= :counter (dialogue/detect-natural-signal "I reject this approach")))
+    (is (= :counter (dialogue/detect-natural-signal "I have concerns about this")))
+    (is (= :counter (dialogue/detect-natural-signal "I have issues with the design"))))
+
+  (testing "returns nil for neutral/ambiguous messages"
+    (is (nil? (dialogue/detect-natural-signal "Here is my analysis")))
+    (is (nil? (dialogue/detect-natural-signal "Let me review this")))
+    (is (nil? (dialogue/detect-natural-signal "What do you think?")))))
+
+(deftest parse-signal-natural-language-test
+  (testing "parse-signal detects natural language approval"
+    (is (= [:approve "LGTM, ship it!" :natural]
+           (dialogue/parse-signal "LGTM, ship it!")))
+    (is (= [:approve "I accept this approach" :natural]
+           (dialogue/parse-signal "I accept this approach"))))
+
+  (testing "parse-signal detects natural language counter"
+    (is (= [:counter "I disagree, we need a different approach" :natural]
+           (dialogue/parse-signal "I disagree, we need a different approach"))))
+
+  (testing "prefix takes priority over natural language"
+    ;; Even if the message contains natural approval language, prefix wins
+    (is (= [:propose "I accept this, here's my proposal" :prefix]
+           (dialogue/parse-signal "[SIGNAL: propose] I accept this, here's my proposal")))))
 
 ;;; =============================================================================
 ;;; Signal Set Tests

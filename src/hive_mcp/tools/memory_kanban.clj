@@ -17,7 +17,6 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-
 ;; Tool handlers
 
 (defn handle-mem-kanban-create
@@ -53,28 +52,6 @@
      :title (get content :title (get content "title"))
      :status (get content :status (get content "status"))
      :priority (get content :priority (get content "priority"))}))
-
-(defn handle-mem-kanban-list
-  "List kanban tasks, optionally by status.
-   When directory is provided, scopes query to that project."
-  [{:keys [status directory]}]
-  (let [elisp (cond
-                (and status directory)
-                (format "(json-encode (hive-mcp-api-kanban-list %s %s))"
-                        (str "\"" (v/escape-elisp-string status) "\"")
-                        (str "\"" (v/escape-elisp-string directory) "\""))
-                status
-                (format "(json-encode (hive-mcp-api-kanban-list %s))"
-                        (str "\"" (v/escape-elisp-string status) "\""))
-                directory
-                (format "(json-encode (hive-mcp-api-kanban-list nil %s))"
-                        (str "\"" (v/escape-elisp-string directory) "\""))
-                :else
-                "(json-encode (hive-mcp-api-kanban-list))")
-        {:keys [success result error]} (ec/eval-elisp elisp)]
-    (if success
-      {:type "text" :text result}
-      {:type "text" :text (str "Error: " error) :isError true})))
 
 (defn handle-mem-kanban-list-slim
   "List kanban tasks with minimal data for token optimization.
@@ -183,13 +160,6 @@
                                :directory {:type "string" :description "Working directory to determine project scope (pass your cwd to ensure correct scoping)"}}
                   :required ["title"]}
     :handler handle-mem-kanban-create}
-
-   {:name "mcp_mem_kanban_list"
-    :description "List kanban tasks from memory, optionally filtered by status"
-    :inputSchema {:type "object"
-                  :properties {:status {:type "string" :enum ["todo" "doing" "review"] :description "Filter by status"}
-                               :directory {:type "string" :description "Working directory to determine project scope (pass your cwd to ensure correct scoping)"}}}
-    :handler handle-mem-kanban-list}
 
    {:name "mcp_mem_kanban_list_slim"
     :description "List kanban tasks with minimal data (id, title, status, priority only). Use for token-efficient overviews (~10x fewer tokens than full list)."
