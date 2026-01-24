@@ -80,30 +80,72 @@
 ;; and Nash equilibrium detection on top of schema's CRUD operations.
 
 ;; =============================================================================
+;; Natural Language Signal Detection
+;; =============================================================================
+
+(def natural-approval-patterns
+  "Patterns that indicate natural language approval/agreement."
+  [#"(?i)\bI\s+(?:accept|approve|agree)\b"
+   #"(?i)\blgtm\b"
+   #"(?i)\blooks?\s+good\b"
+   #"(?i)\bconsensus\s+reached\b"
+   #"(?i)\bno\s+(?:changes?|objections?)\b"
+   #"(?i)\bship\s+it\b"
+   #"(?i)\b(?:sounds?|seems?)\s+(?:good|great|fine)\b"])
+
+(def natural-counter-patterns
+  "Patterns that indicate natural language disagreement/objection."
+  [#"(?i)\bI\s+(?:disagree|object|reject)\b"
+   #"(?i)\bhave\s+(?:concerns?|issues?|problems?)\b"
+   #"(?i)\bwon'?t\s+work\b"
+   #"(?i)\bneed\s+(?:to\s+)?(?:change|reconsider|rethink)\b"])
+
+(defn detect-natural-signal
+  "Detect signal from natural language. Returns nil if no match.
+
+   Examples:
+   (detect-natural-signal \"I accept this approach\")  ;=> :approve
+   (detect-natural-signal \"LGTM!\")                   ;=> :approve
+   (detect-natural-signal \"Here is my analysis\")    ;=> nil"
+  [message]
+  (cond
+    (some #(re-find % message) natural-approval-patterns) :approve
+    (some #(re-find % message) natural-counter-patterns) :counter
+    :else nil))
+
+;; =============================================================================
 ;; Signal Parsing
 ;; =============================================================================
 
 (defn parse-signal
-  "Parse [SIGNAL: X] prefix from message.
+  "Parse signal from message. Priority: prefix > natural-language > default.
 
-   Returns tuple: [signal cleaned-message]
+   Returns tuple: [signal cleaned-message detection-method]
 
    Examples:
    (parse-signal \"[SIGNAL: propose] Here's my change\")
-   => [:propose \"Here's my change\"]
+   => [:propose \"Here's my change\" :prefix]
 
-   (parse-signal \"No signal here\")
-   => [:propose \"No signal here\"]  ; default to :propose"
+   (parse-signal \"LGTM, ship it!\")
+   => [:approve \"LGTM, ship it!\" :natural]
+
+   (parse-signal \"Here's my analysis\")
+   => [:propose \"Here's my analysis\" :default]"
   [message]
   (if-let [[_ signal-str rest] (re-matches #"(?i)\[SIGNAL:\s*([\w-]+)\]\s*([\s\S]*)" message)]
     (let [signal (keyword (str/lower-case signal-str))]
       (if (contains? signals signal)
-        [signal (str/trim rest)]
+        [signal (str/trim rest) :prefix]
         (do
           (log/warn "Unknown signal" signal-str "- defaulting to :propose")
-          [:propose message])))
-    ;; No signal prefix - default to :propose (most common case)
-    [:propose message]))
+          [:propose message :default])))
+    ;; No signal prefix - try natural language detection
+    (if-let [natural-signal (detect-natural-signal message)]
+      (do
+        (log/debug "Detected natural language signal:" natural-signal "from message:" (subs message 0 (min 50 (count message))))
+        [natural-signal message :natural])
+      ;; No natural language match - default to :propose
+      [:propose message :default])))
 
 (defn format-signal
   "Format a signal into message prefix.
@@ -324,15 +366,16 @@
   [{:keys [dialogue-id from to message timeout_ms files signal]}]
   {:pre [(some? dialogue-id) (some? to) (some? message)]}
   (let [sender-id (or from (System/getenv "CLAUDE_SWARM_SLAVE_ID") "unknown")
-        ;; Signal priority: explicit param > parsed from message > default :propose
+        ;; Signal priority: explicit param > parsed from message > natural language > default :propose
         explicit-signal (when signal
                           (let [s (if (keyword? signal) signal (keyword signal))]
                             (when (contains? signals s) s)))
-        [parsed-signal cleaned-message] (if explicit-signal
-                                          ;; Skip prefix parsing when explicit signal provided
-                                          [nil message]
-                                          (parse-signal message))
+        [parsed-signal cleaned-message detection-method] (if explicit-signal
+                                                           ;; Skip parsing when explicit signal provided
+                                                           [nil message :explicit]
+                                                           (parse-signal message))
         final-signal (or explicit-signal parsed-signal :propose)
+        final-detection (if explicit-signal :explicit detection-method)
         ;; Create turn data
         turn-data {:sender sender-id
                    :receiver to
@@ -341,7 +384,15 @@
 
     ;; Validate dialogue exists and is active
     (when-not (dialogue-active? dialogue-id)
-      (throw (ex-info "Dialogue not active" {:dialogue-id dialogue-id})))
+      (let [dialogue (schema/get-dialogue dialogue-id)
+            status (:status dialogue)]
+        (throw (ex-info (case status
+                          :consensus "Dialogue already reached consensus"
+                          :timeout "Dialogue timed out"
+                          :aborted "Dialogue was aborted"
+                          "Dialogue not active")
+                        {:dialogue-id dialogue-id
+                         :status status}))))
 
     ;; Record turn before dispatch
     (record-turn! dialogue-id turn-data)
@@ -389,7 +440,8 @@
         ;; Return enriched result
         {:dialogue-id dialogue-id
          :turn (:turn-num turn)
-         :signal signal
+         :signal final-signal
+         :signal-detection final-detection
          :dispatch-result dispatch-result}))))
 
 ;; =============================================================================

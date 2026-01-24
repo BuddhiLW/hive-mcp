@@ -323,6 +323,73 @@
     (is (= :negative (consensus/signal->equilibrium-contribution :unknown)))))
 
 ;; =============================================================================
+;; Participant ID Normalization Tests
+;; =============================================================================
+
+(deftest extract-short-name-test
+  (testing "extracts role from swarm-agora pattern"
+    (is (= "skeptic" (consensus/extract-short-name "swarm-agora-preset-docs-skeptic-1769195802")))
+    (is (= "advocate" (consensus/extract-short-name "swarm-agora-test-advocate-9876543210")))
+    (is (= "critic" (consensus/extract-short-name "ling-agora-review-critic-1234567890"))))
+
+  (testing "extracts role from simple pattern"
+    (is (= "writer" (consensus/extract-short-name "writer-123")))
+    (is (= "reviewer" (consensus/extract-short-name "reviewer-456789"))))
+
+  (testing "returns full id when no pattern matches"
+    (is (= "justanid" (consensus/extract-short-name "justanid")))
+    (is (= "complex-name-without-timestamp" (consensus/extract-short-name "complex-name-without-timestamp"))))
+
+  (testing "handles nil gracefully"
+    (is (nil? (consensus/extract-short-name nil)))))
+
+(deftest normalize-participant-match-test
+  (testing "exact match returns true"
+    (is (true? (consensus/normalize-participant-match "writer-123" "writer-123"))))
+
+  (testing "fuzzy match with same short name returns true"
+    (is (true? (consensus/normalize-participant-match
+                "skeptic-123"
+                "swarm-agora-preset-docs-skeptic-456")))
+    (is (true? (consensus/normalize-participant-match
+                "swarm-agora-preset-docs-skeptic-1769195802"
+                "skeptic-999"))))
+
+  (testing "different short names return false"
+    (is (false? (consensus/normalize-participant-match "writer-123" "critic-456")))
+    (is (false? (consensus/normalize-participant-match
+                 "swarm-agora-skeptic-111"
+                 "swarm-agora-advocate-222")))))
+
+;; Mock data with fuzzy participant IDs
+(def mock-dialogues-fuzzy
+  {:dialogue-fuzzy
+   {:id "dialogue-fuzzy"
+    :participants ["skeptic" "swarm-agora-preset-docs-advocate-123"]
+    :config consensus/default-config
+    :turns [{:sender "swarm-agora-preset-docs-skeptic-999" :receiver "advocate" :signal :propose :turn-number 1}
+            {:sender "advocate-555" :receiver "skeptic" :signal :approve :turn-number 2}]}})
+
+(deftest last-turn-for-fuzzy-matching-test
+  (testing "last-turn-for uses fuzzy matching"
+    ;; Override mock for this specific test
+    (with-redefs [hive-mcp.agora.schema/get-dialogue
+                  (fn [id] (get mock-dialogues-fuzzy id))
+                  hive-mcp.agora.schema/get-turns
+                  (fn [id] (get-in mock-dialogues-fuzzy [id :turns] []))]
+      ;; Should find turn from "swarm-agora-preset-docs-skeptic-999" when looking for "skeptic"
+      (let [turn (consensus/last-turn-for :dialogue-fuzzy "skeptic")]
+        (is (some? turn))
+        (is (= :propose (:signal turn)))
+        (is (= 1 (:turn-number turn))))
+
+      ;; Should find turn from "advocate-555" when looking for full participant ID
+      (let [turn (consensus/last-turn-for :dialogue-fuzzy "swarm-agora-preset-docs-advocate-123")]
+        (is (some? turn))
+        (is (= :approve (:signal turn)))
+        (is (= 2 (:turn-number turn)))))))
+
+;; =============================================================================
 ;; Edge Case Tests
 ;; =============================================================================
 

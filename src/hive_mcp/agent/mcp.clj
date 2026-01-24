@@ -1,13 +1,17 @@
 (ns hive-mcp.agent.mcp
   "MCP tool definitions for agent delegation.
-   
+
    Defines the MCP tools exposed for agent-related operations:
    - agent_delegate - delegate tasks to local/cloud models
    - delegate_drone - delegate to token-optimized drones
    - openrouter_* - model configuration
-   - preset_* - preset configuration"
+   - preset_* - preset configuration
+
+   CLARITY-T: Telemetry first - all MCP handlers emit structured logs
+   for Loki ingestion and Prometheus metrics for monitoring."
   (:require [hive-mcp.agent.config :as config]
             [hive-mcp.tools.core :refer [mcp-error mcp-json]]
+            [hive-mcp.telemetry.prometheus :as prom]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -42,58 +46,146 @@
    Requires delegate-drone-fn to be passed in to avoid circular dependency.
 
    CLARITY-Y: Graceful error handling - never silently fail.
-   CLARITY-T: Structured logging for Loki ingestion."
+   CLARITY-T: Telemetry first - structured logging, Prometheus metrics, trace IDs.
+
+   Telemetry emitted:
+   - Prometheus: hive_mcp_mcp_requests_total{tool=\"delegate_drone\"}
+   - Prometheus: hive_mcp_request_duration_seconds{tool=\"delegate_drone\"}
+   - Loki: JSON logs with trace-id for request correlation
+   - Error categorization: :conflict, :validation, :execution, :unexpected"
   [delegate-drone-fn {:keys [task files preset trace parent_id cwd]}]
-  (if (str/blank? task)
-    (mcp-error "Task is required")
-    (try
-      (let [result (delegate-drone-fn {:task task
-                                       :files files
-                                       :preset (or preset "drone-worker")
-                                       :trace (if (nil? trace) true trace)
-                                       :parent-id parent_id
-                                       :cwd cwd})]
-        ;; Ensure we always return a structured response
-        (if (nil? result)
-          (mcp-error "Drone returned nil - execution may have failed silently")
-          (mcp-json (assoc result
-                           :status (or (:status result) :unknown)
-                           :message (or (:message result)
-                                        (if (= :completed (:status result))
-                                          "Drone completed successfully"
-                                          "Drone execution finished"))))))
-      (catch clojure.lang.ExceptionInfo e
-        ;; Structured error from delegate! (conflicts, validation, etc.)
-        (let [data (ex-data e)
-              error-type (or (:error-type data) :delegation-error)]
-          ;; CLARITY-T: Structured JSON logging for Loki ingestion
-          (log/error {:event :delegate-drone/failed
-                      :error-type error-type
-                      :error (ex-message e)
-                      :drone-id (:drone-id data)
-                      :conflicts (:conflicts data)
-                      :files files
-                      :task-preview (subs task 0 (min 100 (count task)))})
-          (mcp-json {:status :failed
-                     :error (ex-message e)
-                     :error-type error-type
-                     :conflicts (:conflicts data)
-                     :drone-id (:drone-id data)
-                     :files (:files data)})))
-      (catch Exception e
-        ;; Unexpected error - log and return structured response
-        ;; CLARITY-T: Structured JSON logging for Loki ingestion
-        (let [stacktrace-str (pr-str (.getStackTrace e))]
-          (log/error {:event :delegate-drone/unexpected-error
-                      :error (ex-message e)
-                      :exception-class (.getName (class e))
-                      :files files
-                      :task-preview (subs task 0 (min 100 (count task)))
-                      :stacktrace (subs stacktrace-str 0 (min 500 (count stacktrace-str)))})
-          (mcp-json {:status :failed
-                     :error (str "Drone delegation failed: " (ex-message e))
-                     :error-type :unexpected
-                     :exception-class (.getName (class e))}))))))
+  ;; CLARITY-T: Generate trace ID for request correlation across logs
+  (let [trace-id (str "mcp-" (java.util.UUID/randomUUID))
+        start-time-ns (System/nanoTime)
+        file-count (count (or files []))
+        task-preview (when task (subs task 0 (min 100 (count task))))]
+
+    ;; CLARITY-T: Increment MCP request counter (Prometheus)
+    (prom/inc-mcp-requests! "delegate_drone")
+
+    ;; CLARITY-T: Structured entry log for Loki ingestion
+    (log/info {:event :delegate-drone/request-start
+               :trace-id trace-id
+               :file-count file-count
+               :preset (or preset "drone-worker")
+               :parent-id parent_id
+               :has-cwd (boolean cwd)
+               :task-preview task-preview})
+
+    (if (str/blank? task)
+      (do
+        ;; CLARITY-T: Log validation failure
+        (log/warn {:event :delegate-drone/validation-failed
+                   :trace-id trace-id
+                   :error-type :validation
+                   :error "Task is required"})
+        (prom/inc-errors-total! :validation true)
+        (mcp-error "Task is required"))
+
+      (try
+        (let [result (delegate-drone-fn {:task task
+                                         :files files
+                                         :preset (or preset "drone-worker")
+                                         :trace (if (nil? trace) true trace)
+                                         :parent-id parent_id
+                                         :cwd cwd})
+              duration-sec (/ (- (System/nanoTime) start-time-ns) 1e9)]
+
+          ;; CLARITY-T: Record request duration to Prometheus
+          (prom/observe-request-duration! "delegate_drone" duration-sec)
+
+          ;; Ensure we always return a structured response
+          (if (nil? result)
+            (do
+              ;; CLARITY-T: Log nil result as warning
+              (log/warn {:event :delegate-drone/nil-result
+                         :trace-id trace-id
+                         :duration-sec duration-sec
+                         :error-type :execution})
+              (prom/inc-errors-total! :execution true)
+              (mcp-error "Drone returned nil - execution may have failed silently"))
+
+            (let [status (or (:status result) :unknown)
+                  success? (= :completed status)]
+              ;; CLARITY-T: Structured exit log for Loki ingestion
+              (log/info {:event :delegate-drone/request-end
+                         :trace-id trace-id
+                         :status status
+                         :success success?
+                         :duration-sec duration-sec
+                         :drone-id (:agent-id result)
+                         :files-modified (count (or (:files-modified result) []))
+                         :files-failed (count (or (:files-failed result) []))})
+
+              (mcp-json (assoc result
+                               :status status
+                               :trace-id trace-id
+                               :message (or (:message result)
+                                            (if success?
+                                              "Drone completed successfully"
+                                              "Drone execution finished")))))))
+
+        (catch clojure.lang.ExceptionInfo e
+          ;; Structured error from delegate! (conflicts, validation, etc.)
+          (let [data (ex-data e)
+                error-type (or (:error-type data) :delegation-error)
+                duration-sec (/ (- (System/nanoTime) start-time-ns) 1e9)
+                ;; CLARITY-T: Categorize error for Prometheus labeling
+                error-category (case error-type
+                                 :conflict :conflict
+                                 :validation :validation
+                                 :timeout :timeout
+                                 :rate-limit :rate-limit
+                                 :execution)]
+
+            ;; CLARITY-T: Record request duration even on failure
+            (prom/observe-request-duration! "delegate_drone" duration-sec)
+            (prom/inc-errors-total! error-category (not= error-category :execution))
+
+            ;; CLARITY-T: Structured JSON logging for Loki ingestion
+            (log/error {:event :delegate-drone/failed
+                        :trace-id trace-id
+                        :error-type error-type
+                        :error-category error-category
+                        :error (ex-message e)
+                        :drone-id (:drone-id data)
+                        :conflicts (:conflicts data)
+                        :files files
+                        :duration-sec duration-sec
+                        :task-preview task-preview})
+
+            (mcp-json {:status :failed
+                       :error (ex-message e)
+                       :error-type error-type
+                       :trace-id trace-id
+                       :conflicts (:conflicts data)
+                       :drone-id (:drone-id data)
+                       :files (:files data)})))
+
+        (catch Exception e
+          ;; Unexpected error - log and return structured response
+          (let [duration-sec (/ (- (System/nanoTime) start-time-ns) 1e9)
+                stacktrace-str (pr-str (.getStackTrace e))]
+
+            ;; CLARITY-T: Record request duration even on unexpected failure
+            (prom/observe-request-duration! "delegate_drone" duration-sec)
+            (prom/inc-errors-total! :unexpected false)
+
+            ;; CLARITY-T: Structured JSON logging for Loki ingestion
+            (log/error {:event :delegate-drone/unexpected-error
+                        :trace-id trace-id
+                        :error (ex-message e)
+                        :exception-class (.getName (class e))
+                        :files files
+                        :duration-sec duration-sec
+                        :task-preview task-preview
+                        :stacktrace (subs stacktrace-str 0 (min 500 (count stacktrace-str)))})
+
+            (mcp-json {:status :failed
+                       :error (str "Drone delegation failed: " (ex-message e))
+                       :error-type :unexpected
+                       :trace-id trace-id
+                       :exception-class (.getName (class e))})))))))
 
 ;;; ============================================================
 ;;; Tool Definitions

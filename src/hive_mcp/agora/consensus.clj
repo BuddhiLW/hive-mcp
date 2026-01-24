@@ -11,7 +11,8 @@
    Depends on: hive-mcp.agora.schema (dialogue state queries)"
   (:require [clojure.set :as set]
             [clojure.string :as str]
-            [hive-mcp.agora.schema :as schema]))
+            [hive-mcp.agora.schema :as schema]
+            [taoensso.timbre :as log]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -67,12 +68,59 @@
   [dialogue-id]
   (or (:config (schema/get-dialogue dialogue-id)) default-config))
 
+;; =============================================================================
+;; Participant ID Normalization
+;; =============================================================================
+
+(defn extract-short-name
+  "Extract short name from slave-id.
+
+   Examples:
+   'swarm-agora-preset-docs-skeptic-1769195802' -> 'skeptic'
+   'ling-agora-critic-456' -> 'critic'
+   'writer-123' -> 'writer'"
+  [slave-id]
+  (when slave-id
+    (or
+     ;; Pattern: swarm-agora-*-<role>-<timestamp>
+     (second (re-find #"(?:swarm-|ling-)?agora-[^-]+-([^-]+)-\d+" slave-id))
+     ;; Pattern: swarm-agora-preset-*-<role>-<timestamp>
+     (second (re-find #"(?:swarm-|ling-)?agora-preset-[^-]+-([^-]+)-\d+" slave-id))
+     ;; Pattern: <role>-<timestamp>
+     (second (re-find #"^([^-]+)-\d+$" slave-id))
+     ;; Fallback: return as-is
+     slave-id)))
+
+(defn normalize-participant-match
+  "Fuzzy match sender to participant using short name extraction.
+
+   Returns true if:
+   - Exact match
+   - Short names match (e.g., 'skeptic' == 'swarm-agora-skeptic-123')
+
+   Logs a warning when fuzzy matching occurs to help debug."
+  [sender participant]
+  (or (= sender participant)
+      (let [sender-short (extract-short-name sender)
+            participant-short (extract-short-name participant)
+            fuzzy-match? (and sender-short
+                              participant-short
+                              (= sender-short participant-short))]
+        (when fuzzy-match?
+          ;; Log when fuzzy matching is used (helps debug issues)
+          (when-not (= sender participant)
+            (log/debug "Fuzzy participant match:" sender "~" participant
+                       "(short:" sender-short ")")))
+        fuzzy-match?)))
+
 (defn last-turn-for
   "Get the most recent turn for a specific participant.
-   Filters turns by sender and returns the last one."
+   Uses fuzzy matching to handle participant ID variations."
   [dialogue-id participant]
   (let [turns (schema/get-turns dialogue-id)
-        participant-turns (filter #(= participant (:sender %)) turns)]
+        participant-turns (filter #(normalize-participant-match
+                                    (:sender %) participant)
+                                  turns)]
     (last (sort-by :turn-number participant-turns))))
 
 ;; =============================================================================

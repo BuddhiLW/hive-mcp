@@ -97,10 +97,12 @@
           signal-name (if-let [s (:signal result)] (name s) "unknown")
           consensus-name (if consensus-status (name consensus-status) "unknown")]
       (log/info "Agora dispatch to" to "in dialogue" dialogue_id
-                "signal:" (:signal result) "consensus:" consensus-status)
+                "signal:" (:signal result) "detection:" (:signal-detection result)
+                "consensus:" consensus-status)
       (mcp-success {:dialogue-id dialogue_id
                     :turn (:turn result)
                     :signal signal-name
+                    :signal-detection (when-let [d (:signal-detection result)] (name d))
                     :consensus-status consensus-name
                     :dispatch-result (:dispatch-result result)}))
     (catch clojure.lang.ExceptionInfo e
@@ -119,7 +121,8 @@
    - :approval-ratio - Ratio of approving participants (0.0-1.0)
    - :participants - Number of participants
    - :turn-count - Total turns in dialogue
-   - :mediator-needed? - True if dialogue is stuck/deadlocked."
+   - :mediator-needed? - True if dialogue is stuck/deadlocked
+   - :participant-status - Per-participant signal status for debugging."
   [{:keys [dialogue_id]}]
   (try
     ;; Validate dialogue_id is provided
@@ -130,7 +133,27 @@
       (when-not dialogue
         (throw (ex-info (str "Dialogue not found: " dialogue_id)
                         {:type :not-found :dialogue-id dialogue_id})))
-      (let [result (consensus/consensus-result dialogue_id)]
+      (let [result (consensus/consensus-result dialogue_id)
+            ;; Get last turn for preview
+            turns (schema/get-turns dialogue_id)
+            last-turn (last (sort-by :turn-number turns))
+            ;; Truncate message for preview (first 100 chars)
+            msg-preview (when-let [msg (:message last-turn)]
+                          (if (> (count msg) 100)
+                            (str (subs msg 0 100) "...")
+                            msg))
+            ;; Build per-participant status for debugging
+            participants (consensus/get-participants dialogue_id)
+            participant-status (mapv (fn [p]
+                                       (let [turn (consensus/last-turn-for dialogue_id p)
+                                             signal (:signal turn)]
+                                         {:participant p
+                                          :short-name (consensus/extract-short-name p)
+                                          :last-signal (when signal (name signal))
+                                          :in-equilibrium? (boolean
+                                                            (when signal
+                                                              (contains? consensus/equilibrium-signals signal)))}))
+                                     participants)]
         (log/debug "Consensus check for" dialogue_id ":" result)
         (mcp-success {:dialogue-id dialogue_id
                       :status (if-let [s (:status result)]
@@ -143,7 +166,14 @@
                       :progress-score (or (:progress-score result) 0.0)
                       :mediator-needed? (boolean (:mediator-needed? result))
                       :mediator-reason (when-let [r (:mediator-reason result)]
-                                         (name r))})))
+                                         (name r))
+                      ;; Per-participant status for debugging signal issues
+                      :participant-status participant-status
+                      ;; Last turn preview for quick context
+                      :last-turn (when last-turn
+                                   {:from (:sender last-turn)
+                                    :signal (when-let [s (:signal last-turn)] (name s))
+                                    :preview msg-preview})})))
     (catch clojure.lang.ExceptionInfo e
       (log/warn "Consensus check failed:" (ex-message e) (ex-data e))
       (mcp-error (str "Consensus check failed: " (ex-message e))))
@@ -205,6 +235,51 @@
       (log/error e "Failed to join dialogue")
       (mcp-error (str "Failed to join dialogue: " (.getMessage e))))))
 
+(defn handle-agora-get-history
+  "Retrieve dialogue transcript with all turns.
+
+   Returns the full dialogue history including all messages,
+   signals, and metadata. Useful for agents to catch up on
+   dialogue state or review the conversation.
+
+   Returns: {:dialogue-id, :topic, :status, :participants, :turns}."
+  [{:keys [dialogue_id limit]}]
+  (try
+    (when-not dialogue_id
+      (throw (ex-info "Missing required parameter: dialogue_id" {:type :validation})))
+    (let [dialogue (dialogue/get-dialogue dialogue_id)]
+      (when-not dialogue
+        (throw (ex-info (str "Dialogue not found: " dialogue_id)
+                        {:type :not-found :dialogue-id dialogue_id})))
+      (let [all-turns (dialogue/get-dialogue-turns dialogue_id)
+            ;; Apply limit if provided
+            turns (if (and limit (pos? limit))
+                    (take-last limit all-turns)
+                    all-turns)
+            ;; Format turns for output
+            formatted-turns (mapv (fn [t]
+                                    {:turn-num (:turn-num t)
+                                     :from (:sender t)
+                                     :to (:receiver t)
+                                     :signal (when-let [s (:signal t)] (name s))
+                                     :message (:message t)
+                                     :timestamp (when-let [ts (:timestamp t)]
+                                                  (.getTime ts))})
+                                  turns)]
+        (log/debug "Retrieved" (count formatted-turns) "turns for dialogue" dialogue_id)
+        (mcp-success {:dialogue-id dialogue_id
+                      :topic (:topic dialogue)
+                      :status (when-let [s (:status dialogue)] (name s))
+                      :participants (vec (:participants dialogue))
+                      :turn-count (count all-turns)
+                      :turns formatted-turns})))
+    (catch clojure.lang.ExceptionInfo e
+      (log/warn "Get history failed:" (ex-message e) (ex-data e))
+      (mcp-error (str "Get history failed: " (ex-message e))))
+    (catch Exception e
+      (log/error e "Failed to get dialogue history")
+      (mcp-error (str "Failed to get history: " (.getMessage e))))))
+
 ;; ============================================================
 ;; Tool Definitions
 ;; ============================================================
@@ -235,7 +310,7 @@
                                :to {:type "string"
                                     :description "Target ling slave-id to receive the message"}
                                :message {:type "string"
-                                         :description "Message content. Signal can be included as [SIGNAL: X] prefix for backward compatibility, or use the `signal` parameter instead (recommended)."}
+                                         :description "Message content. Signal detection priority: 1) explicit `signal` param, 2) [SIGNAL: X] prefix, 3) natural language ('I accept', 'LGTM', 'looks good' -> approve; 'I disagree', 'have concerns' -> counter), 4) default: propose."}
                                :signal {:type "string"
                                         :enum ["propose" "counter" "approve" "no-change" "defer"]
                                         :description "Optional signal. Takes priority over message prefix. If omitted, parsed from message prefix or defaults to 'propose'."}
@@ -273,4 +348,14 @@
                                :slave_id {:type "string"
                                           :description "Slave-id of the ling joining the dialogue"}}
                   :required ["dialogue_id" "slave_id"]}
-    :handler handle-agora-join-dialogue}])
+    :handler handle-agora-join-dialogue}
+
+   {:name "agora_get_history"
+    :description "Retrieve dialogue transcript with all turns. Returns messages, signals, and timestamps for catching up on dialogue state or reviewing the conversation."
+    :inputSchema {:type "object"
+                  :properties {:dialogue_id {:type "string"
+                                             :description "ID of the dialogue to retrieve history for"}
+                               :limit {:type "integer"
+                                       :description "Optional: limit to last N turns (default: all)"}}
+                  :required ["dialogue_id"]}
+    :handler handle-agora-get-history}])
