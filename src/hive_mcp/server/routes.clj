@@ -125,6 +125,55 @@
 ;; Composable Handler Wrappers (SRP: Each wrapper single responsibility)
 ;; =============================================================================
 
+(def ^:const hot-reload-retry-delay-ms
+  "Delay between retries when hot-reload might have invalidated handlers."
+  100)
+
+(def ^:const hot-reload-max-retries
+  "Maximum retries for hot-reload recovery."
+  3)
+
+(defn- hot-reload-error?
+  "Check if exception indicates stale var references from hot-reload.
+   
+   CLARITY-Y: Identify transient errors that can be recovered via retry."
+  [^Throwable e]
+  (let [msg (str (.getMessage e))]
+    (or (re-find #"(?i)var.*not.*found" msg)
+        (re-find #"(?i)unbound|undefined" msg)
+        (re-find #"(?i)no.*protocol.*method" msg)
+        (instance? IllegalStateException e))))
+
+(defn wrap-handler-retry
+  "Wrap handler with retry logic for hot-reload resilience.
+   
+   CLARITY-Y: Yield safe failure via automatic retry on transient errors.
+   
+   When hot-reload occurs, in-flight tool calls may fail because:
+   - Var references point to old, unloaded namespaces
+   - Protocol implementations are temporarily unavailable
+   
+   This wrapper catches these transient errors and retries, giving
+   time for refresh-tools! to complete."
+  [handler]
+  (fn [args]
+    (loop [attempt 1]
+      (let [result (try
+                     {:ok (handler args)}
+                     (catch Exception e
+                       (if (and (hot-reload-error? e)
+                                (< attempt hot-reload-max-retries))
+                         {:retry e}
+                         (throw e))))]
+        (if (:retry result)
+          (do
+            (log/warn "Hot-reload retry" {:attempt attempt 
+                                          :max hot-reload-max-retries
+                                          :error (ex-message (:retry result))})
+            (Thread/sleep hot-reload-retry-delay-ms)
+            (recur (inc attempt)))
+          (:ok result))))))
+
 (defn wrap-handler-context
   "Wrap handler to bind request context for tool execution.
    SRP: Single responsibility - context binding only.
@@ -216,18 +265,23 @@
    Wraps handler to attach pending hivemind messages via content embedding.
 
    Uses composable handler wrappers (SRP: each wrapper single responsibility):
+   - wrap-handler-retry: auto-retry on hot-reload transient errors (CLARITY-Y)
    - wrap-handler-context: binds request context for tool execution
    - wrap-handler-normalize: converts result to content array
    - wrap-handler-piggyback: embeds hivemind messages with agent-id extraction
    - wrap-handler-response: builds {:content ...} response
 
    Composition via -> threading enables clear data flow:
-   handler -> context -> normalize -> piggyback -> response"
+   handler -> retry -> context -> normalize -> piggyback -> response
+   
+   CLARITY-Y: wrap-handler-retry is innermost to catch handler exceptions
+   before context/normalize processing."
   [{:keys [name description inputSchema handler]}]
   {:name name
    :description description
    :inputSchema inputSchema
    :handler (-> handler
+                wrap-handler-retry      ; CLARITY-Y: Hot-reload resilience
                 wrap-handler-context
                 wrap-handler-normalize
                 wrap-handler-piggyback
