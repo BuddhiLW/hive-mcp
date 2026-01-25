@@ -18,7 +18,7 @@
             [hive-mcp.tools.memory.scope :as scope]
             [hive-mcp.tools.memory.format :as fmt]
             [hive-mcp.tools.memory.duration :as dur]
-            [hive-mcp.tools.core :refer [mcp-json mcp-error coerce-int!]]
+            [hive-mcp.tools.core :refer [mcp-json mcp-error coerce-int! coerce-vec!]]
             [hive-mcp.chroma :as chroma]
             [hive-mcp.knowledge-graph.edges :as kg-edges]
             [hive-mcp.agent.context :as ctx]
@@ -99,56 +99,66 @@
      - kg_depends_on: List of entry IDs this depends on
      - kg_refines: List of entry IDs this refines
 
-   Edges are stored in DataScript with full provenance (scope, agent, timestamp)."
+   Edges are stored in DataScript with full provenance (scope, agent, timestamp).
+
+   ELM Principle: Array parameters are coerced with helpful error messages."
   [{:keys [type content tags duration directory agent_id
-           kg_implements kg_supersedes kg_depends_on kg_refines] :as params}]
-  (let [directory (or directory (ctx/current-directory))]
-    (log/info "mcp-memory-add:" type "directory:" directory "agent_id:" agent_id)
-    (with-chroma
-      (let [project-id (scope/get-current-project-id directory)
-            ;; Agent tagging for convergence tracking
-            agent-id (or agent_id (System/getenv "CLAUDE_SWARM_SLAVE_ID"))
-            agent-tag (when agent-id (str "agent:" agent-id))
-            base-tags (or tags [])
-            tags-with-agent (if agent-tag (conj base-tags agent-tag) base-tags)
-            ;; Add KG relationship metadata as tags for Chroma filtering
-            kg-tags (cond-> []
-                      (seq kg_implements) (conj "kg:has-implements")
-                      (seq kg_supersedes) (conj "kg:has-supersedes")
-                      (seq kg_depends_on) (conj "kg:has-depends-on")
-                      (seq kg_refines) (conj "kg:has-refines"))
-            tags-with-kg (into tags-with-agent kg-tags)
-            tags-with-scope (scope/inject-project-scope tags-with-kg project-id)
-            content-hash (chroma/content-hash content)
-            duration-str (or duration "long")
-            expires (dur/calculate-expires duration-str)
-            ;; Check for duplicate
-            existing (chroma/find-duplicate type content-hash :project-id project-id)]
-        (if existing
-          ;; Duplicate found - merge tags and return existing
-          (let [merged-tags (distinct (concat (:tags existing) tags-with-scope))
-                updated (chroma/update-entry! (:id existing) {:tags merged-tags})]
-            (log/info "Duplicate found, merged tags:" (:id existing))
-            (mcp-json (fmt/entry->json-alist updated)))
-          ;; Create new entry
-          (let [entry-id (chroma/index-memory-entry!
-                          {:type type
-                           :content content
-                           :tags tags-with-scope
-                           :content-hash content-hash
-                           :duration duration-str
-                           :expires (or expires "")
-                           :project-id project-id})
-                ;; Create KG edges if any relationships specified
-                edge-ids (create-kg-edges! entry-id params project-id agent-id)
-                ;; Store outgoing edge IDs in Chroma for bidirectional lookup
-                _ (when (seq edge-ids)
-                    (chroma/update-entry! entry-id {:kg-outgoing edge-ids}))
-                created (chroma/get-entry-by-id entry-id)]
-            (log/info "Created memory entry:" entry-id
-                      (when (seq edge-ids) (str " with " (count edge-ids) " KG edges")))
-            (mcp-json (cond-> (fmt/entry->json-alist created)
-                        (seq edge-ids) (assoc :kg_edges_created edge-ids)))))))))
+           kg_implements kg_supersedes kg_depends_on kg_refines]}]
+  (try
+    (let [;; ELM Principle: Coerce array parameters with helpful error messages
+          tags-vec (coerce-vec! tags :tags [])
+          kg-implements-vec (coerce-vec! kg_implements :kg_implements [])
+          kg-supersedes-vec (coerce-vec! kg_supersedes :kg_supersedes [])
+          kg-depends-on-vec (coerce-vec! kg_depends_on :kg_depends_on [])
+          kg-refines-vec (coerce-vec! kg_refines :kg_refines [])
+          directory (or directory (ctx/current-directory))]
+      (log/info "mcp-memory-add:" type "directory:" directory "agent_id:" agent_id)
+      (with-chroma
+        (let [project-id (scope/get-current-project-id directory)
+              agent-id (or agent_id (System/getenv "CLAUDE_SWARM_SLAVE_ID"))
+              agent-tag (when agent-id (str "agent:" agent-id))
+              base-tags tags-vec
+              tags-with-agent (if agent-tag (conj base-tags agent-tag) base-tags)
+              kg-tags (cond-> []
+                        (seq kg-implements-vec) (conj "kg:has-implements")
+                        (seq kg-supersedes-vec) (conj "kg:has-supersedes")
+                        (seq kg-depends-on-vec) (conj "kg:has-depends-on")
+                        (seq kg-refines-vec) (conj "kg:has-refines"))
+              tags-with-kg (into tags-with-agent kg-tags)
+              tags-with-scope (scope/inject-project-scope tags-with-kg project-id)
+              content-hash (chroma/content-hash content)
+              duration-str (or duration "long")
+              expires (dur/calculate-expires duration-str)
+              existing (chroma/find-duplicate type content-hash :project-id project-id)]
+          (if existing
+            (let [merged-tags (distinct (concat (:tags existing) tags-with-scope))
+                  updated (chroma/update-entry! (:id existing) {:tags merged-tags})]
+              (log/info "Duplicate found, merged tags:" (:id existing))
+              (mcp-json (fmt/entry->json-alist updated)))
+            (let [entry-id (chroma/index-memory-entry!
+                            {:type type
+                             :content content
+                             :tags tags-with-scope
+                             :content-hash content-hash
+                             :duration duration-str
+                             :expires (or expires "")
+                             :project-id project-id})
+                  kg-params {:kg_implements kg-implements-vec
+                             :kg_supersedes kg-supersedes-vec
+                             :kg_depends_on kg-depends-on-vec
+                             :kg_refines kg-refines-vec}
+                  edge-ids (create-kg-edges! entry-id kg-params project-id agent-id)
+                  _ (when (seq edge-ids)
+                      (chroma/update-entry! entry-id {:kg-outgoing edge-ids}))
+                  created (chroma/get-entry-by-id entry-id)]
+              (log/info "Created memory entry:" entry-id
+                        (when (seq edge-ids) (str " with " (count edge-ids) " KG edges")))
+              (mcp-json (cond-> (fmt/entry->json-alist created)
+                          (seq edge-ids) (assoc :kg_edges_created edge-ids))))))))
+    (catch clojure.lang.ExceptionInfo e
+      (if (= :coercion-error (:type (ex-data e)))
+        (mcp-error (.getMessage e))
+        (throw e)))))
 
 ;; ============================================================
 ;; Query Handler
