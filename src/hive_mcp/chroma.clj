@@ -90,6 +90,22 @@
   []
   @embedding-provider)
 
+(defn reset-embedding-provider!
+  "Reset the embedding provider atom. Use when hot-reload causes protocol mismatch.
+
+   Hot-reload can cause 'No implementation of method' errors when:
+   1. Protocol is redefined but provider instance was created with old protocol
+   2. Namespace load order changes during development
+
+   Fix: Call this, then set-embedding-provider! with a fresh instance.
+
+   Example:
+     (reset-embedding-provider!)
+     (set-embedding-provider! (ollama/->provider))"
+  []
+  (reset! embedding-provider nil)
+  (log/info "Embedding provider reset (was:" (type @embedding-provider) ")"))
+
 ;;; ============================================================
 ;;; Collection-Aware Embedding API
 ;;; ============================================================
@@ -302,7 +318,7 @@
    Chroma metadata only supports scalar values (string, int, float, bool)."
   [{:keys [id content type tags created updated duration expires
            content-hash access-count helpful-count unhelpful-count project-id
-           kg-outgoing kg-incoming]
+           kg-outgoing kg-incoming abstraction-level]
     :as entry}]
   (require-embedding!)
   (let [coll (get-or-create-collection)
@@ -317,7 +333,9 @@
                   :project-id project-id
                   ;; Knowledge Graph edge references (stored as comma-separated IDs)
                   :kg-outgoing (join-tags kg-outgoing)
-                  :kg-incoming (join-tags kg-incoming)}
+                  :kg-incoming (join-tags kg-incoming)
+                  ;; Abstraction level (1-4: L1=Disc, L2=Semantic, L3=Pattern, L4=Intent)
+                  :abstraction-level abstraction-level}
         meta (merge metadata-defaults (into {} (remove (comp nil? val) provided)))]
     @(chroma/add coll [{:id entry-id :embedding embedding :document doc-text :metadata meta}]
                  :upsert? true)
@@ -539,3 +557,57 @@
       (catch Exception e
         (log/debug "Chroma availability check failed:" (.getMessage e))
         false))))
+
+(defn reinitialize-embeddings!
+  "Fix hot-reload protocol mismatch by reloading namespaces and reinitializing.
+
+   Call this when you see:
+     'No implementation of method: :embed-text of protocol: EmbeddingProvider'
+
+   This happens when the protocol is redefined but cached provider instances
+   were created with the old protocol definition.
+
+   Options:
+     :provider-type - :ollama (default), :openai, or :openrouter
+
+   Returns status map on success."
+  [& {:keys [provider-type] :or {provider-type :ollama}}]
+  (log/info "Reinitializing embeddings due to protocol mismatch...")
+
+  ;; 1. Remove provider namespaces (not service - it has alias to this ns)
+  (remove-ns 'hive-mcp.embeddings.ollama)
+  (remove-ns 'hive-mcp.embeddings.openai)
+  (remove-ns 'hive-mcp.embeddings.openrouter)
+  (remove-ns 'hive-mcp.embeddings.registry)
+
+  ;; 2. Reload implementors in correct order
+  (require 'hive-mcp.embeddings.ollama :reload)
+  (require 'hive-mcp.embeddings.openai :reload)
+  (require 'hive-mcp.embeddings.openrouter :reload)
+  (require 'hive-mcp.embeddings.registry :reload)
+
+  ;; 3. Clear all caches
+  (reset-collection-cache!)
+  (reset-embedding-provider!)
+
+  ;; 4. Reinitialize registry (service uses resolve, no reload needed)
+  (let [registry-init (resolve 'hive-mcp.embeddings.registry/init!)
+        registry-clear (resolve 'hive-mcp.embeddings.registry/clear-cache!)]
+    (registry-clear)
+    (registry-init))
+
+  ;; 5. Create fresh provider based on type
+  (let [provider (case provider-type
+                   :ollama ((resolve 'hive-mcp.embeddings.ollama/->provider))
+                   :openai ((resolve 'hive-mcp.embeddings.openai/->provider))
+                   :openrouter ((resolve 'hive-mcp.embeddings.openrouter/->provider)))]
+    (set-embedding-provider! provider)
+
+    ;; 6. Verify fix
+    (let [fixed? (satisfies? EmbeddingProvider provider)]
+      (if fixed?
+        (log/info "Embeddings reinitialized successfully")
+        (log/error "Reinitialization failed - protocol still mismatched"))
+      {:fixed? fixed?
+       :provider-type provider-type
+       :dimension (when fixed? (embedding-dimension provider))})))
