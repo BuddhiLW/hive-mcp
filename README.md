@@ -160,3 +160,9 @@ docker compose up -d              # Chroma vector DB
 ---
 
 [AGPL-3.0-or-later](LICENSE)
+
+Testing drone with deepseek model
+
+;; Drone test successful
+
+Testing gpt-oss-120b

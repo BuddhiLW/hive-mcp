@@ -3,7 +3,7 @@
  :description "Hivemind MCP server for Claude Code + Emacs integration"
 
  ;; Source directories for hot-reload watching (recursive)
- :watch-dirs ["src" "hive-hot/src" "test"]
+ :watch-dirs ["src" "hive-hot/src"]
 
  ;; Enable hot-reload for this Clojure project
  :hot-reload false}
