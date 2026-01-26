@@ -31,6 +31,7 @@
             [hive-mcp.tools.core :refer [mcp-json]]
             [hive-mcp.agent.drone.feedback :as fb]
             [hive-mcp.chroma :as chroma]
+            [clojure.string :as str]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -148,6 +149,70 @@
 ;; =============================================================================
 ;; Tool Definition
 ;; =============================================================================
+
+;; =============================================================================
+;; Aggregation Query (for /catchup and /wrap)
+;; =============================================================================
+
+(defn get-drone-feedback-summary
+  "Query aggregated feedback for coordinator review.
+
+   Returns feedback grouped by category with counts and recent examples.
+   Use during /catchup or /wrap to review drone-reported issues.
+
+   Arguments:
+     opts - Map with optional :directory for project scoping
+
+   Returns map with:
+     :total-count    - Total feedback entries
+     :by-category    - Counts grouped by category
+     :recent         - Last 5 feedback entries (preview)
+     :needs-attention - Categories with 3+ reports (potential patterns)"
+  [& [{:keys [directory]}]]
+  (with-chroma
+    (let [project-id (scope/get-current-project-id directory)
+          ;; Query all drone feedback
+          entries (chroma/query-entries :type "note"
+                                        :project-id project-id
+                                        :limit 100)
+          ;; Filter to drone-feedback tagged entries
+          feedback (filter #(some #{"drone-feedback"} (:tags %)) entries)]
+      (if (empty? feedback)
+        {:message "No drone feedback recorded"
+         :total-count 0
+         :by-category {}
+         :recent []
+         :needs-attention []}
+
+        (let [;; Extract category from tags
+              with-category (for [f feedback]
+                              (let [cat-tag (first (filter #(str/starts-with? % "feedback-")
+                                                           (:tags f)))
+                                    category (when cat-tag
+                                               (subs cat-tag (count "feedback-")))]
+                                (assoc f :category category)))
+
+              ;; Group by category
+              by-cat (group-by :category with-category)
+              category-counts (into {} (for [[cat entries] by-cat]
+                                         [cat (count entries)]))
+
+              ;; Recent feedback (last 5)
+              recent (->> feedback
+                          (sort-by :created-at >)
+                          (take 5)
+                          (mapv fmt/entry->json-alist))
+
+              ;; Categories with 3+ reports (potential patterns)
+              needs-attention (->> category-counts
+                                   (filter (fn [[_ cnt]] (>= cnt 3)))
+                                   (map first)
+                                   vec)]
+
+          {:total-count (count feedback)
+           :by-category category-counts
+           :recent recent
+           :needs-attention needs-attention})))))
 
 ;; =============================================================================
 ;; Pattern Analysis Handlers

@@ -34,10 +34,17 @@
 
    Returns a vector of non-nil IDs suitable for KG edge creation."
   [{:keys [progress-notes completed-tasks]}]
-  (->> (concat progress-notes completed-tasks)
-       (keep :id)  ; Extract :id, filter nils
-       (distinct)
-       (vec)))
+  (let [all-entries (concat progress-notes completed-tasks)
+        ids (->> all-entries
+                 (keep :id)  ; Extract :id, filter nils
+                 (distinct)
+                 (vec))]
+    (log/debug "extract-source-ids:"
+               {:progress-note-count (count progress-notes)
+                :completed-task-count (count completed-tasks)
+                :entries-with-ids (count ids)
+                :sample-entry (first all-entries)})
+    ids))
 
 (defn- create-derived-from-edges!
   "Create :derived-from KG edges linking a summary to its source entries.
@@ -52,18 +59,35 @@
 
    Returns: {:created-count n :edge-ids [ids]} or {:error msg} on failure"
   [summary-id source-ids project-id agent-id]
+  (log/debug "create-derived-from-edges! called with"
+             {:summary-id summary-id
+              :source-count (count source-ids)
+              :source-ids source-ids
+              :project-id project-id
+              :agent-id agent-id})
   (when (and summary-id (seq source-ids))
     (try
-      (let [edge-ids (for [source-id source-ids]
-                       (kg-edges/add-edge!
-                        {:from summary-id
-                         :to source-id
-                         :relation :derived-from
-                         :scope project-id
-                         :created-by agent-id}))]
+      ;; Use reduce instead of lazy for to ensure side effects execute
+      ;; and collect results in a single pass
+      (let [edge-ids (reduce
+                      (fn [acc source-id]
+                        (try
+                          (let [edge-id (kg-edges/add-edge!
+                                         {:from summary-id
+                                          :to source-id
+                                          :relation :derived-from
+                                          :scope project-id
+                                          :created-by agent-id})]
+                            (log/debug "Created edge" edge-id "from" summary-id "to" source-id)
+                            (conj acc edge-id))
+                          (catch Exception e
+                            (log/warn "Failed to create edge to" source-id ":" (.getMessage e))
+                            acc)))
+                      []
+                      source-ids)]
         (log/info "Created" (count edge-ids) ":derived-from KG edges for summary" summary-id)
         {:created-count (count edge-ids)
-         :edge-ids (vec edge-ids)})
+         :edge-ids edge-ids})
       (catch Exception e
         (log/warn "Failed to create :derived-from KG edges:" (.getMessage e))
         {:error (.getMessage e)

@@ -131,6 +131,18 @@
       (is (str/includes? content "Message:") "Should have message header")
       (is (str/includes? content "Context:") "Should have context header"))))
 
+(deftest handle-drone-feedback-duplicate-detection
+  (testing "Duplicate feedback detection prevents identical submissions"
+    (let [feedback {:category "tool-missing"
+                   :message "Cannot execute bash commands in drone context"}
+          result1 (df/handle-drone-feedback feedback)
+          parsed1 (parse-mcp-response result1)
+          result2 (df/handle-drone-feedback feedback)
+          parsed2 (parse-mcp-response result2)]
+      (is (some? (:id parsed1)) "First submission should succeed")
+      (is (:duplicate parsed2) "Second identical submission should be flagged as duplicate")
+      (is (= (:id parsed1) (:id parsed2)) "Duplicate should reference original entry ID"))))
+
 ;; =============================================================================
 ;; Tool Definition Tests
 ;; =============================================================================
@@ -149,3 +161,32 @@
         (is (contains? props "tool"))
         (is (contains? props "context"))
         (is (= ["category" "message"] (:required schema)))))))
+
+;; =============================================================================
+;; Summary Aggregation Tests
+;; =============================================================================
+
+(deftest get-drone-feedback-summary-empty
+  (testing "Summary returns empty structure when no feedback exists"
+    (let [result (df/get-drone-feedback-summary {})]
+      (is (map? result))
+      (is (= 0 (:total-count result)))
+      (is (= {} (:by-category result)))
+      (is (empty? (:recent result)))
+      (is (empty? (:needs-attention result))))))
+
+(deftest get-drone-feedback-summary-with-data
+  (testing "Summary correctly aggregates feedback by category"
+    ;; Add multiple feedback entries
+    (df/handle-drone-feedback {:category "tool-missing" :message "Test 1"})
+    (df/handle-drone-feedback {:category "tool-missing" :message "Test 2"})
+    (df/handle-drone-feedback {:category "tool-missing" :message "Test 3"})
+    (df/handle-drone-feedback {:category "workflow-friction" :message "Test 4"})
+
+    (let [result (df/get-drone-feedback-summary {})]
+      (is (>= (:total-count result) 4) "Should have at least 4 entries")
+      (is (contains? (:by-category result) "tool-missing"))
+      (is (>= (get-in result [:by-category "tool-missing"]) 3))
+      ;; tool-missing should be flagged as needs-attention (3+ reports)
+      (is (some #(= "tool-missing" %) (:needs-attention result))
+          "tool-missing should be in needs-attention with 3+ reports"))))
