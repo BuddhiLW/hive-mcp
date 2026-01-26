@@ -19,14 +19,15 @@
 (def slave-statuses
   "Valid slave status values.
 
-   :idle       - Ready for work
-   :spawning   - Being created
-   :starting   - Process starting
-   :working    - Executing a task
-   :blocked    - Waiting on external resource
-   :error      - In error state
-   :terminated - Killed/stopped"
-  #{:idle :spawning :starting :working :blocked :error :terminated})
+   :idle         - Ready for work
+   :spawning     - Being created
+   :starting     - Process starting
+   :initializing - Spawned, awaiting preset injection completion
+   :working      - Executing a task
+   :blocked      - Waiting on external resource
+   :error        - In error state
+   :terminated   - Killed/stopped"
+  #{:idle :spawning :starting :initializing :working :blocked :error :terminated})
 
 (def task-statuses
   "Valid task status values.

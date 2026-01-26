@@ -13,15 +13,15 @@
             [hive-mcp.swarm.datascript.claims :as claims]
             [hive-mcp.swarm.datascript.lings :as lings]
             [hive-mcp.swarm.datascript.connection :as conn]
-            [hive-mcp.swarm.datascript.queries :as queries]
-            [datascript.core :as d]))
+            [hive-mcp.swarm.datascript.queries :as queries]))
 
 ;; =============================================================================
 ;; Test Fixtures
 ;; =============================================================================
 
-(defn reset-db-fixture [f]
+(defn reset-db-fixture
   "Reset DataScript connection before each test."
+  [f]
   (conn/reset-conn!)
   (f))
 
@@ -139,25 +139,25 @@
     ;; Track if event was dispatched (we'll use an atom as spy)
     (let [events-captured (atom [])
           handler-registered-var (resolve 'hive-mcp.events.core/handler-registered?)
-          dispatch-var (resolve 'hive-mcp.events.core/dispatch)]
+          dispatch-var (resolve 'hive-mcp.events.core/dispatch)
+          orig-handler-registered @handler-registered-var
+          orig-dispatch @dispatch-var]
       ;; Use alter-var-root to temporarily replace the functions
-      (let [orig-handler-registered @handler-registered-var
-            orig-dispatch @dispatch-var]
-        (try
-          (alter-var-root handler-registered-var (constantly (constantly true)))
-          (alter-var-root dispatch-var (constantly (fn [event]
-                                                     (swap! events-captured conj event))))
-          ;; Release the claim
-          (lings/release-claim! "/src/claimed.clj")
+      (try
+        (alter-var-root handler-registered-var (constantly (constantly true)))
+        (alter-var-root dispatch-var (constantly (fn [event]
+                                                   (swap! events-captured conj event))))
+        ;; Release the claim
+        (lings/release-claim! "/src/claimed.clj")
 
-          ;; Verify event was dispatched
-          (is (= 1 (count @events-captured)))
-          (let [[event-id data] (first @events-captured)]
-            (is (= :claim/file-released event-id))
-            (is (= "/src/claimed.clj" (:file data))))
-          (finally
-            (alter-var-root handler-registered-var (constantly orig-handler-registered))
-            (alter-var-root dispatch-var (constantly orig-dispatch)))))))
+        ;; Verify event was dispatched
+        (is (= 1 (count @events-captured)))
+        (let [[event-id data] (first @events-captured)]
+          (is (= :claim/file-released event-id))
+          (is (= "/src/claimed.clj" (:file data))))
+        (finally
+          (alter-var-root handler-registered-var (constantly orig-handler-registered))
+          (alter-var-root dispatch-var (constantly orig-dispatch))))))
 
   (testing "release-claim! does not dispatch when no handler registered"
     ;; Setup
@@ -166,21 +166,21 @@
 
     (let [events-captured (atom [])
           handler-registered-var (resolve 'hive-mcp.events.core/handler-registered?)
-          dispatch-var (resolve 'hive-mcp.events.core/dispatch)]
-      (let [orig-handler-registered @handler-registered-var
-            orig-dispatch @dispatch-var]
-        (try
-          (alter-var-root handler-registered-var (constantly (constantly false)))
-          (alter-var-root dispatch-var (constantly (fn [event]
-                                                     (swap! events-captured conj event))))
-          ;; Release the claim
-          (lings/release-claim! "/src/claimed2.clj")
+          dispatch-var (resolve 'hive-mcp.events.core/dispatch)
+          orig-handler-registered @handler-registered-var
+          orig-dispatch @dispatch-var]
+      (try
+        (alter-var-root handler-registered-var (constantly (constantly false)))
+        (alter-var-root dispatch-var (constantly (fn [event]
+                                                   (swap! events-captured conj event))))
+        ;; Release the claim
+        (lings/release-claim! "/src/claimed2.clj")
 
-          ;; Verify event was NOT dispatched
-          (is (= 0 (count @events-captured)))
-          (finally
-            (alter-var-root handler-registered-var (constantly orig-handler-registered))
-            (alter-var-root dispatch-var (constantly orig-dispatch))))))))
+        ;; Verify event was NOT dispatched
+        (is (= 0 (count @events-captured)))
+        (finally
+          (alter-var-root handler-registered-var (constantly orig-handler-registered))
+          (alter-var-root dispatch-var (constantly orig-dispatch)))))))
 
 ;; =============================================================================
 ;; Edge Cases

@@ -245,3 +245,57 @@
       (is (= 2 (:slaves stats)))
       (is (= 1 (:tasks stats)))
       (is (= 1 (:claims stats))))))
+
+;; =============================================================================
+;; Dispatch Race Condition Tests (TDD)
+;; =============================================================================
+;; These tests verify that dispatch waits for preset completion.
+;; A slave is only ready for dispatch when status is :idle (preset loaded).
+
+(deftest slave-ready-for-dispatch-test
+  (testing "Slave with :idle status is ready for dispatch"
+    (logic/add-slave! "slave-1" :idle)
+    (is (logic/slave-ready-for-dispatch? "slave-1"))))
+
+(deftest slave-spawning-not-ready-test
+  (testing "Slave with :spawning status is NOT ready for dispatch"
+    (logic/add-slave! "slave-1" :spawning)
+    (is (not (logic/slave-ready-for-dispatch? "slave-1")))))
+
+(deftest slave-starting-not-ready-test
+  (testing "Slave with :starting status is NOT ready for dispatch"
+    (logic/add-slave! "slave-1" :starting)
+    (is (not (logic/slave-ready-for-dispatch? "slave-1")))))
+
+(deftest slave-working-is-busy-not-ready-test
+  (testing "Slave with :working status is busy, not ready for new dispatch"
+    (logic/add-slave! "slave-1" :working)
+    (is (not (logic/slave-ready-for-dispatch? "slave-1")))))
+
+(deftest nonexistent-slave-not-ready-test
+  (testing "Non-existent slave is not ready for dispatch"
+    (is (not (logic/slave-ready-for-dispatch? "ghost-slave")))))
+
+(deftest check-dispatch-readiness-test
+  (testing "check-dispatch-readiness returns status for pre-flight check"
+    (logic/add-slave! "slave-1" :idle)
+    (logic/add-slave! "slave-2" :spawning)
+
+    (let [result-ready (logic/check-dispatch-readiness "slave-1")
+          result-spawning (logic/check-dispatch-readiness "slave-2")
+          result-missing (logic/check-dispatch-readiness "missing")]
+
+      ;; Ready slave
+      (is (:ready? result-ready))
+      (is (= :idle (:status result-ready)))
+      (is (nil? (:reason result-ready)))
+
+      ;; Spawning slave
+      (is (not (:ready? result-spawning)))
+      (is (= :spawning (:status result-spawning)))
+      (is (= :preset-loading (:reason result-spawning)))
+
+      ;; Missing slave
+      (is (not (:ready? result-missing)))
+      (is (nil? (:status result-missing)))
+      (is (= :slave-not-found (:reason result-missing))))))

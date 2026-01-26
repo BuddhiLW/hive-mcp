@@ -113,10 +113,20 @@
   "Trigger :task-complete hooks via event dispatch.
 
    ARCHITECTURAL GUARANTEE: Ensures a shout is emitted on task completion,
-   regardless of whether the ling explicitly called hivemind_shout."
+   regardless of whether the ling explicitly called hivemind_shout.
+
+   Layer 4 emits a DIRECT synthetic shout (not via events) to guarantee
+   visibility even if events system is not initialized."
   [task-id slave-id]
+  ;; LAYER 4: Direct synthetic shout - architectural guarantee
+  ;; This call happens regardless of events system state
+  (hivemind/shout! slave-id :completed
+                   {:task-id task-id
+                    :source "layer4-synthetic"
+                    :message (str "Task " task-id " completed (synthetic)")})
+  (log/debug "Layer4: Emitted synthetic shout for" slave-id)
+  ;; Also dispatch event for any registered handlers (optional enhancement)
   (dispatch-event! [:task/shout-complete {:task-id task-id :agent-id slave-id}])
-  (log/debug "Layer4: Dispatched :task/shout-complete for" slave-id)
   (when-let [registry (get-hooks-registry)]
     (let [merged-ctx {:type :task-complete :task-id task-id :agent-id slave-id}
           results (hooks/trigger-hooks registry :task-complete merged-ctx)]
@@ -129,7 +139,12 @@
 
 (defn- handle-slave-spawned
   "Handle slave spawn event. Event: {:slave-id :name :parent-id :depth :cwd}
-   Derives project-id from cwd for project-scoped swarm operations."
+   Derives project-id from cwd for project-scoped swarm operations.
+   
+   NOTE: Sets initial status to :initializing, NOT :idle.
+   The slave transitions to :idle only after preset injection completes
+   (signaled by slave-ready event). This prevents dispatch race conditions
+   where tasks are queued before the slave is fully initialized."
   [event]
   (let [slave-id (get-field event :slave-id)
         name (get-field event :name slave-id)
@@ -139,9 +154,20 @@
         project-id (when cwd (scope/get-current-project-id cwd))
         reg (get-swarm-registry)]
     (when slave-id
-      (proto/add-slave! reg slave-id {:status :idle :name name :depth depth
+      (proto/add-slave! reg slave-id {:status :initializing :name name :depth depth
                                       :parent parent-id :cwd cwd :project-id project-id})
-      (log/debug "Sync: registered slave" slave-id "depth:" depth "project-id:" project-id))))
+      (log/debug "Sync: registered slave" slave-id "depth:" depth "status: :initializing"))))
+
+(defn- handle-slave-ready
+  "Handle slave-ready event. Event: {:slave-id}
+   Transitions slave from :initializing to :idle after preset injection completes.
+   This signals the slave is ready to receive dispatched tasks."
+  [event]
+  (let [slave-id (get-field event :slave-id)
+        reg (get-swarm-registry)]
+    (when slave-id
+      (proto/update-slave! reg slave-id {:slave/status :idle})
+      (log/info "Sync: slave" slave-id "ready (preset injection complete)"))))
 
 (defn- handle-slave-status
   "Handle slave status change event. Event: {:slave-id :status}"
@@ -268,6 +294,7 @@
 
 (def ^:private event-handlers
   {:slave-spawned handle-slave-spawned
+   :slave-ready handle-slave-ready
    :slave-status handle-slave-status
    :slave-killed handle-slave-killed
    :task-dispatched handle-task-dispatched
