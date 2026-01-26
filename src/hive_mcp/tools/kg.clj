@@ -10,12 +10,14 @@
    - kg_subgraph: Extract visible subgraph for a scope
    - kg_contradictions: Find conflicting knowledge
    - kg_node_context: Get full context for a node
+   - kg_reground: Re-verify entry against source, detect drift
 
    SOLID-S: Single Responsibility - MCP tool handlers only.
    CLARITY-I: Inputs validated at tool boundary.
    CLARITY-Y: Graceful error handling."
   (:require [hive-mcp.tools.core :refer [mcp-json mcp-error]]
             [hive-mcp.knowledge-graph.edges :as edges]
+            [hive-mcp.knowledge-graph.grounding :as grounding]
             [hive-mcp.knowledge-graph.queries :as queries]
             [hive-mcp.knowledge-graph.scope :as scope]
             [hive-mcp.knowledge-graph.schema :as schema]
@@ -343,6 +345,27 @@
       (log/error e "kg_stats failed")
       (mcp-error (str "Stats retrieval failed: " (.getMessage e))))))
 
+(defn handle-kg-reground
+  "Re-ground a knowledge entry by verifying against its source file.
+
+   Arguments:
+     entry_id - Entry ID to re-ground (required)
+     force    - Force re-ground even if recently grounded (optional)"
+  [{:keys [entry_id force]}]
+  (log/info "kg_reground" {:entry-id entry_id :force force})
+  (try
+    (or (validate-node-id entry_id "entry_id")
+        (let [result (grounding/reground-entry! entry_id)]
+          (mcp-json {:success true
+                     :status (name (:status result))
+                     :drift? (:drift? result)
+                     :entry-id entry_id
+                     :source-file (:source-file result)
+                     :updated? (:updated? result)})))
+    (catch Exception e
+      (log/error e "kg_reground failed")
+      (mcp-error (str "Re-grounding failed: " (.getMessage e))))))
+
 ;;; =============================================================================
 ;;; Tool Definitions
 ;;; =============================================================================
@@ -458,4 +481,14 @@
     :inputSchema {:type "object"
                   :properties {}
                   :required []}
-    :handler handle-kg-stats}])
+    :handler handle-kg-stats}
+
+   {:name "kg_reground"
+    :description "Re-verify a knowledge entry against its source file and update grounding timestamp. Detects drift when source content has changed since last grounding. Returns status: regrounded (success), needs-review (drift detected), source-missing (file not found)."
+    :inputSchema {:type "object"
+                  :properties {"entry_id" {:type "string"
+                                           :description "Entry ID to re-ground"}
+                               "force" {:type "boolean"
+                                        :description "Force re-ground even if recently grounded (optional)"}}
+                  :required ["entry_id"]}
+    :handler handle-kg-reground}])
