@@ -98,7 +98,70 @@
   (when-let [kw (abstraction-level-keyword level)]
     (get abstraction-levels kw)))
 
+;; =============================================================================
+;; Disc Entity Schema (File State Tracking)
+;; =============================================================================
+;;
+;; Disc entities track the actual state of files on disk, enabling grounding
+;; verification without re-reading files. When a memory entry is grounded,
+;; it references a disc entity as proof of verification.
+
+(def disc-schema
+  "DataScript schema for disc (file) state tracking.
+
+   Disc entities represent the L1 abstraction level - actual files on disk.
+   Used as grounding targets for higher-level knowledge entries."
+  {:disc/path         {:db/unique :db.unique/identity
+                       :db/doc "File path (unique identity for the disc entity)"}
+   :disc/content-hash {:db/doc "SHA256 hash of file content"}
+   :disc/analyzed-at  {:db/doc "Timestamp of last kondo/analysis (inst)"}
+   :disc/git-commit   {:db/doc "Git commit hash when analyzed"}
+   :disc/project-id   {:db/doc "Project scope (for multi-project support)"}})
+
+;; =============================================================================
+;; Abstraction Level Helpers
+;; =============================================================================
+
+(def type->abstraction-level
+  "Maps memory entry types to their default abstraction levels.
+
+   L1 (Disc):     Not stored as memory - use disc entities
+   L2 (Semantic): What things DO - snippets, notes, function docs
+   L3 (Pattern):  Recurring structures - conventions, idioms
+   L4 (Intent):   Why - ADRs, decisions, axioms"
+  {"snippet"    2  ; Code snippets describe what code does
+   "note"       2  ; Notes describe semantic understanding
+   "convention" 3  ; Conventions are patterns
+   "decision"   4  ; Decisions are intent-level
+   "axiom"      4  ; Axioms are foundational intent
+   "pattern"    3  ; Explicit patterns
+   "doc"        2  ; Documentation is semantic
+   "todo"       2  ; TODOs are semantic notes
+   "question"   2  ; Questions are semantic
+   "answer"     2  ; Answers are semantic
+   "warning"    2  ; Warnings are semantic
+   "error"      2  ; Errors are semantic
+   "lesson"     3  ; Lessons are pattern-level
+   "principle"  4  ; Principles are intent-level
+   "rule"       3  ; Rules are pattern-level
+   "guideline"  3  ; Guidelines are pattern-level
+   "workflow"   3  ; Workflows are patterns
+   "recipe"     3  ; Recipes are patterns
+   })
+
+(defn derive-abstraction-level
+  "Derive the default abstraction level for a memory entry type.
+   Returns integer 2-4, defaulting to 2 (Semantic) for unknown types.
+
+   Arguments:
+     entry-type - String type of the memory entry (e.g., \"decision\", \"snippet\")
+
+   Returns:
+     Integer abstraction level (2-4)"
+  [entry-type]
+  (get type->abstraction-level entry-type 2))
+
 (defn full-schema
-  "Returns the combined KG schema (edges + knowledge abstraction)."
+  "Returns the combined KG schema (edges + knowledge abstraction + disc)."
   []
-  (merge kg-schema knowledge-schema))
+  (merge kg-schema knowledge-schema disc-schema))
