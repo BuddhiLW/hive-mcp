@@ -17,6 +17,7 @@
             [hive-mcp.swarm.datascript :as ds]
             [hive-mcp.tools.memory.scope :as scope]
             [hive-mcp.knowledge-graph.queries :as kg-queries]
+            [hive-mcp.knowledge-graph.edges :as kg-edges]
             [clojure.data.json :as json]
             [clojure.string :as str]
             [clojure.set :as set]
@@ -227,6 +228,81 @@
 ;; Knowledge Graph Context Enrichment
 ;; =============================================================================
 
+(defn- find-related-via-session-summaries
+  "Find entries related to session summaries via :derived-from traversal.
+   Session summaries often derive from decisions/conventions made during session.
+
+   Returns vector of related entry IDs."
+  [session-ids _project-id]
+  (when (seq session-ids)
+    (try
+      (->> session-ids
+           (mapcat (fn [session-id]
+                     ;; Traverse incoming :derived-from edges to find source entries
+                     ;; Note: Don't pass scope - catchup should see all related entries
+                     (let [results (kg-queries/traverse
+                                    session-id
+                                    {:direction :incoming
+                                     :relations #{:derived-from}
+                                     :max-depth 2})]
+                       (map :node-id results))))
+           (distinct)
+           (vec))
+      (catch Exception e
+        (log/debug "Session traversal failed:" (.getMessage e))
+        []))))
+
+(defn- find-related-decisions-via-kg
+  "Find decisions connected via :implements, :refines, or :depends-on relationships.
+   These are decisions that have active dependencies in the knowledge graph.
+
+   Returns vector of related decision IDs."
+  [decision-ids _project-id]
+  (when (seq decision-ids)
+    (try
+      (->> decision-ids
+           (mapcat (fn [decision-id]
+                     ;; Look for entries that implement or refine this decision
+                     ;; Note: Don't pass scope - catchup should see all related entries
+                     (let [results (kg-queries/traverse
+                                    decision-id
+                                    {:direction :both
+                                     :relations #{:implements :refines :depends-on}
+                                     :max-depth 2})]
+                       (map :node-id results))))
+           (distinct)
+           (remove (set decision-ids))  ; Exclude original decisions
+           (vec))
+      (catch Exception e
+        (log/debug "Decision traversal failed:" (.getMessage e))
+        []))))
+
+(defn- count-ungrounded-entries
+  "Count entries that may need verification (re-grounding).
+   Queries Chroma for entries without recent grounding timestamp.
+
+   Returns count of potentially stale entries."
+  [project-id]
+  (try
+    ;; Query decisions and conventions that might need verification
+    (let [decisions (chroma/query-entries :type "decision" :project-id project-id :limit 50)
+          conventions (chroma/query-entries :type "convention" :project-id project-id :limit 50)
+          all-entries (concat decisions conventions)
+          ;; Count entries without grounded-at or with old grounding (> 7 days)
+          now (java.time.Instant/now)
+          week-ago (.minusDays now 7)
+          needs-grounding? (fn [entry]
+                             (let [grounded-at (get-in entry [:metadata :grounded-at])]
+                               (or (nil? grounded-at)
+                                   (try
+                                     (let [grounded-inst (java.time.Instant/parse grounded-at)]
+                                       (.isBefore grounded-inst week-ago))
+                                     (catch Exception _ true)))))]
+      (count (filter needs-grounding? all-entries)))
+    (catch Exception e
+      (log/debug "Ungrounded count failed:" (.getMessage e))
+      0)))
+
 (defn- extract-kg-relations
   "Extract meaningful KG relationships from node context.
 
@@ -303,14 +379,34 @@
 (defn- gather-kg-insights
   "Gather high-level KG insights for catchup summary.
 
-   Returns:
+   Returns comprehensive KG context including:
+   - :edge-count - total edges in KG
+   - :by-relation - breakdown by relation type
    - :contradictions - entries with conflicts that need attention
    - :superseded - entries that have been replaced (may need cleanup)
-   - :decision-chains - decisions with dependency relationships"
-  [decisions-meta conventions-meta]
+   - :dependency-chains - count of entries with dependency relationships
+   - :related-decisions - decisions connected via KG traversal
+   - :ungrounded-count - entries needing verification"
+  [decisions-meta conventions-meta sessions-meta project-id]
   (try
-    (let [all-entries (concat decisions-meta conventions-meta)
-          ;; Find entries with concerning relationships
+    (let [;; Always query KG stats first - gives overview even without enriched entries
+          kg-stats (kg-edges/edge-stats)
+          edge-count (:total-edges kg-stats)
+          by-relation (:by-relation kg-stats)
+
+          ;; Extract IDs for traversal
+          session-ids (mapv :id sessions-meta)
+          decision-ids (mapv :id decisions-meta)
+
+          ;; Find related entries via KG traversal
+          related-from-sessions (find-related-via-session-summaries session-ids project-id)
+          related-decisions (find-related-decisions-via-kg decision-ids project-id)
+
+          ;; Count ungrounded entries
+          ungrounded-count (count-ungrounded-entries project-id)
+
+          ;; Find entries with concerning relationships from enriched data
+          all-entries (concat decisions-meta conventions-meta)
           contradictions (->> all-entries
                               (filter #(seq (get-in % [:kg :contradicts])))
                               (mapv #(select-keys % [:id :preview :kg])))
@@ -322,13 +418,19 @@
                          (filter #(or (seq (get-in % [:kg :depends-on]))
                                       (seq (get-in % [:kg :depended-by]))))
                          (count))]
-      (cond-> {}
+
+      ;; Build insights map - always include edge-count for visibility
+      (cond-> {:edge-count edge-count}
+        (seq by-relation) (assoc :by-relation by-relation)
         (seq contradictions) (assoc :contradictions contradictions)
         (seq superseded) (assoc :superseded superseded)
-        (pos? with-deps) (assoc :dependency-chains with-deps)))
+        (pos? with-deps) (assoc :dependency-chains with-deps)
+        (seq related-from-sessions) (assoc :session-derived related-from-sessions)
+        (seq related-decisions) (assoc :related-decisions related-decisions)
+        (pos? ungrounded-count) (assoc :ungrounded-count ungrounded-count)))
     (catch Exception e
       (log/warn "KG insights gathering failed:" (.getMessage e))
-      {})))
+      {:edge-count 0 :error (.getMessage e)})))
 
 ;; =============================================================================
 ;; Response Building
@@ -464,7 +566,9 @@
               conventions-enriched (:entries (enrich-entries-with-kg conventions-base))
 
               ;; Gather KG insights for high-level visibility
-              kg-insights (gather-kg-insights decisions-enriched conventions-enriched)
+              ;; Pass sessions-meta and project-id for traversal queries
+              kg-insights (gather-kg-insights decisions-enriched conventions-enriched
+                                              sessions-meta project-id)
 
               snippets-meta (mapv #(entry->catchup-meta % 60) snippets)
               expiring-meta (mapv #(entry->catchup-meta % 80) expiring)
