@@ -6,8 +6,7 @@
    - drone-refactor: For refactoring tasks
    - drone-bugfix: For bug fixing tasks
    - drone-docs: For documentation tasks
-   - drone-worker: Default for general tasks"
-  (:require [clojure.string :as str]))
+   - drone-worker: Default for general tasks")
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later

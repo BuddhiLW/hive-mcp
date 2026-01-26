@@ -12,7 +12,6 @@
 
    Extracted for 200 LOC compliance and single responsibility."
   (:require [hive-mcp.tools.memory.crud :as mem-crud]
-            [hive-mcp.chroma :as chroma]
             [clojure.string :as str]
             [clojure.data.json :as json]
             [taoensso.timbre :as log]))
