@@ -93,7 +93,7 @@
 (defn- normalize-path
   "Normalize a file path for comparison.
    Uses canonical path resolution to prevent path traversal attacks.
-   
+
    CLARITY-I: Guards against ../../../ path escaping."
   [path]
   (when path
@@ -107,43 +107,24 @@
             (str/replace #"/+" "/")
             (str/replace #"/$" ""))))))
 
-(defn create-sandbox
-  "Create a sandbox specification for drone execution.
-
-   Arguments:
-     files - List of file paths the drone is allowed to operate on
-
-   Returns sandbox spec:
-     :allowed-files    - Set of normalized file paths
-     :allowed-dirs     - Set of parent directories for read operations
-     :blocked-patterns - Patterns for sensitive files
-     :blocked-tools    - Tools the drone cannot use"
-  [files]
-  (let [normalized (set (map normalize-path files))
-        dirs (set (map parent-dir files))]
-    {:allowed-files normalized
-     :allowed-dirs dirs
-     :blocked-patterns blocked-patterns
-     :blocked-tools blocked-tools}))
-
 ;;; ============================================================
-;;; Path Validation
+;;; Path Containment Validation (MUST be before create-sandbox)
 ;;; ============================================================
 
 (defn validate-path-containment
   "Validate that a path resolves within an allowed root directory.
-   
+
    CLARITY-I: Central path security validation. Use this when resolving
    paths from untrusted input (drone file lists, user-provided paths).
-   
+
    Arguments:
      path         - Path to validate (absolute or relative)
      root-dir     - Directory the path must resolve within
-   
+
    Returns:
      {:valid? true :canonical-path \"...\"} or
      {:valid? false :error \"...\"}
-   
+
    Example:
      (validate-path-containment \"../../../etc/passwd\" \"/project\")
      => {:valid? false :error \"Path escapes allowed directory\"}"
@@ -163,6 +144,58 @@
       (catch Exception e
         {:valid? false
          :error (str "Path validation failed: " (.getMessage e))}))))
+
+;;; ============================================================
+;;; Sandbox Creation
+;;; ============================================================
+
+(defn create-sandbox
+  "Create a sandbox specification for drone execution.
+
+   Arguments:
+     files       - List of file paths the drone is allowed to operate on
+     project-root - Project root directory for path containment validation (optional)
+
+   Returns sandbox spec:
+     :allowed-files    - Set of validated canonical file paths
+     :allowed-dirs     - Set of parent directories for read operations
+     :blocked-patterns - Patterns for sensitive files
+     :blocked-tools    - Tools the drone cannot use
+     :rejected-files   - Files that failed containment validation (if any)
+
+   CLARITY-I: All file paths are validated to be within project-root.
+   Paths that escape the project directory are rejected and logged."
+  ([files] (create-sandbox files nil))
+  ([files project-root]
+   (let [effective-root (or project-root (System/getProperty "user.dir"))
+         ;; Validate each file path for containment
+         validations (for [f files]
+                       (let [result (validate-path-containment f effective-root)]
+                         (assoc result :original-path f)))
+         valid-paths (->> validations
+                          (filter :valid?)
+                          (map :canonical-path))
+         rejected (->> validations
+                       (remove :valid?)
+                       (map (fn [v] {:path (:original-path v)
+                                     :error (:error v)})))]
+     ;; Log rejected paths for security audit
+     (when (seq rejected)
+       (log/warn "Sandbox rejected paths escaping project directory"
+                 {:project-root effective-root
+                  :rejected-count (count rejected)
+                  :rejected rejected}))
+     (let [normalized (set (map normalize-path valid-paths))
+           dirs (set (map parent-dir valid-paths))]
+       {:allowed-files normalized
+        :allowed-dirs dirs
+        :blocked-patterns blocked-patterns
+        :blocked-tools blocked-tools
+        :rejected-files (vec rejected)}))))
+
+;;; ============================================================
+;;; Sandbox Validation Helpers
+;;; ============================================================
 
 (defn- matches-blocked-pattern?
   "Check if a path matches any blocked pattern."
