@@ -14,24 +14,27 @@
    - :contradicts  - Conflicts with
    - :depends-on   - Requires for correctness
    - :derived-from - Synthesized from sources
-   - :applies-to   - Scope applicability"
+   - :applies-to   - Scope applicability
+   - :co-accessed  - Frequently recalled together (batch recall pattern)"
   #{:implements :supersedes :refines :contradicts
-    :depends-on :derived-from :applies-to})
+    :depends-on :derived-from :applies-to :co-accessed})
 
 (def kg-schema
   "DataScript schema for Knowledge Graph edges.
 
    Bounded context pattern: separate from Chroma memory storage.
    Edges connect memory entry IDs without duplicating content."
-  {:kg-edge/id         {:db/unique :db.unique/identity
-                        :db/doc "Unique edge identifier (UUID string)"}
-   :kg-edge/from       {:db/doc "Source node ID (memory entry ID)"}
-   :kg-edge/to         {:db/doc "Target node ID (memory entry ID)"}
-   :kg-edge/relation   {:db/doc "Relation type keyword from relation-types"}
-   :kg-edge/scope      {:db/doc "Scope where edge was discovered (e.g., project-id)"}
-   :kg-edge/confidence {:db/doc "Confidence score 0.0-1.0"}
-   :kg-edge/created-by {:db/doc "Agent ID that created this edge"}
-   :kg-edge/created-at {:db/doc "Creation timestamp (inst)"}})
+  {:kg-edge/id            {:db/unique :db.unique/identity
+                           :db/doc "Unique edge identifier (UUID string)"}
+   :kg-edge/from          {:db/doc "Source node ID (memory entry ID)"}
+   :kg-edge/to            {:db/doc "Target node ID (memory entry ID)"}
+   :kg-edge/relation      {:db/doc "Relation type keyword from relation-types"}
+   :kg-edge/scope         {:db/doc "Scope where edge was discovered (e.g., project-id)"}
+   :kg-edge/confidence    {:db/doc "Confidence score 0.0-1.0"}
+   :kg-edge/created-by    {:db/doc "Agent ID that created this edge"}
+   :kg-edge/created-at    {:db/doc "Creation timestamp (inst)"}
+   :kg-edge/last-verified {:db/doc "Timestamp of last verification that this edge is still valid (inst)"}
+   :kg-edge/source-type   {:db/doc "How this edge was established: :manual, :automated, :inferred, :co-access"}})
 
 ;; =============================================================================
 ;; Abstraction Level Tracking (per Korzybski's Structural Differential)
@@ -65,7 +68,17 @@
    :knowledge/grounded-from     {:db/doc "Ref to disc entity (file/commit) verified against"}
    :knowledge/gaps              {:db/cardinality :db.cardinality/many
                                  :db/doc "Set of known abstraction gaps (keywords)"}
-   :knowledge/source-hash       {:db/doc "Content hash of source when abstracted (for drift detection)"}})
+   :knowledge/source-hash       {:db/doc "Content hash of source when abstracted (for drift detection)"}
+   :knowledge/source-type       {:db/doc "How this knowledge was created: :manual, :automated, :inferred, :co-access"}})
+
+(def source-types
+  "Valid source types for edge and knowledge provenance tracking.
+
+   - :manual     - Explicitly created by a human or agent
+   - :automated  - Created by automated analysis (kondo, git, etc.)
+   - :inferred   - Derived from pattern detection or heuristics
+   - :co-access  - Created from co-access pattern (batch recall)"
+  #{:manual :automated :inferred :co-access})
 
 (defn valid-relation?
   "Check if a relation type is valid."
@@ -77,6 +90,11 @@
   [confidence]
   (and (number? confidence)
        (<= 0.0 confidence 1.0)))
+
+(defn valid-source-type?
+  "Check if source type is valid."
+  [source-type]
+  (contains? source-types source-type))
 
 (defn valid-abstraction-level?
   "Check if abstraction level is valid (1-4).
@@ -116,7 +134,9 @@
    :disc/content-hash {:db/doc "SHA256 hash of file content"}
    :disc/analyzed-at  {:db/doc "Timestamp of last kondo/analysis (inst)"}
    :disc/git-commit   {:db/doc "Git commit hash when analyzed"}
-   :disc/project-id   {:db/doc "Project scope (for multi-project support)"}})
+   :disc/project-id   {:db/doc "Project scope (for multi-project support)"}
+   :disc/last-read-at {:db/doc "Timestamp of last file read by any agent (inst)"}
+   :disc/read-count   {:db/doc "Number of times this file has been read by agents"}})
 
 ;; =============================================================================
 ;; Abstraction Level Helpers

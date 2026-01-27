@@ -23,6 +23,10 @@
         ;; Datascript for in-memory graph storage (GraphStore backend)
         datascript/datascript {:mvn/version "1.7.3"}
 
+        ;; Datalevin for durable graph storage (GraphStore backend, optional)
+        ;; LMDB-backed Datalog — requires Java 21+
+        datalevin/datalevin {:mvn/version "0.10.2"}
+
         ;; Logging - SLF4J with Logback backend
         ;; clojure.tools.logging provides the Clojure facade
         ;; logback-classic is the SLF4J implementation
