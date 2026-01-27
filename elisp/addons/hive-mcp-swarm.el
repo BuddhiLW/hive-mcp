@@ -723,15 +723,27 @@ Returns list of alists suitable for JSON serialization."
 
 ;;;; API for MCP Tools:
 
-(defun hive-mcp-swarm-api-spawn (name presets &optional cwd terminal kanban-task-id)
+(defun hive-mcp-swarm-api-spawn (name presets &optional cwd terminal kanban-task-id context-file)
   "API: Spawn slave NAME with PRESETS in CWD using TERMINAL backend.
 KANBAN-TASK-ID optionally links this ling to a kanban task for lifecycle tracking.
+CONTEXT-FILE is an optional path to a temp file containing pre-generated
+catchup context to inject into the system prompt (Architecture > LLM behavior).
+The file is read and deleted after use.
 Returns slave-id on success, or error plist on failure."
-  (hive-mcp-with-fallback
-      (hive-mcp-swarm-spawn name :presets presets :cwd cwd
-                            :terminal (when terminal (intern terminal))
-                            :kanban-task-id kanban-task-id)
-    `(:error "spawn-failed" :name ,name :reason "unknown")))
+  (let ((injected-context
+         (when (and context-file (file-exists-p context-file))
+           (prog1
+               (with-temp-buffer
+                 (insert-file-contents context-file)
+                 (buffer-string))
+             ;; Clean up temp file after reading
+             (ignore-errors (delete-file context-file))))))
+    (hive-mcp-with-fallback
+        (hive-mcp-swarm-spawn name :presets presets :cwd cwd
+                              :terminal (when terminal (intern terminal))
+                              :kanban-task-id kanban-task-id
+                              :injected-context injected-context)
+      `(:error "spawn-failed" :name ,name :reason "unknown"))))
 
 (defun hive-mcp-swarm-api-dispatch (slave-id prompt &optional timeout-ms)
   "API: Dispatch PROMPT to SLAVE-ID with TIMEOUT-MS.

@@ -312,19 +312,29 @@ overrides via memory, and file-based fallback."
       (hive-mcp-swarm-presets--get-memory-content name)
       (hive-mcp-swarm-presets--get-file-content name)))
 
-(defun hive-mcp-swarm-presets-build-system-prompt (presets)
+(defun hive-mcp-swarm-presets-build-system-prompt (presets &optional injected-context)
   "Build combined system prompt from list of PRESETS.
 Returns concatenated content with separator and auto-shout footer,
 or nil if no presets found.  The footer ensures lings automatically
-call hivemind_shout when they complete tasks."
+call hivemind_shout when they complete tasks.
+
+When INJECTED-CONTEXT is non-nil, prepend it as a
+\"## Project Context (Auto-Injected)\" section before the preset content.
+This implements Architecture > LLM behavior: context injected at spawn
+rather than relying on lings to /catchup themselves."
   (let ((contents '()))
     (dolist (preset presets)
       (when-let* ((content (hive-mcp-swarm-presets-get preset)))
         (push content contents)))
-    (when contents
-      (concat
-       (mapconcat #'identity (nreverse contents) "\n\n---\n\n")
-       hive-mcp-swarm-presets--auto-shout-footer))))
+    (when (or contents injected-context)
+      (let ((preset-body (when contents
+                           (mapconcat #'identity (nreverse contents) "\n\n---\n\n"))))
+        (concat
+         ;; Injected context comes first (axioms, conventions, decisions)
+         (when injected-context
+           (concat injected-context "\n\n---\n\n"))
+         (or preset-body "")
+         hive-mcp-swarm-presets--auto-shout-footer)))))
 
 (defun hive-mcp-swarm-presets-add-custom-dir (dir)
   "Add DIR to custom preset directories and reload."

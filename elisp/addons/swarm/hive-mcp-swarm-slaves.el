@@ -156,7 +156,7 @@ Kill some slaves with `hive-mcp-swarm-kill' before spawning more."
 
 ;;;; Spawn Functions:
 
-(cl-defun hive-mcp-swarm-slaves-spawn (name &key presets cwd role terminal backend model kanban-task-id)
+(cl-defun hive-mcp-swarm-slaves-spawn (name &key presets cwd role terminal backend model kanban-task-id injected-context)
   "Spawn a new Claude slave with NAME - FULLY ASYNC.
 
 PRESETS is a list of preset names to apply (e.g., \\='(\"tdd\" \"clarity\")).
@@ -166,6 +166,8 @@ TERMINAL overrides `hive-mcp-swarm-terminal' for this spawn.
 BACKEND explicitly sets the backend (claude-code-ide, vterm, eat, ollama).
 MODEL sets the model for ollama backend (devstral, devstral-small, deepseek-r1:7b).
 KANBAN-TASK-ID is the optional kanban task ID to link this ling with.
+INJECTED-CONTEXT is optional pre-generated catchup context to inject
+into the system prompt (Architecture > LLM behavior).
 
 When ROLE is specified without explicit BACKEND/MODEL, uses tier mapping
 from `hive-mcp-swarm-tier-mapping' for two-tier orchestration:
@@ -221,6 +223,7 @@ Poll the slave's :status to check progress: spawning -> starting -> idle."
                    :depth spawn-depth
                    :parent-id parent-id
                    :kanban-task-id kanban-task-id  ; Linked kanban task (optional)
+                   :context-injected (not (null injected-context))  ; Track if context was auto-injected
                    :current-task nil
                    :task-queue '()
                    :tasks-completed 0
@@ -241,31 +244,35 @@ Poll the slave's :status to check progress: spawning -> starting -> idle."
     (hive-mcp-swarm-events-emit-slave-spawned slave-id name presets work-dir kanban-task-id)
 
     ;; FULLY ASYNC: Defer ALL work to timer so we return IMMEDIATELY
-    (run-with-timer
-     0 nil
-     (lambda ()
-       (condition-case err
-           (hive-mcp-swarm-slaves--do-spawn-async slave-id name presets work-dir term-backend)
-         (error
-          ;; Mark slave as errored
-          (when-let* ((slave (gethash slave-id hive-mcp-swarm--slaves)))
-            (plist-put slave :status 'error)
-            (plist-put slave :error (error-message-string err)))
-          (message "[swarm] Spawn error for %s: %s" slave-id (error-message-string err))))))
+    ;; Capture injected-context in closure for async spawn
+    (let ((ctx injected-context))
+      (run-with-timer
+       0 nil
+       (lambda ()
+         (condition-case err
+             (hive-mcp-swarm-slaves--do-spawn-async slave-id name presets work-dir term-backend ctx)
+           (error
+            ;; Mark slave as errored
+            (when-let* ((slave (gethash slave-id hive-mcp-swarm--slaves)))
+              (plist-put slave :status 'error)
+              (plist-put slave :error (error-message-string err)))
+            (message "[swarm] Spawn error for %s: %s" slave-id (error-message-string err)))))))
 
     (when (called-interactively-p 'any)
       (message "Spawning slave: %s (async)" slave-id))
 
     slave-id))
 
-(defun hive-mcp-swarm-slaves--do-spawn-async (slave-id name presets work-dir term-backend)
+(defun hive-mcp-swarm-slaves--do-spawn-async (slave-id name presets work-dir term-backend &optional injected-context)
   "Actually spawn the slave buffer for SLAVE-ID.
 Called async from `hive-mcp-swarm-slaves-spawn'.
 NAME is the slave name, PRESETS the preset list.
-WORK-DIR is the working directory, TERM-BACKEND the terminal type."
+WORK-DIR is the working directory, TERM-BACKEND the terminal type.
+INJECTED-CONTEXT is optional pre-generated catchup context
+(Architecture > LLM behavior)."
   (let* ((slave (gethash slave-id hive-mcp-swarm--slaves))
          (buffer-name (format "%s%s*" hive-mcp-swarm-buffer-prefix name))
-         (system-prompt (hive-mcp-swarm-presets-build-system-prompt presets))
+         (system-prompt (hive-mcp-swarm-presets-build-system-prompt presets injected-context))
          buffer)
 
     (unless slave

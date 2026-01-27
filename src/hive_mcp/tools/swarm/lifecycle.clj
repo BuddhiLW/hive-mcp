@@ -20,11 +20,33 @@
             [hive-mcp.emacsclient :as ec]
             [hive-mcp.validation :as v]
             [hive-mcp.tools.memory.scope :as scope]
+            [hive-mcp.tools.catchup :as catchup]
             [clojure.string :as str]
+            [taoensso.timbre :as log]
             [hive-mcp.telemetry.prometheus :as prom]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
+
+;; ============================================================
+;; Spawn Context Injection
+;; ============================================================
+
+(defn- write-spawn-context-file
+  "Write spawn context to a temporary file for elisp consumption.
+   Returns absolute file path, or nil on failure.
+
+   Architecture > LLM behavior: context injected at spawn, not
+   left to LLM /catchup compliance."
+  [context-str]
+  (when context-str
+    (try
+      (let [tmp-file (java.io.File/createTempFile "hive-spawn-ctx-" ".md")]
+        (spit tmp-file context-str)
+        (.getAbsolutePath tmp-file))
+      (catch Exception e
+        (log/warn "Failed to write spawn context file:" (.getMessage e))
+        nil))))
 
 ;; ============================================================
 ;; Spawn Handler
@@ -38,6 +60,10 @@
    The slave-spawned event from elisp triggers register-ling! via
    channel subscription (see registry/start-registry-sync!).
 
+   Architecture > LLM behavior: Generates lightweight catchup context
+   and injects it at spawn time via temp file. Lings receive axioms,
+   priority conventions, and active decisions without needing /catchup.
+
    Parameters:
    - name: Name for the slave (required)
    - presets: List of preset names to apply
@@ -47,20 +73,32 @@
    - kanban_task_id: Optional kanban task ID to link this ling with
 
    CLARITY: I - Inputs validated (name required)
+   CLARITY: C - Composes spawn-context injection without modifying catchup
    SOLID: SRP - Only handles spawn, not registration"
   [{:keys [name presets cwd _role terminal kanban_task_id]}]
   (core/with-swarm
-    (let [presets-str (when (seq presets)
+    (let [;; Generate lightweight catchup context for injection (non-fatal)
+          spawn-ctx (try
+                      (catchup/spawn-context cwd)
+                      (catch Exception e
+                        (log/warn "spawn-context generation failed (non-fatal):" (.getMessage e))
+                        nil))
+          ctx-file (write-spawn-context-file spawn-ctx)
+          presets-str (when (seq presets)
                         (format "'(%s)" (str/join " " (map #(format "\"%s\"" %) presets))))
-          ;; Include kanban_task_id in elisp call if provided
-          elisp (format "(json-encode (hive-mcp-swarm-api-spawn \"%s\" %s %s %s %s))"
+          ;; Include kanban_task_id and context-file in elisp call
+          elisp (format "(json-encode (hive-mcp-swarm-api-spawn \"%s\" %s %s %s %s %s))"
                         (v/escape-elisp-string (or name "slave"))
                         (or presets-str "nil")
                         (if cwd (format "\"%s\"" (v/escape-elisp-string cwd)) "nil")
                         (if terminal (format "\"%s\"" terminal) "nil")
-                        (if kanban_task_id (format "\"%s\"" (v/escape-elisp-string kanban_task_id)) "nil"))
+                        (if kanban_task_id (format "\"%s\"" (v/escape-elisp-string kanban_task_id)) "nil")
+                        (if ctx-file (format "\"%s\"" (v/escape-elisp-string ctx-file)) "nil"))
           ;; Use 10s timeout for spawn as it may take longer
           {:keys [success result error timed-out]} (ec/eval-elisp-with-timeout elisp 10000)]
+      (when spawn-ctx
+        (log/info "spawn-context injected for ling" name
+                  {:chars (count spawn-ctx) :file ctx-file}))
       (cond
         timed-out
         (core/mcp-timeout-error "Spawn operation" :extra-data {:slave_name name})
