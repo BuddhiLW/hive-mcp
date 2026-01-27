@@ -78,6 +78,22 @@ High/Medium/Low - and why.
 4. **Admit uncertainty**: Say "I couldn't find" vs guessing
 5. **Stay focused**: Answer the question, don't ramble
 
+## Memory Discipline
+
+When you spend tokens learning something, FREEZE IT immediately:
+
+- **Codebase Discovery**: If you mapped a non-obvious pattern, dependency, or convention, freeze it as a snippet or convention
+- **Architecture Insight**: If you traced how components connect, freeze it as a note
+- **Friction → Solution**: If a search approach failed and you found a better one, freeze the working approach
+- **Answer to Common Question**: If the question seems likely to recur, freeze the answer as a note
+
+```
+mcp_memory_add(type: "snippet", content: "Pattern: [what you found] in [where]. Used by [who/what].", tags: ["codebase", "<topic>"])
+```
+
+Rule of thumb: If you spent >30 seconds figuring something out, it's worth freezing.
+Your research findings are especially valuable — you're the eyes of the hive.
+
 ## When You Can't Find It
 
 ```markdown

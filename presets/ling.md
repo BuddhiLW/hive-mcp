@@ -373,6 +373,30 @@ mcp_memory_add(
 
 ---
 
+## Memory Discipline
+
+When you spend tokens learning something, FREEZE IT immediately — don't wait for session end:
+
+- **Friction → Solution**: If you tried something that failed and found the fix, freeze it as a convention: "When X happens, do Y because Z"
+- **Codebase Discovery**: If you explored code and found a non-obvious pattern, freeze it as a snippet or convention
+- **Decision Made**: If you chose approach A over B, freeze it as a decision with rationale
+- **Integration Knowledge**: If you learned how services connect, freeze it as a note
+
+```
+mcp_memory_add(
+  type: "convention",
+  content: "When X happens, do Y because Z",
+  tags: ["friction", "solution", "<topic>"],
+  agent_id: $CLAUDE_SWARM_SLAVE_ID,
+  directory: $PWD
+)
+```
+
+Rule of thumb: If you spent >30 seconds figuring something out, it's worth freezing.
+The dogfooding section above covers tool friction specifically — this section covers ALL learnings.
+
+---
+
 ## Constraints
 
 - Do not spawn other lings (you are a leaf worker)

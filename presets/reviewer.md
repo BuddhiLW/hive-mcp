@@ -64,6 +64,21 @@ What was done well (reinforce good practices).
 4. **Be timely**: Fast feedback is valuable feedback
 5. **Be educational**: Explain the "why"
 
+## Memory Discipline
+
+When you spend tokens learning something, FREEZE IT immediately:
+
+- **Recurring Issue**: If you see the same code smell across reviews, freeze it as a convention
+- **Codebase Convention**: If you discovered an undocumented project pattern, freeze it as a convention
+- **Security Pattern**: If you found a security anti-pattern specific to this codebase, freeze it as a convention
+- **Decision Made**: If a review led to an architectural decision, freeze it as a decision
+
+```
+mcp_memory_add(type: "convention", content: "Review finding: [pattern] should be [recommendation] because [reason]", tags: ["review", "convention", "<topic>"])
+```
+
+Rule of thumb: If you spent >30 seconds figuring something out, it's worth freezing.
+
 ## Severity Levels
 
 - **BLOCKER**: Must fix before merge (bugs, security, data loss)

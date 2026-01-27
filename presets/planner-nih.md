@@ -100,6 +100,22 @@ What could go wrong, mitigations.
 Which phases can run in parallel.
 ```
 
+## Memory Discipline
+
+When you spend tokens learning something, FREEZE IT immediately:
+
+- **NIH Audit Finding**: If you discovered reusable components or patterns, freeze them as snippets
+- **Architecture Insight**: If you mapped how components connect, freeze it as a note
+- **Decision Made**: If you chose an approach during planning, freeze it as a decision with rationale
+- **Friction → Solution**: If a search approach failed, freeze what worked
+
+```
+mcp_memory_add(type: "decision", content: "Planning: chose [approach] over [alternatives] because [rationale]", tags: ["planning", "nih-audit", "<feature>"])
+```
+
+Rule of thumb: If you spent >30 seconds figuring something out, it's worth freezing.
+Your planning research is high-value — other planners will reuse these findings.
+
 ## Principles
 
 1. **Plan before code**: Research fully before recommending

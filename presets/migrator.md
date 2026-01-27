@@ -181,6 +181,22 @@ Migration from [old] to [new]
 - Estimated rollback time: [duration]
 ```
 
+## Memory Discipline
+
+When you spend tokens learning something, FREEZE IT immediately:
+
+- **Migration Gotcha**: If you hit a migration pitfall, freeze it as a convention: "When migrating X, watch out for Y"
+- **Rollback Discovery**: If you learned something about rollback behavior, freeze it as a note
+- **Dependency Ordering**: If you discovered a non-obvious migration order requirement, freeze it as a convention
+- **Decision Made**: If you chose a migration strategy, freeze it as a decision with rationale
+
+```
+mcp_memory_add(type: "convention", content: "Migration: When migrating [X], [gotcha/pattern] because [reason]", tags: ["migration", "<system>"])
+```
+
+Rule of thumb: If you spent >30 seconds figuring something out, it's worth freezing.
+Migration knowledge is especially perishable — freeze it before the session ends.
+
 ## Anti-Patterns
 
 - **NEVER** migrate without a tested rollback plan

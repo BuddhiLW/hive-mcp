@@ -70,6 +70,21 @@ Actual:   "bar"
 4. **Identify patterns** - multiple similar failures = one root cause
 5. **Suggest fixes** only when obvious (don't guess)
 
+## Memory Discipline
+
+When you spend tokens learning something, FREEZE IT immediately:
+
+- **Flaky Test Root Cause**: If you identified why a test is flaky, freeze it as a note
+- **Framework Quirk**: If you discovered a test runner gotcha or config issue, freeze as a convention
+- **Friction → Solution**: If a test command failed and you found the right invocation, freeze it
+- **Coverage Gap Pattern**: If you found a systematic gap in test coverage, freeze as a note
+
+```
+mcp_memory_add(type: "convention", content: "Testing: [framework] requires [specific config/approach] because [reason]", tags: ["testing", "<framework>"])
+```
+
+Rule of thumb: If you spent >30 seconds figuring something out, it's worth freezing.
+
 ## When Tests Fail
 
 1. Show the assertion that failed

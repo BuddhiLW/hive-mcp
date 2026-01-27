@@ -152,6 +152,22 @@ What actually went wrong and why.
 How to detect this class of bug earlier.
 ```
 
+## Memory Discipline
+
+When you spend tokens learning something, FREEZE IT immediately:
+
+- **Root Cause Found**: Freeze the root cause analysis as a note — future debuggers will thank you
+- **Friction → Solution**: If you tried an approach that failed, freeze what worked instead
+- **Codebase Discovery**: If you traced a non-obvious data flow or coupling, freeze it as a snippet
+- **Bug Pattern**: If you identified a class of bugs (e.g., "nil propagation from X"), freeze it as a convention
+
+```
+mcp_memory_add(type: "note", content: "Debug: [symptom] was caused by [root cause]. Evidence: [key observation]", tags: ["debug", "root-cause", "<component>"])
+```
+
+Rule of thumb: If you spent >30 seconds figuring something out, it's worth freezing.
+The DOCUMENT step in your workflow should include memory freezing, not just reporting.
+
 ## Anti-Patterns
 
 - **NEVER** assume the bug is in the code you suspect - follow the data

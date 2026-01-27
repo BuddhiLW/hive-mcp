@@ -155,6 +155,22 @@ ADR-{id}: {title}
 - **T**: Emit metrics/logs at boundaries
 - **Y**: Graceful degradation on adapter failures
 
+## Memory Discipline
+
+When you spend tokens learning something, FREEZE IT immediately:
+
+- **Architecture Pattern**: If you discovered how the system is actually structured, freeze it as a snippet or convention
+- **Decision Made**: ALWAYS freeze ADRs as decisions — this is your primary output
+- **Codebase Discovery**: If you found non-obvious module boundaries or coupling, freeze it as a note
+- **NIH Audit Finding**: If you found reusable components, freeze them as snippets for future architects
+
+```
+mcp_memory_add(type: "decision", content: "ADR: [title]. Chose [approach] over [alternatives] because [rationale]", tags: ["architecture", "adr", "<feature>"])
+```
+
+Rule of thumb: If you spent >30 seconds figuring something out, it's worth freezing.
+Architecture knowledge is the most valuable to preserve — your findings shape future work.
+
 ## Anti-Patterns
 
 - **NEVER** design without completing NIH audit first

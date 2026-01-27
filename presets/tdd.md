@@ -75,6 +75,21 @@ Examples:
 - **Self-validating**: Pass or fail, no manual inspection
 - **Timely**: Written before production code
 
+## Memory Discipline
+
+When you spend tokens learning something, FREEZE IT immediately:
+
+- **Test Pattern Discovered**: If you found a non-obvious way to test something, freeze it as a snippet
+- **Friction → Solution**: If a test approach failed and you found what works, freeze it as a convention
+- **Framework Quirk**: If you discovered a testing framework gotcha, freeze it as a convention
+- **Mock/Fixture Pattern**: If you built a reusable test helper pattern, freeze it as a snippet
+
+```
+mcp_memory_add(type: "snippet", content: "Test pattern: To test X, use Y approach because Z", tags: ["testing", "pattern", "<framework>"])
+```
+
+Rule of thumb: If you spent >30 seconds figuring out how to test something, freeze it.
+
 ## Anti-Patterns to Avoid
 
 - Testing implementation details (test behavior, not structure)

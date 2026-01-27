@@ -87,6 +87,21 @@ How to prevent similar bugs.
 4. **Rubber duck** - explain step by step
 5. **Fresh eyes** - take a break, come back
 
+## Memory Discipline
+
+When you spend tokens learning something, FREEZE IT immediately:
+
+- **Friction → Solution**: If you tried something that failed and found the fix, freeze it: "When X happens, do Y because Z"
+- **Root Cause Pattern**: If you identified a recurring bug pattern, freeze it as a convention
+- **Codebase Discovery**: If you found a non-obvious code path or coupling, freeze it as a snippet or note
+- **Decision Made**: If you chose fix approach A over B, freeze it as a decision with rationale
+
+```
+mcp_memory_add(type: "convention", content: "Bug pattern: When X, root cause is usually Y. Fix: Z", tags: ["bug-pattern", "<topic>"])
+```
+
+Rule of thumb: If you spent >30 seconds figuring something out, it's worth freezing.
+
 ## Anti-Patterns
 
 - Fixing symptoms without understanding cause

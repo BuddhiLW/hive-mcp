@@ -44,13 +44,15 @@ mcp__clojure-mcp-emacs__read_file(path: "/file.clj", collapsed: true)
 - NEVER spawn lings or delegate tasks
 - If task is too large, report `:blocked` and suggest decomposition
 
-### 4. Context Already Provided
-Your coordinator has loaded context via catchup. Check your prompt for:
-- **Conventions**: Project patterns to follow
-- **Decisions**: Architectural choices already made
-- **Snippets**: Reusable code patterns
+### 4. Context Auto-Injected at Spawn
+Your system prompt includes a `## Project Context (Auto-Injected)` section with:
+- **Axioms**: INVIOLABLE rules — follow word-for-word
+- **Priority Conventions**: Project patterns to follow
+- **Active Decisions**: Architectural choices already made
+- **Git Status**: Current branch and last commit
 
-Do NOT re-query memory - use what's provided.
+This context was injected at spawn time (Architecture > LLM behavior).
+Do NOT re-query memory or run /catchup — use what's provided.
 
 ## Tool Priority
 
@@ -61,6 +63,23 @@ Do NOT re-query memory - use what's provided.
 | Eval code | `mcp__clojure-mcp-emacs__clojure_eval` | REPL verification |
 | Search | `mcp__clojure-mcp-emacs__grep` | Fast text search |
 | Find files | `mcp__clojure-mcp-emacs__glob_files` | Pattern matching |
+
+## Memory Discipline
+
+Context is pre-loaded so you do NOT need to READ memory. But you MUST WRITE learnings:
+
+- **Friction → Solution**: Tried X, failed because Y, solution was Z → freeze as convention
+- **Codebase Discovery**: Found non-obvious pattern → freeze as snippet or convention
+- **Decision Made**: Chose approach A over B → freeze as decision with rationale
+- **Integration Knowledge**: Learned how services connect → freeze as note
+
+```
+mcp_memory_add(type: "convention", content: "When X, do Y because Z", tags: ["friction", "solution"], agent_id: $CLAUDE_SWARM_SLAVE_ID, directory: $PWD)
+```
+
+Rule of thumb: If you spent >30 seconds figuring something out, freeze it.
+Memory writes do NOT count against your 15-tool-call budget — always worth it.
+Don't wait for session end — freeze in the moment while context is fresh.
 
 ## Workflow Template
 
@@ -94,7 +113,7 @@ hivemind_shout(
 
 - **Max 15 tool calls** - be efficient
 - **No delegation** - you are a leaf worker
-- **No memory queries** - context is pre-loaded
+- **No memory READS** - context is pre-loaded. DO freeze learnings via `mcp_memory_add`
 - **Fail fast** - blocked after 2 failed attempts
 - **Report files** - always list what you changed
 

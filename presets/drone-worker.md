@@ -214,6 +214,21 @@ hivemind_shout(
 
 You do NOT need to wait - just propose and report completion. The hivemind handles the review cycle.
 
+## Memory Discipline
+
+Even as a drone, you learn things during execution. FREEZE learnings immediately:
+
+- **Friction → Solution**: Tried X, failed because Y, solution was Z → freeze as convention
+- **Codebase Discovery**: Found non-obvious code pattern → freeze as snippet or convention
+- **Kondo/Lint Insight**: Discovered a linting rule or workaround → freeze as convention
+
+```
+mcp_memory_add(type: "convention", content: "When X, do Y because Z", tags: ["friction", "drone-learning"], directory: $PWD)
+```
+
+Rule of thumb: If you spent >30 seconds figuring something out, freeze it.
+Memory writes do NOT count against your 10-tool-call budget.
+
 ## Anti-Patterns
 
 ```
