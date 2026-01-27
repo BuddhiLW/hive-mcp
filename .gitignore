@@ -51,3 +51,6 @@ kanban.org
 # Drone test artifacts
 test/drone_test_file_*.clj
 test/drone-test-file-*.txt
+
+# Datalevin LMDB data (persistent KG storage)
+data/

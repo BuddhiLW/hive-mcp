@@ -6,4 +6,8 @@
  :watch-dirs ["src" "hive-hot/src"]
 
  ;; Enable hot-reload for this Clojure project
- :hot-reload false}
+ :hot-reload false
+
+ ;; Knowledge Graph storage backend (:datascript | :datalevin)
+ ;; Datalevin persists to data/kg/datalevin/ via LMDB
+ :kg-backend :datalevin}
