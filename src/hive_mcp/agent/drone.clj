@@ -24,6 +24,7 @@
             [hive-mcp.hivemind :as hivemind]
             [hive-mcp.swarm.coordinator :as coordinator]
             [hive-mcp.swarm.datascript :as ds]
+            [hive-mcp.knowledge-graph.disc :as kg-disc]
             [hive-mcp.events.core :as ev]
             [hive-mcp.telemetry.prometheus :as prom]
             [clojure.data.json :as json]
@@ -85,11 +86,12 @@
 
 (defn- format-file-contents
   "Pre-read file contents so drone has exact content for propose_diff.
+   Records disc entity reads for L1 file state tracking.
 
    Arguments:
      files        - List of file paths to read
      project-root - Optional project root override (defaults to diff/get-project-root)
-   
+
    CLARITY-I: Validates paths don't escape project directory before reading."
   [files & [project-root-override]]
   (when (seq files)
@@ -100,6 +102,12 @@
                        (if (:valid? validation)
                          (try
                            (let [content (slurp (:canonical-path validation))]
+                             ;; Track disc read (async, non-blocking)
+                             (future
+                               (try
+                                 (kg-disc/touch-disc! (:canonical-path validation))
+                                 (catch Exception e
+                                   (log/debug "Disc touch failed (non-fatal):" (.getMessage e)))))
                              (str "### " f "\n```\n" content "```\n"))
                            (catch Exception e
                              (str "### " f "\n(File not found or unreadable: " (.getMessage e) ")\n")))
@@ -617,7 +625,7 @@
         :files [\"src/core.clj\"]
         :max-retries 3}
        agent/delegate!)"
-  [{:keys [task files preset max-retries initial-delay-ms max-delay-ms on-retry]
+  [{:keys [_task _files preset max-retries initial-delay-ms max-delay-ms on-retry]
     :or {max-retries 3
          initial-delay-ms 1000
          max-delay-ms 30000}

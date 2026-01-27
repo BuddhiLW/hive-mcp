@@ -68,6 +68,7 @@
    The context is available to all code in body via accessor functions
    or directly via *request-ctx*."
   [ctx & body]
+  #_{:clj-kondo/ignore [:deprecated-var]}
   `(binding [*request-ctx* ~ctx
              ;; Also bind legacy var for backward compat
              *current-agent-id* (:agent-id ~ctx)]

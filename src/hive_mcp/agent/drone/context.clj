@@ -11,6 +11,8 @@
    CLARITY-A: Architectural performance via minimal but high-value context"
   (:require [hive-mcp.tools.kondo :as kondo]
             [hive-mcp.chroma :as chroma]
+            [hive-mcp.knowledge-graph.disc :as kg-disc]
+            [hive-mcp.knowledge-graph.edges :as kg-edges]
             [clojure.string :as str]
             [clojure.java.io :as io]
             [taoensso.timbre :as log]))
@@ -261,6 +263,76 @@
          "\n")))
 
 ;;; ============================================================
+;;; Knowledge Graph File Context
+;;; ============================================================
+
+(defn get-kg-file-knowledge
+  "Check KG for existing knowledge about a file before reading it.
+   Returns disc state and any knowledge entries grounded from this file.
+
+   Arguments:
+     file-path - Absolute file path
+
+   Returns:
+     Map with :disc (disc entity or nil), :stale? boolean,
+     :staleness-score float, :knowledge-entries (grounded entries)"
+  [file-path]
+  (try
+    (let [disc (kg-disc/get-disc file-path)
+          stale? (when disc
+                   (let [{:keys [hash exists?]} (kg-disc/file-content-hash file-path)]
+                     (or (not exists?)
+                         (and hash (:disc/content-hash disc)
+                              (not= hash (:disc/content-hash disc))))))
+          staleness (when disc (kg-disc/staleness-score disc))
+          ;; Find knowledge entries grounded from this file
+          ;; Search Chroma for entries with source-file metadata matching this path
+          grounded-entries (try
+                             (when (chroma/embedding-configured?)
+                               (->> (chroma/query-entries :limit 10)
+                                    (filter #(= file-path (get-in % [:metadata :source-file])))
+                                    (take 5)))
+                             (catch Exception _ nil))]
+      {:disc disc
+       :stale? (boolean stale?)
+       :staleness-score (or staleness 1.0)
+       :knowledge-entries (vec (or grounded-entries []))
+       :has-knowledge? (or (some? disc) (seq grounded-entries))})
+    (catch Exception e
+      (log/debug "KG file knowledge lookup failed:" (.getMessage e))
+      {:disc nil :stale? true :staleness-score 1.0
+       :knowledge-entries [] :has-knowledge? false})))
+
+(defn format-kg-file-context
+  "Format KG knowledge about a file as context string for drone injection.
+   Only includes context when relevant knowledge exists."
+  [kg-info file-path]
+  (when (:has-knowledge? kg-info)
+    (let [{:keys [disc stale? staleness-score knowledge-entries]} kg-info
+          sections (cond-> []
+                     disc
+                     (conj (str "- Disc state: "
+                                (if stale? "STALE (file changed)" "fresh")
+                                " (staleness: " (format "%.1f" (float staleness-score)) ")"
+                                (when (:disc/read-count disc)
+                                  (str ", read " (:disc/read-count disc) " times"))
+                                (when (:disc/analyzed-at disc)
+                                  (str ", last analyzed: " (:disc/analyzed-at disc)))))
+
+                     (seq knowledge-entries)
+                     (conj (str "- " (count knowledge-entries) " knowledge entries grounded from this file:"
+                                (str/join "\n  "
+                                          (map (fn [e]
+                                                 (str "  * [" (or (:type e) "note") "] "
+                                                      (subs (str (:content e))
+                                                            0 (min 100 (count (str (:content e)))))))
+                                               knowledge-entries)))))]
+      (when (seq sections)
+        (str "### KG Knowledge for " (last (str/split file-path #"/")) "\n"
+             (str/join "\n" sections)
+             "\n")))))
+
+;;; ============================================================
 ;;; Main Context Builder
 ;;; ============================================================
 
@@ -303,14 +375,19 @@
     (when-not abs-path
       (log/warn "Skipping context build for invalid path" {:file file-path}))
     (when abs-path
-      (let [;; Gather context components
+      (let [;; KG-first: Check knowledge graph for existing file knowledge
+            kg-info (get-kg-file-knowledge abs-path)
+            kg-context-str (format-kg-file-context kg-info abs-path)
+            ;; Gather context components
             snippet (read-surrounding-lines abs-path target-line {:context 20})
             imports (extract-imports abs-path)
             related (find-related-symbols abs-path task)
             lint (get-existing-warnings abs-path {:level :warning})
             conventions (get-relevant-conventions task project-id)
-            ;; Format each section
+            ;; Format each section (KG context injected first for priority)
             formatted (str
+                       (when kg-context-str
+                         (str kg-context-str "\n"))
                        (format-imports-context imports)
                        "\n"
                        (when snippet
@@ -330,6 +407,7 @@
          :related-fns related
          :lint-issues lint
          :conventions conventions
+         :kg-info kg-info
          :formatted formatted}))))
 
 (defn format-full-context
