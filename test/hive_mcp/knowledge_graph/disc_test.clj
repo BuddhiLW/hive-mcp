@@ -11,8 +11,7 @@
    Each test uses a fresh DataScript connection via fixture."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [hive-mcp.knowledge-graph.disc :as disc]
-            [hive-mcp.knowledge-graph.connection :as conn]
-            [clojure.java.io :as io]))
+            [hive-mcp.knowledge-graph.store.fixtures :as fixtures]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -22,14 +21,7 @@
 ;; Test Fixtures
 ;; =============================================================================
 
-(defn reset-kg-fixture
-  "Reset KG connection before and after each test."
-  [f]
-  (conn/reset-conn!)
-  (f)
-  (conn/reset-conn!))
-
-(use-fixtures :each reset-kg-fixture)
+(use-fixtures :each fixtures/datascript-fixture)
 
 ;; =============================================================================
 ;; Helper Functions

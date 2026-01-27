@@ -134,10 +134,10 @@
 
 (defn reground-batch!
   "Re-ground multiple knowledge entries.
-   
+
    Arguments:
      entry-ids - Collection of knowledge entry IDs
-   
+
    Returns:
      {:total int
       :by-status {status count}
@@ -156,3 +156,68 @@
      :by-status by-status
      :results results
      :drifted-entries drifted-entries}))
+
+(defn backfill-grounding!
+  "Discover and ground all Chroma entries that have source-file metadata.
+
+   Queries Chroma for all entries, filters to those with :source-file in
+   metadata, then computes source-hash and sets grounded-at for each.
+
+   Arguments:
+     opts - Optional map with:
+       :project-id    - Filter to specific project (default: all)
+       :limit         - Max entries to process (default: 500)
+       :force?        - Re-ground even if already grounded (default: false)
+       :max-age-days  - Only re-ground if older than N days (default: 7)
+
+   Returns:
+     {:total-scanned int
+      :with-source int
+      :processed int
+      :by-status {status count}
+      :drifted-entries [entry-id]}"
+  [& [{:keys [project-id limit force? max-age-days]
+       :or {limit 500 force? false max-age-days 7}}]]
+  (log/info "backfill-grounding! starting"
+            {:project-id project-id :limit limit :force? force? :max-age-days max-age-days})
+  (try
+    (let [;; 1. Query all entries from Chroma
+          entries (chroma/query-entries :project-id project-id
+                                        :limit limit
+                                        :include-expired? true)
+          total-scanned (count entries)
+
+          ;; 2. Filter to entries with source-file metadata
+          with-source (->> entries
+                           (filter (fn [entry]
+                                     (let [sf (or (get-in entry [:metadata :source-file])
+                                                  (:source-file entry))]
+                                       (and sf (not (str/blank? (str sf)))))))
+                           vec)
+
+          ;; 3. Filter to entries needing regrounding (unless forced)
+          needs-work (if force?
+                       with-source
+                       (filter #(needs-regrounding? % max-age-days) with-source))
+          entry-ids (mapv :id needs-work)
+
+          ;; 4. Run batch regrounding
+          result (when (seq entry-ids)
+                   (reground-batch! entry-ids))]
+
+      (log/info "backfill-grounding! complete"
+                {:total-scanned total-scanned
+                 :with-source (count with-source)
+                 :processed (count entry-ids)
+                 :by-status (:by-status result)})
+      {:total-scanned total-scanned
+       :with-source (count with-source)
+       :processed (count entry-ids)
+       :by-status (or (:by-status result) {})
+       :drifted-entries (or (:drifted-entries result) [])})
+
+    (catch Exception e
+      (log/error "backfill-grounding! failed" {:error e})
+      {:error (.getMessage e)
+       :total-scanned 0
+       :processed 0})))

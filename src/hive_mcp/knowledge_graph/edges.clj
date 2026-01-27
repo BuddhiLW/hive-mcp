@@ -2,9 +2,8 @@
   "CRUD operations for Knowledge Graph edges.
 
    Provides functions to create, read, update, and delete edges
-   between knowledge nodes (memory entries) in the DataScript store."
-  (:require [datascript.core :as d]
-            [hive-mcp.knowledge-graph.connection :as conn]
+   between knowledge nodes (memory entries) via the IGraphStore protocol."
+  (:require [hive-mcp.knowledge-graph.connection :as conn]
             [hive-mcp.knowledge-graph.schema :as schema]))
 
 (defn generate-edge-id
@@ -21,12 +20,14 @@
    - :relation   - Relation type (must be in schema/relation-types)
 
    Optional keys:
-   - :scope      - Scope where edge was discovered
-   - :confidence - Confidence score 0.0-1.0 (default: 1.0)
-   - :created-by - Agent ID that created edge
+   - :scope         - Scope where edge was discovered
+   - :confidence    - Confidence score 0.0-1.0 (default: 1.0)
+   - :created-by    - Agent ID that created edge
+   - :source-type   - How edge was established (:manual, :automated, :inferred, :co-access)
+   - :last-verified - Timestamp of last verification (defaults to creation time)
 
    Returns the edge ID on success, throws on validation failure."
-  [{:keys [from to relation scope confidence created-by]
+  [{:keys [from to relation scope confidence created-by source-type last-verified]
     :or {confidence 1.0}}]
   ;; Validate required fields
   (when (or (nil? from) (nil? to))
@@ -39,16 +40,23 @@
   (when-not (schema/valid-confidence? confidence)
     (throw (ex-info "Invalid confidence score (must be 0.0-1.0)"
                     {:confidence confidence})))
+  (when (and source-type (not (schema/valid-source-type? source-type)))
+    (throw (ex-info "Invalid source type"
+                    {:source-type source-type
+                     :valid-source-types schema/source-types})))
 
   (let [edge-id (generate-edge-id)
+        now (java.util.Date.)
         edge-data (cond-> {:kg-edge/id edge-id
                            :kg-edge/from from
                            :kg-edge/to to
                            :kg-edge/relation relation
                            :kg-edge/confidence confidence
-                           :kg-edge/created-at (java.util.Date.)}
+                           :kg-edge/created-at now
+                           :kg-edge/last-verified (or last-verified now)}
                     scope (assoc :kg-edge/scope scope)
-                    created-by (assoc :kg-edge/created-by created-by))]
+                    created-by (assoc :kg-edge/created-by created-by)
+                    source-type (assoc :kg-edge/source-type source-type))]
     (conn/transact! [edge-data])
     edge-id))
 
@@ -56,8 +64,8 @@
   "Get an edge by its ID.
    Returns the edge entity map or nil if not found."
   [edge-id]
-  (when-let [eid (d/entid @(conn/get-conn) [:kg-edge/id edge-id])]
-    (d/pull @(conn/get-conn) '[*] eid)))
+  (when-let [eid (conn/entid [:kg-edge/id edge-id])]
+    (conn/pull-entity '[*] eid)))
 
 (defn get-edges-from
   "Query all outgoing edges from a source node.
@@ -74,8 +82,8 @@
                         [?e :kg-edge/from ?from]
                         [?e :kg-edge/scope ?scope]]]
      (if scope
-       (d/q scoped-query @(conn/get-conn) from-node-id scope)
-       (d/q base-query @(conn/get-conn) from-node-id)))))
+       (conn/query scoped-query from-node-id scope)
+       (conn/query base-query from-node-id)))))
 
 (defn get-edges-to
   "Query all incoming edges to a target node.
@@ -92,8 +100,8 @@
                         [?e :kg-edge/to ?to]
                         [?e :kg-edge/scope ?scope]]]
      (if scope
-       (d/q scoped-query @(conn/get-conn) to-node-id scope)
-       (d/q base-query @(conn/get-conn) to-node-id)))))
+       (conn/query scoped-query to-node-id scope)
+       (conn/query base-query to-node-id)))))
 
 (defn get-edges-by-relation
   "Query all edges of a specific relation type.
@@ -110,8 +118,8 @@
                         [?e :kg-edge/relation ?rel]
                         [?e :kg-edge/scope ?scope]]]
      (if scope
-       (d/q scoped-query @(conn/get-conn) relation scope)
-       (d/q base-query @(conn/get-conn) relation)))))
+       (conn/query scoped-query relation scope)
+       (conn/query base-query relation)))))
 
 (defn get-edges-by-scope
   "Query all edges within a specific scope.
@@ -122,7 +130,7 @@
                 :where
                 [?e :kg-edge/id]
                 [?e :kg-edge/scope ?scope]]]
-    (d/q query @(conn/get-conn) scope)))
+    (conn/query query scope)))
 
 (defn find-edge
   "Find an edge between two nodes.
@@ -143,8 +151,8 @@
                           [?e :kg-edge/to ?to]
                           [?e :kg-edge/relation ?rel]]
          results (if relation
-                   (d/q relation-query @(conn/get-conn) from-node-id to-node-id relation)
-                   (d/q base-query @(conn/get-conn) from-node-id to-node-id))]
+                   (conn/query relation-query from-node-id to-node-id relation)
+                   (conn/query base-query from-node-id to-node-id))]
      (first results))))
 
 (defn update-edge-confidence!
@@ -154,8 +162,17 @@
   (when-not (schema/valid-confidence? new-confidence)
     (throw (ex-info "Invalid confidence score (must be 0.0-1.0)"
                     {:confidence new-confidence})))
-  (when-let [eid (d/entid @(conn/get-conn) [:kg-edge/id edge-id])]
+  (when-let [eid (conn/entid [:kg-edge/id edge-id])]
     (conn/transact! [[:db/add eid :kg-edge/confidence new-confidence]])
+    true))
+
+(defn verify-edge!
+  "Update the last-verified timestamp of an edge.
+   Call when an edge relationship is confirmed to still be valid.
+   Returns true on success, nil if edge not found."
+  [edge-id]
+  (when-let [eid (conn/entid [:kg-edge/id edge-id])]
+    (conn/transact! [[:db/add eid :kg-edge/last-verified (java.util.Date.)]])
     true))
 
 (defn increment-confidence!
@@ -175,7 +192,7 @@
   "Delete an edge by its ID.
    Returns true if edge was removed, false if not found."
   [edge-id]
-  (if-let [eid (d/entid @(conn/get-conn) [:kg-edge/id edge-id])]
+  (if-let [eid (conn/entid [:kg-edge/id edge-id])]
     (do
       (conn/transact! [[:db/retractEntity eid]])
       true)
@@ -208,8 +225,8 @@
                         [?e :kg-edge/id]
                         [?e :kg-edge/scope ?scope]]]
      (if scope
-       (d/q scoped-query @(conn/get-conn) scope)
-       (d/q base-query @(conn/get-conn))))))
+       (conn/query scoped-query scope)
+       (conn/query base-query)))))
 
 (defn count-edges
   "Count total edges, optionally filtered by scope."
@@ -217,6 +234,67 @@
    (count-edges nil))
   ([scope]
    (count (get-all-edges scope))))
+
+(defn record-co-access!
+  "Record co-access pattern between a batch of memory entries.
+   Creates :co-accessed edges between pairs that were recalled together.
+   If an edge already exists between a pair, increments its confidence instead.
+
+   Arguments:
+     entry-ids - Collection of entry IDs recalled in the same batch (min 2)
+     opts      - Optional map with:
+                 :scope      - Scope where co-access occurred
+                 :created-by - Agent/tool that triggered the recall
+
+   Returns the count of edges created or reinforced."
+  [entry-ids & [{:keys [scope created-by]}]]
+  (let [ids (vec (distinct entry-ids))]
+    (when (>= (count ids) 2)
+      (let [pairs (for [i (range (count ids))
+                        j (range (inc i) (count ids))]
+                    [(nth ids i) (nth ids j)])
+            ;; Limit pairs to avoid quadratic explosion on large batches
+            limited-pairs (take 50 pairs)]
+        (count
+         (for [[from-id to-id] limited-pairs]
+           (if-let [existing (find-edge from-id to-id :co-accessed)]
+             ;; Reinforce existing co-access edge
+             (do (increment-confidence! (:kg-edge/id existing) 0.1)
+                 (verify-edge! (:kg-edge/id existing))
+                 :reinforced)
+             ;; Create new co-access edge with low initial confidence
+             (do (add-edge! (cond-> {:from from-id
+                                     :to to-id
+                                     :relation :co-accessed
+                                     :confidence 0.3
+                                     :source-type :co-access}
+                              scope (assoc :scope scope)
+                              created-by (assoc :created-by created-by)))
+                 :created))))))))
+
+(defn get-co-accessed
+  "Get entries co-accessed with the given entry.
+   Returns entry IDs sorted by confidence (strongest co-access first).
+
+   Arguments:
+     entry-id - Entry ID to find co-accessed entries for
+
+   Returns:
+     Vector of {:entry-id <id> :confidence <score>}"
+  [entry-id]
+  (let [outgoing (get-edges-from entry-id)
+        incoming (get-edges-to entry-id)
+        co-access-edges (->> (concat outgoing incoming)
+                             (filter #(= :co-accessed (:kg-edge/relation %))))
+        neighbors (map (fn [edge]
+                         {:entry-id (if (= (:kg-edge/from edge) entry-id)
+                                      (:kg-edge/to edge)
+                                      (:kg-edge/from edge))
+                          :confidence (or (:kg-edge/confidence edge) 0.3)})
+                       co-access-edges)]
+    (->> neighbors
+         (sort-by :confidence >)
+         vec)))
 
 (defn edge-stats
   "Get statistics about edges in the Knowledge Graph.

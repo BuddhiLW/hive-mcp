@@ -14,7 +14,7 @@
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [clojure.string :as string]
             [hive-mcp.knowledge-graph.edges :as edges]
-            [hive-mcp.knowledge-graph.connection :as conn]
+            [hive-mcp.knowledge-graph.store.fixtures :as fixtures]
             [hive-mcp.knowledge-graph.schema :as schema]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -24,14 +24,7 @@
 ;; Test Fixtures
 ;; =============================================================================
 
-(defn reset-kg-fixture
-  "Reset KG connection before and after each test."
-  [f]
-  (conn/reset-conn!)
-  (f)
-  (conn/reset-conn!))
-
-(use-fixtures :each reset-kg-fixture)
+(use-fixtures :each fixtures/datascript-fixture)
 
 ;; =============================================================================
 ;; Helper Functions
