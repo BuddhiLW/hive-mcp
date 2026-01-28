@@ -2,13 +2,14 @@
   "Tests for Agora dialogue dispatch wrapper.
 
    Covers:
-   - Signal parsing from [SIGNAL: X] prefix
+   - Signal parsing from [SIGNAL: X] prefix (data-driven via signal.clj)
    - Dialogue lifecycle (create, join, leave)
    - Turn recording and querying
    - Nash equilibrium detection
    - Dialogue dispatch wrapper"
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
-            [hive-mcp.agora.dialogue :as dialogue]))
+            [hive-mcp.agora.dialogue :as dialogue]
+            [hive-mcp.agora.signal :as signal]))
 
 ;;; =============================================================================
 ;;; Test Fixtures
@@ -49,7 +50,7 @@
            (dialogue/parse-signal "[SIGNAL: NO-CHANGE] test")))))
 
 (deftest parse-signal-no-prefix-test
-  (testing "parse-signal defaults to :propose when no prefix and no natural language match"
+  (testing "parse-signal defaults to :propose when no prefix"
     (is (= [:propose "Just a regular message" :default]
            (dialogue/parse-signal "Just a regular message")))
     (is (= [:propose "" :default]
@@ -238,58 +239,86 @@
 ;;; =============================================================================
 
 ;;; =============================================================================
-;;; Natural Language Signal Detection Tests
+;;; Data-Driven Signal Tests (via signal.clj)
 ;;; =============================================================================
 
-(deftest detect-natural-signal-test
-  (testing "detects approval patterns"
-    (is (= :approve (dialogue/detect-natural-signal "I accept this approach")))
-    (is (= :approve (dialogue/detect-natural-signal "I approve of this change")))
-    (is (= :approve (dialogue/detect-natural-signal "I agree with the proposal")))
-    (is (= :approve (dialogue/detect-natural-signal "LGTM!")))
-    (is (= :approve (dialogue/detect-natural-signal "looks good to me")))
-    (is (= :approve (dialogue/detect-natural-signal "This looks good")))
-    (is (= :approve (dialogue/detect-natural-signal "No objections here")))
-    (is (= :approve (dialogue/detect-natural-signal "ship it!")))
-    (is (= :approve (dialogue/detect-natural-signal "Sounds good to me"))))
-
-  (testing "detects counter patterns"
-    (is (= :counter (dialogue/detect-natural-signal "I disagree with this")))
-    (is (= :counter (dialogue/detect-natural-signal "I object to the proposal")))
-    (is (= :counter (dialogue/detect-natural-signal "I reject this approach")))
-    (is (= :counter (dialogue/detect-natural-signal "I have concerns about this")))
-    (is (= :counter (dialogue/detect-natural-signal "I have issues with the design"))))
-
-  (testing "returns nil for neutral/ambiguous messages"
-    (is (nil? (dialogue/detect-natural-signal "Here is my analysis")))
-    (is (nil? (dialogue/detect-natural-signal "Let me review this")))
-    (is (nil? (dialogue/detect-natural-signal "What do you think?")))))
-
-(deftest parse-signal-natural-language-test
-  (testing "parse-signal detects natural language approval"
-    (is (= [:approve "LGTM, ship it!" :natural]
+(deftest parse-signal-no-nlp-test
+  (testing "NLP removed: natural language messages default to :propose"
+    ;; ADR: Data-driven signals replace NLP regex parsing.
+    ;; Messages without [SIGNAL: X] prefix always default to :propose.
+    (is (= [:propose "LGTM, ship it!" :default]
            (dialogue/parse-signal "LGTM, ship it!")))
-    (is (= [:approve "I accept this approach" :natural]
-           (dialogue/parse-signal "I accept this approach"))))
-
-  (testing "parse-signal detects natural language counter"
-    (is (= [:counter "I disagree, we need a different approach" :natural]
+    (is (= [:propose "I accept this approach" :default]
+           (dialogue/parse-signal "I accept this approach")))
+    (is (= [:propose "I disagree, we need a different approach" :default]
            (dialogue/parse-signal "I disagree, we need a different approach"))))
 
-  (testing "prefix takes priority over natural language"
-    ;; Even if the message contains natural approval language, prefix wins
+  (testing "prefix still works after NLP removal"
     (is (= [:propose "I accept this, here's my proposal" :prefix]
            (dialogue/parse-signal "[SIGNAL: propose] I accept this, here's my proposal")))))
+
+(deftest signal-from-map-test
+  (testing "signal.clj constructs valid signal from structured map"
+    (let [result (signal/signal-from-map {:type :propose
+                                          :strength 0.8
+                                          :message "Strategy pattern enables runtime switching"
+                                          :evidence [{:source "GOF" :content "Chapter 5"}]})]
+      (is (= :propose (:type result)))
+      (is (= 0.8 (:strength result)))
+      (is (= "Strategy pattern enables runtime switching" (:message result)))
+      (is (= 1 (count (:evidence result))))))
+
+  (testing "signal-from-map rejects invalid type"
+    (let [result (signal/signal-from-map {:type :invalid :message "test"})]
+      (is (some? (:error result)))))
+
+  (testing "signal-from-map rejects missing message"
+    (let [result (signal/signal-from-map {:type :propose})]
+      (is (some? (:error result)))))
+
+  (testing "signal-from-map accepts :signal alias for :type"
+    (let [result (signal/signal-from-map {:signal :approve :message "LGTM"})]
+      (is (= :approve (:type result)))))
+
+  (testing "strength clamped to 0.0-1.0"
+    (is (= 1.0 (:strength (signal/signal-from-map {:type :approve :strength 5.0 :message "x"}))))
+    (is (= 0.0 (:strength (signal/signal-from-map {:type :approve :strength -1.0 :message "x"}))))))
+
+(deftest signal-parse-unified-test
+  (testing "parse-signal dispatches on input type"
+    ;; Map input
+    (let [result (signal/parse-signal {:type :approve :message "LGTM"})]
+      (is (= :approve (:type result))))
+    ;; String input (legacy)
+    (let [result (signal/parse-signal "[SIGNAL: counter] I disagree")]
+      (is (= :counter (:type result))))
+    ;; Keyword input
+    (let [result (signal/parse-signal :defer)]
+      (is (= :defer (:type result)))))
+
+  (testing "parse-signal returns error for invalid keyword"
+    (let [result (signal/parse-signal :invalid-signal)]
+      (is (some? (:error result))))))
 
 ;;; =============================================================================
 ;;; Signal Set Tests
 ;;; =============================================================================
 
 (deftest signal-sets-test
-  (testing "Signal sets are correctly defined"
-    (is (= #{:propose :counter :no-change :approve :defer}
-           dialogue/signals))
-    (is (= #{:no-change :approve}
-           dialogue/equilibrium-signals))
-    (is (= #{:propose :counter}
-           dialogue/disruption-signals))))
+  (testing "Signal sets delegate to signal.clj"
+    (is (= signal/signal-types dialogue/signals))
+    (is (= signal/equilibrium-signals dialogue/equilibrium-signals))
+    (is (= signal/disruption-signals dialogue/disruption-signals)))
+
+  (testing "Signal sets contain expected values"
+    (is (contains? dialogue/signals :propose))
+    (is (contains? dialogue/signals :counter))
+    (is (contains? dialogue/signals :no-change))
+    (is (contains? dialogue/signals :approve))
+    (is (contains? dialogue/signals :defer))
+    ;; equilibrium-signals now includes :lgtm via signal.clj
+    (is (contains? dialogue/equilibrium-signals :no-change))
+    (is (contains? dialogue/equilibrium-signals :approve))
+    (is (contains? dialogue/equilibrium-signals :lgtm))
+    (is (contains? dialogue/disruption-signals :propose))
+    (is (contains? dialogue/disruption-signals :counter))))
