@@ -293,17 +293,10 @@ mcp_memory_query_metadata(type: "decision", tags: ["<relevant-tag>"])
 - Build on documented patterns
 - Reference them in your shouts (visibility)
 
-## Session End (Wrap Pattern)
+## Session End (MANDATORY)
 
-**Run `/wrap` or call wrap_crystallize directly.** Both work for lings now.
+**ALWAYS call `session_complete` when your task is done.** This is the single lifecycle endpoint — it handles wrap, crystallization, kanban updates, and attribution in one call.
 
-**Option 1: /wrap skill** (unified for lings and coordinators)
-```
-/wrap
-```
-Follow the prompts - it will ask for your `pwd` and `$CLAUDE_SWARM_SLAVE_ID`.
-
-**Option 2: session_complete** (RECOMMENDED - full lifecycle)
 ```
 session_complete(
   commit_msg: "feat: your work summary",
@@ -313,17 +306,11 @@ session_complete(
 )
 ```
 
-**Option 3: wrap_crystallize** (wrap only, no git/kanban)
-```
-wrap_crystallize(
-  agent_id: $CLAUDE_SWARM_SLAVE_ID,
-  directory: "/path/to/your/project"
-)
-```
-
 **CRITICAL parameters:**
 - `agent_id`: Your `$CLAUDE_SWARM_SLAVE_ID` - without it, your learnings get attributed to "coordinator"
 - `directory`: Your `pwd` - without it, your wraps may contaminate other projects
+
+**Why session_complete?** It subsumes `/wrap` — one call does everything: crystallize learnings, update kanban, commit if needed. Calling `/wrap` separately is redundant.
 
 ---
 

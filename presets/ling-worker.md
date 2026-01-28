@@ -109,6 +109,21 @@ hivemind_shout(
 )
 ```
 
+## Session End (MANDATORY)
+
+**ALWAYS call `session_complete` when your task is done.** This crystallizes learnings, updates kanban, and handles attribution in one call.
+
+```
+session_complete(
+  commit_msg: "feat: brief summary of what you did",
+  task_ids: ["kanban-id-if-linked"],
+  agent_id: $CLAUDE_SWARM_SLAVE_ID,
+  directory: $PWD
+)
+```
+
+Call this AFTER your final `hivemind_shout(completed)`. The shout tells the coordinator you're done; `session_complete` persists your learnings for the flywheel.
+
 ## Constraints
 
 - **Max 15 tool calls** - be efficient
