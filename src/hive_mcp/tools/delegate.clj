@@ -25,6 +25,7 @@
    SOLID: ISP - Single tool with polymorphic dispatch based on params.
    CLARITY: L - Thin wrapper delegating to focused modules."
   (:require [hive-mcp.agent :as agent]
+            [hive-mcp.knowledge-graph.disc :as kg-disc]
             [hive-mcp.tools.swarm.wave :as wave]
             [hive-mcp.tools.swarm.validated-wave :as validated-wave]
             [hive-mcp.tools.core :refer [mcp-json mcp-error]]
@@ -87,8 +88,12 @@
       (log/info {:event :delegate/routing
                  :mode :single
                  :file-count (count (or files []))})
-      (let [result (agent/delegate-drone!
-                    {:task task
+      (let [;; L1 Disc: Proactively surface staleness warnings for claimed files
+            disc-warnings (try (kg-disc/staleness-warnings files) (catch Exception _ nil))
+            disc-notice (kg-disc/format-staleness-warnings disc-warnings)
+            augmented-task (if disc-notice (str disc-notice task) task)
+            result (agent/delegate-drone!
+                    {:task augmented-task
                      :files files
                      :preset (or preset "drone-worker")
                      :trace (if (nil? trace) true trace)

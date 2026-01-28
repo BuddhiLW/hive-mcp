@@ -18,6 +18,7 @@
             [hive-mcp.tools.memory.scope :as scope]
             [hive-mcp.knowledge-graph.queries :as kg-queries]
             [hive-mcp.knowledge-graph.edges :as kg-edges]
+            [hive-mcp.knowledge-graph.disc :as kg-disc]
             [clojure.data.json :as json]
             [clojure.string :as str]
             [clojure.set :as set]
@@ -55,8 +56,8 @@
      (let [elisp (if directory
                    (format "(hive-mcp-memory--project-id %s)" (pr-str directory))
                    "(hive-mcp-memory--project-id)")
-           {:keys [success result]} (ec/eval-elisp elisp)]
-       (if (and success result (not= result "nil"))
+           {:keys [success result timed-out]} (ec/eval-elisp-with-timeout elisp 10000)]
+       (if (and success result (not= result "nil") (not timed-out))
          (str/replace result #"\"" "")
          "global"))
      (catch Exception _
@@ -71,8 +72,8 @@
      (let [elisp (if directory
                    (format "(hive-mcp-memory--get-project-name %s)" (pr-str directory))
                    "(hive-mcp-memory--get-project-name)")
-           {:keys [success result]} (ec/eval-elisp elisp)]
-       (if (and success result (not= result "nil"))
+           {:keys [success result timed-out]} (ec/eval-elisp-with-timeout elisp 10000)]
+       (if (and success result (not= result "nil") (not timed-out))
          (str/replace result #"\"" "")
          nil))
      (catch Exception _
@@ -179,8 +180,8 @@
                          (list :branch (string-trim (shell-command-to-string \"git rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'none'\"))
                                :uncommitted (not (string-empty-p (shell-command-to-string \"git status --porcelain 2>/dev/null\")))
                                :last-commit (string-trim (shell-command-to-string \"git log -1 --format='%h - %s' 2>/dev/null || echo 'none'\"))))")
-          {:keys [success result]} (ec/eval-elisp git-elisp)]
-      (when success
+          {:keys [success result timed-out]} (ec/eval-elisp-with-timeout git-elisp 30000)]
+      (when (and success (not timed-out))
         (json/read-str result :key-fn keyword)))
     (catch Exception _
       {:branch "unknown" :uncommitted false :last-commit "unknown"})))
@@ -456,7 +457,14 @@
           with-deps (->> all-entries
                          (filter #(or (seq (get-in % [:kg :depends-on]))
                                       (seq (get-in % [:kg :depended-by]))))
-                         (count))]
+                         (count))
+
+          ;; L1 Disc: Surface stale files (staleness > 0.5) for catchup awareness
+          stale-files (try
+                        (kg-disc/top-stale-files :n 10 :project-id project-id :threshold 0.5)
+                        (catch Exception e
+                          (log/debug "KG insights stale-files query failed:" (.getMessage e))
+                          []))]
 
       ;; Build insights map - always include edge-count for visibility
       (cond-> {:edge-count edge-count}
@@ -466,7 +474,8 @@
         (pos? with-deps) (assoc :dependency-chains with-deps)
         (seq related-from-sessions) (assoc :session-derived related-from-sessions)
         (seq related-decisions) (assoc :related-decisions related-decisions)
-        (pos? ungrounded-count) (assoc :ungrounded-count ungrounded-count)))
+        (pos? ungrounded-count) (assoc :ungrounded-count ungrounded-count)
+        (seq stale-files) (assoc :stale-files stale-files)))
     (catch Exception e
       (log/warn "KG insights gathering failed:" (.getMessage e))
       {:edge-count 0 :error (.getMessage e)})))
@@ -606,15 +615,36 @@
            "- **Uncommitted changes**: yes\n")
          (format "- **Last commit**: %s\n" (or (:last-commit git-info) "unknown")))))
 
+(defn- format-spawn-stale-files
+  "Format stale files section for spawn context markdown.
+   Surfaces top-N most stale disc entities as files needing re-grounding."
+  [stale-files]
+  (when (seq stale-files)
+    (let [lines (map (fn [{:keys [path score days-since-read hash-mismatch?]}]
+                       (format "- `%s` (staleness: %.1f%s%s)"
+                               path
+                               (float score)
+                               (if days-since-read
+                                 (format ", last read %dd ago" days-since-read)
+                                 ", never read")
+                               (if hash-mismatch?
+                                 ", content changed"
+                                 "")))
+                     stale-files)]
+      (str "### Files Needing Re-Grounding (L1 Disc)\n\n"
+           (str/join "\n" lines)
+           "\n\n"))))
+
 (defn- serialize-spawn-context
   "Serialize spawn context data to markdown string.
    Formats as a '## Project Context (Auto-Injected)' section."
-  [{:keys [axioms priority-conventions decisions git-info project-name]}]
+  [{:keys [axioms priority-conventions decisions git-info project-name stale-files]}]
   (str "## Project Context (Auto-Injected)\n\n"
        (format "**Project**: %s\n\n" (or project-name "unknown"))
        (format-spawn-axioms axioms)
        (format-spawn-priorities priority-conventions)
        (format-spawn-decisions decisions)
+       (format-spawn-stale-files stale-files)
        (format-spawn-git git-info)))
 
 (def ^:private max-spawn-context-chars
@@ -653,6 +683,13 @@
             decisions (query-scoped-entries "decision" nil project-id 5)
             git-info (gather-git-info directory)
 
+            ;; L1 Disc: Surface top-N most stale files needing re-grounding
+            stale-files (try
+                          (kg-disc/top-stale-files :n 5 :project-id project-id)
+                          (catch Exception e
+                            (log/debug "spawn-context stale-files query failed:" (.getMessage e))
+                            []))
+
             ;; Transform to metadata
             axioms-meta (mapv entry->axiom-meta axioms)
             priority-meta (mapv entry->priority-meta priority-conventions)
@@ -663,6 +700,7 @@
                          {:axioms axioms-meta
                           :priority-conventions priority-meta
                           :decisions decisions-meta
+                          :stale-files stale-files
                           :git-info git-info
                           :project-name (or project-name project-id "global")})]
 
@@ -670,12 +708,13 @@
         (if (> (count context-str) max-spawn-context-chars)
           (do
             (log/warn "spawn-context exceeds token budget:"
-                      (count context-str) "chars, truncating decisions")
-            ;; Truncate: keep axioms + priority conventions, drop decisions
+                      (count context-str) "chars, truncating decisions + stale-files")
+            ;; Truncate: keep axioms + priority conventions, drop decisions + stale files
             (serialize-spawn-context
              {:axioms axioms-meta
               :priority-conventions priority-meta
               :decisions []
+              :stale-files []
               :git-info git-info
               :project-name (or project-name project-id "global")}))
           context-str))

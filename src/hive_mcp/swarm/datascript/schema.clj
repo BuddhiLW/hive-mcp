@@ -66,6 +66,15 @@
    :dispatch - Task dispatch in progress"
   #{:wrap :commit :dispatch})
 
+(def daemon-statuses
+  "Valid Emacs daemon status values.
+
+   :active     - Running and sending heartbeats
+   :stale      - Not sending heartbeats (likely crashed)
+   :error      - In error state (Emacs reported errors)
+   :terminated - Gracefully shutdown"
+  #{:active :stale :error :terminated})
+
 (def olympus-layout-modes
   "Valid Olympus layout mode values.
    :auto    - Automatically calculate optimal layout
@@ -420,4 +429,40 @@
     :db/cardinality :db.cardinality/one}
 
    :olympus/ling-positions
-   {:db/doc "Map of {ling-id {:tab T :row R :col C}} positions (stored as EDN string)"}})
+   {:db/doc "Map of {ling-id {:tab T :row R :col C}} positions (stored as EDN string)"}
+
+   ;;; =========================================================================
+   ;;; Emacs Daemon Entity (Daemon lifecycle management)
+   ;;; =========================================================================
+
+   :emacs-daemon/id
+   {:db/doc "Unique identifier for the Emacs daemon (e.g., socket name)"
+    :db/unique :db.unique/identity}
+
+   :emacs-daemon/socket-name
+   {:db/doc "Emacs daemon socket name (for emacsclient -s)"}
+
+   :emacs-daemon/pid
+   {:db/doc "Operating system process ID of the Emacs daemon"}
+
+   :emacs-daemon/emacsclient
+   {:db/doc "Path to the emacsclient binary used to communicate"}
+
+   :emacs-daemon/status
+   {:db/doc "Current status: :active :stale :error :terminated"}
+
+   :emacs-daemon/started-at
+   {:db/doc "Timestamp when daemon was registered"}
+
+   :emacs-daemon/heartbeat-at
+   {:db/doc "Timestamp of last successful heartbeat"}
+
+   :emacs-daemon/error-message
+   {:db/doc "Last error message (set when status is :error)"}
+
+   :emacs-daemon/error-count
+   {:db/doc "Cumulative count of errors encountered"}
+
+   :emacs-daemon/lings
+   {:db/doc "Set of ling/slave IDs bound to this daemon"
+    :db/cardinality :db.cardinality/many}})

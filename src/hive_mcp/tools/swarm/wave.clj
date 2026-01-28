@@ -17,6 +17,7 @@
             [hive-mcp.events.core :as ev]
             [hive-mcp.agent :as agent]
             [hive-mcp.agent.cost :as cost]
+            [hive-mcp.knowledge-graph.disc :as kg-disc]
             [hive-mcp.telemetry.prometheus :as prom]
             [hive-mcp.telemetry.health :as health]
             [clojure.core.async :as async :refer [go go-loop <! >! <!! chan close!]]
@@ -200,8 +201,14 @@
    Returns:
      Map with :success :result or :error, and :proposed-diff-ids when skip-auto-apply"
   [{:keys [change-item/id change-item/file change-item/task]} preset cwd skip-auto-apply wave-id]
-  (let [result (agent/delegate-drone!
-                {:task (str "File: " file "\n\nTask: " task)
+  (let [;; L1 Disc: Proactively surface staleness warnings (zero noise for fresh files)
+        disc-warnings (try (kg-disc/staleness-warnings [file]) (catch Exception _ nil))
+        disc-notice (kg-disc/format-staleness-warnings disc-warnings)
+        task-str (if disc-notice
+                   (str disc-notice "File: " file "\n\nTask: " task)
+                   (str "File: " file "\n\nTask: " task))
+        result (agent/delegate-drone!
+                {:task task-str
                  :files [file]
                  :preset preset
                  :trace true
