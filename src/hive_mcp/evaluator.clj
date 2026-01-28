@@ -349,7 +349,12 @@
                               (hive-mcp-cider-eval-explicit %s)
                             (error \"hive-mcp-cider not loaded\")))"
                         (pr-str code))
-          {:keys [success result error]} (ec/eval-elisp elisp)]
+          {:keys [success result error timed-out]}
+          (try
+            (ec/eval-elisp-with-timeout elisp 10000)
+            (catch Exception e
+              (log/warn "EmacsCiderEvaluator: eval-code exception" (.getMessage e))
+              {:success false :error (.getMessage e)}))]
       (if success
         {:success true
          :result result
@@ -361,9 +366,11 @@
          :result nil
          :value nil
          :out ""
-         :err error
+         :err (or error "")
          :ns "user"
-         :error error})))
+         :error (if timed-out
+                  "CIDER eval timed out after 10s - Emacs may be busy or unresponsive"
+                  error)})))
 
   (connected? [this]
     (let [{:keys [connected]} (get-status this)]
@@ -376,7 +383,12 @@
                   (if (fboundp 'hive-mcp-cider-status)
                       (json-encode (hive-mcp-cider-status))
                     (json-encode (list :connected nil :error \"hive-mcp-cider not loaded\"))))"
-          {:keys [success result error]} (ec/eval-elisp elisp)]
+          {:keys [success result error timed-out]}
+          (try
+            (ec/eval-elisp-with-timeout elisp 5000)
+            (catch Exception e
+              (log/warn "EmacsCiderEvaluator: get-status exception" (.getMessage e))
+              {:success false :error (.getMessage e)}))]
       (if success
         (try
           (let [status (json/read-str result :key-fn keyword)]
@@ -388,7 +400,9 @@
              :raw-result result}))
         {:connected false
          :type :cider
-         :error (or error "Unknown error checking CIDER status")}))))
+         :error (if timed-out
+                  "CIDER status check timed out after 5s - Emacs may be unresponsive"
+                  (or error "Unknown error checking CIDER status"))}))))
 
 (defn create-emacs-cider-evaluator
   "Create an EmacsCiderEvaluator instance.

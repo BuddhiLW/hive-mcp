@@ -13,7 +13,7 @@
    - handlers.claim   - File claims (:claim/file-released, :claim/notify-waiting)
    - handlers.hot-reload - Hot reload lifecycle (:hot/reload-start, :hot/reload-success, :file/changed)
    - handlers.kg     - Knowledge Graph (:kg/edge-created, :kg/edge-updated, :kg/edge-removed, :kg/node-promoted)
-   - handlers.agora  - Agora events (:agora/turn-dispatched, :agora/timeout, :agora/turn-response, :agora/execute-next-turn, :agora/consensus)
+   - handlers.agora  - Agora events (:agora/turn-dispatched, :agora/timeout, :agora/turn-completed, :agora/dispatch-next, :agora/execute-drone, :agora/debate-started, :agora/stage-transition, :agora/consensus)
 
    ## Usage
    ```clojure
@@ -57,9 +57,12 @@
    - :kg/node-promoted      - Knowledge promoted to parent scope
    - :agora/turn-dispatched   - Agora turn dispatched to ling
    - :agora/timeout           - Agora timeout
-   - :agora/turn-response     - Auto-continue drone debates (P0)
-   - :agora/execute-next-turn - Execute next debate turn async (P0)
-   - :agora/consensus         - Crystallize debate result to memory (P0)
+   - :agora/turn-completed    - Unified turn completion (drones + lings)
+   - :agora/dispatch-next     - Participant-type aware next turn dispatch
+   - :agora/execute-drone     - Execute drone turn via delegate-drone!
+   - :agora/debate-started    - Auto-kick first turn after create-debate!
+   - :agora/stage-transition  - Research -> debate stage transition
+   - :agora/consensus         - Crystallize debate result to memory
 
    SOLID: SRP - Facade delegates to domain-specific modules
    CLARITY: R - Represented intent through clear module structure"
@@ -125,7 +128,7 @@
     (agora/register-handlers!)
 
     (reset! *registered true)
-    (println "[hive-events] Handlers registered: :task/complete :task/shout-complete :git/commit-modified :ling/started :ling/completed :ling/ready-for-wrap :session/end :session/wrap :kanban/sync :kanban/done :crystal/wrap-request :crystal/wrap-notify :wave/start :wave/item-done :wave/complete :validated-wave/start :validated-wave/iteration-start :validated-wave/success :validated-wave/partial :validated-wave/retry :drone/started :drone/completed :drone/failed :claim/file-released :claim/notify-waiting :system/error :hot/reload-start :hot/reload-success :file/changed :kg/edge-created :kg/edge-updated :kg/edge-removed :kg/node-promoted :agora/turn-dispatched :agora/timeout :agora/turn-response :agora/execute-next-turn :agora/consensus")
+    (println "[hive-events] Handlers registered: :task/complete :task/shout-complete :git/commit-modified :ling/started :ling/completed :ling/ready-for-wrap :session/end :session/wrap :kanban/sync :kanban/done :crystal/wrap-request :crystal/wrap-notify :wave/start :wave/item-done :wave/complete :validated-wave/start :validated-wave/iteration-start :validated-wave/success :validated-wave/partial :validated-wave/retry :drone/started :drone/completed :drone/failed :claim/file-released :claim/notify-waiting :system/error :hot/reload-start :hot/reload-success :file/changed :kg/edge-created :kg/edge-updated :kg/edge-removed :kg/node-promoted :agora/turn-dispatched :agora/timeout :agora/turn-completed :agora/dispatch-next :agora/execute-drone :agora/debate-started :agora/stage-transition :agora/consensus")
     true))
 
 (defn reset-registration!

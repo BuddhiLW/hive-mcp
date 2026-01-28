@@ -454,12 +454,11 @@
               elisp (format "(json-encode (hive-mcp-api-kanban-move %s \"done\" %s))"
                             (str "\"" task-id "\"")
                             dir-arg)
-              {:keys [_success _error]} (require '[hive-mcp.emacsclient :as ec])
-              result (when (resolve 'hive-mcp.emacsclient/eval-elisp)
-                       ((resolve 'hive-mcp.emacsclient/eval-elisp) elisp))]
-          (if (:success result)
-            (log/info "[EVENT] Kanban task moved to done:" task-id)
-            (log/warn "[EVENT] Kanban move failed for" task-id ":" (:error result))))
+              {:keys [success error timed-out]} (ec/eval-elisp-with-timeout elisp 10000)]
+          (cond
+            timed-out (log/warn "[EVENT] Kanban move for" task-id "timed out (10s) - continuing")
+            success   (log/info "[EVENT] Kanban task moved to done:" task-id)
+            :else     (log/warn "[EVENT] Kanban move failed for" task-id ":" error)))
         (catch Exception e
           (log/error "[EVENT] Kanban move error for" task-id ":" (.getMessage e)))))))
 
@@ -549,10 +548,11 @@
       (let [elisp (format "(hive-mcp-swarm-send-to-terminal \"%s\" \"%s\")"
                           (v/escape-elisp-string slave-id)
                           (v/escape-elisp-string prompt))
-            {:keys [success error]} (ec/eval-elisp elisp)]
-        (if success
-          (log/info "[EVENT] Sent Agora prompt to ling:" slave-id)
-          (log/warn "[EVENT] Failed to send Agora prompt to" slave-id ":" error)))
+            {:keys [success error timed-out]} (ec/eval-elisp-with-timeout elisp 10000)]
+        (cond
+          timed-out (log/warn "[EVENT] Agora prompt to" slave-id "timed out (10s) - continuing")
+          success   (log/info "[EVENT] Sent Agora prompt to ling:" slave-id)
+          :else     (log/warn "[EVENT] Failed to send Agora prompt to" slave-id ":" error)))
       (catch Exception e
         (log/error "[EVENT] Swarm send-prompt error:" (.getMessage e))))))
 
@@ -564,7 +564,7 @@
   "Execute an :agora/continue effect - continue debate asynchronously.
 
    Calls debate/continue-debate! in a future to avoid blocking the event loop.
-   The continue-debate! function will emit another :agora/turn-response event
+   The continue-debate! function will emit another :agora/turn-completed event
    upon completion, creating the event-driven automation loop.
 
    Expected data shape:
@@ -729,6 +729,10 @@
 
     ;; :agora/continue - Async debate continuation (P0: Event-Driven Agora)
     (ev/reg-fx :agora/continue handle-agora-continue)
+
+    ;; :agora/execute-drone - Execute drone turn (unified event chain)
+    ;; Delegates to same handler as :agora/continue
+    (ev/reg-fx :agora/execute-drone handle-agora-continue)
 
     ;; :kanban-move-done - Move kanban tasks to done (Session Complete)
     (ev/reg-fx :kanban-move-done handle-kanban-move-done)

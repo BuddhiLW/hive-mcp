@@ -404,6 +404,8 @@
   [& _args]
   (let [server-id (random-uuid)]
     (log/info "Starting hive-mcp server:" server-id)
+    (when-let [sock (System/getenv "EMACS_SOCKET_NAME")]
+      (log/info "Targeting Emacs daemon:" sock))
     ;; CLARITY-Y: Mark coordinator running FIRST to protect production state
     ;; This prevents test fixtures from resetting ev/reset-all! or ds/reset-conn!
     (guards/mark-coordinator-running!)
