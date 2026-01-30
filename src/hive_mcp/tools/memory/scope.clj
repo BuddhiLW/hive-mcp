@@ -24,22 +24,28 @@
 ;; ============================================================
 
 (defn get-current-project-id
-  "Get current project ID from Emacs, or 'global' if not in a project.
-   When directory is provided, uses that path to determine project context
-   instead of relying on Emacs's current buffer."
+  "Get current project ID from directory path or Emacs context.
+   When directory is provided, derives project-id from path (no Emacs call).
+   When directory is nil, falls back to Emacs current buffer context."
   ([]
    (get-current-project-id nil))
   ([directory]
-   (try
-     (let [elisp (if directory
-                   (format "(hive-mcp-memory--project-id %s)" (pr-str directory))
-                   "(hive-mcp-memory--project-id)")
-           {:keys [success result]} (ec/eval-elisp elisp)]
-       (if (and success result (not= result "nil"))
-         (str/replace result #"\"" "")
+   (if directory
+     ;; Derive from directory path directly (no emacsclient roundtrip)
+     (let [parts (str/split directory #"/")
+           project-name (last parts)]
+       (if (and project-name (not (str/blank? project-name)))
+         project-name
          "global"))
-     (catch Exception _
-       "global"))))
+     ;; Fallback to Emacs only when no directory provided
+     (try
+       (let [elisp "(hive-mcp-memory--project-id)"
+             {:keys [success result]} (ec/eval-elisp elisp)]
+         (if (and success result (not= result "nil"))
+           (str/replace result #"\"" "")
+           "global"))
+       (catch Exception _
+         "global")))))
 
 ;; ============================================================
 ;; Scope Tag Management

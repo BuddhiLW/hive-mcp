@@ -15,7 +15,7 @@
    [hive-mcp.tools.magit :as magit]
    [hive-mcp.tools.projectile :as projectile]
    [hive-mcp.tools.kanban :as kanban]
-   [hive-mcp.tools.swarm :as swarm]
+   ;; swarm require removed - tools now via compat shims
    [hive-mcp.tools.swarm.claim :as claim]
    [hive-mcp.tools.org :as org]
    [hive-mcp.tools.prompt :as prompt]
@@ -37,10 +37,30 @@
    [hive-mcp.tools.cost :as cost]
    [hive-mcp.tools.routing :as routing]
    [hive-mcp.tools.delegate :as delegate]
+   [hive-mcp.tools.overarch :as overarch]
+   [hive-mcp.plan.tool :as plan]
    [hive-mcp.hivemind :as hivemind]
    [hive-mcp.channel :as channel]
    [hive-mcp.agent :as agent]
    [hive-mcp.chroma :as chroma]
+   ;; Consolidated CLI tools (new unified interface)
+   [hive-mcp.tools.consolidated.agent :as c-agent]
+   [hive-mcp.tools.consolidated.memory :as c-memory]
+   [hive-mcp.tools.consolidated.kg :as c-kg]
+   [hive-mcp.tools.consolidated.hivemind :as c-hivemind]
+   [hive-mcp.tools.consolidated.magit :as c-magit]
+   [hive-mcp.tools.consolidated.cider :as c-cider]
+   [hive-mcp.tools.consolidated.kanban :as c-kanban]
+   [hive-mcp.tools.consolidated.preset :as c-preset]
+   [hive-mcp.tools.consolidated.olympus :as c-olympus]
+   [hive-mcp.tools.consolidated.agora :as c-agora]
+   [hive-mcp.tools.consolidated.kondo :as c-kondo]
+   [hive-mcp.tools.consolidated.project :as c-project]
+   [hive-mcp.tools.consolidated.session :as c-session]
+   [hive-mcp.tools.consolidated.emacs :as c-emacs]
+   [hive-mcp.tools.consolidated.wave :as c-wave]
+   ;; Backward-compatibility shims for deprecated tools
+   [hive-mcp.tools.compat :as compat]
    [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -63,10 +83,18 @@
 ;; Base Tools (always included)
 ;; =============================================================================
 
-(def ^:private base-tools
-  "Tools that are always included regardless of capability state.
+(defn ^:private get-base-tools
+  "Get tools that are always included regardless of capability state.
    Excludes kanban tools (both mem-kanban and org-kanban) - these are added
-   conditionally in get-filtered-tools based on Chroma availability."
+   conditionally in get-filtered-tools based on Chroma availability.
+
+   CRITICAL: This is a function, not a def, to support hot-reload.
+   Each call dereferences the current var values from tool modules,
+   ensuring handlers point to fresh function references after reload.
+
+   Includes deprecated tool shims (compat/tools) for backward compatibility.
+   These log warnings and delegate to consolidated handlers."
+  []
   (vec (concat buffer/tools
                crystal/tools
                memory/tools
@@ -74,7 +102,7 @@
                magit/tools
                projectile/tools
                ;; kanban/tools removed - now conditional on Chroma availability
-               swarm/tools
+               ;; swarm/tools removed - use compat/tools shims instead
                claim/tools  ; File claim management (claim_list, claim_clear)
                prompt/tools
                presets-tools/tools
@@ -94,9 +122,30 @@
                cost/tools              ; Token cost tracking and budget management
                routing/tools           ; Smart model routing for drones
                delegate/tools          ; Unified delegate API (ADR-20260123161700)
+               plan/tools              ; plan_to_kanban workflow (exploration -> kanban)
+               overarch/tools          ; Overarch architecture diagram generation
                hivemind/tools
                channel/channel-tools
-               agent/tools)))
+               agent/tools
+               ;; Consolidated CLI tools (new unified interface)
+               ;; Each exposes single tool with subcommands: agent spawn|status|kill
+               c-agent/tools
+               c-memory/tools
+               c-kg/tools
+               c-hivemind/tools
+               c-magit/tools
+               c-cider/tools
+               c-kanban/tools
+               c-preset/tools
+               c-olympus/tools
+               c-agora/tools
+               c-kondo/tools
+               c-project/tools
+               c-session/tools
+               c-emacs/tools
+               c-wave/tools
+               ;; Backward-compatibility shims (deprecated, sunset: 2026-04-01)
+               compat/tools)))
 
 ;; =============================================================================
 ;; Dynamic Tool Aggregation
@@ -115,17 +164,21 @@
    - Include org tools WITH org_kanban_native_* (additional fallback)
    - Exclude mcp_mem_kanban_* tools
 
-   CLARITY: Open/Closed - new capabilities can be added without modifying base tools."
+   CLARITY: Open/Closed - new capabilities can be added without modifying base tools.
+
+   HOT-RELOAD: Calls (get-base-tools) to get fresh handler references.
+   This ensures hot-reload updates propagate to tool dispatch."
   []
-  (let [chroma-up? (chroma/chroma-available?)]
+  (let [chroma-up? (chroma/chroma-available?)
+        base (get-base-tools)]
     (log/info "Kanban capability check: Chroma available?" chroma-up?)
     (if chroma-up?
       ;; Chroma available: use mem-kanban only, no org-kanban tools
-      (vec (concat base-tools
+      (vec (concat base
                    mem-kanban/tools
                    (org-tools-without-kanban)))
       ;; Chroma unavailable: use kanban/tools (elisp addon) + org-kanban-native as fallback
-      (vec (concat base-tools
+      (vec (concat base
                    kanban/tools  ; elisp org-kanban addon (fallback when Chroma down)
                    org/tools)))))
 
@@ -139,7 +192,10 @@
    modules without modifying this aggregation.
 
    NOTE: This static def includes ALL tools for backward compatibility.
-   Use get-filtered-tools at server startup for capability-based filtering."
+   Use get-filtered-tools at server startup for capability-based filtering.
+
+   Includes deprecated tool shims (compat/tools) for backward compatibility.
+   These log deprecation warnings and delegate to consolidated handlers."
   (vec (concat buffer/tools
                crystal/tools
                memory/tools
@@ -148,7 +204,7 @@
                magit/tools
                projectile/tools
                kanban/tools
-               swarm/tools
+               ;; swarm/tools removed - use compat/tools shims instead
                claim/tools  ; File claim management (claim_list, claim_clear)
                org/tools
                prompt/tools
@@ -169,9 +225,29 @@
                cost/tools              ; Token cost tracking and budget management
                routing/tools           ; Smart model routing for drones
                delegate/tools          ; Unified delegate API (ADR-20260123161700)
+               plan/tools              ; plan_to_kanban workflow (exploration -> kanban)
+               overarch/tools          ; Overarch architecture diagram generation
                hivemind/tools
                channel/channel-tools
-               agent/tools)))
+               agent/tools
+               ;; Consolidated CLI tools (new unified interface)
+               c-agent/tools
+               c-memory/tools
+               c-kg/tools
+               c-hivemind/tools
+               c-magit/tools
+               c-cider/tools
+               c-kanban/tools
+               c-preset/tools
+               c-olympus/tools
+               c-agora/tools
+               c-kondo/tools
+               c-project/tools
+               c-session/tools
+               c-emacs/tools
+               c-wave/tools
+               ;; Backward-compatibility shims (deprecated, sunset: 2026-04-01)
+               compat/tools)))
 
 (defn get-tool-by-name
   "Find a tool definition by name."

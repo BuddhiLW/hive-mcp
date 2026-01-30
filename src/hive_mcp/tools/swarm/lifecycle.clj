@@ -77,9 +77,13 @@
    SOLID: SRP - Only handles spawn, not registration"
   [{:keys [name presets cwd _role terminal kanban_task_id]}]
   (core/with-swarm
-    (let [;; Generate lightweight catchup context for injection (non-fatal)
+    (let [;; CLARITY-I: Validate cwd is a proper string path (fix for stringp bug)
+          ;; MCP may pass non-string values - coerce to nil if invalid
+          validated-cwd (when (and cwd (string? cwd) (not (str/blank? cwd)))
+                          cwd)
+          ;; Context injection re-enabled with validated directory
           spawn-ctx (try
-                      (catchup/spawn-context cwd)
+                      (catchup/spawn-context validated-cwd)
                       (catch Exception e
                         (log/warn "spawn-context generation failed (non-fatal):" (.getMessage e))
                         nil))
@@ -90,7 +94,7 @@
           elisp (format "(json-encode (hive-mcp-swarm-api-spawn \"%s\" %s %s %s %s %s))"
                         (v/escape-elisp-string (or name "slave"))
                         (or presets-str "nil")
-                        (if cwd (format "\"%s\"" (v/escape-elisp-string cwd)) "nil")
+                        (if validated-cwd (format "\"%s\"" (v/escape-elisp-string validated-cwd)) "nil")
                         (if terminal (format "\"%s\"" terminal) "nil")
                         (if kanban_task_id (format "\"%s\"" (v/escape-elisp-string kanban_task_id)) "nil")
                         (if ctx-file (format "\"%s\"" (v/escape-elisp-string ctx-file)) "nil"))

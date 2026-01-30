@@ -10,7 +10,7 @@
    - overarch_export: Export models to JSON/Structurizr
    - overarch_select: Query model elements by criteria
    - overarch_help: Show CLI usage"
-  (:require [clojure.java.shell :refer [sh]]
+  (:require [babashka.process :as p]
             [clojure.string :as str]
             [hive-mcp.tools.core :refer [mcp-error mcp-json mcp-success]]
             [taoensso.timbre :as log]))
@@ -31,24 +31,26 @@
   #{"json" "structurizr"})
 
 ;; =============================================================================
-;; Internal Helpers
+;; CLI Execution
 ;; =============================================================================
 
-(defn- run-overarch
-  "Execute overarch CLI with given args.
+(defn run-overarch!
+  "Execute overarch CLI with given args using babashka.process.
    Returns {:success true :output ...} or {:success false :error ... :exit ...}"
   [& args]
   (log/debug "Running overarch" {:args args})
   (try
-    (let [result (apply sh overarch-bin args)]
-      (if (zero? (:exit result))
+    (let [cmd (into [overarch-bin] args)
+          result (p/shell {:out :string :err :string :continue true} cmd)
+          exit-code (:exit result)]
+      (if (zero? exit-code)
         {:success true
          :output (str/trim (:out result))}
         {:success false
          :error (or (not-empty (str/trim (:err result)))
                     (str/trim (:out result))
                     "Unknown error")
-         :exit (:exit result)}))
+         :exit exit-code}))
     (catch java.io.IOException e
       {:success false
        :error (str "Failed to execute overarch: " (.getMessage e))
@@ -78,7 +80,7 @@
       (mcp-error (:error err))
       (let [args (cond-> ["-m" model-dir "-r" render-format "-R" render-dir]
                    (false? format_subdirs) (conj "--no-render-format-subdirs"))
-            result (apply run-overarch args)]
+            result (apply run-overarch! args)]
         (if (:success result)
           (mcp-json {:status "success"
                      :model_dir model-dir
@@ -97,7 +99,7 @@
     ;; Validate format
     (if-let [err (validate-format export-format valid-export-formats "export format")]
       (mcp-error (:error err))
-      (let [result (run-overarch "-m" model-dir "-x" export-format "-X" export-dir)]
+      (let [result (run-overarch! "-m" model-dir "-x" export-format "-X" export-dir)]
         (if (:success result)
           (mcp-json {:status "success"
                      :model_dir model-dir
@@ -115,7 +117,7 @@
     (mcp-error "criteria parameter is required"))
   (let [model-dir (or model_dir "models")
         flag (if as_references "-S" "-s")
-        result (run-overarch "-m" model-dir flag criteria)]
+        result (run-overarch! "-m" model-dir flag criteria)]
     (if (:success result)
       (mcp-json {:status "success"
                  :model_dir model-dir
@@ -128,7 +130,7 @@
   "Show overarch CLI help and usage information."
   [_]
   (log/info "overarch-help")
-  (let [result (run-overarch "--help")]
+  (let [result (run-overarch! "--help")]
     (if (:success result)
       (mcp-success (:output result))
       (mcp-error (str "Failed to get help: " (:error result))))))
@@ -139,7 +141,7 @@
   [{:keys [model_dir]}]
   (log/info "overarch-validate" {:model_dir model_dir})
   (let [model-dir (or model_dir "models")
-        result (run-overarch "-m" model-dir "--model-warnings" "--model-info")]
+        result (run-overarch! "-m" model-dir "--model-warnings" "--model-info")]
     (if (:success result)
       (mcp-json {:status "success"
                  :model_dir model-dir

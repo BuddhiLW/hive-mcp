@@ -2,7 +2,7 @@
   "MCP tool for completing ling sessions with full lifecycle.
 
    CLARITY Framework:
-   - C: Composition - orchestrates git, kanban, crystal, hivemind
+   - C: Composition - orchestrates git, kanban, crystal, hivemind, plan-to-kanban
    - L: Layers pure - handler validates, event system executes effects
    - A: Architectural performance - single tool call instead of 4
    - R: Represented intent - clear session completion semantics
@@ -15,6 +15,7 @@
    2. Move kanban tasks to done
    3. Run wrap/crystallize for memory persistence
    4. Shout completion to hivemind coordinator
+   5. Auto-trigger plan_to_kanban if explorer preset (when enabled)
 
    Usage by lings:
    ```
@@ -28,12 +29,34 @@
             [hive-mcp.events.interceptors :as interceptors]
             [hive-mcp.agent.context :as ctx]
             [hive-mcp.swarm.datascript :as ds]
+            [hive-mcp.chroma :as chroma]
             [clojure.data.json :as json]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
+
+;; =============================================================================
+;; Configuration
+;; =============================================================================
+
+(def ^:private config
+  "Session complete configuration.
+   :auto-kanban-on-explore - When true, auto-trigger plan_to_kanban for explorer lings"
+  (atom {:auto-kanban-on-explore true}))
+
+(defn set-config!
+  "Update session_complete configuration.
+   Options:
+     :auto-kanban-on-explore - Enable/disable auto plan-to-kanban for explorer lings"
+  [opts]
+  (swap! config merge opts))
+
+(defn get-config
+  "Get current session_complete configuration."
+  []
+  @config)
 
 ;; =============================================================================
 ;; Validation (CLARITY: Inputs are guarded)
@@ -51,6 +74,102 @@
     {:error "commit_msg cannot be empty"}
 
     :else nil))
+
+;; =============================================================================
+;; Explorer Preset Detection & Plan Memory Discovery
+;; =============================================================================
+
+(defn- has-explorer-preset?
+  "Check if a ling has the explorer preset.
+   Returns true if 'explorer' is in the ling's :slave/presets."
+  [agent-id]
+  (when agent-id
+    (when-let [slave (ds/get-slave agent-id)]
+      (let [presets (set (:slave/presets slave))]
+        (contains? presets "explorer")))))
+
+(defn- find-plan-memory
+  "Find the most recent plan memory created by this agent.
+   Looks for memories with tags 'plan' and 'exploration-output'.
+
+   Arguments:
+     agent-id   - The ling's agent ID
+     project-id - Project scope for filtering
+
+   Returns:
+     Memory entry map with :id, :content, etc. or nil if not found"
+  [agent-id project-id]
+  (try
+    (let [agent-tag (str "agent:" agent-id)
+          ;; Query recent decisions (plans are stored as decisions per explorer preset)
+          entries (chroma/query-entries :type "decision"
+                                        :project-id project-id
+                                        :limit 50)
+          ;; Filter for plan + exploration-output tags + agent attribution
+          plan-entries (->> entries
+                            (filter (fn [entry]
+                                      (let [tags (set (:tags entry))]
+                                        (and (contains? tags "plan")
+                                             (contains? tags "exploration-output")
+                                             (contains? tags agent-tag)))))
+                            ;; Sort by created (most recent first)
+                            (sort-by :created #(compare %2 %1)))]
+      (first plan-entries))
+    (catch Exception e
+      (log/warn "find-plan-memory failed:" (.getMessage e))
+      nil)))
+
+(defn- trigger-plan-to-kanban!
+  "Trigger plan_to_kanban for a plan memory entry.
+   Called asynchronously after session completion.
+
+   Arguments:
+     plan-memory-id - Memory entry ID containing the plan
+     directory      - Working directory for project scope
+
+   Returns:
+     Result map from plan_to_kanban or nil on failure"
+  [plan-memory-id directory]
+  (try
+    ;; Require plan.tool dynamically to avoid circular deps
+    (let [plan-to-kanban (requiring-resolve 'hive-mcp.plan.tool/plan-to-kanban)]
+      (log/info "Auto-triggering plan_to_kanban for plan:" plan-memory-id)
+      (plan-to-kanban plan-memory-id :directory directory))
+    (catch Exception e
+      (log/error e "Failed to auto-trigger plan_to_kanban")
+      nil)))
+
+(defn- maybe-trigger-plan-to-kanban!
+  "Check if this ling has explorer preset and trigger plan_to_kanban if so.
+   Called after session completion events are dispatched.
+
+   Arguments:
+     agent-id   - The completing ling's agent ID
+     directory  - Working directory for project scoping
+
+   Returns:
+     {:triggered? bool :plan-id id :result result} or nil"
+  [agent-id directory]
+  (when (:auto-kanban-on-explore @config)
+    (when (has-explorer-preset? agent-id)
+      (log/info "Explorer preset detected for" agent-id "- checking for plan memory")
+      (let [project-id (when directory
+                         ;; Derive project-id from directory
+                         (try
+                           ((requiring-resolve 'hive-mcp.tools.memory.scope/get-current-project-id) directory)
+                           (catch Exception _ nil)))]
+        (when-let [plan-memory (find-plan-memory agent-id project-id)]
+          (let [plan-id (:id plan-memory)]
+            (log/info "Found plan memory:" plan-id "- triggering plan_to_kanban")
+            ;; Trigger asynchronously to not block session completion
+            (future
+              (try
+                (let [result (trigger-plan-to-kanban! plan-id directory)]
+                  (log/info "plan_to_kanban result:" (pr-str result)))
+                (catch Exception e
+                  (log/error e "Async plan_to_kanban failed"))))
+            {:triggered? true
+             :plan-id plan-id}))))))
 
 ;; =============================================================================
 ;; Event Handler (dispatched via hive-events)
@@ -205,13 +324,18 @@
       ;; Dispatch the event
       (ev/dispatch [:ling/session-complete event-data])
 
-      ;; Return success response
-      {:type "text"
-       :text (json/write-str {:status "ok"
-                              :agent_id agent-id
-                              :tasks_completed (count merged-task-ids)
-                              :linked_kanban_task ling-kanban-task-id
-                              :commit_msg commit_msg})})))
+      ;; Check for explorer preset and trigger plan_to_kanban if applicable
+      (let [plan-trigger-result (maybe-trigger-plan-to-kanban! agent-id effective-dir)]
+        ;; Return success response
+        {:type "text"
+         :text (json/write-str (cond-> {:status "ok"
+                                        :agent_id agent-id
+                                        :tasks_completed (count merged-task-ids)
+                                        :linked_kanban_task ling-kanban-task-id
+                                        :commit_msg commit_msg}
+                                 (:triggered? plan-trigger-result)
+                                 (assoc :plan_to_kanban_triggered true
+                                        :plan_id (:plan-id plan-trigger-result))))}))))
 
 ;; =============================================================================
 ;; Tool Definition

@@ -1,42 +1,70 @@
 (ns hive-mcp.tools.memory-kanban
   "In-memory kanban tools using the memory system.
-   
+
    Tasks stored as memory entries with:
    - type: 'note'
    - tags: ['kanban', status, priority]
    - duration: 'short-term' (7 days)
    - content: {:task-type 'kanban' :title ... :status ...}
-   
+
    Moving to 'done' DELETES from memory (after creating progress note)."
   (:require [hive-mcp.emacsclient :as ec]
             [hive-mcp.validation :as v]
             [hive-mcp.crystal.hooks :as crystal-hooks]
+            [hive-mcp.tools.memory.crud :as mem-crud]
             [clojure.data.json :as json]
-            [taoensso.timbre :as log]))
+            [taoensso.timbre :as log])
+  (:import [java.time ZonedDateTime]
+           [java.time.format DateTimeFormatter]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;; Tool handlers
+;; ============================================================
+;; Direct Chroma Kanban (bypasses elisp roundtrip)
+;; ============================================================
+
+(defn- kanban-timestamp
+  "Generate ISO timestamp for kanban task."
+  []
+  (.format (ZonedDateTime/now) (DateTimeFormatter/ofPattern "yyyy-MM-dd'T'HH:mm:ssZ")))
+
+(defn- build-kanban-tags
+  "Build tags for kanban task: ['kanban', status, priority, scope]."
+  [status priority project-id]
+  (cond-> ["kanban" (str "status-" status) (str "priority-" priority)]
+    project-id (conj (str "scope:project:" project-id))))
 
 (defn handle-mem-kanban-create
-  "Create a kanban task in memory.
+  "Create a kanban task in memory (direct Chroma, no elisp roundtrip).
    When directory is provided, scopes task to that project."
   [{:keys [title priority context directory]}]
-  (let [priority (or priority "medium")
-        elisp (format "(json-encode (hive-mcp-api-kanban-create %s %s %s %s))"
-                      (str "\"" (v/escape-elisp-string title) "\"")
-                      (str "\"" (v/escape-elisp-string priority) "\"")
-                      (if context
-                        (str "\"" (v/escape-elisp-string context) "\"")
-                        "nil")
-                      (if directory
-                        (str "\"" (v/escape-elisp-string directory) "\"")
-                        "nil"))
-        {:keys [success result error]} (ec/eval-elisp elisp)]
-    (if success
-      {:type "text" :text result}
-      {:type "text" :text (str "Error: " error) :isError true})))
+  (try
+    (let [priority (or priority "medium")
+          status "todo"
+          project-id (when directory
+                       (last (clojure.string/split directory #"/")))
+          content {:task-type "kanban"
+                   :title title
+                   :status status
+                   :priority priority
+                   :created (kanban-timestamp)
+                   :started nil
+                   :context context}
+          tags (build-kanban-tags status priority project-id)
+          ;; Call memory CRUD directly - no elisp roundtrip
+          result (mem-crud/handle-add {:type "note"
+                                       :content (json/write-str content)
+                                       :tags tags
+                                       :directory directory
+                                       :duration "short"})]
+      (log/info "kanban-create result:" result)
+      (if (:isError result)
+        result
+        {:type "text" :text (:text result)}))
+    (catch Exception e
+      (log/error e "kanban-create failed")
+      {:type "text" :text (str "Error: " (.getMessage e)) :isError true})))
 
 ;; ============================================================
 ;; Slim/Metadata Formatting (Token Optimization)
