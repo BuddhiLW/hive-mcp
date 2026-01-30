@@ -20,12 +20,20 @@
         ;; Logic programming for swarm hivemind coordination
         org.clojure/core.logic {:mvn/version "1.1.1"}
 
+        ;; Time handling
+        clj-time/clj-time {:mvn/version "0.15.2"}
+
         ;; Datascript for in-memory graph storage (GraphStore backend)
         datascript/datascript {:mvn/version "1.7.3"}
 
         ;; Datalevin for durable graph storage (GraphStore backend, optional)
         ;; LMDB-backed Datalog — requires Java 21+
         datalevin/datalevin {:mvn/version "0.10.2"}
+
+        ;; Datahike for immutable graph storage with branching/time-travel
+        ;; Content-addressable, supports branch/merge for multi-ling exploration
+        ;; Part of replikativ ecosystem (pairs with yggdrasil)
+        org.replikativ/datahike {:mvn/version "0.7.1638"}
 
         ;; Logging - SLF4J with Logback backend
         ;; clojure.tools.logging provides the Clojure facade
@@ -78,7 +86,12 @@
 
         ;; java-diff-utils for proper unified diff computation (hunks, context)
         ;; Used by drone diff protocol for token-efficient diff storage
-        io.github.java-diff-utils/java-diff-utils {:mvn/version "4.12"}}
+        io.github.java-diff-utils/java-diff-utils {:mvn/version "4.12"}
+        org.replikativ/yggdrasil {:mvn/version "0.1.6"}
+
+        ;; Process execution - babashka.process for CLI wrappers
+        ;; Used by overarch, scc, and other CLI tool integrations
+        babashka/process {:mvn/version "0.5.22"}}
 
  :aliases
  {:mcp

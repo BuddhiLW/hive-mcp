@@ -91,6 +91,26 @@
   (trace/untrace-ns ns-sym))
 
 ;; ============================================================
+;; WebSocket Channel (for bb-mcp bridge)
+;; ============================================================
+
+(defn start-websocket!
+  "Start the websocket channel server for bb-mcp communication.
+   Default port 9999, configurable via HIVE_WS_PORT env var."
+  ([] (start-websocket! (parse-long (or (System/getenv "HIVE_WS_PORT") "9999"))))
+  ([port]
+   (require '[hive-mcp.channel.websocket :as ws])
+   ((resolve 'hive-mcp.channel.websocket/start!) {:port port})
+   (println "WebSocket channel started on port" port)))
+
+(defn stop-websocket!
+  "Stop the websocket channel server."
+  []
+  (require '[hive-mcp.channel.websocket :as ws])
+  ((resolve 'hive-mcp.channel.websocket/stop!))
+  (println "WebSocket channel stopped"))
+
+;; ============================================================
 ;; Startup
 ;; ============================================================
 
@@ -102,3 +122,13 @@
 (println "  (reload!)            - Hot-reload changed files")
 (println "  (run-tests 'ns)      - Run tests for namespace")
 (println "================================\n")
+
+;; Auto-start disabled - call (start-websocket!) manually or via systemd
+;; TODO: Re-enable when nREPL detection is reliable
+#_(when-not *command-line-args*
+    (future
+      (try
+        (Thread/sleep 3000)
+        (start-websocket!)
+        (catch Exception e
+          (println "WebSocket auto-start failed (non-fatal):" (.getMessage e))))))
