@@ -210,7 +210,10 @@
    as comma-separated strings for bidirectional lookup.
 
    Grounding fields track abstraction level and verification status
-   per Korzybski's Structural Differential model."
+   per Korzybski's Structural Differential model.
+
+   Staleness fields track Bayesian freshness evidence for L1 Phase 2
+   transitive staleness propagation."
   [{:keys [id document metadata]}]
   {:id id
    :type (:type metadata)
@@ -235,6 +238,12 @@
    :knowledge-gaps (split-tags (:knowledge-gaps metadata))
    :source-hash (:source-hash metadata)
    :source-file (:source-file metadata)
+   ;; Staleness tracking (Bayesian Beta model for L1 Phase 2)
+   :staleness-alpha (:staleness-alpha metadata)
+   :staleness-beta (:staleness-beta metadata)
+   :staleness-source (when-let [s (:staleness-source metadata)]
+                       (if (string? s) (keyword s) s))
+   :staleness-depth (:staleness-depth metadata)
    :document document})
 
 ;;; ============================================================
@@ -323,7 +332,12 @@
    :grounded-from ""           ; Disc entity ID verified against
    :knowledge-gaps ""          ; Comma-separated gap keywords
    :source-hash ""             ; Content hash when abstracted (for drift detection)
-   :source-file ""})
+   :source-file ""
+   ;; Staleness tracking for L1 Phase 2 transitive propagation (Bayesian Beta model)
+   :staleness-alpha 1          ; Bayesian α parameter (positive evidence / freshness)
+   :staleness-beta 1           ; Bayesian β parameter (negative evidence / staleness)
+   :staleness-source nil       ; Source: :hash-mismatch, :git-commit, :time-decay, :transitive
+   :staleness-depth 0})
 
 (defn index-memory-entry!
   "Index a memory entry in Chroma (full storage, not just search).
@@ -333,14 +347,17 @@
    Full metadata stored: type, tags, content, content-hash, created, updated,
    duration, expires, access-count, helpful-count, unhelpful-count, project-id,
    kg-outgoing, kg-incoming, abstraction-level, grounded-at, grounded-from,
-   knowledge-gaps, source-hash, source-file.
+   knowledge-gaps, source-hash, source-file, staleness-alpha, staleness-beta,
+   staleness-source, staleness-depth.
 
    Note: Tags, KG edge IDs, and knowledge-gaps are stored as comma-separated
-   strings since Chroma metadata only supports scalar values (string, int, float, bool)."
+   strings since Chroma metadata only supports scalar values (string, int, float, bool).
+   Keywords (like staleness-source) are stored as strings."
   [{:keys [id content type tags created updated duration expires
            content-hash access-count helpful-count unhelpful-count project-id
            kg-outgoing kg-incoming abstraction-level
-           grounded-at grounded-from knowledge-gaps source-hash source-file]
+           grounded-at grounded-from knowledge-gaps source-hash source-file
+           staleness-alpha staleness-beta staleness-source staleness-depth]
     :as entry}]
   (require-embedding!)
   (let [coll (get-or-create-collection)
@@ -362,7 +379,12 @@
                   :grounded-from grounded-from
                   :knowledge-gaps (join-tags knowledge-gaps)
                   :source-hash source-hash
-                  :source-file source-file}
+                  :source-file source-file
+                  ;; Staleness tracking (Bayesian Beta model for L1 Phase 2)
+                  :staleness-alpha staleness-alpha
+                  :staleness-beta staleness-beta
+                  :staleness-source (when staleness-source (name staleness-source))
+                  :staleness-depth staleness-depth}
         meta (merge metadata-defaults (into {} (remove (comp nil? val) provided)))]
     @(chroma/add coll [{:id entry-id :embedding embedding :document doc-text :metadata meta}]
                  :upsert? true)
@@ -407,6 +429,17 @@
          (take limit)
          vec)))
 
+(defn query-grounded-from
+  "Query Chroma for entries grounded from a specific disc path.
+   Returns seq of entry maps."
+  [disc-path]
+  (require-embedding!)
+  (let [coll (get-or-create-collection)
+        results @(chroma/get coll
+                             :where {:grounded-from disc-path}
+                             :include #{:documents :metadatas})]
+    (map metadata->entry results)))
+
 (defn update-entry!
   "Update a memory entry in Chroma.
    ID is required. Updates only provided fields.
@@ -418,6 +451,19 @@
           ;; Re-index with merged data
           _ (index-memory-entry! merged)]
       (get-entry-by-id id))))
+
+(defn update-staleness!
+  "Update staleness fields for a Chroma entry.
+   Options: :alpha (float), :beta (float), :source (keyword like :hash-mismatch), :depth (int).
+   Returns updated entry."
+  [entry-id {:keys [alpha beta source depth]}]
+  (require-embedding!)
+  (let [updates (-> {}
+                    (cond-> alpha (assoc :staleness-alpha alpha))
+                    (cond-> beta (assoc :staleness-beta beta))
+                    (cond-> source (assoc :staleness-source source))
+                    (cond-> depth (assoc :staleness-depth depth)))]
+    (update-entry! entry-id updates)))
 
 (defn find-duplicate
   "Find entry with matching content-hash in the given type.

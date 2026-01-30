@@ -66,13 +66,16 @@
    Returns flat seq of {:agent-id :event-type :message :timestamp :project-id}.
 
    Note: project-id is included for per-project cursor scoping.
-   Messages without project-id default to 'global'."
+   Messages without project-id default to 'global'.
+
+   BUG FIX: Shouts may have :task but no :message (or vice versa).
+   Fall back to :task when :message is nil to prevent {:m nil} in piggyback."
   []
   (mapcat (fn [[agent-id {:keys [messages]}]]
-            (for [{:keys [event-type message timestamp project-id]} messages]
+            (for [{:keys [event-type message task timestamp project-id]} messages]
               {:agent-id agent-id
                :event-type event-type
-               :message message
+               :message (or message task)
                :timestamp timestamp
                :project-id (or project-id "global")}))
           @agent-registry))
@@ -174,12 +177,12 @@
                        (when directory (mem-scope/get-current-project-id directory))
                        (when slave-cwd (mem-scope/get-current-project-id slave-cwd))
                        "global")
-        message {:event-type event-type
-                 :timestamp now
-                 :task (:task data)
-                 :message (:message data)
-                 :project-id project-id
-                 :data (dissoc data :task :message :directory :project-id)}
+        message (cond-> {:event-type event-type
+                         :timestamp now
+                         :project-id project-id
+                         :data (dissoc data :task :message :directory :project-id)}
+                  (:task data) (assoc :task (:task data))
+                  (:message data) (assoc :message (:message data)))
         event {:type (keyword (str "hivemind-" (name event-type)))
                :agent-id agent-id
                :timestamp now

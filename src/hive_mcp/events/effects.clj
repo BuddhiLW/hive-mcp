@@ -740,6 +740,15 @@
     ;; :wrap-crystallize - Run wrap crystallization (Session Complete)
     (ev/reg-fx :wrap-crystallize handle-wrap-crystallize)
 
+    ;; :tool-registry-refresh - Refresh tool handlers after hot-reload
+    (ev/reg-fx :tool-registry-refresh
+               (fn [_]
+                 (try
+                   (let [refresh-fn (requiring-resolve 'hive-mcp.agent.registry/refresh!)]
+                     (refresh-fn))
+                   (catch Exception e
+                     (log/error "[hot-reload] Failed to refresh tool registry:" (ex-message e))))))
+
     ;; ==========================================================================
     ;; Knowledge Graph Effects (delegated to kg.clj for SRP compliance)
     ;; ==========================================================================
@@ -751,7 +760,7 @@
 
     (reset! *registered true)
     (log/info "[hive-events] Coeffects registered: :now :agent-context :db-snapshot :waiting-lings :request-ctx")
-    (log/info "[hive-events] Effects registered: :shout :targeted-shout :log :ds-transact :wrap-notify :channel-publish :memory-write :report-metrics :emit-system-error :dispatch :dispatch-n :git-commit :kanban-sync :dispatch-task :swarm-send-prompt :agora/continue :kanban-move-done :wrap-crystallize")
+    (log/info "[hive-events] Effects registered: :shout :targeted-shout :log :ds-transact :wrap-notify :channel-publish :memory-write :report-metrics :emit-system-error :dispatch :dispatch-n :git-commit :kanban-sync :dispatch-task :swarm-send-prompt :agora/continue :kanban-move-done :wrap-crystallize :tool-registry-refresh")
     true))
 
 (defn reset-registration!

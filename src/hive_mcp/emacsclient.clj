@@ -7,7 +7,8 @@
    structured data for observability."
   (:require [clojure.java.shell :refer [sh]]
             [clojure.string :as str]
-            [taoensso.timbre :as log]))
+            [taoensso.timbre :as log])
+  (:import [clojure.lang IDeref]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -65,6 +66,40 @@
    Prevents thundering-herd probes right after a crash."
   5000)
 
+;;; =============================================================================
+;;; Daemon Death Detection & Error Reporting (IEmacsDaemon Integration)
+;;; =============================================================================
+
+(defn- detect-daemon-death
+  "Check if an error string indicates daemon death.
+   Returns [matched? tag] where tag is the specific death pattern matched."
+  [error-str]
+  (when (string? error-str)
+    (some (fn [[pattern tag]]
+            (when (re-find pattern error-str)
+              [true tag]))
+          daemon-dead-patterns)))
+
+(defn- report-daemon-error!
+  "Report a daemon error to the daemon store.
+   Uses requiring-resolve for lazy loading to avoid cyclic dependencies.
+
+   This is the integration point between emacsclient circuit breaker
+   and the IEmacsDaemon lifecycle tracking system."
+  [error-message death-tag]
+  (try
+    ;; Use requiring-resolve for lazy loading
+    (when-let [mark-error! (requiring-resolve 'hive-mcp.emacs.daemon-store/mark-error!)]
+      (when-let [default-daemon-id (requiring-resolve 'hive-mcp.emacs.daemon-store/default-daemon-id)]
+        (let [daemon-id (default-daemon-id)]
+          (mark-error! daemon-id (str "[" (name death-tag) "] " error-message))
+          (log/info :daemon-error-reported {:daemon-id daemon-id
+                                            :death-tag death-tag
+                                            :message error-message}))))
+    (catch Exception e
+      ;; Don't fail the operation if reporting fails
+      (log/debug "Could not report daemon error to store:" (.getMessage e)))))
+
 (defn- unwrap-emacs-string
   "Unwrap emacsclient print format quoting.
    Emacs wraps string results in quotes: \"foo\" -> \"\\\"foo\\\"\"
@@ -84,6 +119,9 @@
   "Execute elisp code with a timeout. Returns immediately if the operation
    takes longer than timeout-ms milliseconds.
    Clamps timeout-ms to *max-timeout-ms* (30s) as a hard ceiling.
+
+   IEmacsDaemon integration: On daemon death detection (matching daemon-dead-patterns),
+   reports the error to the daemon store for lifecycle tracking.
 
    Returns a map with :success, :result or :error keys.
    On timeout, returns {:success false :error \"Timeout...\" :timed-out true}"
@@ -117,7 +155,18 @@
            (do
              (if (:success result)
                (log/debug :emacsclient-success {:duration-ms duration})
-               (log/warn :emacsclient-failure {:duration-ms duration :error (:error result)}))
+               (do
+                 (log/warn :emacsclient-failure {:duration-ms duration :error (:error result)})
+                 ;; IEmacsDaemon integration: detect and report daemon death
+                 (when-let [[_ death-tag] (detect-daemon-death (:error result))]
+                   (log/warn :daemon-death-detected {:tag death-tag :error (:error result)})
+                   (report-daemon-error! (:error result) death-tag)
+                   (swap! circuit-breaker assoc
+                          :alive? false
+                          :tripped-at (System/currentTimeMillis)
+                          :crash-count (inc (:crash-count @circuit-breaker))
+                          :last-error (:error result)
+                          :last-tag death-tag))))
              (assoc result :duration-ms duration))))
        (catch Exception e
          (let [duration (- (System/currentTimeMillis) start)]

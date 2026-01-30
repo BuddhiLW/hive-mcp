@@ -424,11 +424,21 @@
     ;; CLARITY-T: Telemetry first - expose coordinator identity for hivemind operations
     (try
       (require 'hive-mcp.swarm.datascript)
+      (require 'hive-mcp.swarm.datascript.lings)
       (let [register! (resolve 'hive-mcp.swarm.datascript/register-coordinator!)
-            project-id (or (System/getenv "HIVE_MCP_PROJECT_ID") "hive-mcp")]
+            add-slave! (resolve 'hive-mcp.swarm.datascript.lings/add-slave!)
+            project-id (or (System/getenv "HIVE_MCP_PROJECT_ID") "hive-mcp")
+            cwd (System/getProperty "user.dir")]
         (register! project-id {:project project-id})
+        ;; Also register "coordinator" as a slave (depth 0) for bb-mcp compatibility
+        ;; bb-mcp injects agent_id: "coordinator" on all tool calls for piggyback tracking
+        (add-slave! "coordinator" {:name "coordinator"
+                                   :status :idle
+                                   :depth 0  ;; depth 0 = coordinator (not a ling)
+                                   :project-id project-id
+                                   :cwd cwd})
         (reset! coordinator-id-atom project-id)
-        (log/info "Coordinator registered:" project-id))
+        (log/info "Coordinator registered:" project-id "(also as slave for bb-mcp compat)"))
       (catch Exception e
         (log/warn "Coordinator registration failed (non-fatal):" (.getMessage e))))
     ;; Start embedded nREPL FIRST - bb-mcp needs this to forward tool calls
