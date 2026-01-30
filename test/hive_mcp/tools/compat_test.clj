@@ -307,7 +307,23 @@
     (let [info (compat/migration-info compat/swarm-spawn-shim)]
       (is (= "swarm_spawn" (:old-name info)))
       (is (= :agent (:new-tool info)))
-      (is (= "spawn" (:new-cmd info))))))
+      (is (= "spawn" (:new-cmd info)))))
+
+  (testing "swarm-spawn-shim renames directory to cwd"
+    (let [received (atom nil)
+          mock-handlers {:agent (mock-handler received {:ok true})}]
+      (with-redefs [compat/get-consolidated-handler (fn [tool-name]
+                                                      (get mock-handlers tool-name))]
+        (compat/swarm-spawn-shim {:directory "/project/path" :presets ["coordinator"]})
+
+        (is (= "/project/path" (:cwd @received))
+            "directory should be renamed to cwd")
+        (is (not (contains? @received :directory))
+            "directory should not be present")
+        (is (= "ling" (:type @received))
+            "static type param should be set")
+        (is (= ["coordinator"] (:presets @received))
+            "other params should pass through")))))
 
 (deftest swarm-dispatch-shim-renames-slave-id
   (testing "swarm-dispatch-shim renames slave_id to agent_id"
@@ -450,3 +466,46 @@
             "Missing source key should not create entry")
         (is (not (contains? @received :renamed))
             "Renamed key should not exist without source")))))
+
+;; =============================================================================
+;; String Key Handling Tests (MCP JSON compatibility)
+;; =============================================================================
+
+(deftest make-shim-handles-string-keys
+  (testing "param-rename works with string keys from MCP JSON"
+    (let [received (atom nil)
+          mock-handlers {:agent (mock-handler received {:ok true})}
+          shim (compat/make-shim "swarm_kill" :agent "kill"
+                                 :param-rename {:slave_id :agent_id})]
+      (with-redefs [compat/get-consolidated-handler (fn [tool-name]
+                                                      (get mock-handlers tool-name))]
+        ;; MCP sends string keys from JSON parsing
+        (shim {"slave_id" "ling-123" "force" true})
+
+        (is (= "ling-123" (:agent_id @received))
+            "String slave_id should be renamed to keyword :agent_id")
+        (is (not (contains? @received :slave_id))
+            "Old key should not be present")
+        (is (not (contains? @received "slave_id"))
+            "String key should not be present")
+        (is (true? (:force @received))
+            "Other string keys should become keywords")))))
+
+(deftest make-shim-handles-mixed-keys
+  (testing "param-rename handles mixed string and keyword keys"
+    (let [received (atom nil)
+          mock-handlers {:agent (mock-handler received {:ok true})}
+          shim (compat/make-shim "swarm_dispatch" :agent "dispatch"
+                                 :param-rename {:slave_id :agent_id
+                                                :message :prompt})]
+      (with-redefs [compat/get-consolidated-handler (fn [tool-name]
+                                                      (get mock-handlers tool-name))]
+        ;; Mixed: some string, some keyword (edge case)
+        (shim {"slave_id" "ling-1" :message "test prompt"})
+
+        (is (= "ling-1" (:agent_id @received))
+            "String key should be normalized and renamed")
+        (is (= "test prompt" (:prompt @received))
+            "Keyword key should be renamed")
+        (is (= "dispatch" (:command @received))
+            "Command should be set")))))

@@ -6,6 +6,7 @@
    2. Moves kanban tasks to done
    3. Runs wrap/crystallize
    4. Shouts completion to hivemind
+   5. Auto-triggers plan_to_kanban for explorer presets
 
    TDD: Tests written first, implementation follows.
 
@@ -22,6 +23,7 @@
             [hive-mcp.events.effects :as effects]
             [hive-mcp.events.handlers :as handlers]
             [hive-mcp.chroma :as chroma]
+            [hive-mcp.swarm.datascript :as ds]
             [hive-mcp.test-fixtures :as fixtures]))
 
 ;; =============================================================================
@@ -248,3 +250,125 @@
       (is (some? (find-effect :kanban-move-done)) "kanban-move-done triggered")
       (is (some? (find-effect :wrap-crystallize)) "wrap-crystallize triggered")
       (is (some? (find-effect :shout)) "shout triggered"))))
+
+;; =============================================================================
+;; Configuration Tests
+;; =============================================================================
+
+(deftest config-management
+  (testing "Config defaults"
+    (let [config (sc/get-config)]
+      (is (true? (:auto-kanban-on-explore config))
+          "auto-kanban-on-explore should be true by default")))
+
+  (testing "Config can be updated"
+    (let [original (sc/get-config)]
+      (sc/set-config! {:auto-kanban-on-explore false})
+      (is (false? (:auto-kanban-on-explore (sc/get-config)))
+          "Config should be updatable")
+      ;; Restore
+      (sc/set-config! original))))
+
+;; =============================================================================
+;; Explorer Preset Integration Tests
+;; =============================================================================
+
+(deftest explorer-preset-detection
+  (testing "Ling with explorer preset is detected"
+    ;; Setup: add a slave with explorer preset
+    (ds/add-slave! "explorer-ling-test"
+                   {:presets ["explorer" "hivemind"]
+                    :status :working
+                    :project-id "test-project"})
+    (try
+      ;; The has-explorer-preset? fn is private, test via behavior
+      ;; Create a memory entry that looks like a plan
+      (let [plan-content "{:plan/title \"Test Plan\" :plan/steps [{:step/id \"s1\"}]}"
+            entry-id (chroma/index-memory-entry!
+                      {:type "decision"
+                       :content plan-content
+                       :tags ["plan" "exploration-output" "agent:explorer-ling-test"]
+                       :project-id "test-project"
+                       :duration "medium"})]
+        (try
+          ;; Now complete session with the explorer ling
+          (let [result (sc/handle-session-complete
+                        {:commit_msg "feat: exploration complete"
+                         :agent_id "explorer-ling-test"
+                         :directory "/home/lages/test-project"})
+                parsed (parse-mcp-response result)]
+            (is (= "ok" (:status parsed)) "Should succeed")
+            ;; Should indicate plan_to_kanban was triggered
+            (is (true? (:plan_to_kanban_triggered parsed))
+                "Should trigger plan_to_kanban for explorer ling")
+            (is (= entry-id (:plan_id parsed))
+                "Should return the plan ID"))
+          (finally
+            ;; Cleanup memory entry
+            (try (chroma/delete-entry! entry-id) (catch Exception _)))))
+      (finally
+        ;; Cleanup slave
+        (ds/remove-slave! "explorer-ling-test")))))
+
+(deftest non-explorer-ling-no-trigger
+  (testing "Ling without explorer preset does not trigger plan_to_kanban"
+    ;; Setup: add a slave without explorer preset
+    (ds/add-slave! "worker-ling-test"
+                   {:presets ["tdd" "hivemind"]
+                    :status :working
+                    :project-id "test-project"})
+    (try
+      (let [result (sc/handle-session-complete
+                    {:commit_msg "feat: regular work done"
+                     :agent_id "worker-ling-test"
+                     :directory "/home/lages/test-project"})
+            parsed (parse-mcp-response result)]
+        (is (= "ok" (:status parsed)) "Should succeed")
+        (is (nil? (:plan_to_kanban_triggered parsed))
+            "Should NOT trigger plan_to_kanban for non-explorer ling"))
+      (finally
+        (ds/remove-slave! "worker-ling-test")))))
+
+(deftest config-disables-auto-trigger
+  (testing "When auto-kanban-on-explore is false, no trigger"
+    (let [original (sc/get-config)]
+      (sc/set-config! {:auto-kanban-on-explore false})
+      (try
+        ;; Setup: add a slave with explorer preset
+        (ds/add-slave! "explorer-disabled-test"
+                       {:presets ["explorer"]
+                        :status :working
+                        :project-id "test-project"})
+        (try
+          (let [result (sc/handle-session-complete
+                        {:commit_msg "feat: explore with disabled trigger"
+                         :agent_id "explorer-disabled-test"
+                         :directory "/home/lages/test-project"})
+                parsed (parse-mcp-response result)]
+            (is (= "ok" (:status parsed)) "Should succeed")
+            (is (nil? (:plan_to_kanban_triggered parsed))
+                "Should NOT trigger when config is disabled"))
+          (finally
+            (ds/remove-slave! "explorer-disabled-test")))
+        (finally
+          ;; Restore config
+          (sc/set-config! original))))))
+
+(deftest explorer-without-plan-no-trigger
+  (testing "Explorer ling without plan memory does not crash"
+    ;; Setup: add a slave with explorer preset but no plan memory
+    (ds/add-slave! "explorer-no-plan-test"
+                   {:presets ["explorer"]
+                    :status :working
+                    :project-id "test-project"})
+    (try
+      (let [result (sc/handle-session-complete
+                    {:commit_msg "feat: explored but no plan"
+                     :agent_id "explorer-no-plan-test"
+                     :directory "/home/lages/test-project"})
+            parsed (parse-mcp-response result)]
+        (is (= "ok" (:status parsed)) "Should succeed even without plan")
+        (is (nil? (:plan_to_kanban_triggered parsed))
+            "Should NOT trigger without plan memory"))
+      (finally
+        (ds/remove-slave! "explorer-no-plan-test")))))
