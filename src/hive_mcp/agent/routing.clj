@@ -46,35 +46,34 @@
 (def model-routes
   "Task type to primary/secondary model mapping.
 
-   Strategy:
-   - devstral: Best for code generation, tests, implementations
-   - deepseek: Best at code understanding, refactoring, bugfix
-   - gemma: Lightweight alternative for simple tasks
-   - mimo: Good for architecture/design tasks"
+   Strategy (paid tier):
+   - grok-code-fast-1: Best for code generation, tests, implementations
+   - deepseek-v3.2: Best at code understanding, refactoring, bugfix
+   - Fallback chains use deepseek as secondary"
   (atom
-   {:testing        {:primary "mistralai/devstral-2512:free"
-                     :secondary "google/gemma-3-4b-it:free"
-                     :reason "Devstral excels at test patterns and assertions"}
+   {:testing        {:primary "x-ai/grok-code-fast-1"
+                     :secondary "deepseek/deepseek-v3.2"
+                     :reason "Grok excels at test patterns and assertions"}
 
     :refactoring    {:primary "deepseek/deepseek-v3.2"
-                     :secondary "mistralai/devstral-2512:free"
+                     :secondary "x-ai/grok-code-fast-1"
                      :reason "DeepSeek strong at understanding code structure"}
 
-    :implementation {:primary "mistralai/devstral-2512:free"
-                     :secondary "x-ai/grok-code-fast-1"
-                     :reason "Devstral optimized for code generation"}
+    :implementation {:primary "x-ai/grok-code-fast-1"
+                     :secondary "deepseek/deepseek-v3.2"
+                     :reason "Grok optimized for code generation"}
 
     :bugfix         {:primary "deepseek/deepseek-v3.2"
-                     :secondary "mistralai/devstral-2512:free"
+                     :secondary "x-ai/grok-code-fast-1"
                      :reason "DeepSeek good at root cause analysis"}
 
-    :documentation  {:primary "openai/gpt-oss-120b:free"
-                     :secondary "mistralai/devstral-2512:free"
-                     :reason "GPT-OSS excels at natural language"}
-
-    :general        {:primary "mistralai/devstral-2512:free"
+    :documentation  {:primary "deepseek/deepseek-v3.2"
                      :secondary "x-ai/grok-code-fast-1"
-                     :reason "Devstral as robust default"}}))
+                     :reason "DeepSeek good at natural language"}
+
+    :general        {:primary "x-ai/grok-code-fast-1"
+                     :secondary "deepseek/deepseek-v3.2"
+                     :reason "Grok as robust default"}}))
 
 (defn get-route
   "Get the model route for a task type."
@@ -383,13 +382,13 @@
    These free-tier models return 404 for tool_use but are excellent
    for reasoning. We use a two-tier architecture:
    - Tier 1: These models for thinking/code generation
-   - Tier 2: gpt-oss-120b for actual tool execution"
+   - Tier 2: gpt-oss-120b for actual tool execution
+
+   Note: Paid models like x-ai/grok-code-fast-1 support native tool calls."
   #{"mistralai/devstral-2512:free"
     "mistralai/devstral-small:free"
     "google/gemma-3-4b-it:free"
-    "google/gemma-2-9b-it:free"
-    "deepseek/deepseek-v3.2"
-    "deepseek/deepseek-chat"})
+    "google/gemma-2-9b-it:free"})
 
 (def tool-proxy-model
   "Model to use for actual tool execution (Tier 2).
