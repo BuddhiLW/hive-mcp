@@ -23,10 +23,15 @@
    ADR-002 COMPLIANCE: Queries DataScript (source of truth), not hivemind atom.
 
    Maps DataScript slave status to swarm working status:
-   - :working, :started, :progress -> \"working\"
-   - :idle, :completed, :error -> \"idle\"
+   - :working -> \"working\"
+   - :idle, :error -> \"idle\"
    - :blocked -> \"blocked\"
    - nil (not registered) -> nil
+
+   BACKWARDS COMPAT: Also handles legacy statuses that may exist in DataScript
+   from before the hivemind.clj fix (event-type->slave-status):
+   - :started, :progress -> \"working\" (legacy: should now be :working)
+   - :completed -> \"idle\" (legacy: should now be :idle)
 
    agent-id: The slave/agent ID to query
 
@@ -35,11 +40,15 @@
   (when-let [slave (ds/get-slave agent-id)]
     (let [status (:slave/status slave)]
       (case status
-        (:working :started :progress) "working"
-        (:idle :completed) "idle"
+        ;; Valid slave statuses (primary)
+        :working "working"
+        :idle "idle"
         :error "idle"
         :blocked "blocked"
-        ;; Default to idle for unknown states
+        ;; Legacy statuses (backwards compat - from before hivemind.clj fix)
+        (:started :progress) "working"
+        :completed "idle"
+        ;; Default to idle for unknown/transitional states
         "idle"))))
 
 ;; ============================================================

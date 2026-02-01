@@ -60,7 +60,10 @@
                                          :description "Task ID to move/update"}
                               "new_status" {:type "string"
                                             :enum ["todo" "inprogress" "inreview" "done"]
-                                            :description "Target status for move"}}
+                                            :description "Target status for move"}
+                              ;; scope params
+                              "directory" {:type "string"
+                                           :description "Working directory for project scope (auto-detected if not provided)"}}
                  :required ["command"]}
    :handler handle-kanban})
 

@@ -17,6 +17,7 @@
             [clojure.data.json :as json]
             [hive-mcp.tools.compat :as compat]
             [hive-mcp.tools.consolidated.agent :as agent]
+            [hive-mcp.tools.swarm.core :as swarm-core]
             [hive-mcp.swarm.datascript.connection :as conn]
             [hive-mcp.swarm.datascript.lings :as ds-lings]
             [hive-mcp.swarm.datascript.queries :as queries]
@@ -232,29 +233,43 @@
 ;; =============================================================================
 ;; swarm_dispatch Integration Tests
 ;; =============================================================================
+;;
+;; NOTE: swarm_dispatch shim routes to ORIGINAL handler (not consolidated)
+;; because the original has critical coordinator preflight and context injection.
+;; These tests mock emacsclient since original handler uses elisp dispatch.
 
-(deftest swarm-dispatch-renames-slave-id-and-message
-  (testing "swarm_dispatch renames slave_id->agent_id and message->prompt"
+(deftest swarm-dispatch-calls-original-handler-with-message-rename
+  (testing "swarm_dispatch renames message->prompt and calls original handler"
     (add-test-slave! "ling-dispatch-test" {:depth 1 :status :idle})
 
-    ;; Use OLD param names
-    (let [result (compat/swarm-dispatch-shim {"slave_id" "ling-dispatch-test"
-                                              "message" "Test task prompt"})
-          parsed (parse-response result)]
-      (is (not (:isError result)) (str "Unexpected error: " (:text result)))
-      (is (:success parsed))
-      (is (= "ling-dispatch-test" (:agent-id parsed)))
-      (is (string? (:task-id parsed))))))
+    ;; Must mock swarm-addon-available? AND emacsclient for original handler
+    (with-redefs [swarm-core/swarm-addon-available? (constantly true)
+                  ec/eval-elisp-with-timeout
+                  (fn [_elisp _timeout]
+                    {:success true
+                     :result "{\"status\":\"dispatched\",\"task-id\":\"task-123\"}"})]
+      ;; Use OLD 'message' param - should be renamed to 'prompt' for original handler
+      (let [result (compat/swarm-dispatch-shim {"slave_id" "ling-dispatch-test"
+                                                "message" "Test task prompt"})
+            parsed (parse-response result)]
+        (is (not (:isError result)) (str "Unexpected error: " (:text result)))
+        (is (= "dispatched" (:status parsed)))
+        (is (= "task-123" (:task-id parsed)))))))
 
 (deftest swarm-dispatch-works-with-keyword-params
   (testing "swarm_dispatch works with keyword params (Clojure callers)"
     (add-test-slave! "ling-kw-dispatch" {:depth 1 :status :idle})
 
-    (let [result (compat/swarm-dispatch-shim {:slave_id "ling-kw-dispatch"
-                                              :message "Another task"})
-          parsed (parse-response result)]
-      (is (not (:isError result)))
-      (is (:success parsed)))))
+    (with-redefs [swarm-core/swarm-addon-available? (constantly true)
+                  ec/eval-elisp-with-timeout
+                  (fn [_elisp _timeout]
+                    {:success true
+                     :result "{\"status\":\"dispatched\",\"task-id\":\"task-456\"}"})]
+      (let [result (compat/swarm-dispatch-shim {:slave_id "ling-kw-dispatch"
+                                                :message "Another task"})
+            parsed (parse-response result)]
+        (is (not (:isError result)))
+        (is (= "dispatched" (:status parsed)))))))
 
 ;; =============================================================================
 ;; lings_available Integration Tests
@@ -319,14 +334,20 @@
   (testing "message param is renamed to prompt for dispatch"
     (add-test-slave! "msg-test-ling" {:depth 1 :status :idle})
 
-    ;; Use old 'message' param
-    (let [result (compat/swarm-dispatch-shim {"slave_id" "msg-test-ling"
-                                              "message" "Do this task"})
-          parsed (parse-response result)]
-      (is (not (:isError result)))
-      (is (:success parsed))
-      ;; Dispatch succeeded, meaning 'message' was translated to 'prompt'
-      (is (string? (:task-id parsed))))))
+    ;; Mock swarm-addon AND emacsclient for original handler
+    (with-redefs [swarm-core/swarm-addon-available? (constantly true)
+                  ec/eval-elisp-with-timeout
+                  (fn [_elisp _timeout]
+                    {:success true
+                     :result "{\"status\":\"dispatched\",\"task-id\":\"msg-task-789\"}"})]
+      ;; Use old 'message' param
+      (let [result (compat/swarm-dispatch-shim {"slave_id" "msg-test-ling"
+                                                "message" "Do this task"})
+            parsed (parse-response result)]
+        (is (not (:isError result)))
+        (is (= "dispatched" (:status parsed)))
+        ;; Dispatch succeeded, meaning 'message' was translated to 'prompt'
+        (is (= "msg-task-789" (:task-id parsed)))))))
 
 ;; =============================================================================
 ;; Mixed Key Type Tests (MCP Compatibility)
@@ -336,13 +357,19 @@
   (testing "shims normalize string keys from MCP JSON to keywords"
     (add-test-slave! "string-key-test" {:depth 1 :status :idle})
 
-    ;; Test swarm_dispatch with all string keys
-    (let [result (compat/swarm-dispatch-shim {"slave_id" "string-key-test"
-                                              "message" "Task from MCP"
-                                              "files" ["a.clj" "b.clj"]})
-          parsed (parse-response result)]
-      (is (not (:isError result)))
-      (is (:success parsed)))))
+    ;; Mock swarm-addon AND emacsclient for original handler
+    (with-redefs [swarm-core/swarm-addon-available? (constantly true)
+                  ec/eval-elisp-with-timeout
+                  (fn [_elisp _timeout]
+                    {:success true
+                     :result "{\"status\":\"dispatched\",\"task-id\":\"string-key-task\"}"})]
+      ;; Test swarm_dispatch with all string keys
+      (let [result (compat/swarm-dispatch-shim {"slave_id" "string-key-test"
+                                                "message" "Task from MCP"
+                                                "files" ["a.clj" "b.clj"]})
+            parsed (parse-response result)]
+        (is (not (:isError result)))
+        (is (= "dispatched" (:status parsed)))))))
 
 (deftest shims-handle-mixed-string-keyword-keys
   (testing "shims handle mix of string and keyword keys"
@@ -389,10 +416,17 @@
       (is (:isError result))
       (is (string? (:text result))))
 
-    ;; Test dispatch with missing agent
-    (let [result (compat/swarm-dispatch-shim {:slave_id "not-here"
-                                              :message "task"})]
-      (is (:isError result)))))
+    ;; Test dispatch with missing agent (requires swarm-addon AND emacsclient mock)
+    ;; Original handler checks swarm addon availability first
+    (with-redefs [swarm-core/swarm-addon-available? (constantly true)
+                  ec/eval-elisp-with-timeout
+                  (fn [_elisp _timeout]
+                    {:success true
+                     :result "{\"status\":\"error\",\"error\":\"agent-not-found\"}"})]
+      (let [result (compat/swarm-dispatch-shim {:slave_id "not-here"
+                                                :message "task"})]
+        ;; Original handler returns MCP error for error status
+        (is (:isError result))))))
 
 ;; =============================================================================
 ;; End-to-End Workflow Tests

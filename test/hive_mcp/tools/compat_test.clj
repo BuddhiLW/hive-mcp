@@ -325,18 +325,42 @@
         (is (= ["coordinator"] (:presets @received))
             "other params should pass through")))))
 
-(deftest swarm-dispatch-shim-renames-slave-id
-  (testing "swarm-dispatch-shim renames slave_id to agent_id"
+(deftest swarm-dispatch-shim-calls-original-handler
+  (testing "swarm-dispatch-shim calls original handler, not consolidated"
+    ;; FIX: swarm_dispatch now routes to original handler (not consolidated)
+    ;; because the original has critical coordinator preflight and context injection.
+    ;; slave_id is NOT renamed - original handler expects slave_id.
+    ;; message IS renamed to prompt for backward compatibility.
     (let [received (atom nil)
-          mock-handlers {:agent (mock-handler received {:ok true})}]
-      (with-redefs [compat/get-consolidated-handler (fn [tool-name]
-                                                      (get mock-handlers tool-name))]
-        (compat/swarm-dispatch-shim {:slave_id "ling-1" :prompt "test"})
+          mock-handler (fn [params]
+                         (reset! received params)
+                         {:ok true})]
+      (with-redefs [compat/resolve-swarm-dispatch-handler (constantly mock-handler)]
+        ;; Test with legacy 'message' param
+        (compat/swarm-dispatch-shim {:slave_id "ling-1" :message "test task"})
 
-        (is (= "ling-1" (:agent_id @received))
-            "slave_id should be renamed to agent_id")
-        (is (not (contains? @received :slave_id))
-            "slave_id should not be present")))))
+        (is (= "ling-1" (:slave_id @received))
+            "slave_id should be passed through unchanged (NOT renamed to agent_id)")
+        (is (= "test task" (:prompt @received))
+            "message should be renamed to prompt for backward compat")
+        (is (not (contains? @received :message))
+            "message should be removed after rename")
+        (is (not (contains? @received :command))
+            "command should NOT be added (original handler doesn't need it)")
+        (is (not (contains? @received :agent_id))
+            "agent_id should NOT be present (no rename from slave_id)"))))
+
+  (testing "swarm-dispatch-shim passes prompt unchanged when provided"
+    (let [received (atom nil)
+          mock-handler (fn [params]
+                         (reset! received params)
+                         {:ok true})]
+      (with-redefs [compat/resolve-swarm-dispatch-handler (constantly mock-handler)]
+        ;; Test with direct 'prompt' param (no rename needed)
+        (compat/swarm-dispatch-shim {:slave_id "ling-2" :prompt "direct prompt"})
+
+        (is (= "ling-2" (:slave_id @received)))
+        (is (= "direct prompt" (:prompt @received)))))))
 
 (deftest lings-available-shim-adds-type
   (testing "lings-available-shim adds type=ling static param"

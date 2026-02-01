@@ -9,10 +9,10 @@
    - When Chroma is unavailable: exposes org_kanban_native_* tools (fallback)"
   (:require ;; Domain-specific tool modules (SOLID refactoring)
    [hive-mcp.tools.buffer :as buffer]
-   [hive-mcp.tools.memory :as memory]
+   ;; memory/tools REMOVED - compat shims delegate to consolidated
    [hive-mcp.tools.memory-kanban :as mem-kanban]
    [hive-mcp.tools.cider :as cider]
-   [hive-mcp.tools.magit :as magit]
+   ;; magit/tools REMOVED - compat shims delegate to consolidated
    [hive-mcp.tools.projectile :as projectile]
    [hive-mcp.tools.kanban :as kanban]
    ;; swarm require removed - tools now via compat shims
@@ -23,7 +23,7 @@
    [hive-mcp.tools.diff :as diff]
    [hive-mcp.tools.kondo :as kondo]
    [hive-mcp.tools.scc :as scc]
-   [hive-mcp.tools.kg :as kg]
+   ;; kg/tools REMOVED - compat shims delegate to consolidated
    [hive-mcp.tools.crystal :as crystal]
    [hive-mcp.tools.hot :as hot]
    [hive-mcp.tools.health :as health]
@@ -39,7 +39,7 @@
    [hive-mcp.tools.delegate :as delegate]
    [hive-mcp.tools.overarch :as overarch]
    [hive-mcp.plan.tool :as plan]
-   [hive-mcp.hivemind :as hivemind]
+   ;; hivemind/tools REMOVED - compat shims delegate to consolidated
    [hive-mcp.channel :as channel]
    [hive-mcp.agent :as agent]
    [hive-mcp.chroma :as chroma]
@@ -97,9 +97,9 @@
   []
   (vec (concat buffer/tools
                crystal/tools
-               memory/tools
+               ;; memory/tools REMOVED - compat/tools provides shims → consolidated
                cider/tools
-               magit/tools
+               ;; magit/tools REMOVED - compat/tools provides shims → consolidated
                projectile/tools
                ;; kanban/tools removed - now conditional on Chroma availability
                ;; swarm/tools removed - use compat/tools shims instead
@@ -109,7 +109,7 @@
                diff/tools
                kondo/tools
                scc/tools
-               kg/tools      ; Knowledge Graph query and traversal
+               ;; kg/tools REMOVED - compat/tools provides shims → consolidated
                hot/tools     ; hot reload coordination tools
                health/tools  ; MCP health check
                drone-feedback/tools
@@ -124,7 +124,7 @@
                delegate/tools          ; Unified delegate API (ADR-20260123161700)
                plan/tools              ; plan_to_kanban workflow (exploration -> kanban)
                overarch/tools          ; Overarch architecture diagram generation
-               hivemind/tools
+               ;; hivemind/tools REMOVED - compat/tools provides shims → consolidated
                channel/channel-tools
                agent/tools
                ;; Consolidated CLI tools (new unified interface)
@@ -145,6 +145,8 @@
                c-emacs/tools
                c-wave/tools
                ;; Backward-compatibility shims (deprecated, sunset: 2026-04-01)
+               ;; These provide old tool names (magit_status, mcp_memory_add, etc.)
+               ;; and delegate to consolidated handlers
                compat/tools)))
 
 ;; =============================================================================
@@ -234,10 +236,10 @@
    These log deprecation warnings and delegate to consolidated handlers."
   (vec (concat buffer/tools
                crystal/tools
-               memory/tools
+               ;; memory/tools REMOVED - compat/tools provides shims → consolidated
                mem-kanban/tools
                cider/tools
-               magit/tools
+               ;; magit/tools REMOVED - compat/tools provides shims → consolidated
                projectile/tools
                kanban/tools
                ;; swarm/tools removed - use compat/tools shims instead
@@ -248,7 +250,7 @@
                diff/tools
                kondo/tools
                scc/tools
-               kg/tools      ; Knowledge Graph query and traversal
+               ;; kg/tools REMOVED - compat/tools provides shims → consolidated
                hot/tools     ; hot reload coordination tools
                health/tools  ; MCP health check
                drone-feedback/tools
@@ -263,7 +265,7 @@
                delegate/tools          ; Unified delegate API (ADR-20260123161700)
                plan/tools              ; plan_to_kanban workflow (exploration -> kanban)
                overarch/tools          ; Overarch architecture diagram generation
-               hivemind/tools
+               ;; hivemind/tools REMOVED - compat/tools provides shims → consolidated
                channel/channel-tools
                agent/tools
                ;; Consolidated CLI tools (new unified interface)
@@ -283,6 +285,8 @@
                c-emacs/tools
                c-wave/tools
                ;; Backward-compatibility shims (deprecated, sunset: 2026-04-01)
+               ;; These provide old tool names (magit_status, mcp_memory_add, etc.)
+               ;; and delegate to consolidated handlers
                compat/tools)))
 
 (defn get-tool-by-name

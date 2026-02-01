@@ -210,11 +210,52 @@
   (make-shim "swarm_kill" :agent "kill"
              :param-rename {:slave_id :agent_id}))
 
+;; =============================================================================
+;; Special Case: swarm_dispatch routes to ORIGINAL handler
+;; =============================================================================
+;;
+;; Unlike other shims that route to consolidated handlers, swarm_dispatch must
+;; route to the original handler because it contains critical logic:
+;; - Coordinator pre-flight conflict checks (dispatch-or-queue!)
+;; - Context injection layers (staleness warnings, recent changes, shout reminder)
+;; - Proper elisp dispatch with structured response handling
+;;
+;; The consolidated agent dispatch handler lacks this functionality.
+;; See: 4-Layer Convergence Pattern, CC.7 (recent file changes)
+
+(defn- resolve-swarm-dispatch-handler
+  "Lazily resolve the original swarm dispatch handler.
+   Uses dynamic require to avoid circular dependencies at load time."
+  []
+  (require 'hive-mcp.tools.swarm.dispatch)
+  @(resolve 'hive-mcp.tools.swarm.dispatch/handle-swarm-dispatch))
+
 (def swarm-dispatch-shim
-  "DEPRECATED: Use `agent dispatch` instead."
-  (make-shim "swarm_dispatch" :agent "dispatch"
-             :param-rename {:slave_id :agent_id
-                            :message :prompt}))
+  "DEPRECATED: Use `agent dispatch` instead.
+
+   NOTE: Routes to ORIGINAL swarm dispatch handler (not consolidated) because
+   it contains critical coordinator preflight and context injection logic."
+  (with-meta
+    (fn [params]
+      (log/warn "DEPRECATED: swarm_dispatch -> use agent dispatch (sunset: 2026-04-01)")
+      ;; Normalize params to keyword keys (MCP may send string keys from JSON)
+      (let [normalized (into {} (map (fn [[k v]] [(keyword k) v]) params))
+            ;; Backward compat: rename legacy param 'message' to 'prompt'
+            ;; Original handler expects :prompt, but old callers may use :message
+            with-prompt (if (and (contains? normalized :message)
+                                 (not (contains? normalized :prompt)))
+                          (-> normalized
+                              (assoc :prompt (:message normalized))
+                              (dissoc :message))
+                          normalized)]
+        ;; Call original handler directly - expects slave_id, prompt, timeout_ms, files
+        ((resolve-swarm-dispatch-handler) with-prompt)))
+    {:deprecated   true
+     :sunset-date  "2026-04-01"
+     :old-name     "swarm_dispatch"
+     :new-tool     :agent
+     :new-cmd      "dispatch"
+     :param-rename {:message :prompt}}))
 
 (def lings-available-shim
   "DEPRECATED: Use `agent list` with type 'ling' instead."

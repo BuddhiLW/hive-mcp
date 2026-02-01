@@ -146,6 +146,26 @@
 ;; =============================================================================
 ;; Core Functions
 
+(defn- event-type->slave-status
+  "Map hivemind event type to valid DataScript slave status.
+
+   Event types from shouts (:started, :progress, :completed, :error, :blocked)
+   must be mapped to valid slave-statuses from schema.clj:
+   #{:idle :spawning :starting :initializing :working :blocked :error :terminated}
+
+   BUG FIX: Previously event-type was passed directly to DataScript, but
+   :completed/:progress/:started are not valid slave statuses, causing
+   lings to appear stuck on 'working' when they were actually idle."
+  [event-type]
+  (case event-type
+    :started   :working
+    :progress  :working
+    :completed :idle
+    :error     :error
+    :blocked   :blocked
+    ;; Default to :idle for unknown event types
+    :idle))
+
 (defn shout!
   "Broadcast a message to the hivemind coordinator.
 
@@ -198,8 +218,9 @@
                 :last-seen now})))
     ;; Update DataScript status if slave exists there
     ;; This keeps DataScript in sync with hivemind events
+    ;; BUG FIX: Map event-type to valid slave status (not all event types are valid statuses)
     (when (proto/get-slave registry/default-registry agent-id)
-      (proto/update-slave! registry/default-registry agent-id {:slave/status event-type}))
+      (proto/update-slave! registry/default-registry agent-id {:slave/status (event-type->slave-status event-type)}))
     ;; Broadcast to Emacs via WebSocket (primary - reliable)
     (when (ws/connected?)
       (ws/emit! (:type event) (dissoc event :type)))
