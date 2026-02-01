@@ -149,6 +149,7 @@
 (def tool-def
   "MCP tool definition for consolidated emacs command."
   {:name "emacs"
+   :consolidated true
    :description "Emacs operations: eval (run elisp), buffers (list), notify (message), status (connection), switch (change buffer), find (open file), save (save buffers), current (buffer info). Use command='help' to list all."
    :inputSchema {:type "object"
                  :properties {"command" {:type "string"

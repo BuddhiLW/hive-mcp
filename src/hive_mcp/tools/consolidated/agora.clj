@@ -44,6 +44,7 @@
 (def tool-def
   "MCP tool definition for consolidated agora command."
   {:name "agora"
+   :consolidated true
    :description "Agora dialogue system: dialogue (create), dispatch (send message), consensus (check Nash equilibrium), list (all dialogues), join (add participant), history (transcript), debate/debate-status/continue (drone debates), staged/stage-status (two-stage). Use command='help' to list all."
    :inputSchema {:type "object"
                  :properties {"command" {:type "string"

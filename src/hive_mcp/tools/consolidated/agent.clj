@@ -12,11 +12,14 @@
             [hive-mcp.agent.protocol :as proto]
             [hive-mcp.agent.ling :as ling]
             [hive-mcp.agent.drone :as drone]
+            [hive-mcp.agent.context :as ctx]
             [hive-mcp.swarm.datascript.queries :as queries]
+            [hive-mcp.swarm.registry :as registry]
             [hive-mcp.swarm.logic :as logic]
             [hive-mcp.tools.swarm.collect :as swarm-collect]
             [hive-mcp.tools.swarm.status :as swarm-status]
             [hive-mcp.tools.swarm.core :as swarm-core]
+            [hive-mcp.tools.memory.scope :as scope]
             [hive-mcp.emacsclient :as ec]
             [taoensso.timbre :as log]
             [clojure.data.json :as json]))
@@ -251,26 +254,60 @@
   "Terminate an agent.
 
    Parameters:
-     agent_id - Agent ID to kill (required)
-     force    - Force kill even if critical ops in progress (default: false)
+     agent_id            - Agent ID to kill (required)
+     directory           - Caller's working directory for ownership check (optional)
+     force               - Force kill even if critical ops in progress (default: false)
+     force_cross_project - Allow killing agents from different projects (default: false)
 
-   CLARITY: Y - Safe failure, checks critical ops before killing."
-  [{:keys [agent_id force]}]
+   HUMAN-IN-THE-LOOP (HIL): Cross-project kill prevention.
+   If target agent's project differs from caller's project, kill is denied
+   unless force_cross_project=true is explicitly passed. This prevents
+   accidentally killing lings from other projects.
+
+   Ownership rules:
+   - Caller without project context (coordinator): can kill anything
+   - Legacy lings without project-id: can be killed by anyone
+   - Same project: kill proceeds normally
+   - Different project: requires force_cross_project=true
+
+   CLARITY: Y - Safe failure, checks ownership + critical ops before killing.
+   CLARITY: I - Inputs guarded with HIL for cross-project safety."
+  [{:keys [agent_id directory force force_cross_project]}]
   (if (empty? agent_id)
     (mcp-error "agent_id is required")
     (try
       (if-let [agent-data (queries/get-slave agent_id)]
-        (let [agent-type (if (= 1 (:slave/depth agent-data)) :ling :drone)
-              agent (case agent-type
-                      :ling (ling/->ling agent_id {:cwd (:slave/cwd agent-data)
-                                                   :presets (:slave/presets agent-data)
-                                                   :project-id (:slave/project-id agent-data)})
-                      :drone (drone/->drone agent_id {:cwd (:slave/cwd agent-data)
-                                                      :parent-id (:slave/parent agent-data)
-                                                      :project-id (:slave/project-id agent-data)}))
-              result (proto/kill! agent)]
-          (log/info "Kill agent result" {:agent_id agent_id :result result})
-          (mcp-json result))
+        (let [;; Get caller's project context
+              ;; Fallback chain: explicit param → ctx binding → nil
+              effective-dir (or directory (ctx/current-directory))
+              caller-project-id (when effective-dir
+                                  (scope/get-current-project-id effective-dir))
+              ;; Get target's project-id
+              target-project-id (:slave/project-id agent-data)
+              ;; Check ownership (HIL guard)
+              can-kill? (or force_cross_project
+                            (nil? caller-project-id)   ; coordinator context - no restriction
+                            (nil? target-project-id)   ; legacy ling - can be killed by anyone
+                            (= caller-project-id target-project-id))]  ; same project
+          (if-not can-kill?
+            ;; HIL: Cross-project kill denied - return actionable error
+            (mcp-error (format "Agent '%s' belongs to project '%s', not '%s'. Pass force_cross_project=true to kill cross-project."
+                               agent_id target-project-id caller-project-id))
+            ;; Ownership OK - proceed with kill
+            (let [agent-type (if (= 1 (:slave/depth agent-data)) :ling :drone)
+                  agent (case agent-type
+                          :ling (ling/->ling agent_id {:cwd (:slave/cwd agent-data)
+                                                       :presets (:slave/presets agent-data)
+                                                       :project-id (:slave/project-id agent-data)})
+                          :drone (drone/->drone agent_id {:cwd (:slave/cwd agent-data)
+                                                          :parent-id (:slave/parent agent-data)
+                                                          :project-id (:slave/project-id agent-data)}))
+                  result (proto/kill! agent)]
+              (log/info "Kill agent result" {:agent_id agent_id
+                                             :result result
+                                             :caller-project caller-project-id
+                                             :target-project target-project-id})
+              (mcp-json result))))
         (mcp-error (str "Agent not found: " agent_id)))
       (catch Exception e
         (log/error "Failed to kill agent" {:agent_id agent_id :error (ex-message e)})
@@ -414,6 +451,62 @@
     (swarm-status/handle-swarm-broadcast params)))
 
 ;; =============================================================================
+;; Cleanup Handler (Emacs/DataScript Reconciliation)
+;; =============================================================================
+
+(defn handle-cleanup
+  "Reconcile DataScript registry with actual Emacs state.
+
+   Problem: When Emacs restarts, hive-mcp-swarm--slaves hash table is lost,
+   but DataScript persists agent records. This leaves orphan agents in DataScript
+   with no corresponding Emacs buffer.
+
+   Solution: Query both DataScript and Emacs, remove orphans from DataScript.
+
+   Algorithm:
+   1. Get all agents from DataScript
+   2. Query Emacs for live ling buffers
+   3. For each DataScript ling (depth=1), check if Emacs has it
+   4. Remove orphans (DataScript entries without Emacs buffer)
+
+   Note: Drones (depth=2+) are JVM-side only, not affected by Emacs restart.
+
+   Parameters: None required
+
+   CLARITY: Y - Safe reconciliation, only removes clear orphans."
+  [_params]
+  (try
+    (let [;; Get all slaves from DataScript
+          ds-agents (queries/get-all-slaves)
+          ;; Get live lings from Emacs
+          elisp-lings (or (query-elisp-lings) [])
+          elisp-ids (set (map :slave/id elisp-lings))
+          ;; Find orphan lings (in DataScript but not in Emacs)
+          ;; Only check lings (depth=1), drones are JVM-side
+          orphan-lings (->> ds-agents
+                            (filter #(= 1 (:slave/depth %)))
+                            (filter #(not (elisp-ids (:slave/id %))))
+                            (map :slave/id))
+          ;; Remove orphans from DataScript
+          removed (doall
+                   (for [slave-id orphan-lings]
+                     (do
+                       (log/info "Removing orphan ling from DataScript" {:slave-id slave-id})
+                       (registry/remove-slave! slave-id)
+                       slave-id)))]
+      (log/info "Cleanup completed" {:orphans-removed (count removed)
+                                     :ds-total (count ds-agents)
+                                     :elisp-lings (count elisp-lings)})
+      (mcp-json {:success true
+                 :orphans-removed (count removed)
+                 :removed-ids (vec removed)
+                 :ds-agents-before (count ds-agents)
+                 :elisp-lings-found (count elisp-lings)}))
+    (catch Exception e
+      (log/error "Cleanup failed" {:error (ex-message e)})
+      (mcp-error (str "Cleanup failed: " (ex-message e))))))
+
+;; =============================================================================
 ;; Handlers Map
 ;; =============================================================================
 
@@ -426,7 +519,8 @@
    :claims    handle-claims
    :list      handle-list
    :collect   handle-collect
-   :broadcast handle-broadcast})
+   :broadcast handle-broadcast
+   :cleanup   handle-cleanup})
 
 ;; =============================================================================
 ;; CLI Handler
@@ -443,10 +537,11 @@
 (def tool-def
   "MCP tool definition for consolidated agent command."
   {:name "agent"
-   :description "Unified agent operations: spawn (create ling/drone), status (query agents), kill (terminate), dispatch (send task), claims (file ownership), list (all agents), collect (get task result), broadcast (prompt all). Type: 'ling' (Claude Code instance) or 'drone' (OpenRouter leaf worker). Use command='help' to list all."
+   :consolidated true
+   :description "Unified agent operations: spawn (create ling/drone), status (query agents), kill (terminate), dispatch (send task), claims (file ownership), list (all agents), collect (get task result), broadcast (prompt all), cleanup (remove orphan agents after Emacs restart). Type: 'ling' (Claude Code instance) or 'drone' (OpenRouter leaf worker). Use command='help' to list all."
    :inputSchema {:type "object"
                  :properties {"command" {:type "string"
-                                         :enum ["spawn" "status" "kill" "dispatch" "claims" "list" "collect" "broadcast" "help"]
+                                         :enum ["spawn" "status" "kill" "dispatch" "claims" "list" "collect" "broadcast" "cleanup" "help"]
                                          :description "Agent operation to perform"}
                               ;; spawn params
                               "type" {:type "string"
@@ -482,6 +577,10 @@
                               ;; kill params
                               "force" {:type "boolean"
                                        :description "Force kill even if critical ops in progress"}
+                              "directory" {:type "string"
+                                           :description "Caller's working directory (for cross-project ownership check)"}
+                              "force_cross_project" {:type "boolean"
+                                                     :description "HIL override: Allow killing agents from different projects (default: false). Required when target agent belongs to different project than caller."}
                               ;; collect params
                               "task_id" {:type "string"
                                          :description "Task ID for collect operation"}

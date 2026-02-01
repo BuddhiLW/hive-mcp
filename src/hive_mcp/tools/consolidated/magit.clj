@@ -42,6 +42,7 @@
 (def tool-def
   "MCP tool definition for consolidated magit command."
   {:name "magit"
+   :consolidated true
    :description "Git operations via Magit: status (repo state), stage (add files), commit (create commit), push (to remote), branches (list all), log (recent commits), diff (view changes), pull/fetch (from remote), feature-branches (for /ship). Use command='help' to list all."
    :inputSchema {:type "object"
                  :properties {"command" {:type "string"

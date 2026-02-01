@@ -12,6 +12,10 @@
             [hive-mcp.validation :as v]
             [hive-mcp.crystal.hooks :as crystal-hooks]
             [hive-mcp.tools.memory.crud :as mem-crud]
+            [hive-mcp.tools.memory.scope :as scope]
+            [hive-mcp.tools.memory.core :refer [with-chroma]]
+            [hive-mcp.chroma :as chroma]
+            [hive-mcp.agent.context :as ctx]
             [clojure.data.json :as json]
             [taoensso.timbre :as log])
   (:import [java.time ZonedDateTime]
@@ -32,18 +36,26 @@
 (defn- build-kanban-tags
   "Build tags for kanban task: ['kanban', status, priority, scope]."
   [status priority project-id]
-  (cond-> ["kanban" (str "status-" status) (str "priority-" priority)]
+  (cond-> ["kanban" status (str "priority-" priority)]
     project-id (conj (str "scope:project:" project-id))))
 
 (defn handle-mem-kanban-create
   "Create a kanban task in memory (direct Chroma, no elisp roundtrip).
-   When directory is provided, scopes task to that project."
-  [{:keys [title priority context directory]}]
+   When directory is provided, scopes task to that project.
+
+   CTX Migration: Uses request context for agent_id and directory extraction.
+   Fallback chain: explicit param → ctx binding → env var → default."
+  [{:keys [title priority context directory agent_id]}]
   (try
-    (let [priority (or priority "medium")
+    ;; CTX: Apply fallback chain for directory and agent_id
+    (let [effective-dir (or directory (ctx/current-directory))
+          effective-agent (or agent_id
+                              (ctx/current-agent-id)
+                              (System/getenv "CLAUDE_SWARM_SLAVE_ID"))
+          priority (or priority "medium")
           status "todo"
-          project-id (when directory
-                       (last (clojure.string/split directory #"/")))
+          project-id (when effective-dir
+                       (last (clojure.string/split effective-dir #"/")))
           content {:task-type "kanban"
                    :title title
                    :status status
@@ -53,10 +65,12 @@
                    :context context}
           tags (build-kanban-tags status priority project-id)
           ;; Call memory CRUD directly - no elisp roundtrip
+          ;; Pass effective-agent for agent tag attribution
           result (mem-crud/handle-add {:type "note"
                                        :content (json/write-str content)
                                        :tags tags
-                                       :directory directory
+                                       :directory effective-dir
+                                       :agent_id effective-agent
                                        :duration "short"})]
       (log/info "kanban-create result:" result)
       (if (:isError result)
@@ -81,100 +95,145 @@
      :status (get content :status (get content "status"))
      :priority (get content :priority (get content "priority"))}))
 
+(defn- kanban-entry?
+  "Check if entry is a kanban task."
+  [entry]
+  (let [content (:content entry)]
+    (= "kanban" (or (get content :task-type) (get content "task-type")))))
+
 (defn handle-mem-kanban-list-slim
   "List kanban tasks with minimal data for token optimization.
    Returns only id, title, status, priority per entry (~10x fewer tokens).
-   When directory is provided, scopes query to that project."
+   When directory is provided, scopes query to that project.
+
+   CTX Migration: Uses request context for directory extraction.
+   Fallback chain: explicit param → ctx binding.
+
+   Queries Chroma directly (bypasses elisp roundtrip) to be consistent
+   with handle-mem-kanban-create which stores directly in Chroma."
   [{:keys [status directory]}]
-  (let [elisp (cond
-                (and status directory)
-                (format "(json-encode (hive-mcp-api-kanban-list %s %s))"
-                        (str "\"" (v/escape-elisp-string status) "\"")
-                        (str "\"" (v/escape-elisp-string directory) "\""))
-                status
-                (format "(json-encode (hive-mcp-api-kanban-list %s))"
-                        (str "\"" (v/escape-elisp-string status) "\""))
-                directory
-                (format "(json-encode (hive-mcp-api-kanban-list nil %s))"
-                        (str "\"" (v/escape-elisp-string directory) "\""))
-                :else
-                "(json-encode (hive-mcp-api-kanban-list))")
-        {:keys [success result error]} (ec/eval-elisp elisp)]
-    (if success
-      (let [entries (try (json/read-str result :key-fn keyword) (catch Exception _ []))
-            slim-entries (mapv task->slim entries)]
-        {:type "text" :text (json/write-str slim-entries)})
-      {:type "text" :text (str "Error: " error) :isError true})))
+  (try
+    (let [effective-dir (or directory (ctx/current-directory))]
+      (with-chroma
+        (let [project-id (scope/get-current-project-id effective-dir)
+              ;; Build tag filter - always include "kanban", optionally status
+              required-tags (if status ["kanban" status] ["kanban"])
+              ;; Query from Chroma
+              entries (chroma/query-entries :type "note"
+                                            :project-id project-id
+                                            :limit 100)
+              ;; Filter by required tags
+              tag-filtered (filter (fn [entry]
+                                     (let [entry-tags (set (:tags entry))]
+                                       (every? #(contains? entry-tags %) required-tags)))
+                                   entries)
+              ;; Filter to only kanban entries
+              kanban-entries (filter kanban-entry? tag-filtered)
+              ;; Convert to slim format
+              slim-entries (mapv task->slim kanban-entries)]
+          {:type "text" :text (json/write-str slim-entries)})))
+    (catch Exception e
+      (log/error e "kanban-list-slim failed")
+      {:type "text" :text (str "Error: " (.getMessage e)) :isError true})))
 
 (defn handle-mem-kanban-move
   "Move task to new status. When moving to 'done':
    1. Fetches the task entry first
    2. Calls crystal hook to create progress note
    3. Then deletes the kanban entry
-   When directory is provided, scopes operation to that project."
+   When directory is provided, scopes operation to that project.
+
+   CTX Migration: Uses request context for directory extraction.
+   Fallback chain: explicit param → ctx binding.
+
+   Queries/updates Chroma directly (bypasses elisp roundtrip) to be consistent
+   with handle-mem-kanban-create which stores directly in Chroma."
   [{:keys [task_id new_status directory]}]
-  (let [valid-statuses #{"todo" "doing" "review" "done"}
-        dir-arg (if directory
-                  (str "\"" (v/escape-elisp-string directory) "\"")
-                  "nil")]
+  (let [valid-statuses #{"todo" "doing" "review" "done"}]
     (if-not (valid-statuses new_status)
       {:type "text" :text (str "Invalid status: " new_status ". Valid: todo, doing, review, done") :isError true}
-      (if (= new_status "done")
-        ;; Special handling for DONE: call crystal hook before deletion
-        (let [;; 1. Fetch the entry before deletion
-              get-elisp (format "(json-encode (hive-mcp-memory-get %s %s))"
-                                (str "\"" (v/escape-elisp-string task_id) "\"")
-                                dir-arg)
-              {:keys [success result error]} (ec/eval-elisp get-elisp)]
-          (if-not success
-            {:type "text" :text (str "Error fetching task: " error) :isError true}
-            (let [;; 2. Parse the entry and extract task data
-                  entry (try (json/read-str result :key-fn keyword) (catch Exception _ nil))
-                  task-data (when entry (crystal-hooks/extract-task-from-kanban-entry entry))]
-              ;; 3. Call crystal hook to create progress note
-              (when task-data
-                (log/info "Calling crystal hook for completed kanban task:" task_id)
-                (try
-                  (crystal-hooks/on-kanban-done task-data)
-                  (catch Exception e
-                    (log/warn "Crystal hook failed (non-fatal):" (.getMessage e)))))
-              ;; 4. Proceed with move (which deletes for 'done')
-              (let [move-elisp (format "(json-encode (hive-mcp-api-kanban-move %s %s %s))"
-                                       (str "\"" (v/escape-elisp-string task_id) "\"")
-                                       (str "\"" (v/escape-elisp-string new_status) "\"")
-                                       dir-arg)
-                    {:keys [success result error]} (ec/eval-elisp move-elisp)]
-                (if success
-                  {:type "text" :text result}
-                  {:type "text" :text (str "Error: " error) :isError true})))))
-        ;; Normal status change (not done)
-        (let [elisp (format "(json-encode (hive-mcp-api-kanban-move %s %s %s))"
-                            (str "\"" (v/escape-elisp-string task_id) "\"")
-                            (str "\"" (v/escape-elisp-string new_status) "\"")
-                            dir-arg)
-              {:keys [success result error]} (ec/eval-elisp elisp)]
-          (if success
-            {:type "text" :text result}
-            {:type "text" :text (str "Error: " error) :isError true}))))))
+      (try
+        (with-chroma
+          (if-let [entry (chroma/get-entry-by-id task_id)]
+            (if-not (kanban-entry? entry)
+              {:type "text" :text (str "Entry is not a kanban task: " task_id) :isError true}
+              (if (= new_status "done")
+                ;; Special handling for DONE: crystal hook then delete
+                (let [task-data (crystal-hooks/extract-task-from-kanban-entry entry)]
+                  ;; Call crystal hook to create progress note
+                  (when task-data
+                    (log/info "Calling crystal hook for completed kanban task:" task_id)
+                    (try
+                      (crystal-hooks/on-kanban-done task-data)
+                      (catch Exception e
+                        (log/warn "Crystal hook failed (non-fatal):" (.getMessage e)))))
+                  ;; Delete the entry
+                  (chroma/delete-entry! task_id)
+                  {:type "text" :text (json/write-str {:deleted true :status "done" :id task_id})})
+                ;; Normal status change
+                (let [content (:content entry)
+                      priority (or (get content :priority) (get content "priority") "medium")
+                      ;; Update content with new status
+                      new-content (-> content
+                                      (assoc :status new_status)
+                                      ;; Set :started timestamp when moving to "doing"
+                                      (cond-> (= new_status "doing")
+                                        (assoc :started (kanban-timestamp))))
+                      ;; Rebuild tags with new status
+                      effective-dir (or directory (ctx/current-directory))
+                      project-id (scope/get-current-project-id effective-dir)
+                      new-tags (build-kanban-tags new_status priority project-id)
+                      ;; Update the entry
+                      _ (chroma/update-entry! task_id {:content new-content :tags new-tags})
+                      updated (chroma/get-entry-by-id task_id)]
+                  {:type "text" :text (json/write-str (task->slim updated))})))
+            {:type "text" :text (str "Task not found: " task_id) :isError true}))
+        (catch Exception e
+          (log/error e "kanban-move failed")
+          {:type "text" :text (str "Error: " (.getMessage e)) :isError true})))))
 
 (defn handle-mem-kanban-stats
   "Get kanban statistics by status.
-   When directory is provided, scopes query to that project."
+   When directory is provided, scopes query to that project.
+
+   CTX Migration: Uses request context for directory extraction.
+   Fallback chain: explicit param → ctx binding.
+
+   Queries Chroma directly (bypasses elisp roundtrip) to be consistent
+   with handle-mem-kanban-create which stores directly in Chroma."
   [{:keys [directory]}]
-  (let [elisp (if directory
-                (format "(json-encode (hive-mcp-api-kanban-stats %s))"
-                        (str "\"" (v/escape-elisp-string directory) "\""))
-                "(json-encode (hive-mcp-api-kanban-stats))")
-        {:keys [success result error]} (ec/eval-elisp elisp)]
-    (if success
-      {:type "text" :text result}
-      {:type "text" :text (str "Error: " error) :isError true})))
+  (try
+    (let [effective-dir (or directory (ctx/current-directory))]
+      (with-chroma
+        (let [project-id (scope/get-current-project-id effective-dir)
+              ;; Query all kanban tasks
+              entries (chroma/query-entries :type "note"
+                                            :project-id project-id
+                                            :limit 500)
+              ;; Filter to kanban entries with "kanban" tag
+              kanban-entries (->> entries
+                                  (filter #(contains? (set (:tags %)) "kanban"))
+                                  (filter kanban-entry?))
+              ;; Count by status
+              stats (reduce (fn [counts entry]
+                              (let [content (:content entry)
+                                    status (or (get content :status) (get content "status") "todo")]
+                                (update counts (keyword status) (fnil inc 0))))
+                            {:todo 0 :doing 0 :review 0}
+                            kanban-entries)]
+          {:type "text" :text (json/write-str stats)})))
+    (catch Exception e
+      (log/error e "kanban-stats failed")
+      {:type "text" :text (str "Error: " (.getMessage e)) :isError true})))
 
 (defn handle-mem-kanban-quick
   "Quick add task with defaults (todo, medium priority).
-   When directory is provided, scopes task to that project."
-  [{:keys [title directory]}]
-  (handle-mem-kanban-create {:title title :directory directory}))
+   When directory is provided, scopes task to that project.
+
+   CTX Migration: Delegates to handle-mem-kanban-create which uses context.
+   Passes through directory and agent_id for explicit param support."
+  [{:keys [title directory agent_id]}]
+  (handle-mem-kanban-create {:title title :directory directory :agent_id agent_id}))
 
 ;; Tool definitions
 
@@ -185,7 +244,8 @@
                   :properties {:title {:type "string" :description "Task title"}
                                :priority {:type "string" :enum ["high" "medium" "low"] :description "Priority (default: medium)"}
                                :context {:type "string" :description "Additional notes"}
-                               :directory {:type "string" :description "Working directory to determine project scope (pass your cwd to ensure correct scoping)"}}
+                               :directory {:type "string" :description "Working directory to determine project scope (auto-extracted from context if not provided)"}
+                               :agent_id {:type "string" :description "Agent identifier for attribution (auto-extracted from context if not provided)"}}
                   :required ["title"]}
     :handler handle-mem-kanban-create}
 
@@ -193,7 +253,7 @@
     :description "List kanban tasks with minimal data (id, title, status, priority only). Use for token-efficient overviews (~10x fewer tokens than full list)."
     :inputSchema {:type "object"
                   :properties {:status {:type "string" :enum ["todo" "doing" "review"] :description "Filter by status"}
-                               :directory {:type "string" :description "Working directory to determine project scope (pass your cwd to ensure correct scoping)"}}}
+                               :directory {:type "string" :description "Working directory to determine project scope (auto-extracted from context if not provided)"}}}
     :handler handle-mem-kanban-list-slim}
 
    {:name "mcp_mem_kanban_move"
@@ -201,20 +261,21 @@
     :inputSchema {:type "object"
                   :properties {:task_id {:type "string" :description "Task ID"}
                                :new_status {:type "string" :enum ["todo" "doing" "review" "done"] :description "New status"}
-                               :directory {:type "string" :description "Working directory to determine project scope (pass your cwd to ensure correct scoping)"}}
+                               :directory {:type "string" :description "Working directory to determine project scope (auto-extracted from context if not provided)"}}
                   :required ["task_id" "new_status"]}
     :handler handle-mem-kanban-move}
 
    {:name "mcp_mem_kanban_stats"
     :description "Get kanban statistics (counts by status)"
     :inputSchema {:type "object"
-                  :properties {:directory {:type "string" :description "Working directory to determine project scope (pass your cwd to ensure correct scoping)"}}}
+                  :properties {:directory {:type "string" :description "Working directory to determine project scope (auto-extracted from context if not provided)"}}}
     :handler handle-mem-kanban-stats}
 
    {:name "mcp_mem_kanban_quick"
     :description "Quick add task with defaults (todo status, medium priority)"
     :inputSchema {:type "object"
                   :properties {:title {:type "string" :description "Task title"}
-                               :directory {:type "string" :description "Working directory to determine project scope (pass your cwd to ensure correct scoping)"}}
+                               :directory {:type "string" :description "Working directory to determine project scope (auto-extracted from context if not provided)"}
+                               :agent_id {:type "string" :description "Agent identifier for attribution (auto-extracted from context if not provided)"}}
                   :required ["title"]}
     :handler handle-mem-kanban-quick}])

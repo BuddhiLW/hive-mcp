@@ -4,17 +4,23 @@
    SOLID: SRP - Single responsibility for scope management.
    CLARITY: R - Represented intent with clear scope semantics.
 
+   Go Context Pattern:
+   Context flows down explicitly via the 'directory' parameter, never derived
+   from ambient state (like Emacs buffer focus). When directory is nil,
+   we return 'global' scope rather than querying Emacs - this prevents
+   cross-project scope leaks when ambient state doesn't match MCP request origin.
+
    Handles:
-   - Project ID detection from Emacs
+   - Project ID detection from directory path (explicit context)
    - Scope tag injection for memory entries
    - Scope matching for filtering queries
 
    NOTE: For hierarchical scope resolution (visible-scopes, get-parent-scope),
    see hive-mcp.knowledge-graph.scope which provides full Knowledge Graph
    scope hierarchy support."
-  (:require [hive-mcp.emacsclient :as ec]
-            [hive-mcp.knowledge-graph.scope :as kg-scope]
-            [clojure.string :as str]))
+  (:require [hive-mcp.knowledge-graph.scope :as kg-scope]
+            [clojure.string :as str]
+            [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -24,9 +30,19 @@
 ;; ============================================================
 
 (defn get-current-project-id
-  "Get current project ID from directory path or Emacs context.
-   When directory is provided, derives project-id from path (no Emacs call).
-   When directory is nil, falls back to Emacs current buffer context."
+  "Get current project ID from directory path.
+
+   Go Context Pattern: Context flows down explicitly, never derived from
+   ambient state. When directory is nil, returns 'global' rather than
+   querying Emacs - this prevents cross-project scope leaks.
+
+   Callers should pass directory explicitly via:
+   - Tool parameter: {:directory \"/path/to/project\"}
+   - Context fallback: (or directory (ctx/current-directory))
+
+   Returns:
+   - Project name (last path segment) when directory is provided
+   - 'global' when directory is nil or blank"
   ([]
    (get-current-project-id nil))
   ([directory]
@@ -37,15 +53,10 @@
        (if (and project-name (not (str/blank? project-name)))
          project-name
          "global"))
-     ;; Fallback to Emacs only when no directory provided
-     (try
-       (let [elisp "(hive-mcp-memory--project-id)"
-             {:keys [success result]} (ec/eval-elisp elisp)]
-         (if (and success result (not= result "nil"))
-           (str/replace result #"\"" "")
-           "global"))
-       (catch Exception _
-         "global")))))
+     ;; No directory = global scope (Go context pattern: explicit context only)
+     (do
+       (log/debug "get-current-project-id: no directory provided, using global scope")
+       "global"))))
 
 ;; ============================================================
 ;; Scope Tag Management

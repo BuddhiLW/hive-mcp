@@ -40,6 +40,7 @@
 (def tool-def
   "MCP tool definition for consolidated wave command."
   {:name "wave"
+   :consolidated true
    :description "Drone wave operations: dispatch (parallel drones), dispatch-validated (with lint), status (execution progress), review (see proposed diffs), approve (apply diffs), reject (discard diffs), auto-approve (safe diffs only). Use command='help' to list all."
    :inputSchema {:type "object"
                  :properties {"command" {:type "string"

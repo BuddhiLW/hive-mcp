@@ -233,13 +233,16 @@
    - directory: Working directory for project scoping. Pass your cwd to ensure
      only wraps from the current project are permeated. This prevents cross-project
      contamination where wraps from project A would pollute project B's memory.
+     Falls back to *request-ctx* directory if not provided.
    - include_children: When true (default), includes wraps from child projects
      using hierarchical prefix matching. E.g., 'myproject' also matches
      'myproject:submodule'. Set to false for exact project matching only.
 
    Part of Crystal Convergence - hivemind permeating ling session data."
   [{:keys [directory include_children] :as _params}]
-  (let [project-id (scope/get-current-project-id directory)
+  ;; Fallback chain: explicit param → request-ctx
+  (let [effective-dir (or directory (ctx/current-directory))
+        project-id (scope/get-current-project-id effective-dir)
         ;; Default to including children (hierarchical matching)
         include-children? (if (nil? include_children) true include_children)]
     (log/info "permeate-crystals: processing wrap queue for project:" project-id

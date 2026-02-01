@@ -151,8 +151,52 @@
 ;; Dynamic Tool Aggregation
 ;; =============================================================================
 
+(defn get-all-tools
+  "Get ALL tools including deprecated shims (for dispatch/calling).
+
+   CLARITY: Deprecated tools are still callable during grace period.
+   This ensures backward compatibility for existing code that calls them directly.
+
+   Parameters:
+   - include-deprecated?: boolean, when true includes deprecated shims
+
+   Returns: Vector of tool definitions."
+  [& {:keys [include-deprecated?] :or {include-deprecated? true}}]
+  (let [chroma-up? (chroma/chroma-available?)
+        base (get-base-tools)
+        all-tools (if chroma-up?
+                    ;; Chroma available: use mem-kanban only, no org-kanban tools
+                    (vec (concat base
+                                 mem-kanban/tools
+                                 (org-tools-without-kanban)))
+                    ;; Chroma unavailable: use kanban/tools (elisp addon) + org-kanban-native as fallback
+                    (vec (concat base
+                                 kanban/tools  ; elisp org-kanban addon (fallback when Chroma down)
+                                 org/tools)))]
+    (if include-deprecated?
+      all-tools
+      ;; Filter out deprecated tools (those with :deprecated true)
+      (filterv #(not (:deprecated %)) all-tools))))
+
+(defn get-consolidated-tools
+  "Get only consolidated 'root' tools for minimal tool listing.
+
+   Returns only tools with :consolidated true flag - the 15 unified
+   command tools (agent, memory, kanban, kg, preset, magit, cider,
+   emacs, wave, hivemind, agora, kondo, olympus, project, session).
+
+   Use this for external tool discovery (bb-mcp, Claude Code) where
+   showing 15 consolidated tools is cleaner than 200+ flat tools.
+
+   All flat tools remain callable via get-all-tools for dispatch."
+  []
+  (filterv :consolidated (get-all-tools :include-deprecated? false)))
+
 (defn get-filtered-tools
-  "Get tools with capability-based kanban switching.
+  "Get tools with capability-based kanban switching, EXCLUDING deprecated tools.
+
+   PHASE 2 STRANGLE: Deprecated tools are excluded from tools/list response.
+   They remain callable via get-all-tools (for backward compatibility).
 
    When Chroma is available:
    - Include mcp_mem_kanban_* tools (memory-based kanban)
@@ -169,18 +213,10 @@
    HOT-RELOAD: Calls (get-base-tools) to get fresh handler references.
    This ensures hot-reload updates propagate to tool dispatch."
   []
-  (let [chroma-up? (chroma/chroma-available?)
-        base (get-base-tools)]
-    (log/info "Kanban capability check: Chroma available?" chroma-up?)
-    (if chroma-up?
-      ;; Chroma available: use mem-kanban only, no org-kanban tools
-      (vec (concat base
-                   mem-kanban/tools
-                   (org-tools-without-kanban)))
-      ;; Chroma unavailable: use kanban/tools (elisp addon) + org-kanban-native as fallback
-      (vec (concat base
-                   kanban/tools  ; elisp org-kanban addon (fallback when Chroma down)
-                   org/tools)))))
+  (let [visible-tools (get-all-tools :include-deprecated? false)]
+    (log/info "Filtered tools for listing:" (count visible-tools)
+              "(deprecated tools hidden from tools/list)")
+    visible-tools))
 
 (def tools
   "Aggregated tool definitions from domain-specific modules.

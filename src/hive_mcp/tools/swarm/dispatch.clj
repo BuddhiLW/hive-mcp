@@ -215,11 +215,19 @@
 (defn- execute-dispatch
   "Execute actual dispatch after pre-flight approval.
 
-   Returns MCP response with task_id on success.
+   Returns MCP response with structured status:
+   - status=dispatched: prompt sent, task_id included
+   - status=queued: terminal not ready, dispatch queued for async retry
+   - status=error: dispatch failed
+
    Injects context layers before dispatch:
    - Layer 3.5: Staleness warnings (KG-first context)
    - Layer 3.6: Recent file changes (CC.7)
    - Layer 3: Shout reminder
+
+   FIX (2026-01-31): Now parses structured response from elisp to properly
+   surface queued status. Previously, queued dispatches appeared as success
+   but message never reached ling.
 
    CLARITY: Y - Yield safe failure with timeout handling"
   [slave_id prompt timeout_ms effective-files]
@@ -240,14 +248,35 @@
       (core/mcp-timeout-error "Dispatch operation" :extra-data {:slave_id slave_id})
 
       success
-      (do
-        ;; Register file claims for successful dispatch
-        (when-let [task-id (try
-                             (:task-id (json/read-str result :key-fn keyword))
-                             (catch Exception _ nil))]
-          (when (seq effective-files)
-            (coord/register-task-claims! task-id slave_id effective-files)))
-        (core/mcp-success result))
+      (let [parsed (try
+                     (json/read-str result :key-fn keyword)
+                     (catch Exception _ {:status "error" :error "json-parse-failed"}))
+            status (:status parsed)]
+        (case status
+          ;; Dispatched successfully - register file claims
+          "dispatched"
+          (do
+            (when-let [task-id (:task-id parsed)]
+              (when (seq effective-files)
+                (coord/register-task-claims! task-id slave_id effective-files)))
+            (core/mcp-success parsed))
+
+          ;; Queued for later - terminal not ready
+          ;; Return success with queued status so coordinator knows to wait/poll
+          "queued"
+          (core/mcp-success (assoc parsed
+                                   :message "Dispatch queued - ling terminal not ready. Will retry automatically."
+                                   :retry_interval_ms 500
+                                   :max_retries 20))
+
+          ;; Error during dispatch
+          "error"
+          (core/mcp-error-json {:error (or (:error parsed) "dispatch-failed")
+                                :slave_id slave_id
+                                :details parsed})
+
+          ;; Unknown status (legacy or parsing issue)
+          (core/mcp-success parsed)))
 
       :else
       (core/mcp-error (str "Error: " error)))))

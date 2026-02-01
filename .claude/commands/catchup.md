@@ -66,7 +66,7 @@ Read CLAUDE.md
 **a) Load In-Memory Kanban first:**
 ```
 mcp__emacs-mcp__mcp_mem_kanban_stats directory:"/path/to/your/project"
-mcp__emacs-mcp__mcp_mem_kanban_list status:"doing" directory:"/path/to/your/project"
+mcp__emacs-mcp__mcp_mem_kanban_list_slim status:"doing" directory:"/path/to/your/project"
 ```
 
 Show DOING tasks as "In Progress" in the summary.

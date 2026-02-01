@@ -36,6 +36,7 @@
 (def tool-def
   "MCP tool definition for consolidated olympus command."
   {:name "olympus"
+   :consolidated true
    :description "Olympus grid control: focus (maximize ling), arrange (trigger layout), tab (navigate tabs), status (current layout). Use command='help' to list all."
    :inputSchema {:type "object"
                  :properties {"command" {:type "string"

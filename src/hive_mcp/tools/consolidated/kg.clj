@@ -41,6 +41,7 @@
 (def tool-def
   "MCP tool definition for consolidated kg command."
   {:name "kg"
+   :consolidated true
    :description "Knowledge Graph operations: traverse (walk graph), edge (add relationship), impact (find dependents), subgraph (extract scope), stats (counts), path (shortest path), context (node details), promote (bubble up scope), reground (verify source). Use command='help' to list all."
    :inputSchema {:type "object"
                  :properties {"command" {:type "string"

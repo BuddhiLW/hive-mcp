@@ -156,8 +156,16 @@
   "Broadcast a prompt to all slaves.
    Uses timeout to prevent MCP blocking.
 
+   FIX: Returns delivery count and errors if no targets found.
+   Previously returned success even with empty slave list.
+
    Parameters:
-   - prompt: The prompt to broadcast to all slaves"
+   - prompt: The prompt to broadcast to all slaves
+
+   Returns:
+   - :delivered-count - Number of slaves that received the broadcast
+   - :task-ids - List of task IDs created for each slave
+   - :error - Only if no slaves are available to broadcast to"
   [{:keys [prompt]}]
   (core/with-swarm
     (let [elisp (format "(json-encode (hive-mcp-swarm-broadcast \"%s\"))"
@@ -168,7 +176,25 @@
         (core/mcp-timeout-error "Broadcast operation")
 
         success
-        (core/mcp-success result)
+        (try
+          (let [task-ids (json/read-str result :key-fn keyword)
+                delivered-count (count task-ids)]
+            (if (zero? delivered-count)
+              ;; BUG FIX: Return error when no targets, not silent success
+              (core/mcp-error-json
+               {:error "no-targets"
+                :message "No slaves available to broadcast to. Spawn slaves first with swarm_spawn."
+                :delivered-count 0
+                :task-ids []})
+              ;; Success with delivery confirmation
+              (core/mcp-success
+               {:delivered-count delivered-count
+                :task-ids task-ids
+                :message (format "Broadcast delivered to %d slave(s)" delivered-count)})))
+          (catch Exception e
+            ;; Fallback to raw result if JSON parsing fails
+            (log/warn "Failed to parse broadcast result:" (.getMessage e))
+            (core/mcp-success result)))
 
         :else
         (core/mcp-error (str "Error: " error))))))

@@ -38,6 +38,7 @@
 (def tool-def
   "MCP tool definition for consolidated project command."
   {:name "project"
+   :consolidated true
    :description "Projectile project operations: info (project details), files (list files), search (content search), find (find by filename), recent (recently visited), list (all projects). Use command='help' to list all."
    :inputSchema {:type "object"
                  :properties {"command" {:type "string"

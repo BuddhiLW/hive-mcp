@@ -53,6 +53,7 @@
 (def tool-def
   "MCP tool definition for consolidated session command."
   {:name "session"
+   :consolidated true
    :description "Session lifecycle: complete (commit + kanban + wrap + shout), wrap (crystallize only without commit). Use 'complete' at end of work session. Use command='help' to list all."
    :inputSchema {:type "object"
                  :properties {"command" {:type "string"

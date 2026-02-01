@@ -16,6 +16,7 @@
   (:require [hive-mcp.tools.core :refer [mcp-json mcp-error]]
             [hive-mcp.emacsclient :as ec]
             [hive-mcp.elisp :as el]
+            [hive-mcp.agent.context :as ctx]
             [clojure.data.json :as json]
             [clojure.java.io :as io]
             [clojure.string :as str]
@@ -235,54 +236,60 @@
    - force: Overwrite existing file (default: false)
    - project-id: Custom project ID (auto-generated if nil)
 
+   CTX Migration: Uses request context for directory extraction.
+   Fallback chain: explicit param → ctx binding → nil.
+
    Returns generated config or error."
   [{:keys [directory force project_id]}]
-  (log/info "generate-hive-project" {:directory directory :force force})
+  ;; CTX Migration: Use request context fallback for directory
+  ;; Fallback chain: explicit param → ctx binding → nil
+  (let [effective-dir (or directory (ctx/current-directory))]
+    (log/info "generate-hive-project" {:directory effective-dir :force force})
 
-  ;; Get projectile info
-  (if-let [proj-info (get-projectile-info directory)]
-    (let [{:keys [name root type]} proj-info
-          project-root (or root directory)
-          config-path (str project-root "/.hive-project.edn")
-          existing? (.exists (io/file config-path))]
+    ;; Get projectile info
+    (if-let [proj-info (get-projectile-info effective-dir)]
+      (let [{:keys [name root type]} proj-info
+            project-root (or root effective-dir)
+            config-path (str project-root "/.hive-project.edn")
+            existing? (.exists (io/file config-path))]
 
-      ;; Check for existing file
-      (if (and existing? (not force))
-        (mcp-json {:error "File already exists. Use force=true to overwrite."
-                   :path config-path
-                   :hint "Existing .hive-project.edn found"})
+        ;; Check for existing file
+        (if (and existing? (not force))
+          (mcp-json {:error "File already exists. Use force=true to overwrite."
+                     :path config-path
+                     :hint "Existing .hive-project.edn found"})
 
-        ;; Generate config
-        (let [project-type-str (or type "generic")
-              project-type-kw (keyword project-type-str)
-              parent-id (find-parent-project-id project-root)
-              generated-id (or project_id (generate-project-id name project-root))
-              config {:project-id generated-id
-                      :parent parent-id
-                      :project-type project-type-kw
-                      :watch-dirs (infer-watch-dirs project-type-str)
-                      :hot-reload (infer-hot-reload? project-type-str)
-                      :presets-path (when (infer-hot-reload? project-type-str)
-                                      ".hive/presets")}
-              edn-content (generate-edn-content config)]
+          ;; Generate config
+          (let [project-type-str (or type "generic")
+                project-type-kw (keyword project-type-str)
+                parent-id (find-parent-project-id project-root)
+                generated-id (or project_id (generate-project-id name project-root))
+                config {:project-id generated-id
+                        :parent parent-id
+                        :project-type project-type-kw
+                        :watch-dirs (infer-watch-dirs project-type-str)
+                        :hot-reload (infer-hot-reload? project-type-str)
+                        :presets-path (when (infer-hot-reload? project-type-str)
+                                        ".hive/presets")}
+                edn-content (generate-edn-content config)]
 
-          ;; Write file
-          (try
-            (spit config-path edn-content)
-            (log/info "Generated .hive-project.edn at:" config-path)
-            (mcp-json {:success true
-                       :path config-path
-                       :config config
-                       :project-type project-type-str
-                       :project-name name
-                       :parent parent-id
-                       :hierarchical (boolean parent-id)})
-            (catch Exception e
-              (log/error e "Failed to write .hive-project.edn")
-              (mcp-error (str "Failed to write config: " (.getMessage e))))))))
+            ;; Write file
+            (try
+              (spit config-path edn-content)
+              (log/info "Generated .hive-project.edn at:" config-path)
+              (mcp-json {:success true
+                         :path config-path
+                         :config config
+                         :project-type project-type-str
+                         :project-name name
+                         :parent parent-id
+                         :hierarchical (boolean parent-id)})
+              (catch Exception e
+                (log/error e "Failed to write .hive-project.edn")
+                (mcp-error (str "Failed to write config: " (.getMessage e))))))))
 
-    ;; No projectile info available
-    (mcp-error "Could not detect project. Ensure directory is a valid project root.")))
+      ;; No projectile info available
+      (mcp-error "Could not detect project. Ensure directory is a valid project root."))))
 
 ;; =============================================================================
 ;; Tool Definition

@@ -17,7 +17,8 @@
    - :applies-to   - Scope applicability
    - :co-accessed  - Frequently recalled together (batch recall pattern)"
   #{:implements :supersedes :refines :contradicts
-    :depends-on :derived-from :applies-to :co-accessed})
+    :depends-on :derived-from :applies-to :co-accessed
+    :projects-to})  ; L3 synthetic -> L2 entry projection
 
 (def kg-schema
   "DataScript schema for Knowledge Graph edges.
@@ -231,6 +232,49 @@
   (merge (disc-certainty-defaults-with-timestamp) disc-entity))
 
 ;; =============================================================================
+;; Synthetic Node Schema (L3 Emergent Clusters)
+;; =============================================================================
+;;
+;; Synthetic nodes represent emergent L3 patterns discovered through
+;; co-access analysis, temporal proximity, or semantic similarity.
+;; Per convention 20260131014506-72b6afed: L3 is emergent, not stored as
+;; raw entries, but as synthesized clusters that project onto L2 entries.
+
+(def synthetic-types
+  "Valid types for synthetic (emergent) knowledge nodes.
+
+   - :co-access          - Entries frequently recalled together
+   - :temporal-proximity - Entries created/accessed within time windows
+   - :semantic-cluster   - Entries with high embedding similarity
+   - :workflow-step      - Sequential pattern in agent workflows
+   - :decision-cluster   - Related decisions forming a decision tree"
+  #{:co-access :temporal-proximity :semantic-cluster
+    :workflow-step :decision-cluster})
+
+(def synthetic-schema
+  "DataScript schema for synthetic (emergent L3) nodes.
+
+   Synthetic nodes are discovered patterns that don't exist as direct
+   memory entries. They aggregate multiple L2 entries via :projects-to
+   edges, enabling pattern-level queries without denormalizing content."
+  {:kg-synthetic/id             {:db/unique :db.unique/identity
+                                 :db/doc "Unique synthetic node ID (UUID string)"}
+   :kg-synthetic/type           {:db/doc "Synthetic type from synthetic-types set"}
+   :kg-synthetic/members        {:db/cardinality :db.cardinality/many
+                                 :db/doc "Set of member entry IDs that form this cluster"}
+   :kg-synthetic/confidence     {:db/doc "Aggregate confidence score 0.0-1.0"}
+   :kg-synthetic/created-at     {:db/doc "Timestamp when pattern was first discovered (inst)"}
+   :kg-synthetic/last-reinforced {:db/doc "Timestamp when pattern was last reinforced by co-access (inst)"}
+   :kg-synthetic/centroid       {:db/doc "Optional embedding vector representing cluster centroid"}
+   :kg-synthetic/label          {:db/doc "Human-readable label for the synthetic node"}
+   :kg-synthetic/scope          {:db/doc "Project scope where this pattern was discovered"}})
+
+(defn valid-synthetic-type?
+  "Check if a synthetic type is valid."
+  [synthetic-type]
+  (contains? synthetic-types synthetic-type))
+
+;; =============================================================================
 ;; Abstraction Level Helpers
 ;; =============================================================================
 
@@ -274,6 +318,6 @@
   (get type->abstraction-level entry-type 2))
 
 (defn full-schema
-  "Returns the combined KG schema (edges + knowledge abstraction + disc)."
+  "Returns the combined KG schema (edges + knowledge abstraction + disc + synthetic)."
   []
-  (merge kg-schema knowledge-schema disc-schema))
+  (merge kg-schema knowledge-schema disc-schema synthetic-schema))

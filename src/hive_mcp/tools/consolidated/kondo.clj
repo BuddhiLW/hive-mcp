@@ -37,6 +37,7 @@
 (def tool-def
   "MCP tool definition for consolidated kondo command."
   {:name "kondo"
+   :consolidated true
    :description "clj-kondo analysis: lint (check for errors), analyze (project summary), callers (find call sites), calls (find outgoing calls), graph (namespace deps). Use command='help' to list all."
    :inputSchema {:type "object"
                  :properties {"command" {:type "string"

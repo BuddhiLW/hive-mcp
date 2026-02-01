@@ -129,7 +129,9 @@
         (log/info "mcp-memory-add:" type "directory:" directory "agent_id:" agent_id)
         (with-chroma
           (let [project-id (scope/get-current-project-id directory)
-                agent-id (or agent_id (System/getenv "CLAUDE_SWARM_SLAVE_ID"))
+                agent-id (or agent_id
+                             (ctx/current-agent-id)
+                             (System/getenv "CLAUDE_SWARM_SLAVE_ID"))
                 agent-tag (when agent-id (str "agent:" agent-id))
                 base-tags tags-vec
                 tags-with-agent (if agent-tag (conj base-tags agent-tag) base-tags)

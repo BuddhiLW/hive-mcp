@@ -43,6 +43,7 @@
 (def tool-def
   "MCP tool definition for consolidated cider command."
   {:name "cider"
+   :consolidated true
    :description "CIDER REPL operations: eval (silent), eval-explicit (show in REPL), doc (docstring), info (full metadata), complete (completions), apropos (search symbols), status (connection), spawn/sessions/kill-session (multi-REPL). Use command='help' to list all."
    :inputSchema {:type "object"
                  :properties {"command" {:type "string"

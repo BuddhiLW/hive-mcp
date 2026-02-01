@@ -65,13 +65,32 @@
 
  :steps
  [{:id :step-1
-   :description "Add preset_core tool - returns summary/key-points without full content"
-   :rationale "Lings can get orientation (~200 tokens) without full preset (~1500 tokens)"
+   :description "Add 'core' command to consolidated preset tool"
+   :rationale "CONSOLIDATED TOOLS pattern: preset(command: 'core', name: 'ling') returns summary (~200 tokens) without full content (~1500 tokens)"
    :files ["src/hive_mcp/presets.clj"
-           "src/hive_mcp/tools/presets.clj"]
-   :changes ["Add extract-preset-core fn (title, summary paragraph, key bullet points)"
-             "Add handle-preset-core tool handler"
-             "Register preset_core tool in tools.clj"]
+           "src/hive_mcp/tools/presets.clj"
+           "src/hive_mcp/tools/consolidated/preset.clj"]
+   :changes ["Add extract-preset-core fn in presets.clj (title, summary paragraph, key bullet points)"
+             "Add handle-preset-core handler fn in tools/presets.clj"
+             "Wire :core to handlers map in consolidated/preset.clj"
+             "Add 'core' to command enum in tool-def inputSchema"]
+   :pattern {:name "CONSOLIDATED TOOLS"
+             :usage "preset(command: 'core', name: 'ling')"
+             :anti-pattern "Do NOT create standalone preset_core tool"}
+   :depends-on []
+   :wave 1}
+
+  {:id :step-1b
+   :description "Add 'list_slim' command to consolidated preset tool"
+   :rationale "CONSOLIDATED TOOLS pattern: preset(command: 'list_slim') returns names + categories only for minimal token usage"
+   :files ["src/hive_mcp/tools/presets.clj"
+           "src/hive_mcp/tools/consolidated/preset.clj"]
+   :changes ["Add handle-preset-list-slim handler in tools/presets.clj"
+             "Wire :list_slim to handlers map in consolidated/preset.clj"
+             "Add 'list_slim' to command enum in tool-def inputSchema"]
+   :pattern {:name "CONSOLIDATED TOOLS"
+             :usage "preset(command: 'list_slim')"
+             :anti-pattern "Do NOT create standalone preset_list_slim tool"}
    :depends-on []
    :wave 1}
 
@@ -80,8 +99,9 @@
    :rationale "Generate the instructions for on-demand preset querying"
    :files ["src/hive_mcp/tools/swarm/prompt.clj"]
    :changes ["Add build-lazy-preset-header fn - generates instruction block"
-             "Include: preset names, when to query, example tool calls"
-             "~300 tokens vs ~1500 tokens per preset"]
+             "Include: preset names, when to query, example tool calls using consolidated syntax"
+             "~300 tokens vs ~1500 tokens per preset"
+             "Use: preset(command: 'get', name: ...) NOT preset_get(name: ...)"]
    :depends-on []
    :wave 1}
 
@@ -170,10 +190,10 @@
 
  :waves
  {:wave-1
-  {:description "Foundation - no behavior change yet"
-   :steps [:step-1 :step-2 :step-4]
+  {:description "Foundation - no behavior change yet (CONSOLIDATED TOOLS pattern)"
+   :steps [:step-1 :step-1b :step-2 :step-4]
    :parallel true
-   :outcome "preset_core tool available, lazy header generator exists, mode toggle exists"}
+   :outcome "preset 'core' + 'list_slim' commands available, lazy header generator exists, mode toggle exists"}
 
   :wave-2
   {:description "Wiring - connect lazy mode through the stack"
@@ -189,9 +209,10 @@
 
  :verification
  {:repl-commands
-  [";; Wave 1 verification"
-   "(require '[hive-mcp.tools.presets :as presets])"
-   "(presets/handle-preset-core {:name \"ling\"})  ; Should return summary, not full"
+  [";; Wave 1 verification - Using CONSOLIDATED TOOLS pattern"
+   "(require '[hive-mcp.tools.consolidated.preset :as preset])"
+   "(preset/handle-preset {:command \"core\" :name \"ling\"})  ; Should return summary, not full"
+   "(preset/handle-preset {:command \"list_slim\"})           ; Should return names + categories only"
    ""
    "(require '[hive-mcp.tools.swarm.prompt :as prompt])"
    "(prompt/build-lazy-preset-header [\"ling\" \"mcp-first\" \"hivemind\"])"
@@ -215,9 +236,19 @@
           "All spawns use current full-content behavior"
           "No code removal needed"]}
 
+ :consolidated-tools-pattern
+ {:description "All new preset operations MUST be commands on existing consolidated 'preset' tool"
+  :rationale "Reduces tool count, consistent UX, easier discovery"
+  :pattern-file "src/hive_mcp/tools/consolidated/preset.clj"
+  :examples ["preset(command: 'core', name: 'ling') NOT preset_core(name: 'ling')"
+             "preset(command: 'list_slim') NOT preset_list_slim()"]
+  :anti-patterns ["Creating new standalone tools like preset_core, preset_list_slim"
+                  "Using old-style tool names like preset_get instead of preset(command: 'get')"]}
+
  :notes
  ["Default presets (ling, mcp-first, hivemind) are most impactful target"
   "Axioms should NEVER be lazy - they are INVIOLABLE"
   "spawn-context already has token budget (~3K) - lazy presets complement this"
-  "Consider: preset_core could use LLM to extract summary if not manually written"
-  "Future: semantic preset selection based on task (already exists in drone/preset.clj)"]}
+  "Consider: preset 'core' command could use LLM to extract summary if not manually written"
+  "Future: semantic preset selection based on task (already exists in drone/preset.clj)"
+  "PATTERN: All preset operations use consolidated 'preset' tool with command param"]}

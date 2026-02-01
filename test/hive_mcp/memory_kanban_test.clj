@@ -538,7 +538,6 @@
     (require 'hive-mcp.tools.memory-kanban)
     (let [tools @(requiring-resolve 'hive-mcp.tools.memory-kanban/tools)
           tool-names-with-directory #{"mcp_mem_kanban_create"
-                                      "mcp_mem_kanban_list"
                                       "mcp_mem_kanban_list_slim"
                                       "mcp_mem_kanban_move"
                                       "mcp_mem_kanban_quick"}

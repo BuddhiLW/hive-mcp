@@ -56,6 +56,7 @@
 (def tool-def
   "MCP tool definition for consolidated memory operations."
   {:name "memory"
+   :consolidated true
    :description "Consolidated memory operations. Commands: add, query, metadata, get, search, duration, promote, demote, log_access, feedback, helpfulness, tags, cleanup, expiring, migrate, import. Use 'help' command to list all available commands."
    :inputSchema {:type "object"
                  :properties {"command" {:type "string"

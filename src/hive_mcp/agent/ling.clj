@@ -53,10 +53,12 @@
           ;; Elisp API: (name presets &optional cwd terminal kanban-task-id context-file)
           ;; Note: depth and parent are tracked in DataScript, not passed to elisp
           ;; Note: preset-str already includes quote prefix from format-elisp-list
-          elisp-code (format "(hive-mcp-swarm-api-spawn \"%s\" %s \"%s\" %s %s nil)"
+          ;; FIX: Use conditional format for cwd - empty string "" is truthy in elisp,
+          ;; breaking fallback chains like (or cwd default-directory)
+          elisp-code (format "(hive-mcp-swarm-api-spawn \"%s\" %s %s %s %s nil)"
                              id
                              preset-str
-                             (or cwd "")
+                             (if cwd (format "\"%s\"" cwd) "nil")
                              (if terminal (format "\"%s\"" terminal) "nil")
                              (if kanban-task-id (format "\"%s\"" kanban-task-id) "nil"))
           result (ec/eval-elisp-with-timeout elisp-code 10000)]
@@ -184,13 +186,23 @@
           ;; Kill elisp process
           (let [elisp-result (ec/eval-elisp-with-timeout
                               (format "(hive-mcp-swarm-slaves-kill \"%s\")" id)
-                              5000)]
-            (when-not (:success elisp-result)
-              (log/warn "Elisp kill may have failed" {:id id :error (:error elisp-result)})))
-          ;; Remove from DataScript
-          (ds-lings/remove-slave! id)
-          (log/info "Ling killed" {:id id})
-          {:killed? true :id id})
+                              5000)
+                ;; BUG FIX: Check both eval success AND actual kill result
+                ;; :success means emacsclient executed, :result is the actual return value
+                ;; elisp returns "t" on success, "nil" when slave not found
+                kill-succeeded? (and (:success elisp-result)
+                                     (not (nil? (:result elisp-result)))
+                                     (not= "nil" (:result elisp-result)))]
+            (if kill-succeeded?
+              (do
+                ;; Only remove from DataScript if elisp confirmed kill
+                (ds-lings/remove-slave! id)
+                (log/info "Ling killed" {:id id})
+                {:killed? true :id id})
+              (do
+                (log/warn "Elisp kill failed - NOT removing from DataScript"
+                          {:id id :elisp-result elisp-result})
+                {:killed? false :id id :reason :elisp-kill-failed}))))
         (do
           (log/warn "Cannot kill ling - critical ops in progress"
                     {:id id :blocking-ops blocking-ops})

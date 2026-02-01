@@ -97,7 +97,7 @@ mcp__emacs__mcp_memory_query
 
 \`\`\`
 mcp__emacs__mcp_mem_kanban_stats directory:"/path/to/your/project"
-mcp__emacs__mcp_mem_kanban_list status:"doing" directory:"/path/to/your/project"
+mcp__emacs__mcp_mem_kanban_list_slim status:"doing" directory:"/path/to/your/project"
 \`\`\`
 
 ### 3. Check Git State
@@ -152,7 +152,7 @@ mcp__emacs__mcp_memory_add
 
 \`\`\`
 mcp__emacs__mcp_mem_kanban_stats directory:"/path/to/your/project"
-mcp__emacs__mcp_mem_kanban_list status:"doing" directory:"/path/to/your/project"
+mcp__emacs__mcp_mem_kanban_list_slim status:"doing" directory:"/path/to/your/project"
 \`\`\`
 
 ### 3. Check Git Status

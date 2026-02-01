@@ -34,12 +34,12 @@ mcp__emacs-mcp__mcp_mem_kanban_create
 
 **All tasks:**
 ```
-mcp__emacs-mcp__mcp_mem_kanban_list
+mcp__emacs-mcp__mcp_mem_kanban_list_slim
 ```
 
 **By status:**
 ```
-mcp__emacs-mcp__mcp_mem_kanban_list
+mcp__emacs-mcp__mcp_mem_kanban_list_slim
   status: "todo"       # todo | doing | review
 ```
 
@@ -77,7 +77,7 @@ mcp__emacs-mcp__mcp_mem_kanban_update
 ### Start Session
 ```
 mcp__emacs-mcp__mcp_mem_kanban_stats
-mcp__emacs-mcp__mcp_mem_kanban_list status:"doing"
+mcp__emacs-mcp__mcp_mem_kanban_list_slim status:"doing"
 ```
 
 ### Begin Work on Task
@@ -93,7 +93,7 @@ mcp__emacs-mcp__mcp_mem_kanban_move task_id:"xxx" new_status:"done"
 ### End Session Review
 ```
 mcp__emacs-mcp__mcp_mem_kanban_stats
-mcp__emacs-mcp__mcp_mem_kanban_list status:"doing"
+mcp__emacs-mcp__mcp_mem_kanban_list_slim status:"doing"
 # For each DOING task, decide: complete it, keep as DOING, or move back to TODO
 ```
 

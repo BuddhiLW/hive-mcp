@@ -328,36 +328,29 @@ INJECTED-CONTEXT is optional pre-generated catchup context
          ;; Kill the pre-created buffer since claude-code-ide creates its own
          (when (buffer-live-p buffer)
            (kill-buffer buffer))
-         ;; Ensure MCP server is running (starts it if needed)
-         (let* ((port (when (fboundp 'claude-code-ide-mcp-server-ensure-server)
+         ;; Write system-prompt to temp file if present (for spawn-time injection)
+         (let* ((prompt-file (when system-prompt
+                               (let ((f (make-temp-file "swarm-prompt-" nil ".md")))
+                                 (with-temp-file f
+                                   (insert system-prompt))
+                                 f)))
+                ;; Ensure MCP server is running (starts it if needed)
+                (port (when (fboundp 'claude-code-ide-mcp-server-ensure-server)
                         (claude-code-ide-mcp-server-ensure-server)))
                 (_ (unless port
                      (error "Failed to start MCP server for claude-code-ide backend")))
+                ;; Pass system-prompt-file as 7th arg for spawn-time injection
                 (result (claude-code-ide--create-terminal-session
                          buffer-name
                          work-dir
                          port
                          nil  ;; continue
                          nil  ;; resume
-                         slave-id)))
+                         slave-id
+                         prompt-file)))  ;; system-prompt-file
            (setq buffer (car result))
            (plist-put slave :buffer buffer)
-           (plist-put slave :process (cdr result))
-           ;; Apply system prompt if present via CLI command after session starts
-           (when system-prompt
-             (let ((prompt-to-send system-prompt))
-               (run-at-time 1.0 nil
-                            (lambda ()
-                              (condition-case err
-                                  (when (buffer-live-p buffer)
-                                    (hive-mcp-swarm-terminal-send
-                                     buffer
-                                     (format "/system-prompt %s"
-                                             (shell-quote-argument prompt-to-send))
-                                     'claude-code-ide))
-                                (error
-                                 (message "[swarm] Timer error sending system-prompt to %s: %s"
-                                          slave-id (error-message-string err)))))))))))
+           (plist-put slave :process (cdr result))))
         ('vterm
          (with-current-buffer buffer
            (vterm-mode)
@@ -416,46 +409,141 @@ INJECTED-CONTEXT is optional pre-generated catchup context
              (plist-put s :status 'idle)))
        (error
         (message "[swarm] Timer error transitioning %s to idle: %s"
-                 slave-id (error-message-string err)))))))
+                 slave-id (error-message-string err))))))))
 
 ;;;; Kill Functions:
+
+(defun hive-mcp-swarm-slaves--extract-name-from-id (slave-id)
+  "Extract the name portion from SLAVE-ID.
+Slave ID format: swarm-NAME-TIMESTAMP (e.g., swarm-worker-1738368000).
+Returns NAME portion or nil if format doesn't match."
+  (when (and slave-id (string-match "^swarm-\\(.+\\)-[0-9]+$" slave-id))
+    (match-string 1 slave-id)))
+
+(defun hive-mcp-swarm-slaves--valid-kill-target-p (buffer slave-id)
+  "Validate BUFFER is a valid kill target for SLAVE-ID.
+Returns t if safe to kill, nil otherwise.
+
+Safety checks (BUG FIX: prevents killing coordinator):
+1. Buffer must be live
+2. Buffer name must start with swarm prefix
+3. Buffer name must NOT contain 'coordinator' (case-insensitive)
+4. Buffer name must match slave name from slave-id (prevents ID/buffer mismatch)
+5. Buffer must NOT be a known coordinator buffer (claude-code, master)
+
+CLARITY: I - Inputs guarded at kill boundary."
+  (when (buffer-live-p buffer)
+    (let* ((buf-name (buffer-name buffer))
+           (buf-name-lower (downcase buf-name))
+           (slave-name (hive-mcp-swarm-slaves--extract-name-from-id slave-id)))
+      (cond
+       ;; Check 1: Must have swarm prefix
+       ((not (string-prefix-p hive-mcp-swarm-buffer-prefix buf-name))
+        (message "[swarm-kill] BLOCKED: Buffer '%s' lacks swarm prefix for slave %s"
+                 buf-name slave-id)
+        nil)
+
+       ;; Check 2: Must NOT contain "coordinator"
+       ((string-match-p "coordinator" buf-name-lower)
+        (message "[swarm-kill] BLOCKED: Buffer '%s' contains 'coordinator' - refusing to kill"
+                 buf-name)
+        nil)
+
+       ;; Check 3: Must NOT be a known coordinator pattern (claude-code buffers)
+       ((or (string-match-p "\\*claude-code" buf-name-lower)
+            (string-match-p "\\*claude code" buf-name-lower)
+            (string-match-p "master" buf-name-lower))
+        (message "[swarm-kill] BLOCKED: Buffer '%s' matches coordinator pattern - refusing to kill"
+                 buf-name)
+        nil)
+
+       ;; Check 4: Buffer name must contain slave name from slave-id
+       ;; This prevents killing wrong buffer due to registry corruption
+       ((and slave-name
+             (not (string-match-p (regexp-quote slave-name) buf-name)))
+        (message "[swarm-kill] BLOCKED: Buffer '%s' doesn't match slave name '%s' from ID %s"
+                 buf-name slave-name slave-id)
+        (message "[swarm-kill] This indicates registry corruption - buffer/slave-id mismatch!")
+        nil)
+
+       ;; All checks passed
+       (t
+        (message "[swarm-kill] Validated: killing buffer '%s' for slave %s (name: %s)"
+                 buf-name slave-id (or slave-name "unknown"))
+        t)))))
 
 (defun hive-mcp-swarm-slaves-kill (slave-id)
   "Kill slave SLAVE-ID without prompts.
 Force-kills the buffer to prevent blocking on process/unsaved prompts.
 Handles vterm/eat process cleanup to ensure no confirmation dialogs.
-Emits slave-killed event via channel for push-based updates."
+Emits slave-killed event via channel for push-based updates.
+
+BUG FIX: Validates buffer before kill to prevent killing coordinator.
+Returns t on success, nil if slave not found or buffer invalid."
   (interactive
    (list (completing-read "Kill slave: "
                           (hash-table-keys hive-mcp-swarm--slaves))))
-  (when-let* ((slave (gethash slave-id hive-mcp-swarm--slaves)))
-    (let ((buffer (plist-get slave :buffer)))
-      (when (buffer-live-p buffer)
-        (with-current-buffer buffer
-          ;; Step 1: Mark buffer as unmodified to prevent "save buffer?" prompts
-          (set-buffer-modified-p nil)
-          ;; Step 2: Disable process query-on-exit for ALL processes in this buffer
-          ;; This prevents "Buffer has running process; kill it?" prompts
-          (when-let* ((proc (get-buffer-process buffer)))
-            (set-process-query-on-exit-flag proc nil))
-          ;; Also handle vterm's internal process tracking if present
-          (when (and (boundp 'vterm--process) vterm--process
-                     (process-live-p vterm--process))
-            (set-process-query-on-exit-flag vterm--process nil)))
-        ;; Step 3: Kill buffer with ALL hooks disabled
-        ;; - kill-buffer-query-functions: prevents "process running" prompts
-        ;; - kill-buffer-hook: prevents any cleanup hooks from blocking
-        ;; - vterm-exit-functions: prevents vterm cleanup hooks
-        (let ((kill-buffer-query-functions nil)
-              (kill-buffer-hook nil)
-              (vterm-exit-functions nil))
-          (kill-buffer buffer))))
-    ;; Emit slave-killed event via channel before cleanup
-    (hive-mcp-swarm-events-emit-slave-killed slave-id)
-    (remhash slave-id hive-mcp-swarm--slaves)
-    ;; Clear prompt tracking for this slave
-    (hive-mcp-swarm-prompts-clear-slave slave-id)
-    (message "Killed slave: %s" slave-id)))
+  (if-let* ((slave (gethash slave-id hive-mcp-swarm--slaves)))
+      (let ((buffer (plist-get slave :buffer))
+            (slave-name (plist-get slave :name)))
+        (cond
+         ;; Buffer is nil (spawn still in progress or already dead)
+         ((null buffer)
+          (message "[swarm-kill] Warning: slave %s has no buffer (spawn incomplete?)" slave-id)
+          ;; Still clean up registry entry
+          (hive-mcp-swarm-events-emit-slave-killed slave-id)
+          (remhash slave-id hive-mcp-swarm--slaves)
+          (hive-mcp-swarm-prompts-clear-slave slave-id)
+          t)
+
+         ;; Buffer is not live (already killed externally)
+         ((not (buffer-live-p buffer))
+          (message "[swarm-kill] Info: slave %s buffer already dead, cleaning registry" slave-id)
+          (hive-mcp-swarm-events-emit-slave-killed slave-id)
+          (remhash slave-id hive-mcp-swarm--slaves)
+          (hive-mcp-swarm-prompts-clear-slave slave-id)
+          t)
+
+         ;; SAFETY CHECK: Validate buffer is valid kill target
+         ((not (hive-mcp-swarm-slaves--valid-kill-target-p buffer slave-id))
+          (message "[swarm-kill] BLOCKED: Buffer '%s' failed safety validation for slave %s"
+                   (buffer-name buffer) slave-id)
+          (message "[swarm-kill] This prevents accidentally killing coordinator!")
+          ;; Still remove from registry to prevent stale entries
+          (remhash slave-id hive-mcp-swarm--slaves)
+          nil)
+
+         ;; Valid target - proceed with kill
+         (t
+          (with-current-buffer buffer
+            ;; Step 1: Mark buffer as unmodified to prevent "save buffer?" prompts
+            (set-buffer-modified-p nil)
+            ;; Step 2: Disable process query-on-exit for ALL processes in this buffer
+            ;; This prevents "Buffer has running process; kill it?" prompts
+            (when-let* ((proc (get-buffer-process buffer)))
+              (set-process-query-on-exit-flag proc nil))
+            ;; Also handle vterm's internal process tracking if present
+            (when (and (boundp 'vterm--process) vterm--process
+                       (process-live-p vterm--process))
+              (set-process-query-on-exit-flag vterm--process nil)))
+          ;; Step 3: Kill buffer with ALL hooks disabled
+          ;; - kill-buffer-query-functions: prevents "process running" prompts
+          ;; - kill-buffer-hook: prevents any cleanup hooks from blocking
+          ;; - vterm-exit-functions: prevents vterm cleanup hooks
+          (let ((kill-buffer-query-functions nil)
+                (kill-buffer-hook nil)
+                (vterm-exit-functions nil))
+            (kill-buffer buffer))
+          ;; Emit slave-killed event via channel before cleanup
+          (hive-mcp-swarm-events-emit-slave-killed slave-id)
+          (remhash slave-id hive-mcp-swarm--slaves)
+          ;; Clear prompt tracking for this slave
+          (hive-mcp-swarm-prompts-clear-slave slave-id)
+          (message "Killed slave: %s" slave-id)
+          t)))
+    ;; Slave not found in registry
+    (message "[swarm-kill] Slave not found: %s" slave-id)
+    nil))
 
 (defun hive-mcp-swarm-slaves-kill-all ()
   "Kill all slaves."

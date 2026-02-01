@@ -8,11 +8,11 @@
   (:require [hive-mcp.tools.core :refer [mcp-success mcp-error]]
             [hive-mcp.emacsclient :as ec]
             [hive-mcp.elisp :as el]
+            [hive-mcp.agent.context :as ctx]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
-
 
 ;; ============================================================
 ;; Working Directory Resolution
@@ -20,14 +20,23 @@
 ;;
 ;; When Claude CLI spawns in a project directory, magit tools should
 ;; operate on that project by default - not on whatever buffer is
-;; active in Emacs. We use the MCP server's working directory as the
-;; default when no explicit directory is provided.
+;; active in Emacs.
+;;
+;; Fallback chain:
+;;   1. Explicit directory parameter from caller
+;;   2. ctx/current-directory - from request context (CTX migration)
+;;   3. System/getProperty "user.dir" - MCP server's working directory
 
 (defn- resolve-directory
   "Resolve the directory to use for git operations.
-   Uses provided directory or falls back to MCP server's working directory."
+   Uses provided directory, request context directory, or falls back to
+   MCP server's working directory.
+
+   CTX Migration: Now uses hive-mcp.agent.context for directory resolution."
   [directory]
-  (or directory (System/getProperty "user.dir")))
+  (or directory
+      (ctx/current-directory)
+      (System/getProperty "user.dir")))
 
 ;; ============================================================
 ;; Magit Integration Tools (requires hive-mcp-magit addon)

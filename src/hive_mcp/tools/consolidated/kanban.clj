@@ -6,24 +6,24 @@
    Usage via MCP: kanban {\"command\": \"list\", \"status\": \"inprogress\"}
 
    SOLID: Facade pattern - single tool entry point for Kanban operations.
-   CLARITY: L - Thin adapter delegating to domain handlers."
+   CLARITY: L - Thin adapter delegating to memory-kanban (Chroma backend)."
   (:require [hive-mcp.tools.cli :refer [make-cli-handler format-help]]
-            [hive-mcp.tools.kanban :as kanban-handlers]))
+            [hive-mcp.tools.memory-kanban :as mem-kanban]))
 
 ;; =============================================================================
-;; Handlers Map - Wire commands to existing handlers
+;; Handlers Map - Wire commands to memory-kanban handlers (Chroma backend)
 ;; =============================================================================
 
 (def handlers
   "Map of command keywords to handler functions."
-  {:list   kanban-handlers/handle-mcp-kanban-list-tasks
-   :create kanban-handlers/handle-mcp-kanban-create-task
-   :move   kanban-handlers/handle-mcp-kanban-move-task
-   :status kanban-handlers/handle-mcp-kanban-status
-   :update kanban-handlers/handle-mcp-kanban-update-task
-   :roadmap kanban-handlers/handle-mcp-kanban-roadmap
-   :my-tasks kanban-handlers/handle-mcp-kanban-my-tasks
-   :sync   kanban-handlers/handle-mcp-kanban-sync})
+  {:list     mem-kanban/handle-mem-kanban-list-slim
+   :create   mem-kanban/handle-mem-kanban-create
+   :move     mem-kanban/handle-mem-kanban-move
+   :status   mem-kanban/handle-mem-kanban-stats
+   :update   mem-kanban/handle-mem-kanban-move  ; move handles status updates
+   :roadmap  mem-kanban/handle-mem-kanban-stats ; stats includes overview
+   :my-tasks mem-kanban/handle-mem-kanban-list-slim
+   :sync     (fn [_] {:success true :message "Memory kanban is single-backend, no sync needed"})})
 
 ;; =============================================================================
 ;; CLI Handler
@@ -40,6 +40,7 @@
 (def tool-def
   "MCP tool definition for consolidated kanban command."
   {:name "kanban"
+   :consolidated true
    :description "Kanban task management: list (all/filtered tasks), create (new task), move (change status), status (board overview), update (modify task), roadmap (milestones), my-tasks (agent's tasks), sync (backends). Use command='help' to list all."
    :inputSchema {:type "object"
                  :properties {"command" {:type "string"

@@ -17,6 +17,7 @@
             [hive-mcp.events.core :as ev]
             [hive-mcp.agent :as agent]
             [hive-mcp.agent.cost :as cost]
+            [hive-mcp.agent.context :as ctx]
             [hive-mcp.knowledge-graph.disc :as kg-disc]
             [hive-mcp.telemetry.prometheus :as prom]
             [hive-mcp.telemetry.health :as health]
@@ -899,8 +900,11 @@
     (when (empty? tasks)
       (throw (ex-info "tasks array is required and must not be empty" {})))
 
-    ;; Normalize task keys (MCP sends string keys)
-    (let [normalized-tasks (mapv (fn [t]
+    ;; CTX Migration: Use request context fallback for cwd
+    ;; Fallback chain: explicit param → ctx binding → nil
+    (let [effective-cwd (or cwd (ctx/current-directory))
+          ;; Normalize task keys (MCP sends string keys)
+          normalized-tasks (mapv (fn [t]
                                    {:file (or (get t "file") (:file t))
                                     :task (or (get t "task") (:task t))})
                                  tasks)
@@ -924,7 +928,7 @@
             {:keys [wave-id item-count]} (execute-wave-async!
                                           plan-id
                                           {:trace (if (nil? trace) true trace)
-                                           :cwd cwd})]
+                                           :cwd effective-cwd})]
         {:type "text"
          :text (json/write-str {:status "dispatched"
                                 :plan_id plan-id

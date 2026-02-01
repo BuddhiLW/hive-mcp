@@ -231,3 +231,114 @@
    Convenience for edge :created-at fields."
   []
   (java.util.Date.))
+
+;; =============================================================================
+;; Temporal Query Facade (W3)
+;; =============================================================================
+
+(defn temporal-store?
+  "Check if the current store supports temporal queries (time-travel).
+   Returns true for Datahike, false for DataScript/Datalevin.
+
+   Use this to guard temporal query calls in application code."
+  []
+  (proto/temporal-store? (ensure-store!)))
+
+(defn history-db
+  "Get a database containing all historical facts.
+
+   Returns a DB value that includes retracted datoms, enabling
+   queries over the complete history of the store.
+
+   Returns nil if the store does not support temporal queries.
+
+   Example:
+     (when (temporal-store?)
+       (query '[:find ?e ?attr ?v ?added
+                :where [?e ?attr ?v _ ?added]]
+              (history-db)))"
+  []
+  (let [store (ensure-store!)]
+    (when (proto/temporal-store? store)
+      (proto/history-db store))))
+
+(defn as-of-db
+  "Get the database as of a specific point in time.
+
+   Arguments:
+     tx-or-time - Transaction ID (integer) or java.util.Date timestamp
+
+   Returns a DB value representing the state at that point,
+   or nil if the store does not support temporal queries.
+
+   Example:
+     ;; Query state from 1 hour ago
+     (as-of-db (java.util.Date. (- (System/currentTimeMillis) 3600000)))"
+  [tx-or-time]
+  (let [store (ensure-store!)]
+    (when (proto/temporal-store? store)
+      (proto/as-of-db store tx-or-time))))
+
+(defn since-db
+  "Get a database containing only facts added since a point in time.
+
+   Arguments:
+     tx-or-time - Transaction ID (integer) or java.util.Date timestamp
+
+   Returns a DB value with only facts added after that point,
+   or nil if the store does not support temporal queries.
+
+   Useful for incremental change tracking and sync operations."
+  [tx-or-time]
+  (let [store (ensure-store!)]
+    (when (proto/temporal-store? store)
+      (proto/since-db store tx-or-time))))
+
+(defn query-history
+  "Query against the full history database.
+
+   Arguments:
+     q      - Datalog query
+     inputs - Optional additional query inputs
+
+   Returns query results against history DB, enabling queries
+   that span all historical states (including retracted facts).
+
+   Returns nil if the store does not support temporal queries.
+
+   Example:
+     ;; Find all values an attribute ever had
+     (query-history '[:find ?v ?added
+                      :in $ ?e ?attr
+                      :where [?e ?attr ?v _ ?added]]
+                    [:kg-edge/id \"some-id\"] :kg-edge/weight)"
+  [q & inputs]
+  (when-let [hdb (history-db)]
+    ;; Dynamically require datahike.api to avoid hard dependency
+    (require 'datahike.api)
+    (if (seq inputs)
+      (apply (resolve 'datahike.api/q) q hdb inputs)
+      ((resolve 'datahike.api/q) q hdb))))
+
+(defn query-as-of
+  "Query the database as it was at a specific point in time.
+
+   Arguments:
+     tx-or-time - Transaction ID (integer) or java.util.Date timestamp
+     q          - Datalog query
+     inputs     - Optional additional query inputs
+
+   Returns query results from the point-in-time snapshot,
+   or nil if the store does not support temporal queries.
+
+   Example:
+     ;; What edges existed yesterday?
+     (query-as-of yesterday
+                  '[:find ?id
+                    :where [?e :kg-edge/id ?id]])"
+  [tx-or-time q & inputs]
+  (when-let [aodb (as-of-db tx-or-time)]
+    (require 'datahike.api)
+    (if (seq inputs)
+      (apply (resolve 'datahike.api/q) q aodb inputs)
+      ((resolve 'datahike.api/q) q aodb))))

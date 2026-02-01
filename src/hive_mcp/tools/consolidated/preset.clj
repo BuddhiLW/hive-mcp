@@ -39,6 +39,7 @@
 (def tool-def
   "MCP tool definition for consolidated preset command."
   {:name "preset"
+   :consolidated true
    :description "Swarm preset management: list (all presets), get (by name), search (semantic query), add (custom preset), delete (remove), status (integration info), migrate (from files to Chroma). Use command='help' to list all."
    :inputSchema {:type "object"
                  :properties {"command" {:type "string"

@@ -42,6 +42,7 @@
 (def tool-def
   "MCP tool definition for consolidated hivemind command."
   {:name "hivemind"
+   :consolidated true
    :description "Hivemind coordination: shout (broadcast status), ask (request decision), status (coordinator state), respond (answer ask), messages (agent history). Use command='help' to list all."
    :inputSchema {:type "object"
                  :properties {"command" {:type "string"

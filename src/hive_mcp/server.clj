@@ -73,6 +73,29 @@
                        (println (force output_)))))}}})
 
 ;; =============================================================================
+;; PHASE 2 STRANGLE: Override tools/list to hide deprecated tools
+;;
+;; Override the SDK's tools/list handler to filter out deprecated tools.
+;; Deprecated tools remain callable (tools/call works) but are hidden from
+;; discovery (tools/list excludes them).
+;;
+;; This enables graceful strangling of deprecated tools:
+;; - New code uses consolidated tools (visible in tools/list)
+;; - Old code continues to work (deprecated tools still callable)
+;; - After sunset date, deprecated tools can be fully removed
+;; =============================================================================
+
+(defmethod jsonrpc-server/receive-request "tools/list"
+  [_ context _params]
+  (log/trace "tools/list request - filtering deprecated tools")
+  (let [all-tools (vals @(:tools context))
+        visible-tools (remove #(:deprecated (:tool %)) all-tools)
+        deprecated-count (- (count all-tools) (count visible-tools))]
+    (when (pos? deprecated-count)
+      (log/debug "Hiding" deprecated-count "deprecated tools from tools/list"))
+    {:tools (mapv :tool visible-tools)}))
+
+;; =============================================================================
 ;; Route Delegation (CLARITY-L: Layers stay pure)
 ;;
 ;; Routing logic extracted to hive-mcp.server.routes for SRP.

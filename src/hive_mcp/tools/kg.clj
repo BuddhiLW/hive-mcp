@@ -12,6 +12,13 @@
    - kg_node_context: Get full context for a node
    - kg_reground: Re-verify entry against source, detect drift
 
+   Versioning tools (Yggdrasil integration):
+   - kg_branch: Create a new branch
+   - kg_checkout: Switch to a branch
+   - kg_branches: List all branches
+   - kg_snapshot_id: Get current commit ID
+   - kg_history: Get commit history
+
    SOLID-S: Single Responsibility - MCP tool handlers only.
    CLARITY-I: Inputs validated at tool boundary.
    CLARITY-Y: Graceful error handling."
@@ -21,6 +28,7 @@
             [hive-mcp.knowledge-graph.queries :as queries]
             [hive-mcp.knowledge-graph.scope :as scope]
             [hive-mcp.knowledge-graph.schema :as schema]
+            [hive-mcp.knowledge-graph.versioning :as versioning]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -539,3 +547,241 @@
                                                :description "Only re-ground entries older than N days (optional, default: 7)"}}
                   :required []}
     :handler handle-kg-backfill-grounding}])
+
+;;; =============================================================================
+;;; Versioning Tool Handlers (Yggdrasil Integration)
+;;; =============================================================================
+
+(defn handle-kg-branch
+  "Create a new branch in the versioned Knowledge Graph.
+
+   Arguments:
+     name - Branch name (required, e.g., 'experiment', 'agent-1-exploration')
+     from - Optional source branch or snapshot-id to branch from"
+  [{:keys [name from]}]
+  (log/info "kg_branch" {:name name :from from})
+  (try
+    (cond
+      (not (versioning/versioning-available?))
+      (mcp-error "Versioning not available. Ensure Datahike backend is configured and Yggdrasil is on classpath.")
+
+      (or (nil? name) (empty? name))
+      (mcp-error "name is required")
+
+      :else
+      (let [branch-kw (keyword name)
+            result (if from
+                     (versioning/branch! branch-kw from)
+                     (versioning/branch! branch-kw))]
+        (if result
+          (mcp-json {:success true
+                     :branch (clojure.core/name branch-kw)
+                     :from (or from "current")
+                     :message (str "Created branch " name)})
+          (mcp-error (str "Failed to create branch " name)))))
+    (catch Exception e
+      (log/error e "kg_branch failed")
+      (mcp-error (str "Branch creation failed: " (.getMessage e))))))
+
+(defn handle-kg-checkout
+  "Switch to a different branch in the versioned Knowledge Graph.
+
+   Arguments:
+     name - Branch name to switch to (required)"
+  [{:keys [name]}]
+  (log/info "kg_checkout" {:name name})
+  (try
+    (cond
+      (not (versioning/versioning-available?))
+      (mcp-error "Versioning not available. Ensure Datahike backend is configured and Yggdrasil is on classpath.")
+
+      (or (nil? name) (empty? name))
+      (mcp-error "name is required")
+
+      :else
+      (let [branch-kw (keyword name)
+            result (versioning/checkout branch-kw)]
+        (if result
+          (mcp-json {:success true
+                     :branch (clojure.core/name branch-kw)
+                     :snapshot-id (versioning/snapshot-id)
+                     :message (str "Switched to branch " name)})
+          (mcp-error (str "Failed to checkout branch " name ". Branch may not exist.")))))
+    (catch Exception e
+      (log/error e "kg_checkout failed")
+      (mcp-error (str "Checkout failed: " (.getMessage e))))))
+
+(defn handle-kg-branches
+  "List all branches in the versioned Knowledge Graph."
+  [_]
+  (log/info "kg_branches")
+  (try
+    (if-not (versioning/versioning-available?)
+      (mcp-error "Versioning not available. Ensure Datahike backend is configured and Yggdrasil is on classpath.")
+      (let [branches (versioning/branches)
+            current (versioning/current-branch)]
+        (mcp-json {:success true
+                   :current-branch (when current (clojure.core/name current))
+                   :branches (if branches
+                               (mapv clojure.core/name branches)
+                               [])
+                   :count (count (or branches []))})))
+    (catch Exception e
+      (log/error e "kg_branches failed")
+      (mcp-error (str "Failed to list branches: " (.getMessage e))))))
+
+(defn handle-kg-snapshot-id
+  "Get the current commit/snapshot ID of the versioned Knowledge Graph."
+  [_]
+  (log/info "kg_snapshot_id")
+  (try
+    (if-not (versioning/versioning-available?)
+      (mcp-error "Versioning not available. Ensure Datahike backend is configured and Yggdrasil is on classpath.")
+      (let [snap-id (versioning/snapshot-id)
+            parent-ids (versioning/parent-ids)
+            branch (versioning/current-branch)]
+        (mcp-json {:success true
+                   :snapshot-id snap-id
+                   :parent-ids (vec (or parent-ids []))
+                   :branch (when branch (clojure.core/name branch))})))
+    (catch Exception e
+      (log/error e "kg_snapshot_id failed")
+      (mcp-error (str "Failed to get snapshot ID: " (.getMessage e))))))
+
+(defn handle-kg-history
+  "Get commit history for the current branch.
+
+   Arguments:
+     limit - Maximum number of commits to return (optional, default: 100)"
+  [{:keys [limit]}]
+  (log/info "kg_history" {:limit limit})
+  (try
+    (if-not (versioning/versioning-available?)
+      (mcp-error "Versioning not available. Ensure Datahike backend is configured and Yggdrasil is on classpath.")
+      (let [opts (when limit {:limit limit})
+            history (versioning/history opts)
+            branch (versioning/current-branch)]
+        (mcp-json {:success true
+                   :branch (when branch (clojure.core/name branch))
+                   :count (count history)
+                   :commits (vec history)})))
+    (catch Exception e
+      (log/error e "kg_history failed")
+      (mcp-error (str "Failed to get history: " (.getMessage e))))))
+
+(defn handle-kg-merge
+  "Merge a source branch or snapshot into the current branch.
+
+   Arguments:
+     source - Source branch name or snapshot-id to merge (required)"
+  [{:keys [source]}]
+  (log/info "kg_merge" {:source source})
+  (try
+    (cond
+      (not (versioning/versioning-available?))
+      (mcp-error "Versioning not available. Ensure Datahike backend is configured and Yggdrasil is on classpath.")
+
+      (or (nil? source) (empty? source))
+      (mcp-error "source is required")
+
+      :else
+      (let [;; Try as branch keyword first, fall back to snapshot-id string
+            source-val (if (and (string? source)
+                                (not (re-matches #"^[0-9a-f-]{36}$" source)))
+                         (keyword source)
+                         source)
+            result (versioning/merge! source-val)]
+        (if result
+          (mcp-json {:success true
+                     :source (str source)
+                     :snapshot-id (versioning/snapshot-id)
+                     :message (str "Merged " source " into current branch")})
+          (mcp-error (str "Failed to merge " source)))))
+    (catch Exception e
+      (log/error e "kg_merge failed")
+      (mcp-error (str "Merge failed: " (.getMessage e))))))
+
+(defn handle-kg-versioning-status
+  "Get the current versioning status of the Knowledge Graph."
+  [_]
+  (log/info "kg_versioning_status")
+  (try
+    (let [status (versioning/status)]
+      (mcp-json {:success true
+                 :available (:available status)
+                 :system-id (:system-id status)
+                 :branch (when (:branch status) (clojure.core/name (:branch status)))
+                 :snapshot-id (:snapshot-id status)
+                 :branches (when (:branches status)
+                             (mapv clojure.core/name (:branches status)))}))
+    (catch Exception e
+      (log/error e "kg_versioning_status failed")
+      (mcp-error (str "Failed to get versioning status: " (.getMessage e))))))
+
+;;; =============================================================================
+;;; Versioning Tool Definitions
+;;; =============================================================================
+
+(def versioning-tools
+  [{:name "kg_branch"
+    :description "Create a new branch in the versioned Knowledge Graph. Branches enable parallel exploration of knowledge without affecting the main timeline. Useful for multi-agent scenarios where each agent experiments independently."
+    :inputSchema {:type "object"
+                  :properties {"name" {:type "string"
+                                       :description "Branch name (e.g., 'experiment', 'agent-1-exploration')"}
+                               "from" {:type "string"
+                                       :description "Source branch or snapshot-id to branch from (optional, default: current)"}}
+                  :required ["name"]}
+    :handler handle-kg-branch}
+
+   {:name "kg_checkout"
+    :description "Switch to a different branch in the versioned Knowledge Graph. Changes the active branch for all subsequent KG operations."
+    :inputSchema {:type "object"
+                  :properties {"name" {:type "string"
+                                       :description "Branch name to switch to"}}
+                  :required ["name"]}
+    :handler handle-kg-checkout}
+
+   {:name "kg_branches"
+    :description "List all branches in the versioned Knowledge Graph. Shows which branches exist and which is currently active."
+    :inputSchema {:type "object"
+                  :properties {}
+                  :required []}
+    :handler handle-kg-branches}
+
+   {:name "kg_snapshot_id"
+    :description "Get the current commit/snapshot ID of the versioned Knowledge Graph. Returns the unique identifier for the current state, useful for bookmarking or branching from specific points."
+    :inputSchema {:type "object"
+                  :properties {}
+                  :required []}
+    :handler handle-kg-snapshot-id}
+
+   {:name "kg_history"
+    :description "Get commit history for the current branch. Returns chronological list of snapshot IDs, newest first."
+    :inputSchema {:type "object"
+                  :properties {"limit" {:type "integer"
+                                        :description "Maximum commits to return (optional, default: 100)"}}
+                  :required []}
+    :handler handle-kg-history}
+
+   {:name "kg_merge"
+    :description "Merge a source branch or snapshot into the current branch. Combines knowledge from parallel exploration timelines."
+    :inputSchema {:type "object"
+                  :properties {"source" {:type "string"
+                                         :description "Source branch name or snapshot-id to merge"}}
+                  :required ["source"]}
+    :handler handle-kg-merge}
+
+   {:name "kg_versioning_status"
+    :description "Get the current versioning status of the Knowledge Graph. Shows whether versioning is available, current branch, snapshot, and all branches."
+    :inputSchema {:type "object"
+                  :properties {}
+                  :required []}
+    :handler handle-kg-versioning-status}])
+
+;;; =============================================================================
+;;; Combined Tool Export
+;;; =============================================================================
+
+(def all-tools
+  "All KG tools including versioning tools."
+  (into tools versioning-tools))
