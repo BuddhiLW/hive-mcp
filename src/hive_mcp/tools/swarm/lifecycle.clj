@@ -21,7 +21,9 @@
             [hive-mcp.validation :as v]
             [hive-mcp.tools.memory.scope :as scope]
             [hive-mcp.tools.catchup :as catchup]
+            [hive-mcp.agent.context :as ctx]
             [clojure.string :as str]
+            [cheshire.core :as json]
             [taoensso.timbre :as log]
             [hive-mcp.telemetry.prometheus :as prom]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -77,9 +79,16 @@
    SOLID: SRP - Only handles spawn, not registration"
   [{:keys [name presets cwd _role terminal kanban_task_id]}]
   (core/with-swarm
-    (let [;; Generate lightweight catchup context for injection (non-fatal)
+    (let [;; CTX Migration: Use request context fallback for cwd
+          ;; Fallback chain: explicit param → ctx binding → nil
+          effective-cwd (or cwd (ctx/current-directory))
+          ;; CLARITY-I: Validate cwd is a proper string path (fix for stringp bug)
+          ;; MCP may pass non-string values - coerce to nil if invalid
+          validated-cwd (when (and effective-cwd (string? effective-cwd) (not (str/blank? effective-cwd)))
+                          effective-cwd)
+          ;; Context injection re-enabled with validated directory
           spawn-ctx (try
-                      (catchup/spawn-context cwd)
+                      (catchup/spawn-context validated-cwd)
                       (catch Exception e
                         (log/warn "spawn-context generation failed (non-fatal):" (.getMessage e))
                         nil))
@@ -90,7 +99,7 @@
           elisp (format "(json-encode (hive-mcp-swarm-api-spawn \"%s\" %s %s %s %s %s))"
                         (v/escape-elisp-string (or name "slave"))
                         (or presets-str "nil")
-                        (if cwd (format "\"%s\"" (v/escape-elisp-string cwd)) "nil")
+                        (if validated-cwd (format "\"%s\"" (v/escape-elisp-string validated-cwd)) "nil")
                         (if terminal (format "\"%s\"" terminal) "nil")
                         (if kanban_task_id (format "\"%s\"" (v/escape-elisp-string kanban_task_id)) "nil")
                         (if ctx-file (format "\"%s\"" (v/escape-elisp-string ctx-file)) "nil"))
@@ -198,8 +207,11 @@
    Pass caller-project-id as nil for coordinator (no project context).
    Pass force-cross-project? as true to bypass ownership check.
 
+   BUG FIX: Now checks elisp result for kill-blocked error.
+   Elisp safety validation prevents accidentally killing coordinator.
+
    CLARITY: SRP - Extracted from handle-swarm-kill for reuse.
-   CLARITY: I - Inputs guarded (ownership + critical ops)"
+   CLARITY: I - Inputs guarded (ownership + critical ops + buffer safety)"
   ([slave_id]
    (kill-single-slave! slave_id nil false))
   ([slave_id caller-project-id]
@@ -225,10 +237,29 @@
                {:success false :error "timeout" :slave-id slave_id}
 
                success
-               (do
-                 ;; Clear from both registries: DataScript + hivemind agent-registry
-                 (hivemind/clear-agent! slave_id)
-                 {:success true :result result :slave-id slave_id})
+               ;; BUG FIX: Parse JSON before checking for kill-blocked error
+               ;; The result from emacsclient is a raw JSON string, not a map.
+               ;; (get "string" :error) returns nil, so we must parse first.
+               (let [parsed-result (if (string? result)
+                                     (try (json/parse-string result true)
+                                          (catch Exception _ result))
+                                     result)
+                     result-error (get parsed-result :error)]
+                 (if (= result-error "kill-blocked")
+                   ;; Kill was blocked by buffer safety validation
+                   (do
+                     (log/warn "Kill blocked by safety validation" {:slave-id slave_id
+                                                                    :reason (get parsed-result :reason)
+                                                                    :message (get parsed-result :message)})
+                     {:success false
+                      :error "kill-blocked-safety"
+                      :slave-id slave_id
+                      :reason (get parsed-result :reason "buffer-safety-validation-failed")
+                      :message (get parsed-result :message)})
+                   ;; Kill succeeded - clear registries
+                   (do
+                     (hivemind/clear-agent! slave_id)
+                     {:success true :result parsed-result :slave-id slave_id})))
 
                :else
                {:success false :error error :slave-id slave_id}))
@@ -268,8 +299,11 @@
    SOLID: SRP - Only handles kill operation"
   [{:keys [slave_id directory force_cross_project]}]
   (core/with-swarm
-    ;; Derive caller's project-id for ownership checks
-    (let [caller-project-id (when directory (scope/get-current-project-id directory))
+    ;; CTX Migration: Use request context fallback for directory
+    ;; Fallback chain: explicit param → ctx binding → nil
+    (let [effective-dir (or directory (ctx/current-directory))
+          ;; Derive caller's project-id for ownership checks
+          caller-project-id (when effective-dir (scope/get-current-project-id effective-dir))
           force? (boolean force_cross_project)]
       (if (= slave_id "all")
         ;; Kill all (optionally project-scoped)

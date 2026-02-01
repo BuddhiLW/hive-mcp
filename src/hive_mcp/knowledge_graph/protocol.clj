@@ -92,3 +92,44 @@
   "Check if a store has been configured."
   []
   (some? @active-store))
+
+;; =============================================================================
+;; Temporal Store Protocol (Optional Extension)
+;; =============================================================================
+
+(defprotocol ITemporalGraphStore
+  "Extended protocol for stores that support temporal queries.
+
+   Datahike implements this protocol for time-travel capabilities.
+   DataScript and Datalevin do not support this and should return nil.
+
+   Temporal queries enable:
+   - Auditing: See what was known at a point in time
+   - Debugging: Understand how knowledge evolved
+   - Rollback: Query past states without data loss"
+
+  (history-db [this]
+    "Get a database containing all historical facts.
+     Returns a DB value that includes retracted datoms, enabling
+     queries over the complete history of the store.
+     Returns nil if not supported.")
+
+  (as-of-db [this tx-or-time]
+    "Get the database as of a specific point in time.
+     tx-or-time can be:
+       - A transaction ID (integer)
+       - A java.util.Date timestamp
+     Returns nil if not supported.")
+
+  (since-db [this tx-or-time]
+    "Get a database containing only facts added since a point in time.
+     tx-or-time can be:
+       - A transaction ID (integer)
+       - A java.util.Date timestamp
+     Returns nil if not supported."))
+
+(defn temporal-store?
+  "Check if the current store supports temporal queries.
+   Returns true if the store implements ITemporalGraphStore."
+  [store]
+  (satisfies? ITemporalGraphStore store))

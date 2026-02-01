@@ -16,6 +16,7 @@
   (:require [hive-mcp.tools.swarm.wave :as wave]
             [hive-mcp.tools.kondo :as kondo]
             [hive-mcp.tools.core :refer [mcp-error]]
+            [hive-mcp.agent.context :as ctx]
             [hive-mcp.events.core :as ev]
             [clojure.data.json :as json]
             [clojure.string :as str]
@@ -511,8 +512,11 @@
     (when (empty? tasks)
       (throw (ex-info "tasks array is required and must not be empty" {})))
 
-    ;; Normalize task keys (MCP sends string keys)
-    (let [normalized-tasks (mapv (fn [t]
+    ;; CTX Migration: Use request context fallback for cwd
+    ;; Fallback chain: explicit param → ctx binding → nil
+    (let [effective-cwd (or cwd (ctx/current-directory))
+          ;; Normalize task keys (MCP sends string keys)
+          normalized-tasks (mapv (fn [t]
                                    {:file (or (get t "file") (:file t))
                                     :task (or (get t "task") (:task t))})
                                  tasks)]
@@ -526,7 +530,7 @@
                normalized-tasks
                {:preset (or preset "drone-worker")
                 :trace (if (nil? trace) true trace)
-                :cwd cwd})]
+                :cwd effective-cwd})]
           {:type "text"
            :text (json/write-str
                   {:status "dispatched"
@@ -546,7 +550,7 @@
                 :lint-level (or lint_level default-lint-level)
                 :preset (or preset "drone-worker")
                 :trace (if (nil? trace) true trace)
-                :cwd cwd})]
+                :cwd effective-cwd})]
           {:type "text"
            :text (json/write-str
                   {:status "dispatched"

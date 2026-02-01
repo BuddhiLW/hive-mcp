@@ -8,15 +8,20 @@
    - Preset selection and task classification
    - Parser code extraction and confidence scoring
    - Validation result structures
-   - Sandbox path containment validation"
-  (:require [clojure.test :refer [deftest is run-tests testing]]
+   - Sandbox path containment validation
+   - KG-first context (consult KG before file reads)"
+  (:require [clojure.test :refer [deftest is run-tests testing use-fixtures]]
             [hive-mcp.agent.drone.errors :as drone]
             [hive-mcp.agent.drone.preset :as preset]
             [hive-mcp.agent.drone.parser :as parser]
             [hive-mcp.agent.drone.tools :as tools]
             [hive-mcp.agent.drone.sandbox :as sandbox]
             [hive-mcp.agent.drone.validation :as validation]
-            [hive-mcp.agent.drone.context :as context]))
+            [hive-mcp.agent.drone.context :as context]
+            [hive-mcp.agent.drone.kg-context :as kg-context]
+            [hive-mcp.knowledge-graph.disc :as disc]
+            [hive-mcp.knowledge-graph.connection :as kg-conn]
+            [clojure.java.io :as io]))
 
 ;; =============================================================================
 ;; Error Classification Tests
@@ -417,6 +422,155 @@
                              "/tmp/test-project")]
       (is (seq (:rejected-files sandbox-with-root))
           "Should reject paths with explicit project-root"))))
+
+;; =============================================================================
+;; KG-First Context Tests (drone consults KG before file reads)
+;; =============================================================================
+
+(def ^:dynamic *test-project-root* nil)
+
+(defn kg-first-fixture [f]
+  ;; Initialize KG connection for tests
+  (kg-conn/ensure-initialized!)
+  ;; Create temp project directory
+  (let [tmp-dir (io/file (System/getProperty "java.io.tmpdir")
+                         (str "hive-kg-test-" (System/currentTimeMillis)))]
+    (.mkdirs tmp-dir)
+    (binding [*test-project-root* (.getAbsolutePath tmp-dir)]
+      (try
+        (f)
+        (finally
+          ;; Cleanup: remove temp files
+          (doseq [f (file-seq tmp-dir)]
+            (.delete f)))))))
+
+(use-fixtures :each kg-first-fixture)
+
+(deftest test-kg-first-context-classification
+  (testing "kg-first-context classifies files correctly"
+    (let [test-file (io/file *test-project-root* "src" "core.clj")]
+      ;; Ensure parent directory exists
+      (.mkdirs (.getParentFile test-file))
+      ;; Create test file
+      (spit test-file "(ns core)\n(defn foo [] 1)")
+      (let [abs-path (.getAbsolutePath test-file)]
+        ;; File with no disc entity should be :needs-read
+        (let [{:keys [kg-known needs-read stale summary]}
+              (disc/kg-first-context [abs-path])]
+          (is (empty? kg-known) "New file should not be kg-known")
+          (is (= [abs-path] needs-read) "New file should be in needs-read")
+          (is (empty? stale) "New file should not be stale")
+          (is (= 1 (:needs-read summary))))
+
+        ;; Add disc entity (simulate prior analysis)
+        (disc/add-disc! {:path abs-path
+                         :content-hash (disc/compute-hash "(ns core)\n(defn foo [] 1)")})
+
+        ;; Now file should be :kg-known (fresh)
+        (let [{:keys [kg-known needs-read stale summary]}
+              (disc/kg-first-context [abs-path])]
+          (is (contains? kg-known abs-path) "Tracked file should be kg-known")
+          (is (empty? needs-read) "Tracked file should not need read")
+          (is (empty? stale) "Fresh file should not be stale")
+          (is (= 1 (:known summary))))
+
+        ;; Modify file content - should become :stale
+        (spit test-file "(ns core)\n(defn foo [] 2)")
+
+        (let [{:keys [kg-known needs-read stale]}
+              (disc/kg-first-context [abs-path])]
+          (is (empty? kg-known) "Changed file should not be kg-known")
+          (is (empty? needs-read) "Changed file has disc, not needs-read")
+          (is (= [abs-path] stale) "Changed file should be stale"))
+
+        ;; Cleanup
+        (disc/remove-disc! abs-path)))))
+
+(deftest test-kg-context-build-summary
+  (testing "build-kg-summary creates context for kg-known files"
+    (let [test-file (io/file *test-project-root* "src" "util.clj")]
+      (.mkdirs (.getParentFile test-file))
+      (let [content "(ns util)\n(defn helper [x] (inc x))"
+            _ (spit test-file content)
+            abs-path (.getAbsolutePath test-file)]
+        ;; Add disc with known hash
+        (disc/add-disc! {:path abs-path
+                         :content-hash (disc/compute-hash content)})
+        ;; Touch to record read
+        (disc/touch-disc! abs-path)
+
+        ;; Build KG summary
+        (let [{:keys [kg-known]} (disc/kg-first-context [abs-path])
+              kg-info (get kg-known abs-path)
+              summary (kg-context/build-kg-summary {abs-path kg-info})]
+          (is (string? summary) "Should return string summary")
+          (is (re-find #"util\.clj" summary) "Should mention file name")
+          (is (re-find #"(?i)(fresh|stale)" summary) "Should indicate freshness"))
+
+        ;; Cleanup
+        (disc/remove-disc! abs-path)))))
+
+(deftest test-kg-first-skips-file-read
+  (testing "format-files-with-kg-context skips reading kg-known files"
+    (let [known-file (io/file *test-project-root* "src" "known.clj")
+          needs-read-file (io/file *test-project-root* "src" "unknown.clj")]
+      (.mkdirs (.getParentFile known-file))
+
+      ;; Create both files
+      (spit known-file "(ns known)\n(defn a [] :a)")
+      (spit needs-read-file "(ns unknown)\n(defn b [] :b)")
+
+      (let [known-path (.getAbsolutePath known-file)
+            needs-read-path (.getAbsolutePath needs-read-file)]
+        ;; Add disc for known file only
+        (disc/add-disc! {:path known-path
+                         :content-hash (disc/compute-hash "(ns known)\n(defn a [] :a)")})
+
+        ;; Call the KG-first context builder
+        (let [{:keys [context files-read]}
+              (kg-context/format-files-with-kg-context
+               [known-path needs-read-path]
+               {:project-root *test-project-root*})]
+
+          ;; Known file should NOT be in files-read (used KG summary)
+          (is (not (contains? (set files-read) known-path))
+              "KG-known file should not be read from disk")
+          ;; Unknown file SHOULD be in files-read
+          (is (contains? (set files-read) needs-read-path)
+              "Unknown file should be read from disk")
+          ;; Context should mention both files
+          (is (re-find #"known\.clj" context) "Context should reference known file")
+          (is (re-find #"unknown\.clj" context) "Context should reference unknown file"))
+
+        ;; Cleanup
+        (disc/remove-disc! known-path)))))
+
+(deftest test-kg-first-includes-staleness-warning
+  (testing "Stale files include staleness warning in context"
+    (let [test-file (io/file *test-project-root* "src" "stale.clj")]
+      (.mkdirs (.getParentFile test-file))
+      (let [old-content "(ns stale)\n(defn old [] 1)"
+            new-content "(ns stale)\n(defn new [] 2)"
+            _ (spit test-file old-content)
+            abs-path (.getAbsolutePath test-file)]
+        ;; Add disc with OLD hash
+        (disc/add-disc! {:path abs-path
+                         :content-hash (disc/compute-hash old-content)})
+
+        ;; Modify file to make it stale
+        (spit test-file new-content)
+
+        ;; Build context - should include staleness warning
+        (let [{:keys [context warnings]}
+              (kg-context/format-files-with-kg-context
+               [abs-path]
+               {:project-root *test-project-root*})]
+          (is (seq warnings) "Should have staleness warnings")
+          (is (re-find #"(?i)stale" context) "Context should mention staleness")
+          (is (re-find #"(?i)re-?read" context) "Context should suggest re-reading"))
+
+        ;; Cleanup
+        (disc/remove-disc! abs-path)))))
 
 (comment
   ;; Run tests

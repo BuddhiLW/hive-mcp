@@ -58,7 +58,7 @@
   "Handler for :hot/reload-success events.
 
    Called when hive-hot completes a reload cycle successfully.
-   Publishes completion event with reload statistics.
+   Publishes completion event with reload statistics and refreshes tool registry.
 
    Expects event data:
    {:loaded   [ns1 ns2 ...]  ; Namespaces that were reloaded
@@ -67,9 +67,10 @@
     :timestamp inst}
 
    Produces effects:
-   - :channel-publish - Broadcast reload-success to WebSocket clients
-   - :log             - Log reload completion message
-   - :prometheus      - Increment counter, record duration histogram"
+   - :channel-publish        - Broadcast reload-success to WebSocket clients
+   - :log                    - Log reload completion message
+   - :prometheus             - Increment counter, record duration histogram
+   - :tool-registry-refresh  - Refresh MCP tool handlers to pick up new code"
   [_coeffects [_ {:keys [loaded unloaded ms timestamp]}]]
   {:channel-publish {:event :hot-reload-success
                      :data {:loaded (or loaded [])
@@ -84,7 +85,9 @@
    :prometheus {:counter :hot_reload_success
                 :labels {}
                 :histogram {:name :hot_reload_duration_seconds
-                            :value (when ms (/ ms 1000.0))}}})
+                            :value (when ms (/ ms 1000.0))}}
+   ;; FIX: Refresh tool handlers to pick up reloaded code
+   :tool-registry-refresh true})
 
 ;; =============================================================================
 ;; Handler: :file/changed

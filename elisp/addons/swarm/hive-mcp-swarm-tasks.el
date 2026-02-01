@@ -188,6 +188,35 @@ This fixes the silent drop bug by:
            slave-id reason retries (or prompt ""))
    :warning))
 
+(defun hive-mcp-swarm--slave-truly-dead-p (slave)
+  "Check if SLAVE is truly dead vs still spawning.
+
+FIX (2026-01-31): Addresses silent dispatch drop during async spawn.
+Previously, `buffer-live-p nil' was treated as dead, but during spawn
+the buffer is legitimately nil until async creation completes.
+
+Returns non-nil if slave should be considered dead:
+- No slave entry at all
+- Status is 'error
+- Buffer was created but is now dead
+
+Returns nil (not dead) if:
+- Status is 'spawning or 'starting (buffer not yet created)
+- Buffer is live (regardless of ready state)"
+  (if (not slave)
+      t  ; No entry = truly dead
+    (let ((status (plist-get slave :status))
+          (buffer (plist-get slave :buffer)))
+      (cond
+       ;; Error status = dead
+       ((eq status 'error) t)
+       ;; Spawning/starting = not dead, just not ready yet
+       ((memq status '(spawning starting)) nil)
+       ;; Buffer exists - check if dead
+       (buffer (not (buffer-live-p buffer)))
+       ;; No buffer and not spawning/starting/error = inconsistent, treat as dead
+       (t t)))))
+
 (defun hive-mcp-swarm--process-queue-entry (entry)
   "Process a single queue ENTRY, dispatching if terminal ready.
 Returns:
@@ -203,9 +232,8 @@ Returns:
          (queued-at (plist-get entry :queued-at))
          (slave (gethash slave-id hive-mcp-swarm--slaves)))
     (cond
-     ;; Slave doesn't exist or buffer dead - fail
-     ((or (not slave)
-          (not (buffer-live-p (plist-get slave :buffer))))
+     ;; Slave truly dead (not spawning) - fail
+     ((hive-mcp-swarm--slave-truly-dead-p slave)
       (message "[swarm-tasks] Queue: %s slave dead, dropping dispatch" slave-id)
       (hive-mcp-swarm--notify-dispatch-dropped
        slave-id "slave-dead" prompt retries queued-at)
@@ -220,13 +248,22 @@ Returns:
      ;; Terminal ready - dispatch!
      ((hive-mcp-swarm--slave-ready-p slave-id)
       (condition-case err
-          (progn
-            (hive-mcp-swarm-tasks-dispatch-immediate
-             slave-id prompt
-             :timeout timeout :priority priority :context context)
-            (message "[swarm-tasks] Queue: %s dispatched after %d retries"
-                     slave-id retries)
-            :success)
+          (let ((result (hive-mcp-swarm-tasks-dispatch-immediate
+                         slave-id prompt
+                         :timeout timeout :priority priority :context context)))
+            ;; Check structured response status
+            (if (equal (plist-get result :status) "dispatched")
+                (progn
+                  (message "[swarm-tasks] Queue: %s dispatched after %d retries (task: %s)"
+                           slave-id retries (plist-get result :task-id))
+                  :success)
+              ;; Dispatch returned error status
+              (message "[swarm-tasks] Queue: %s dispatch failed: %s"
+                       slave-id (plist-get result :error))
+              (hive-mcp-swarm--notify-dispatch-dropped
+               slave-id (or (plist-get result :error) "dispatch-error")
+               prompt retries queued-at)
+              :failed))
         (error
          (message "[swarm-tasks] Queue: %s dispatch error: %s"
                   slave-id (error-message-string err))
@@ -310,36 +347,64 @@ Use with caution - dispatches will be lost."
 (cl-defun hive-mcp-swarm-tasks-dispatch-immediate (slave-id prompt &key timeout priority context)
   "Dispatch PROMPT to SLAVE-ID (NON-BLOCKING).
 TIMEOUT is milliseconds, PRIORITY is critical/high/normal/low.
-Returns task-id."
+Returns structured response plist:
+  - :status \"dispatched\" or \"error\"
+  - :task-id (on success)
+  - :slave-id
+  - :error (on failure)
+
+BUG FIX (2026-01-31): Now returns structured response instead of bare task-id.
+Enables MCP to distinguish success from failure."
   (interactive
    (list (completing-read "Slave: " (hash-table-keys hive-mcp-swarm--slaves))
          (read-string "Prompt: ")))
   (let* ((slave (gethash slave-id hive-mcp-swarm--slaves))
-         (task-id (hive-mcp-swarm-slaves-generate-task-id slave-id))
-         (buffer (plist-get slave :buffer)))
-    (unless slave (error "Slave not found: %s" slave-id))
-    (unless (buffer-live-p buffer) (error "Slave buffer is dead: %s" slave-id))
-    ;; Create task record
-    (puthash task-id
-             (list :task-id task-id :slave-id slave-id :prompt prompt
-                   :status 'dispatched :priority (or priority 'normal)
-                   :timeout (or timeout hive-mcp-swarm-default-timeout)
-                   :context context :dispatched-at (format-time-string "%FT%T%z")
-                   :completed-at nil :result nil :error nil)
-             hive-mcp-swarm--tasks)
-    ;; Update slave state
-    (plist-put slave :status 'working)
-    (plist-put slave :current-task task-id)
-    (plist-put slave :last-activity (format-time-string "%FT%T%z"))
-    (plist-put slave :task-start-point (with-current-buffer buffer (point-max)))
-    ;; Send prompt - NON-BLOCKING
-    (condition-case err
-        (hive-mcp-swarm-terminal-send buffer prompt
-                                      (or (plist-get slave :terminal) hive-mcp-swarm-terminal))
-      (error (message "[swarm-tasks] Dispatch error: %s" (error-message-string err))))
-    (when (called-interactively-p 'any)
-      (message "Dispatched task %s to %s" task-id slave-id))
-    task-id))
+         (buffer (and slave (plist-get slave :buffer))))
+    ;; Pre-validation with structured error responses
+    (unless slave
+      (cl-return-from hive-mcp-swarm-tasks-dispatch-immediate
+        (list :status "error" :slave-id slave-id :error "slave-not-found")))
+    (unless (buffer-live-p buffer)
+      (cl-return-from hive-mcp-swarm-tasks-dispatch-immediate
+        (list :status "error" :slave-id slave-id :error "buffer-dead")))
+    ;; Generate task-id after validation
+    (let ((task-id (hive-mcp-swarm-slaves-generate-task-id slave-id))
+          (send-error nil))
+      ;; Create task record
+      (puthash task-id
+               (list :task-id task-id :slave-id slave-id :prompt prompt
+                     :status 'dispatched :priority (or priority 'normal)
+                     :timeout (or timeout hive-mcp-swarm-default-timeout)
+                     :context context :dispatched-at (format-time-string "%FT%T%z")
+                     :completed-at nil :result nil :error nil)
+               hive-mcp-swarm--tasks)
+      ;; Update slave state
+      (plist-put slave :status 'working)
+      (plist-put slave :current-task task-id)
+      (plist-put slave :last-activity (format-time-string "%FT%T%z"))
+      (plist-put slave :task-start-point (with-current-buffer buffer (point-max)))
+      ;; Send prompt - NON-BLOCKING, capture errors
+      (condition-case err
+          (hive-mcp-swarm-terminal-send buffer prompt
+                                        (or (plist-get slave :terminal) hive-mcp-swarm-terminal))
+        (error
+         (setq send-error (error-message-string err))
+         (message "[swarm-tasks] Dispatch error: %s" send-error)
+         ;; Clean up task record on send failure
+         (remhash task-id hive-mcp-swarm--tasks)
+         ;; Reset slave state
+         (plist-put slave :status 'idle)
+         (plist-put slave :current-task nil)))
+      ;; Return structured response
+      (when (called-interactively-p 'any)
+        (message (if send-error
+                     "Failed to dispatch to %s: %s"
+                   "Dispatched task %s to %s")
+                 (if send-error slave-id task-id)
+                 (if send-error send-error slave-id)))
+      (if send-error
+          (list :status "error" :slave-id slave-id :error send-error)
+        (list :status "dispatched" :task-id task-id :slave-id slave-id)))))
 
 (cl-defun hive-mcp-swarm-tasks-dispatch (slave-id prompt &key timeout priority context)
   "Dispatch PROMPT to SLAVE-ID with ACID queue support.
@@ -351,16 +416,26 @@ This fixes the race condition where spawn (async) completes after dispatch,
 causing prompts to be lost.
 
 TIMEOUT is milliseconds, PRIORITY is critical/high/normal/low.
-Returns task-id (immediate) or queue entry (queued)."
+Returns structured response plist:
+  - :status \"dispatched\", \"queued\", or \"error\"
+  - :task-id (when status is \"dispatched\")
+  - :slave-id
+  - :queue-position, :retries (when status is \"queued\")
+  - :error (when status is \"error\")"
   (interactive
    (list (completing-read "Slave: " (hash-table-keys hive-mcp-swarm--slaves))
          (read-string "Prompt: ")))
   (if (and hive-mcp-swarm-dispatch-queue-enabled
            (not (hive-mcp-swarm--slave-ready-p slave-id)))
       ;; Queue for later - terminal not ready
-      (progn
+      (let ((entry (hive-mcp-swarm-enqueue-dispatch slave-id prompt timeout priority context)))
         (message "[swarm-tasks] Terminal not ready, queuing dispatch for %s" slave-id)
-        (hive-mcp-swarm-enqueue-dispatch slave-id prompt timeout priority context))
+        ;; Return structured response for queued dispatch
+        (list :status "queued"
+              :slave-id slave-id
+              :queue-position (length hive-mcp-swarm-dispatch-queue)
+              :queued-at (plist-get entry :queued-at)
+              :message "Dispatch queued - terminal not ready"))
     ;; Dispatch immediately - terminal ready or queue disabled
     (hive-mcp-swarm-tasks-dispatch-immediate slave-id prompt
                                               :timeout timeout
@@ -405,14 +480,36 @@ TIMEOUT-MS defaults to 5000.  Returns task plist with :result."
 
 (defun hive-mcp-swarm-tasks-broadcast (prompt &optional slave-filter)
   "Send PROMPT to all slaves matching SLAVE-FILTER (:role, :status).
-Returns list of task-ids."
-  (let ((task-ids '()))
+Returns list of dispatch results (structured responses) for each slave.
+
+Each result is a plist with :status (\"dispatched\", \"queued\", or \"error\").
+Successful dispatches include :task-id.
+
+FIX (2026-01-31): Now returns structured responses to track which
+dispatches succeeded vs queued vs failed."
+  (let ((results '())
+        (target-count 0))
+    ;; Count and dispatch to matching slaves
     (maphash (lambda (slave-id slave)
                (when (or (not slave-filter)
                          (hive-mcp-swarm-tasks--slave-matches-filter slave slave-filter))
-                 (push (hive-mcp-swarm-tasks-dispatch slave-id prompt) task-ids)))
+                 (cl-incf target-count)
+                 (condition-case err
+                     (let ((result (hive-mcp-swarm-tasks-dispatch slave-id prompt)))
+                       (push result results))
+                   (error
+                    (message "[swarm-tasks] Broadcast to %s failed: %s"
+                             slave-id (error-message-string err))
+                    (push (list :status "error"
+                                :slave-id slave-id
+                                :error (error-message-string err))
+                          results)))))
              hive-mcp-swarm--slaves)
-    (nreverse task-ids)))
+    ;; Log if no targets found (aids debugging)
+    (when (zerop target-count)
+      (message "[swarm-tasks] Broadcast: no slaves available (hash-table count: %d)"
+               (hash-table-count hive-mcp-swarm--slaves)))
+    (nreverse results)))
 
 ;;;; Non-blocking Completion Check:
 

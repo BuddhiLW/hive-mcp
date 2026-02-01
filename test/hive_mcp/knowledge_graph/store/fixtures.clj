@@ -56,6 +56,31 @@
       (catch Exception e
         (println "Datalevin fixture failed, skipping:" (.getMessage e))))))
 
+(defn datahike-fixture
+  "Fixture that runs test f with a fresh Datahike store in a temp dir.
+   Cleans up the temp directory after the test."
+  [f]
+  (let [tmp-dir (io/file (System/getProperty "java.io.tmpdir")
+                         (str "hive-kg-datahike-test-" (System/nanoTime)))
+        db-path (.getAbsolutePath tmp-dir)]
+    (try
+      ;; Dynamically require datahike store to avoid hard dep
+      (require 'hive-mcp.knowledge-graph.store.datahike)
+      (let [create-fn (resolve 'hive-mcp.knowledge-graph.store.datahike/create-store)
+            store (create-fn {:db-path db-path})]
+        (proto/set-store! store)
+        (proto/ensure-conn! store)
+        (try
+          (f)
+          (finally
+            (proto/close! store)
+            ;; Clean up temp directory
+            (when (.exists tmp-dir)
+              (doseq [file (reverse (file-seq tmp-dir))]
+                (.delete file))))))
+      (catch Exception e
+        (println "Datahike fixture failed, skipping:" (.getMessage e))))))
+
 ;; =============================================================================
 ;; Dual-Backend Fixture
 ;; =============================================================================
@@ -67,11 +92,12 @@
 
 (defn backend-fixture
   "Returns a fixture for a specific backend.
-   backend - :datascript or :datalevin"
+   backend - :datascript, :datalevin, or :datahike"
   [backend]
   (case backend
     :datascript datascript-fixture
-    :datalevin datalevin-fixture))
+    :datalevin datalevin-fixture
+    :datahike datahike-fixture))
 
 (defn dual-backend-fixture
   "Fixture that runs each test against BOTH backends.

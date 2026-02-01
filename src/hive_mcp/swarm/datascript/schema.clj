@@ -82,6 +82,21 @@
    :stacked - Overlapping/tabbed windows"
   #{:auto :manual :stacked})
 
+(def agent-types
+  "Valid agent type values (IAgent discrimination).
+   :ling  - Persistent Claude Code instance (can chain tools)
+   :drone - Ephemeral API call (single task, stateless)"
+  #{:ling :drone})
+
+(def task-types
+  "Valid task type values for drone routing.
+   :coding  - Code implementation tasks
+   :docs    - Documentation tasks
+   :review  - Code review tasks
+   :test    - Testing tasks
+   :refactor - Refactoring tasks"
+  #{:coding :docs :review :test :refactor})
+
 ;;; =============================================================================
 ;;; Schema Definition
 ;;; =============================================================================
@@ -146,6 +161,26 @@
             Enables task-aware lifecycle (auto-move to done when ling wraps).
             Queryable for 'which ling owns task X?' lookups."}
 
+   ;; Agent type discrimination (IAgent support)
+   :slave/agent-type
+   {:db/doc "Agent type: :ling (persistent Claude Code) or :drone (ephemeral API)"
+    :db/index true}
+
+   :slave/model
+   {:db/doc "OpenRouter model ID for drones (e.g., 'anthropic/claude-sonnet-4')"}
+
+   :slave/task-type
+   {:db/doc "Task type for routing: :coding, :docs, :review, etc."}
+
+   :slave/max-steps
+   {:db/doc "Maximum step budget for drones (limits API calls)"}
+
+   :slave/sandbox
+   {:db/doc "Sandbox constraints EDN map (e.g., {:allow-write false :allow-bash false})"}
+
+   :slave/upgraded-from
+   {:db/doc "Original drone-id if this ling was upgraded from a drone"}
+
    ;;; =========================================================================
    ;;; Task Entity
    ;;; =========================================================================
@@ -204,6 +239,75 @@
 
    :claim/wave-id
    {:db/doc "Wave ID that created this claim (for wave-scoped cleanup)"}
+
+   ;; Contextual claim fields (hash tracking and change history)
+   :claim/prior-hash
+   {:db/doc "File content hash at claim acquisition time"}
+
+   :claim/released-hash
+   {:db/doc "File content hash at claim release time"}
+
+   :claim/changes
+   {:db/doc "References to claim-change entities summarizing modifications"
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/many}
+
+   :claim/kg-edges-created
+   {:db/doc "Knowledge graph edge IDs created during this claim"
+    :db/cardinality :db.cardinality/many}
+
+   ;;; =========================================================================
+   ;;; Claim Change Entity (Change summaries for contextual claims)
+   ;;; =========================================================================
+
+   :claim-change/id
+   {:db/doc "Unique identifier for the change entry"
+    :db/unique :db.unique/identity}
+
+   :claim-change/lines-added
+   {:db/doc "Number of lines added in this change"}
+
+   :claim-change/lines-removed
+   {:db/doc "Number of lines removed in this change"}
+
+   :claim-change/hunk-count
+   {:db/doc "Number of diff hunks in this change"}
+
+   :claim-change/summary
+   {:db/doc "Human-readable summary of the change"}
+
+   :claim-change/computed-at
+   {:db/doc "Timestamp when this change summary was computed"}
+
+   ;;; =========================================================================
+   ;;; Claim History Entity (CC.6 - Recent changes tracking)
+   ;;; =========================================================================
+
+   :claim-history/id
+   {:db/doc "Unique identifier for the claim history entry"
+    :db/unique :db.unique/identity}
+
+   :claim-history/file
+   {:db/doc "File path that was claimed"
+    :db/index true}
+
+   :claim-history/slave-id
+   {:db/doc "ID of the slave that held the claim"}
+
+   :claim-history/prior-hash
+   {:db/doc "File content hash at claim acquisition time"}
+
+   :claim-history/released-hash
+   {:db/doc "File content hash at claim release time"}
+
+   :claim-history/lines-added
+   {:db/doc "Number of lines added during the claim period"}
+
+   :claim-history/lines-removed
+   {:db/doc "Number of lines removed during the claim period"}
+
+   :claim-history/released-at
+   {:db/doc "Timestamp when the claim was released"}
 
    ;;; =========================================================================
    ;;; Wrap Queue Entity (Crystal Convergence)

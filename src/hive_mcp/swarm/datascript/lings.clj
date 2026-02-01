@@ -314,7 +314,9 @@
    Arguments:
      file-path - Path to claim (must be unique)
      slave-id  - Slave making the claim
-     task-id   - Task associated with claim (optional)
+     opts      - Optional map with:
+                 :task-id    - Task associated with claim
+                 :prior-hash - File content hash at acquire time (CC.3)
 
    Returns:
      Transaction report
@@ -322,15 +324,17 @@
    Note: Due to :db/unique on :claim/file, attempting to claim
    an already-claimed file will upsert (update the existing claim).
    Use has-conflict? to check first if you want to prevent this."
-  [file-path slave-id & [task-id]]
+  [file-path slave-id & [{:keys [task-id prior-hash]}]]
   {:pre [(string? file-path)
          (string? slave-id)]}
   (let [c (conn/ensure-conn)
         tx-data (cond-> {:claim/file file-path
                          :claim/slave [:slave/id slave-id]
                          :claim/created-at (conn/now)}
-                  task-id (assoc :claim/task [:task/id task-id]))]
-    (log/debug "Claiming file:" file-path "for slave:" slave-id)
+                  task-id (assoc :claim/task [:task/id task-id])
+                  prior-hash (assoc :claim/prior-hash prior-hash))]
+    (log/debug "Claiming file:" file-path "for slave:" slave-id
+               (when prior-hash (str "hash:" (subs prior-hash 0 8) "...")))
     (d/transact! c [tx-data])))
 
 (defn release-claim!
@@ -516,3 +520,45 @@
       (log/debug "Refreshing claim timestamp:" file-path)
       (d/transact! c [{:db/id eid
                        :claim/heartbeat-at (conn/now)}]))))
+
+;;; =============================================================================
+;;; Claim History Functions (CC.6)
+;;; =============================================================================
+
+(defn archive-claim-to-history!
+  "CC.6: Archive a claim to history when releasing with changes.
+
+   Called by coordinator/contextual-claim-release! when a file was modified
+   during the claim period. Records:
+   - Prior and released content hashes
+   - Lines added/removed (if provided)
+   - Release timestamp
+
+   Arguments:
+     file-path - Path of the file being released
+     opts      - Map with:
+                 :slave-id      - ID of the slave that held the claim (required)
+                 :prior-hash    - Content hash at acquire time
+                 :released-hash - Content hash at release time
+                 :lines-added   - Number of lines added (optional)
+                 :lines-removed - Number of lines removed (optional)
+
+   Returns:
+     Transaction report"
+  [file-path {:keys [slave-id prior-hash released-hash lines-added lines-removed]}]
+  {:pre [(string? file-path)
+         (string? slave-id)]}
+  (let [c (conn/ensure-conn)
+        history-id (conn/gen-id "claim-history")
+        tx-data (cond-> {:claim-history/id history-id
+                         :claim-history/file file-path
+                         :claim-history/slave-id slave-id
+                         :claim-history/released-at (conn/now)}
+                  prior-hash (assoc :claim-history/prior-hash prior-hash)
+                  released-hash (assoc :claim-history/released-hash released-hash)
+                  lines-added (assoc :claim-history/lines-added lines-added)
+                  lines-removed (assoc :claim-history/lines-removed lines-removed))]
+    (log/debug "Archiving claim to history:" file-path "slave:" slave-id
+               (when (and lines-added lines-removed)
+                 (str "+/- " lines-added "/" lines-removed)))
+    (d/transact! c [tx-data])))

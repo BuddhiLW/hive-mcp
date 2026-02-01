@@ -215,7 +215,9 @@ Prevents duplicate wraps for the same session.")
   "Check if BACKEND is available."
   (pcase backend
     ('claude-code-ide (require 'claude-code-ide nil t))
-    ('vterm (require 'vterm nil t))
+    ('vterm (and (require 'vterm nil t)
+                 (fboundp 'vterm-mode)
+                 (fboundp 'vterm-send-string)))
     ('eat (require 'eat nil t))
     (_ nil)))
 
@@ -224,12 +226,12 @@ Prevents duplicate wraps for the same session.")
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
       (cond
-       ((derived-mode-p 'vterm-mode) 'vterm)
-       ((derived-mode-p 'eat-mode) 'eat)
-       ;; claude-code-ide uses vterm internally but has special markers
+       ;; claude-code-ide uses vterm internally - check BEFORE generic vterm
        ((and (derived-mode-p 'vterm-mode)
              (bound-and-true-p claude-code-ide-session-id))
         'claude-code-ide)
+       ((derived-mode-p 'vterm-mode) 'vterm)
+       ((derived-mode-p 'eat-mode) 'eat)
        (t nil)))))
 
 ;;;; Helpers:

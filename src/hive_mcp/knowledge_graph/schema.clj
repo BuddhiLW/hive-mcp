@@ -17,7 +17,8 @@
    - :applies-to   - Scope applicability
    - :co-accessed  - Frequently recalled together (batch recall pattern)"
   #{:implements :supersedes :refines :contradicts
-    :depends-on :derived-from :applies-to :co-accessed})
+    :depends-on :derived-from :applies-to :co-accessed
+    :projects-to})  ; L3 synthetic -> L2 entry projection
 
 (def kg-schema
   "DataScript schema for Knowledge Graph edges.
@@ -124,19 +125,154 @@
 ;; verification without re-reading files. When a memory entry is grounded,
 ;; it references a disc entity as proof of verification.
 
+;; Volatility classes for Bayesian certainty decay
+(def volatility-classes
+  "Valid volatility classes for disc certainty tracking.
+   Affects how quickly certainty decays over time.
+
+   - :stable    - Rarely changes (config, deps, infrastructure)
+   - :moderate  - Changes occasionally (business logic, handlers)
+   - :volatile  - Changes frequently (tests, UI, hot paths)"
+  #{:stable :moderate :volatile})
+
 (def disc-schema
   "DataScript schema for disc (file) state tracking.
 
    Disc entities represent the L1 abstraction level - actual files on disk.
-   Used as grounding targets for higher-level knowledge entries."
-  {:disc/path         {:db/unique :db.unique/identity
-                       :db/doc "File path (unique identity for the disc entity)"}
-   :disc/content-hash {:db/doc "SHA256 hash of file content"}
-   :disc/analyzed-at  {:db/doc "Timestamp of last kondo/analysis (inst)"}
-   :disc/git-commit   {:db/doc "Git commit hash when analyzed"}
-   :disc/project-id   {:db/doc "Project scope (for multi-project support)"}
-   :disc/last-read-at {:db/doc "Timestamp of last file read by any agent (inst)"}
-   :disc/read-count   {:db/doc "Number of times this file has been read by agents"}})
+   Used as grounding targets for higher-level knowledge entries.
+
+   Bayesian Certainty Fields:
+   - certainty-alpha/beta form a Beta distribution for probabilistic staleness
+   - Mean certainty = alpha / (alpha + beta)
+   - Higher alpha = more confident the knowledge is fresh
+   - Higher beta = more observations of staleness
+   - volatility-class affects decay rate between observations"
+  {:disc/path              {:db/unique :db.unique/identity
+                            :db/doc "File path (unique identity for the disc entity)"}
+   :disc/content-hash      {:db/doc "SHA256 hash of file content"}
+   :disc/analyzed-at       {:db/doc "Timestamp of last kondo/analysis (inst)"}
+   :disc/git-commit        {:db/doc "Git commit hash when analyzed"}
+   :disc/project-id        {:db/doc "Project scope (for multi-project support)"}
+   :disc/last-read-at      {:db/doc "Timestamp of last file read by any agent (inst)"}
+   :disc/read-count        {:db/doc "Number of times this file has been read by agents"}
+   ;; Bayesian certainty fields
+   :disc/certainty-alpha   {:db/doc "Beta distribution alpha parameter (float, default 5.0)"}
+   :disc/certainty-beta    {:db/doc "Beta distribution beta parameter (float, default 2.0)"}
+   :disc/volatility-class  {:db/doc "Volatility class: :stable, :moderate, or :volatile"}
+   :disc/last-observation  {:db/doc "Timestamp when certainty was last updated (inst)"}})
+
+(defn valid-volatility-class?
+  "Check if volatility class is valid."
+  [volatility-class]
+  (contains? volatility-classes volatility-class))
+
+(defn valid-certainty-alpha?
+  "Check if certainty alpha is valid (positive number)."
+  [alpha]
+  (and (number? alpha) (pos? alpha)))
+
+(defn valid-certainty-beta?
+  "Check if certainty beta is valid (positive number)."
+  [beta]
+  (and (number? beta) (pos? beta)))
+
+;; =============================================================================
+;; Malli Specs for Disc Certainty Fields
+;; =============================================================================
+
+(def DiscCertaintyAlpha
+  "Malli spec for Beta distribution alpha parameter."
+  [:and :double [:> 0]])
+
+(def DiscCertaintyBeta
+  "Malli spec for Beta distribution beta parameter."
+  [:and :double [:> 0]])
+
+(def DiscVolatilityClass
+  "Malli spec for volatility class enum."
+  [:enum :stable :moderate :volatile])
+
+(def DiscLastObservation
+  "Malli spec for last observation timestamp."
+  inst?)
+
+(def DiscCertaintyFields
+  "Malli spec for the complete set of Bayesian certainty fields."
+  [:map
+   [:disc/certainty-alpha {:optional true} DiscCertaintyAlpha]
+   [:disc/certainty-beta {:optional true} DiscCertaintyBeta]
+   [:disc/volatility-class {:optional true} DiscVolatilityClass]
+   [:disc/last-observation {:optional true} DiscLastObservation]])
+
+;; =============================================================================
+;; Default Values for New Disc Entities
+;; =============================================================================
+
+(def disc-certainty-defaults
+  "Default values for Bayesian certainty fields on new disc entities.
+
+   Alpha=5, Beta=2 gives:
+   - Mean certainty: 5/(5+2) = 0.714 (moderately confident)
+   - Variance: relatively low, reflecting prior belief
+   - Represents 'reasonably fresh but not certain' starting state"
+  {:disc/certainty-alpha  5.0
+   :disc/certainty-beta   2.0
+   :disc/volatility-class :moderate})
+
+(defn disc-certainty-defaults-with-timestamp
+  "Returns disc certainty defaults with current timestamp for last-observation."
+  []
+  (assoc disc-certainty-defaults
+         :disc/last-observation (java.util.Date.)))
+
+(defn apply-disc-certainty-defaults
+  "Apply default certainty values to a disc entity map.
+   Only sets values for keys not already present."
+  [disc-entity]
+  (merge (disc-certainty-defaults-with-timestamp) disc-entity))
+
+;; =============================================================================
+;; Synthetic Node Schema (L3 Emergent Clusters)
+;; =============================================================================
+;;
+;; Synthetic nodes represent emergent L3 patterns discovered through
+;; co-access analysis, temporal proximity, or semantic similarity.
+;; Per convention 20260131014506-72b6afed: L3 is emergent, not stored as
+;; raw entries, but as synthesized clusters that project onto L2 entries.
+
+(def synthetic-types
+  "Valid types for synthetic (emergent) knowledge nodes.
+
+   - :co-access          - Entries frequently recalled together
+   - :temporal-proximity - Entries created/accessed within time windows
+   - :semantic-cluster   - Entries with high embedding similarity
+   - :workflow-step      - Sequential pattern in agent workflows
+   - :decision-cluster   - Related decisions forming a decision tree"
+  #{:co-access :temporal-proximity :semantic-cluster
+    :workflow-step :decision-cluster})
+
+(def synthetic-schema
+  "DataScript schema for synthetic (emergent L3) nodes.
+
+   Synthetic nodes are discovered patterns that don't exist as direct
+   memory entries. They aggregate multiple L2 entries via :projects-to
+   edges, enabling pattern-level queries without denormalizing content."
+  {:kg-synthetic/id             {:db/unique :db.unique/identity
+                                 :db/doc "Unique synthetic node ID (UUID string)"}
+   :kg-synthetic/type           {:db/doc "Synthetic type from synthetic-types set"}
+   :kg-synthetic/members        {:db/cardinality :db.cardinality/many
+                                 :db/doc "Set of member entry IDs that form this cluster"}
+   :kg-synthetic/confidence     {:db/doc "Aggregate confidence score 0.0-1.0"}
+   :kg-synthetic/created-at     {:db/doc "Timestamp when pattern was first discovered (inst)"}
+   :kg-synthetic/last-reinforced {:db/doc "Timestamp when pattern was last reinforced by co-access (inst)"}
+   :kg-synthetic/centroid       {:db/doc "Optional embedding vector representing cluster centroid"}
+   :kg-synthetic/label          {:db/doc "Human-readable label for the synthetic node"}
+   :kg-synthetic/scope          {:db/doc "Project scope where this pattern was discovered"}})
+
+(defn valid-synthetic-type?
+  "Check if a synthetic type is valid."
+  [synthetic-type]
+  (contains? synthetic-types synthetic-type))
 
 ;; =============================================================================
 ;; Abstraction Level Helpers
@@ -182,6 +318,6 @@
   (get type->abstraction-level entry-type 2))
 
 (defn full-schema
-  "Returns the combined KG schema (edges + knowledge abstraction + disc)."
+  "Returns the combined KG schema (edges + knowledge abstraction + disc + synthetic)."
   []
-  (merge kg-schema knowledge-schema disc-schema))
+  (merge kg-schema knowledge-schema disc-schema synthetic-schema))

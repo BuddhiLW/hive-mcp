@@ -6,6 +6,9 @@
 [![MCP](https://img.shields.io/badge/MCP-Compatible-green.svg)](https://modelcontextprotocol.io)
 [![Emacs](https://img.shields.io/badge/Emacs-28.1+-purple.svg)](https://www.gnu.org/software/emacs/)
 
+> What could be more absurd than to increase one’s supplies for the road when the journey itself is almost at an end?
+> -- Cicero
+
 ---
 
 ## The Problem
@@ -160,9 +163,3 @@ docker compose up -d              # Chroma vector DB
 ---
 
 [AGPL-3.0-or-later](LICENSE)
-
-Testing drone with deepseek model
-
-;; Drone test successful
-
-Testing gpt-oss-120b

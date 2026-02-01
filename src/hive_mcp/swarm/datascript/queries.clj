@@ -10,6 +10,7 @@
    SOLID-S: Single Responsibility - queries only (no mutations).
    SOLID-I: Interface Segregation - read operations separated from writes."
   (:require [datascript.core :as d]
+            [clojure.set]
             [hive-mcp.swarm.datascript.connection :as conn]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -241,7 +242,8 @@
   "Get claim info for a file.
 
    Returns:
-     Map with :slave-id and :task-id or nil if unclaimed"
+     Map with :slave-id, :task-id, :prior-hash or nil if unclaimed.
+     :prior-hash is the file content hash captured at claim acquire time (CC.3)."
   [file-path]
   (let [c (conn/ensure-conn)
         db @c]
@@ -249,13 +251,15 @@
       {:file file-path
        :slave-id (get-in e [:claim/slave :slave/id])
        :task-id (get-in e [:claim/task :task/id])
-       :created-at (:claim/created-at e)})))
+       :created-at (:claim/created-at e)
+       :prior-hash (:claim/prior-hash e)})))
 
 (defn get-all-claims
   "Get all current file claims.
 
    Returns:
-     Seq of {:file :slave-id :task-id} maps"
+     Seq of {:file :slave-id :task-id :prior-hash} maps.
+     :prior-hash is the file content hash captured at claim acquire time (CC.3)."
   []
   (let [c (conn/ensure-conn)
         db @c
@@ -268,7 +272,8 @@
                 {:file (:claim/file e)
                  :slave-id (get-in e [:claim/slave :slave/id])
                  :task-id (get-in e [:claim/task :task/id])
-                 :created-at (:claim/created-at e)})))))
+                 :created-at (:claim/created-at e)
+                 :prior-hash (:claim/prior-hash e)})))))
 
 (defn has-conflict?
   "Check if a file claim would conflict with existing claims.
@@ -308,6 +313,64 @@
          (filter some?))))
 
 ;;; =============================================================================
+;;; Claim History Query Functions (CC.6)
+;;; =============================================================================
+
+(defn get-recent-claim-history
+  "Get recent claim history entries.
+
+   CC.6: Tracks file changes made during claim periods for auditing
+   and context propagation.
+
+   Options:
+   - :file       - Filter by specific file path
+   - :slave-id   - Filter by specific slave
+   - :since      - Only entries after this timestamp (java.util.Date)
+   - :limit      - Maximum number to return (default 50)
+
+   Returns:
+     Seq of claim history maps sorted by release time (most recent first)"
+  [& {:keys [file slave-id since limit] :or {limit 50}}]
+  (let [c (conn/ensure-conn)
+        db @c
+        ;; Query all claim history entries
+        all-history (d/q '[:find [(pull ?e [*]) ...]
+                           :where [?e :claim-history/id _]]
+                         db)]
+    (->> all-history
+         ;; Filter by file if provided
+         (filter (fn [entry]
+                   (or (nil? file)
+                       (= file (:claim-history/file entry)))))
+         ;; Filter by slave-id if provided
+         (filter (fn [entry]
+                   (or (nil? slave-id)
+                       (= slave-id (:claim-history/slave-id entry)))))
+         ;; Filter by since timestamp if provided
+         (filter (fn [entry]
+                   (or (nil? since)
+                       (and (:claim-history/released-at entry)
+                            (.after (:claim-history/released-at entry) since)))))
+         ;; Sort by release time (most recent first)
+         (sort-by :claim-history/released-at #(compare %2 %1))
+         ;; Apply limit
+         (take limit)
+         ;; Clean up the output format
+         (map (fn [entry]
+                (-> entry
+                    (dissoc :db/id)
+                    ;; Rename keys for cleaner output
+                    (clojure.set/rename-keys
+                     {:claim-history/id :id
+                      :claim-history/file :file
+                      :claim-history/slave-id :slave-id
+                      :claim-history/prior-hash :prior-hash
+                      :claim-history/released-hash :released-hash
+                      :claim-history/lines-added :lines-added
+                      :claim-history/lines-removed :lines-removed
+                      :claim-history/released-at :released-at})))))))
+
+;;; =============================================================================
 ;;; Statistics & Debugging
 ;;; =============================================================================
 
@@ -319,6 +382,7 @@
     {:slaves (count (d/q '[:find ?e :where [?e :slave/id _]] db))
      :tasks (count (d/q '[:find ?e :where [?e :task/id _]] db))
      :claims (count (d/q '[:find ?e :where [?e :claim/file _]] db))
+     :claim-history (count (d/q '[:find ?e :where [?e :claim-history/id _]] db))
      :active-tasks (count (d/q '[:find ?e
                                  :where
                                  [?e :task/status :dispatched]]

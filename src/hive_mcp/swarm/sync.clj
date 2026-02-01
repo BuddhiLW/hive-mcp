@@ -36,6 +36,7 @@
             [hive-mcp.swarm.coordinator :as coord]
             [hive-mcp.channel :as channel]
             [hive-mcp.emacsclient :as ec]
+            [hive-mcp.emacs.daemon-store :as daemon-store]
             [hive-mcp.hivemind :as hivemind]
             [hive-mcp.hooks :as hooks]
             [hive-mcp.tools.memory.scope :as scope]
@@ -140,11 +141,14 @@
 (defn- handle-slave-spawned
   "Handle slave spawn event. Event: {:slave-id :name :parent-id :depth :cwd}
    Derives project-id from cwd for project-scoped swarm operations.
-   
+
    NOTE: Sets initial status to :initializing, NOT :idle.
    The slave transitions to :idle only after preset injection completes
    (signaled by slave-ready event). This prevents dispatch race conditions
-   where tasks are queued before the slave is fully initialized."
+   where tasks are queued before the slave is fully initialized.
+
+   Also registers the Emacs daemon (if not already registered) and binds
+   this ling to it for daemon lifecycle tracking (IEmacsDaemon integration)."
   [event]
   (let [slave-id (get-field event :slave-id)
         name (get-field event :name slave-id)
@@ -152,11 +156,17 @@
         parent-id (get-field event :parent-id)
         cwd (get-field event :cwd)
         project-id (when cwd (scope/get-current-project-id cwd))
-        reg (get-swarm-registry)]
+        reg (get-swarm-registry)
+        ;; Daemon integration: use socket name from env or default
+        daemon-id (daemon-store/default-daemon-id)]
     (when slave-id
       (proto/add-slave! reg slave-id {:status :initializing :name name :depth depth
                                       :parent parent-id :cwd cwd :project-id project-id})
-      (log/debug "Sync: registered slave" slave-id "depth:" depth "status: :initializing"))))
+      ;; IEmacsDaemon integration: ensure daemon registered and bind ling
+      (daemon-store/ensure-default-daemon!)
+      (daemon-store/bind-ling! daemon-id slave-id)
+      (log/debug "Sync: registered slave" slave-id "depth:" depth
+                 "status: :initializing, bound to daemon:" daemon-id))))
 
 (defn- handle-slave-ready
   "Handle slave-ready event. Event: {:slave-id}
@@ -181,14 +191,18 @@
 
 (defn- handle-slave-killed
   "Handle slave killed event. Event: {:slave-id}
-   EVENTS-07: Dispatches :ling/completed BEFORE removing from DataScript."
+   EVENTS-07: Dispatches :ling/completed BEFORE removing from DataScript.
+   IEmacsDaemon integration: Unbinds ling from daemon before removal."
   [event]
   (let [slave-id (get-field event :slave-id)
-        reg (get-swarm-registry)]
+        reg (get-swarm-registry)
+        daemon-id (daemon-store/default-daemon-id)]
     (when slave-id
       (dispatch-event! [:ling/completed {:slave-id slave-id :reason "terminated"}])
+      ;; IEmacsDaemon integration: unbind ling from daemon before removal
+      (daemon-store/unbind-ling! daemon-id slave-id)
       (proto/remove-slave! reg slave-id)
-      (log/debug "Sync: removed slave" slave-id))))
+      (log/debug "Sync: removed slave" slave-id "unbound from daemon:" daemon-id))))
 
 (defn- handle-task-dispatched
   "Handle task dispatch event. Event: {:task-id :slave-id :files}
@@ -235,14 +249,20 @@
       (log/debug "Sync: task failed" task-id))))
 
 (defn- handle-prompt-shown
-  "Handle permission prompt event. Event: {:slave-id :prompt :timestamp :session-id}"
+  "Handle permission prompt event. Event: {:slave-id :prompt :timestamp :session-id}
+   Emits :ling/prompt-pending for Olympus UI reactive updates."
   [event]
   (let [slave-id (get-field event :slave-id)
         prompt (get-field event :prompt)
-        timestamp (get-field event :timestamp)
+        timestamp (get-field event :timestamp (System/currentTimeMillis))
         session-id (get-field event :session-id)]
     (when (and slave-id prompt)
       (hivemind/add-swarm-prompt! slave-id prompt session-id timestamp)
+      ;; Emit event for Olympus UI reactive prompt detection
+      (dispatch-event! [:ling/prompt-pending
+                        {:slave-id slave-id
+                         :prompt-preview (subs prompt 0 (min 100 (count prompt)))
+                         :pending-since timestamp}])
       (log/info "Sync: forwarded prompt from" slave-id "to hivemind"))))
 
 (defn- handle-prompt-stall

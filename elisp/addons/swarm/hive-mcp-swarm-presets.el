@@ -34,9 +34,14 @@
   :prefix "hive-mcp-swarm-presets-")
 
 (defcustom hive-mcp-swarm-presets-dir
-  (expand-file-name "presets" (file-name-directory
-                               (or load-file-name buffer-file-name
-                                   default-directory)))
+  ;; FIX: Resolve to project root /presets/, not elisp/addons/swarm/presets/
+  ;; Use locate-dominating-file to find project root (has deps.edn)
+  (let* ((this-file (or load-file-name buffer-file-name default-directory))
+         (project-root (locate-dominating-file this-file "deps.edn")))
+    (if project-root
+        (expand-file-name "presets" project-root)
+      ;; Fallback: go up 3 levels from elisp/addons/swarm/
+      (expand-file-name "../../../presets" (file-name-directory this-file))))
   "Directory containing built-in preset markdown files."
   :type 'directory
   :group 'hive-mcp-swarm-presets)

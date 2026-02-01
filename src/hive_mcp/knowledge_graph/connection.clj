@@ -38,7 +38,7 @@
 (defn- detect-backend
   "Detect the desired KG backend from configuration sources.
    Priority: env var > .hive-project.edn > default (:datalevin).
-   Returns keyword :datascript or :datalevin."
+   Returns keyword :datascript, :datalevin, or :datahike."
   []
   (let [env-val (System/getenv "HIVE_KG_BACKEND")
         env-backend (when (and env-val (seq env-val))
@@ -70,6 +70,21 @@
                 (proto/set-store! (ds-store/create-store)))))
           (catch Exception e
             (log/warn "Failed to initialize Datalevin, falling back to DataScript"
+                      {:error (.getMessage e)})
+            (proto/set-store! (ds-store/create-store))))
+
+        :datahike
+        (try
+          (require 'hive-mcp.knowledge-graph.store.datahike)
+          (let [create-fn (resolve 'hive-mcp.knowledge-graph.store.datahike/create-store)
+                store (create-fn)]
+            (if store
+              (proto/set-store! store)
+              (do
+                (log/warn "Datahike store creation returned nil, falling back to DataScript")
+                (proto/set-store! (ds-store/create-store)))))
+          (catch Exception e
+            (log/warn "Failed to initialize Datahike, falling back to DataScript"
                       {:error (.getMessage e)})
             (proto/set-store! (ds-store/create-store))))
 
@@ -156,9 +171,10 @@
   "Configure the KG storage backend.
 
    Arguments:
-     backend - :datascript or :datalevin
+     backend - :datascript, :datalevin, or :datahike
      opts    - Backend-specific options:
                :datalevin {:db-path \"data/kg/datalevin\"}
+               :datahike  {:db-path \"data/kg/datahike\" :backend :file}
 
    CLARITY-T: Logs backend selection."
   [backend & [opts]]
@@ -179,9 +195,21 @@
           (log/warn "Datalevin store creation failed, falling back to DataScript")
           (proto/set-store! (ds-store/create-store)))))
 
+    :datahike
+    (let [;; Require datahike store dynamically to avoid hard dep
+          _ (require 'hive-mcp.knowledge-graph.store.datahike)
+          create-fn (resolve 'hive-mcp.knowledge-graph.store.datahike/create-store)
+          store (create-fn opts)]
+      (if store
+        (proto/set-store! store)
+        ;; CLARITY-Y: Fall back to DataScript if Datahike fails
+        (do
+          (log/warn "Datahike store creation failed, falling back to DataScript")
+          (proto/set-store! (ds-store/create-store)))))
+
     ;; Unknown backend
     (throw (ex-info "Unknown KG backend" {:backend backend
-                                          :valid #{:datascript :datalevin}}))))
+                                          :valid #{:datascript :datalevin :datahike}}))))
 
 ;; =============================================================================
 ;; ID and Timestamp Utilities
@@ -203,3 +231,114 @@
    Convenience for edge :created-at fields."
   []
   (java.util.Date.))
+
+;; =============================================================================
+;; Temporal Query Facade (W3)
+;; =============================================================================
+
+(defn temporal-store?
+  "Check if the current store supports temporal queries (time-travel).
+   Returns true for Datahike, false for DataScript/Datalevin.
+
+   Use this to guard temporal query calls in application code."
+  []
+  (proto/temporal-store? (ensure-store!)))
+
+(defn history-db
+  "Get a database containing all historical facts.
+
+   Returns a DB value that includes retracted datoms, enabling
+   queries over the complete history of the store.
+
+   Returns nil if the store does not support temporal queries.
+
+   Example:
+     (when (temporal-store?)
+       (query '[:find ?e ?attr ?v ?added
+                :where [?e ?attr ?v _ ?added]]
+              (history-db)))"
+  []
+  (let [store (ensure-store!)]
+    (when (proto/temporal-store? store)
+      (proto/history-db store))))
+
+(defn as-of-db
+  "Get the database as of a specific point in time.
+
+   Arguments:
+     tx-or-time - Transaction ID (integer) or java.util.Date timestamp
+
+   Returns a DB value representing the state at that point,
+   or nil if the store does not support temporal queries.
+
+   Example:
+     ;; Query state from 1 hour ago
+     (as-of-db (java.util.Date. (- (System/currentTimeMillis) 3600000)))"
+  [tx-or-time]
+  (let [store (ensure-store!)]
+    (when (proto/temporal-store? store)
+      (proto/as-of-db store tx-or-time))))
+
+(defn since-db
+  "Get a database containing only facts added since a point in time.
+
+   Arguments:
+     tx-or-time - Transaction ID (integer) or java.util.Date timestamp
+
+   Returns a DB value with only facts added after that point,
+   or nil if the store does not support temporal queries.
+
+   Useful for incremental change tracking and sync operations."
+  [tx-or-time]
+  (let [store (ensure-store!)]
+    (when (proto/temporal-store? store)
+      (proto/since-db store tx-or-time))))
+
+(defn query-history
+  "Query against the full history database.
+
+   Arguments:
+     q      - Datalog query
+     inputs - Optional additional query inputs
+
+   Returns query results against history DB, enabling queries
+   that span all historical states (including retracted facts).
+
+   Returns nil if the store does not support temporal queries.
+
+   Example:
+     ;; Find all values an attribute ever had
+     (query-history '[:find ?v ?added
+                      :in $ ?e ?attr
+                      :where [?e ?attr ?v _ ?added]]
+                    [:kg-edge/id \"some-id\"] :kg-edge/weight)"
+  [q & inputs]
+  (when-let [hdb (history-db)]
+    ;; Dynamically require datahike.api to avoid hard dependency
+    (require 'datahike.api)
+    (if (seq inputs)
+      (apply (resolve 'datahike.api/q) q hdb inputs)
+      ((resolve 'datahike.api/q) q hdb))))
+
+(defn query-as-of
+  "Query the database as it was at a specific point in time.
+
+   Arguments:
+     tx-or-time - Transaction ID (integer) or java.util.Date timestamp
+     q          - Datalog query
+     inputs     - Optional additional query inputs
+
+   Returns query results from the point-in-time snapshot,
+   or nil if the store does not support temporal queries.
+
+   Example:
+     ;; What edges existed yesterday?
+     (query-as-of yesterday
+                  '[:find ?id
+                    :where [?e :kg-edge/id ?id]])"
+  [tx-or-time q & inputs]
+  (when-let [aodb (as-of-db tx-or-time)]
+    (require 'datahike.api)
+    (if (seq inputs)
+      (apply (resolve 'datahike.api/q) q aodb inputs)
+      ((resolve 'datahike.api/q) q aodb))))

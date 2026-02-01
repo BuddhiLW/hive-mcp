@@ -13,18 +13,18 @@
 ;;; ============================================================
 
 (defonce task-models
-  ;; Task-type to model mapping for OpenRouter free tier.
+  ;; Task-type to model mapping for OpenRouter paid tier.
   ;; Configurable via MCP tools from Elisp.
   ;;
   ;; Default task types:
   ;;   :coding      - Code generation, implementation, bug fixes
-  ;;   :coding-alt  - Fallback for coding tasks  
+  ;;   :coding-alt  - Fallback for coding tasks
   ;;   :arch        - Architecture, design decisions, planning
   ;;   :docs        - Documentation, explanations, comments
-  (atom {:coding "mistralai/devstral-2512:free"
-         :coding-alt "google/gemma-3-4b-it:free"
-         :arch "xiaomi/mimo-v2-flash:free"
-         :docs "openai/gpt-oss-120b:free"}))
+  (atom {:coding "x-ai/grok-code-fast-1"
+         :coding-alt "deepseek/deepseek-v3.2"
+         :arch "deepseek/deepseek-v3.2"
+         :docs "deepseek/deepseek-v3.2"}))
 
 (defn list-models
   "List all configured OpenRouter task models."

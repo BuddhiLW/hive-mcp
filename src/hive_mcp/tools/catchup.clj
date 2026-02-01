@@ -47,21 +47,9 @@
 ;; Project Context Helpers
 ;; =============================================================================
 
-(defn- get-current-project-id
-  "Get current project ID from Emacs, or 'global' if not in a project.
-   When directory is provided, uses that path to determine project context."
-  ([] (get-current-project-id nil))
-  ([directory]
-   (try
-     (let [elisp (if directory
-                   (format "(hive-mcp-memory--project-id %s)" (pr-str directory))
-                   "(hive-mcp-memory--project-id)")
-           {:keys [success result timed-out]} (ec/eval-elisp-with-timeout elisp 10000)]
-       (if (and success result (not= result "nil") (not timed-out))
-         (str/replace result #"\"" "")
-         "global"))
-     (catch Exception _
-       "global"))))
+;; NOTE: get-current-project-id is provided by scope/get-current-project-id
+;; which implements the Go Context Pattern: context flows down explicitly,
+;; never derived from ambient Emacs state.
 
 (defn- get-current-project-name
   "Get current project name from Emacs.
@@ -673,7 +661,7 @@
   [directory]
   (when (chroma/embedding-configured?)
     (try
-      (let [project-id (get-current-project-id directory)
+      (let [project-id (scope/get-current-project-id directory)
             project-name (get-current-project-name directory)
 
             ;; Query core context (reuses existing private helpers)
@@ -738,7 +726,7 @@
     (if-not (chroma/embedding-configured?)
       (chroma-not-configured-error)
       (try
-        (let [project-id (get-current-project-id directory)
+        (let [project-id (scope/get-current-project-id directory)
               project-name (get-current-project-name directory)
               scopes (build-scopes project-name project-id)
 
@@ -811,7 +799,7 @@
       (try
         (let [harvested (crystal-hooks/harvest-all {:directory directory})
               result (crystal-hooks/crystallize-session harvested)
-              project-id (get-current-project-id directory)]
+              project-id (scope/get-current-project-id directory)]
           (if (:error result)
             {:type "text"
              :text (json/write-str {:error (:error result) :session (:session result)})

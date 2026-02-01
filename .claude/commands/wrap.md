@@ -107,7 +107,7 @@ mcp__emacs__mcp_memory_add(
 
 ```
 mcp__emacs__mcp_mem_kanban_stats(directory: "<your pwd>")
-mcp__emacs__mcp_mem_kanban_list(status: "doing", directory: "<your pwd>")
+mcp__emacs__mcp_mem_kanban_list_slim(status: "doing", directory: "<your pwd>")
 ```
 
 ### Git Status

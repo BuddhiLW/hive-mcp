@@ -102,22 +102,24 @@
   "Extract project-id from args map, handling various key formats.
 
    Tries directory-based derivation if explicit project-id not found.
-   Falls back to ctx/current-directory if no directory in args.
+   Falls back to ctx/current-directory, then server's cwd as last resort.
    Returns nil only if no project context available anywhere.
 
    Key priority:
    1. Explicit project_id/project-id
    2. Derived from directory parameter via scope/get-current-project-id
-   3. Derived from ctx/current-directory (request context fallback)"
+   3. Derived from ctx/current-directory (request context fallback)
+   4. Derived from server's working directory (System/getProperty user.dir)"
   [args]
   (or (:project_id args)
       (:project-id args)
       (get args "project_id")
       (get args "project-id")
-      ;; Derive from directory if present, with ctx fallback
+      ;; Derive from directory if present, with ctx and user.dir fallbacks
       (when-let [dir (or (:directory args)
                          (get args "directory")
-                         (ctx/current-directory))]
+                         (ctx/current-directory)
+                         (System/getProperty "user.dir"))]
         (require 'hive-mcp.tools.memory.scope)
         ((resolve 'hive-mcp.tools.memory.scope/get-current-project-id) dir))))
 
@@ -167,7 +169,7 @@
                          (throw e))))]
         (if (:retry result)
           (do
-            (log/warn "Hot-reload retry" {:attempt attempt 
+            (log/warn "Hot-reload retry" {:attempt attempt
                                           :max hot-reload-max-retries
                                           :error (ex-message (:retry result))})
             (Thread/sleep hot-reload-retry-delay-ms)
@@ -272,20 +274,25 @@
    - wrap-handler-response: builds {:content ...} response
 
    Composition via -> threading enables clear data flow:
-   handler -> retry -> context -> normalize -> piggyback -> response
-   
+   handler -> retry -> normalize -> piggyback -> context -> response
+
    CLARITY-Y: wrap-handler-retry is innermost to catch handler exceptions
-   before context/normalize processing."
-  [{:keys [name description inputSchema handler]}]
-  {:name name
-   :description description
-   :inputSchema inputSchema
-   :handler (-> handler
-                wrap-handler-retry      ; CLARITY-Y: Hot-reload resilience
-                wrap-handler-context
-                wrap-handler-normalize
-                wrap-handler-piggyback
-                wrap-handler-response)})
+   before context/normalize processing.
+
+   CRITICAL: context must wrap piggyback so ctx/current-directory is bound
+   when extract-project-id runs. Previous order had context INSIDE piggyback,
+   meaning the dynamic binding exited before piggyback could use it."
+  [{:keys [name description inputSchema handler deprecated]}]
+  (cond-> {:name name
+           :description description
+           :inputSchema inputSchema
+           :handler (-> handler
+                        wrap-handler-retry      ; CLARITY-Y: Hot-reload resilience
+                        wrap-handler-normalize
+                        wrap-handler-piggyback  ; needs ctx bound
+                        wrap-handler-context    ; binds ctx for piggyback
+                        wrap-handler-response)}
+    deprecated (assoc :deprecated true)))
 
 ;; =============================================================================
 ;; Server Spec Building
@@ -296,15 +303,25 @@
 
    MUST be called AFTER init-embedding-provider! to get accurate Chroma status.
 
-   Uses tools/get-filtered-tools for dynamic kanban tool switching:
+   PHASE 2 STRANGLE: Includes ALL tools (deprecated tools have :deprecated true).
+   The server.clj multimethod override filters deprecated from tools/list response.
+
+   Uses tools/get-all-tools for dynamic kanban tool switching:
    - Chroma available -> mcp_mem_kanban_* tools
-   - Chroma unavailable -> org_kanban_native_* tools (fallback)"
+   - Chroma unavailable -> org_kanban_native_* tools (fallback)
+
+   Deprecated tools are:
+   - INCLUDED in spec with :deprecated true (callable via tools/call)
+   - FILTERED by server.clj multimethod override (hidden from tools/list)"
   []
-  (let [filtered-tools (tools/get-filtered-tools)]
-    (log/info "Building server spec with" (count filtered-tools) "tools (capability-filtered)")
+  (let [all-tools (tools/get-all-tools :include-deprecated? true)
+        deprecated-count (count (filter :deprecated all-tools))
+        visible-count (- (count all-tools) deprecated-count)]
+    (log/info "Building server spec with" (count all-tools) "tools"
+              "(" visible-count "visible," deprecated-count "deprecated)")
     {:name "hive-mcp"
      :version "0.1.0"
-     :tools (mapv make-tool (concat filtered-tools docs/docs-tools))}))
+     :tools (mapv make-tool (concat all-tools docs/docs-tools))}))
 
 ;; DEPRECATED: Static spec kept for backward compatibility with tests
 ;; Prefer build-server-spec for capability-aware tool list
@@ -325,6 +342,10 @@
    Uses capability-based filtering - re-checks Chroma availability
    to dynamically switch between mem-kanban and org-kanban-native tools.
 
+   PHASE 2 STRANGLE: Registers ALL tools (including deprecated) for dispatch.
+   Deprecated tools are excluded from tools/list but remain callable for
+   backward compatibility during the grace period (sunset: 2026-04-01).
+
    Parameters:
      server-context-atom - atom containing the server context with :tools key
 
@@ -333,14 +354,18 @@
   [server-context-atom]
   (when-let [context @server-context-atom]
     (let [tools-atom (:tools context)
-          filtered-tools (tools/get-filtered-tools)
-          new-tools (mapv make-tool (concat filtered-tools docs/docs-tools))]
+          ;; Include deprecated tools for dispatch (tools/call still works)
+          all-tools (tools/get-all-tools :include-deprecated? true)
+          new-tools (mapv make-tool (concat all-tools docs/docs-tools))
+          ;; Track deprecated count for logging
+          deprecated-count (count (filter :deprecated all-tools))]
       ;; Clear and re-register all tools
       (reset! tools-atom {})
       (doseq [tool new-tools]
         (swap! tools-atom assoc (:name tool) {:tool (dissoc tool :handler)
                                               :handler (:handler tool)}))
-      (log/info "Hot-reloaded" (count new-tools) "tools (capability-filtered)")
+      (log/info "Hot-reloaded" (count new-tools) "tools"
+                "(including" deprecated-count "deprecated shims for backward compat)")
       (count new-tools))))
 
 (defn debug-tool-handler
@@ -366,16 +391,22 @@
 ;; =============================================================================
 
 (defn register-tools-for-delegation!
-  "Register filtered tools for agent delegation.
+  "Register tools for agent delegation including deprecated shims.
 
-   Delegates to hive-mcp.agent/register-tools! with capability-filtered tools.
+   PHASE 2 STRANGLE: Includes deprecated tools for backward compatibility.
+   Agents can still delegate to deprecated tools during grace period.
+
+   Delegates to hive-mcp.agent/register-tools! with all tools.
 
    Returns:
      count of tools registered"
   []
   (require 'hive-mcp.agent)
   (let [register-tools! (resolve 'hive-mcp.agent/register-tools!)
-        filtered-tools (tools/get-filtered-tools)]
-    (register-tools! filtered-tools)
-    (log/info "Registered" (count filtered-tools) "tools for agent delegation (capability-filtered)")
-    (count filtered-tools)))
+        ;; Include deprecated tools for delegation (backward compat)
+        all-tools (tools/get-all-tools :include-deprecated? true)
+        deprecated-count (count (filter :deprecated all-tools))]
+    (register-tools! all-tools)
+    (log/info "Registered" (count all-tools) "tools for agent delegation"
+              "(including" deprecated-count "deprecated shims)")
+    (count all-tools)))

@@ -36,7 +36,10 @@
    - swarm/logic.clj     - Core.logic predicates and claims storage
    - swarm/datascript.clj - Entity state (slaves, tasks, coordinators)"
   (:require [hive-mcp.swarm.logic :as logic]
+            [hive-mcp.swarm.datascript.lings :as lings]
+            [hive-mcp.knowledge-graph.disc :as disc]
             [hive-mcp.tools.swarm.claim :as claim-tools]
+            [clojure.java.io :as io]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -141,6 +144,9 @@
    claiming files. This prevents race conditions where drones are in DataScript
    but not in logic-db, causing ghost claims and conflict detection failures.
 
+   CC.3 PRIOR HASH: Computes file content hash at acquire time and stores it
+   in DataScript claim record. This enables change detection on release.
+
    Arguments:
    - task-id:  Unique task identifier
    - slave-id: Slave/drone claiming the files
@@ -166,9 +172,15 @@
              :files-claimed 0}
             (do
               (doseq [f files]
+                ;; Core.logic claims for conflict detection
                 (logic/add-claim! f slave-id)
                 (logic/add-task-file! task-id f)
-                (claim-tools/record-claim-timestamp! f slave-id))
+                (claim-tools/record-claim-timestamp! f slave-id)
+                ;; CC.3: Compute prior-hash and store in DataScript
+                (let [prior-hash (when (.exists (io/file f))
+                                   (:hash (disc/file-content-hash f)))]
+                  (lings/claim-file! f slave-id {:task-id task-id
+                                                 :prior-hash prior-hash})))
               {:acquired? true
                :conflicts []
                :files-claimed (count files)})))))))
@@ -229,6 +241,64 @@
 ;; Claim Management
 ;; =============================================================================
 
+(defn contextual-claim-release!
+  "CC.4: Release a file claim with change detection and staleness propagation.
+   CC.6: Archive to claim-history when file changed during claim period.
+
+   Compares the prior-hash (captured at acquire time via CC.3) with the
+   current file content hash. If the content changed during the claim period,
+   propagates staleness to dependent KG entries via disc/propagate-staleness!.
+
+   This enables the knowledge graph to track which files were modified by
+   which drones, and automatically marks dependent knowledge as potentially
+   stale when source files change.
+
+   Arguments:
+     file-path - Path of the file to release
+
+   Returns:
+     {:released? bool
+      :changed?  bool    - true if file content changed during claim
+      :propagated {...}  - staleness propagation result if changed
+      :archived?  bool   - true if archived to claim-history (CC.6)}"
+  [file-path]
+  (let [claim-info (lings/get-claim-info file-path)]
+    (if-not claim-info
+      {:released? false :reason :no-claim}
+      (let [prior-hash (:prior-hash claim-info)
+            slave-id (:slave-id claim-info)
+            ;; Compute current hash
+            {:keys [hash exists?]} (disc/file-content-hash file-path)
+            changed? (and exists?
+                          prior-hash
+                          hash
+                          (not= prior-hash hash))]
+        ;; CC.5: Wire to propagate-staleness! when content changed
+        (let [propagation-result
+              (when changed?
+                (log/info "File changed during claim, propagating staleness"
+                          {:file file-path
+                           :prior-hash (when prior-hash (subs prior-hash 0 8))
+                           :current-hash (when hash (subs hash 0 8))})
+                (disc/propagate-staleness! file-path
+                                           (:hash-mismatch disc/base-staleness-values)
+                                           :hash-mismatch))
+              ;; CC.6: Archive to claim-history when changed
+              archived? (when changed?
+                          (lings/archive-claim-to-history!
+                           file-path
+                           {:slave-id slave-id
+                            :prior-hash prior-hash
+                            :released-hash hash})
+                          true)]
+          ;; Release the claim (also releases from logic-db via lings)
+          (lings/release-claim! file-path)
+          (claim-tools/remove-claim-timestamp! file-path)
+          {:released? true
+           :changed? (boolean changed?)
+           :propagated propagation-result
+           :archived? (boolean archived?)})))))
+
 (defn register-task-claims!
   "Register file claims for a dispatched task.
    Call this after successful dispatch.
@@ -249,16 +319,33 @@
 (defn release-task-claims!
   "Release file claims when a task completes.
    Call this on task completion/failure.
-   Also cleans up claim timestamps for staleness tracking."
+
+   CC.4/CC.5: Uses contextual-claim-release! to detect file changes and
+   propagate staleness to the knowledge graph when files were modified
+   during the claim period.
+
+   Returns:
+     {:released int :changed int :propagated int}"
   [task-id]
   ;; Get files before releasing
-  (let [files (logic/get-files-for-task task-id)]
-    ;; Release claims in logic-db
+  (let [files (logic/get-files-for-task task-id)
+        results (doall
+                 (for [f files]
+                   (let [result (contextual-claim-release! f)]
+                     (assoc result :file f))))]
+    ;; Release claims in logic-db (core.logic side)
     (logic/release-claims-for-task! task-id)
-    ;; Clean up timestamp tracking
-    (doseq [f files]
-      (claim-tools/remove-claim-timestamp! f))
-    (log/info "Released" (count files) "claims for task" task-id)))
+    ;; Summarize results
+    (let [released-count (count (filter :released? results))
+          changed-count (count (filter :changed? results))
+          propagated-count (count (filter :propagated results))]
+      (log/info "Released" released-count "claims for task" task-id
+                (when (pos? changed-count)
+                  (str "(" changed-count " files changed, staleness propagated)")))
+      {:released released-count
+       :changed changed-count
+       :propagated propagated-count
+       :details results})))
 
 ;; =============================================================================
 ;; Queue Processing (call periodically or on events)

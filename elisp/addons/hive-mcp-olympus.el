@@ -41,6 +41,7 @@
 ;; Status colors in dashboard:
 ;; - Green  : Working normally
 ;; - Gray   : Idle
+;; - Orange : Prompt pending (waiting for human input)
 ;; - Yellow : Blocked (needs attention)
 ;; - Red    : Stuck (working > 2min) or Error
 
@@ -457,6 +458,32 @@ Default 120 seconds (2 minutes)."
         (when (fboundp 'hive-mcp-swarm-notify-error)
           (hive-mcp-swarm-notify-error slave-id error-type error-preview))))))
 
+(defun hive-mcp-olympus--handle-prompt-pending (event)
+  "Handle :ling/prompt-pending EVENT by firing urgent notification.
+EVENT contains slave-id, prompt-preview, and pending-since.
+Wave 2+3: Updates dashboard status and fires urgent desktop notification."
+  (when hive-mcp-olympus-notify-enabled
+    (let* ((slave-id (cdr (assoc "slave-id" event)))
+           (prompt-preview (cdr (assoc "prompt-preview" event)))
+           (pending-since (cdr (assoc "pending-since" event))))
+      (when slave-id
+        ;; Update slave status in local state for dashboard coloring
+        (when (and (boundp 'hive-mcp-swarm--slaves)
+                   (hash-table-p hive-mcp-swarm--slaves))
+          (when-let* ((slave (gethash slave-id hive-mcp-swarm--slaves)))
+            (puthash slave-id
+                     (plist-put slave :status 'prompt-pending)
+                     hive-mcp-swarm--slaves)))
+        ;; Wave 3: Fire urgent desktop notification
+        (when (fboundp 'hive-mcp-swarm-notify)
+          (hive-mcp-swarm-notify
+           (format "PROMPT PENDING: %s" slave-id)
+           (or prompt-preview "Ling waiting for input")
+           'urgent))
+        ;; Also log to messages
+        (message "[Olympus] Prompt pending from %s: %s"
+                 slave-id (or prompt-preview "awaiting response"))))))
+
 (defun hive-mcp-olympus--subscribe-notification-events ()
   "Subscribe to swarm events that should trigger global notifications."
   (when (fboundp 'hive-mcp-channel-on)
@@ -471,7 +498,10 @@ Default 120 seconds (2 minutes)."
                           #'hive-mcp-olympus--handle-dispatch-dropped)
     ;; Error: Task failed with error
     (hive-mcp-channel-on :auto-error
-                          #'hive-mcp-olympus--handle-auto-error)))
+                          #'hive-mcp-olympus--handle-auto-error)
+    ;; Reactive prompt detection: ling waiting on prompt response
+    (hive-mcp-channel-on :ling/prompt-pending
+                          #'hive-mcp-olympus--handle-prompt-pending)))
 
 (defun hive-mcp-olympus--unsubscribe-notification-events ()
   "Unsubscribe from notification events."
@@ -483,7 +513,9 @@ Default 120 seconds (2 minutes)."
     (hive-mcp-channel-off :dispatch-dropped
                            #'hive-mcp-olympus--handle-dispatch-dropped)
     (hive-mcp-channel-off :auto-error
-                           #'hive-mcp-olympus--handle-auto-error)))
+                           #'hive-mcp-olympus--handle-auto-error)
+    (hive-mcp-channel-off :ling/prompt-pending
+                           #'hive-mcp-olympus--handle-prompt-pending)))
 
 ;;; =============================================================================
 ;;; Background Monitor (Timer-based stuck detection)
@@ -624,10 +656,16 @@ Default 5 seconds."
   "Face for errored lings in dashboard."
   :group 'hive-mcp-olympus)
 
+(defface hive-mcp-olympus-prompt-pending-face
+  '((t :foreground "orange" :weight bold))
+  "Face for lings waiting on prompt response."
+  :group 'hive-mcp-olympus)
+
 (defun hive-mcp-olympus--status-to-face (status duration)
   "Return face for STATUS and DURATION."
   (cond
    ((eq status 'error) 'hive-mcp-olympus-error-face)
+   ((eq status 'prompt-pending) 'hive-mcp-olympus-prompt-pending-face)
    ((eq status 'blocked) 'hive-mcp-olympus-blocked-face)
    ((and (eq status 'working) (> (or duration 0) hive-mcp-olympus-stuck-threshold))
     'hive-mcp-olympus-stuck-face)
@@ -764,6 +802,7 @@ Keybindings:
 Colors:
 - Green: Working normally
 - Gray: Idle
+- Orange: Prompt pending (waiting for input)
 - Yellow: Blocked (needs attention)
 - Red: Stuck (working too long) or Error"
   (interactive)

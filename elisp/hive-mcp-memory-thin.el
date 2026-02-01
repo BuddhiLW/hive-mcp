@@ -163,8 +163,15 @@ Returns the :project-id value from .hive-project.edn, or nil if not found."
 Resolution order:
   1. Stable :project-id from .hive-project.edn (survives renames)
   2. Fallback: SHA1 hash of absolute path (filesystem-safe)
-Returns \"global\" if not in a project."
-  (let ((root (or project-root (hive-mcp-memory--get-project-root))))
+Returns \"global\" if not in a project.
+PROJECT-ROOT must be a string path or nil."
+  ;; CLARITY-I: Validate input type (fix for stringp bug from MCP)
+  (let ((root (cond
+               ((stringp project-root) project-root)
+               ((null project-root) (hive-mcp-memory--get-project-root))
+               (t (progn
+                    (message "[hive-mcp] Warning: project-root not a string: %S" project-root)
+                    (hive-mcp-memory--get-project-root))))))
     (if root
         (or (hive-mcp-memory--get-stable-project-id root)
             (substring (sha1 (expand-file-name root)) 0 16))
@@ -172,8 +179,15 @@ Returns \"global\" if not in a project."
 
 (defun hive-mcp-memory--project-id-hash (&optional project-root)
   "Return SHA1 hash ID for PROJECT-ROOT (ignores config).
-Use this for migration when you need the path-based hash."
-  (let ((root (or project-root (hive-mcp-memory--get-project-root))))
+Use this for migration when you need the path-based hash.
+PROJECT-ROOT must be a string path or nil."
+  ;; CLARITY-I: Validate input type (fix for stringp bug from MCP)
+  (let ((root (cond
+               ((stringp project-root) project-root)
+               ((null project-root) (hive-mcp-memory--get-project-root))
+               (t (progn
+                    (message "[hive-mcp] Warning: project-root not a string: %S" project-root)
+                    (hive-mcp-memory--get-project-root))))))
     (if root
         (substring (sha1 (expand-file-name root)) 0 16)
       "global")))
@@ -311,6 +325,90 @@ Returns a 64-character hex string."
   "Function to call for storage operations.
 Should accept (op type &rest args) and delegate to MCP.
 If nil, storage operations will error with instructions.")
+
+;; ============================================================
+;; CIDER-based Storage Delegate (calls Clojure MCP handlers)
+;; ============================================================
+
+(defun hive-mcp-memory--cider-delegate (op &rest args)
+  "Delegate memory operation OP to Clojure MCP handlers via CIDER.
+OP is one of: add, get, query, update, delete.
+ARGS vary by operation:
+  - add: type content tags project-id duration
+  - get: id project-id
+  - query: type tags project-id limit duration scope-filter
+  - update: id updates project-id
+  - delete: id project-id
+Returns the result from Clojure or nil on failure."
+  (unless (and (featurep 'cider) (cider-connected-p))
+    (error "CIDER not connected. Memory operations require nREPL connection"))
+  (let* ((clj-code (hive-mcp-memory--build-clj-call op args))
+         (response (cider-nrepl-send-sync-request
+                    (list "op" "eval"
+                          "code" clj-code
+                          "ns" "hive-mcp.tools.memory")))
+         (value (nrepl-dict-get response "value"))
+         (err (nrepl-dict-get response "err")))
+    (when err
+      (message "[hive-mcp-memory] Error: %s" err))
+    (when value
+      (car (read-from-string value)))))
+
+(defun hive-mcp-memory--build-clj-call (op args)
+  "Build Clojure code to call MCP handler for OP with ARGS."
+  (pcase op
+    ('add
+     (let ((type (nth 0 args))
+           (content (nth 1 args))
+           (tags (nth 2 args))
+           (project-id (nth 3 args))
+           (duration (nth 4 args)))
+       (format "(handle-mcp-memory-add {:type %S :content %S :tags %s :directory %s :duration %s})"
+               (symbol-name type)
+               (if (stringp content) content (prin1-to-string content))
+               (if tags (format "'%S" tags) "nil")
+               (if project-id (format "\"%s\"" project-id) "nil")
+               (if duration (format "\"%s\"" (symbol-name duration)) "nil"))))
+    ('get
+     (let ((id (nth 0 args))
+           (project-id (nth 1 args)))
+       (format "(handle-mcp-memory-get-full {:id %S :directory %s})"
+               id
+               (if project-id (format "\"%s\"" project-id) "nil"))))
+    ('query
+     (let ((type (nth 0 args))
+           (tags (nth 1 args))
+           (project-id (nth 2 args))
+           (limit (nth 3 args))
+           (duration (nth 4 args))
+           (scope-filter (nth 5 args)))
+       (format "(handle-mcp-memory-query {:type %S :tags %s :directory %s :limit %s :duration %s :scope %s})"
+               (when type (symbol-name type))
+               (if tags (format "'%S" tags) "nil")
+               (if project-id (format "\"%s\"" project-id) "nil")
+               (or limit "20")
+               (if duration (format "\"%s\"" duration) "nil")
+               (if scope-filter (format "\"%s\"" scope-filter) "nil"))))
+    ('update
+     (let ((id (nth 0 args))
+           (updates (nth 1 args))
+           (project-id (nth 2 args)))
+       (format "(handle-mcp-memory-update-tags {:id %S :tags %s})"
+               id
+               (if updates (format "'%S" updates) "nil"))))
+    ('delete
+     (let ((id (nth 0 args)))
+       ;; No direct delete handler - use expiration
+       (format "(message \"Delete not directly supported - use duration expiration for %s\")" id)))
+    (_
+     (error "Unknown memory operation: %s" op))))
+
+(defun hive-mcp-memory-init-cider-delegate ()
+  "Initialize the CIDER-based storage delegate.
+Call this after CIDER connects to enable memory operations."
+  (interactive)
+  (setq hive-mcp-memory--storage-delegate #'hive-mcp-memory--cider-delegate)
+  (message "hive-mcp-memory: CIDER delegate initialized"))
 
 (defun hive-mcp-memory--delegate (operation &rest args)
   "Delegate OPERATION with ARGS to storage backend.

@@ -132,6 +132,7 @@ approve_diff(diff_id: "...")                  # TDD passed, approve
 5. DELEGATE:        delegate_drone(task: "...", files: [...])
 6. REVIEW:          Verify drone results
 7. SHOUT complete:  hivemind_shout(event_type: "completed", message: "result")
+8. SESSION END:     session_complete(agent_id: $CLAUDE_SWARM_SLAVE_ID, directory: $PWD)
 ```
 
 ## CRITICAL: Progressive Shouting (Trust the Piggyback)
@@ -316,21 +317,30 @@ session_complete(
 
 ## MANDATORY: Task Completion Protocol
 
-**CRITICAL**: When you complete your assigned task, you MUST immediately call:
+**CRITICAL**: When you complete your assigned task, you MUST do BOTH steps:
 
+### Step 1: Shout Completion (for coordinator visibility)
 ```
 hivemind_shout(event_type: "completed", task: "<your task summary>", message: "<brief result summary>")
 ```
 
-This is NON-NEGOTIABLE. The coordinator cannot see your work until you shout completion.
+### Step 2: Session Complete (for crystallization)
+```
+session_complete(
+  agent_id: $CLAUDE_SWARM_SLAVE_ID,
+  directory: $PWD
+)
+```
+
+**BOTH steps are NON-NEGOTIABLE.** Shouting tells the coordinator you're done. Session complete crystallizes your learnings and updates kanban.
 
 **Rules:**
-1. NEVER go idle without shouting completion status
-2. If blocked or failed, shout with event_type: "blocked" or "error"
-3. Include actionable summary in the message field
+1. NEVER go idle without BOTH shout AND session_complete
+2. If blocked or failed, shout with event_type: "blocked" or "error" (skip session_complete)
+3. Include actionable summary in the shout message field
 4. Shout progress periodically for long tasks: event_type: "progress"
 
-Failure to shout completion wastes coordinator context and blocks pipeline progress.
+Failure to complete the protocol wastes coordinator context and loses your learnings.
 
 ---
 

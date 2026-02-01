@@ -7,7 +7,8 @@
    - Bug regression: agent_id parameter is correctly received"
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [clojure.data.json :as json]
-            [hive-mcp.hivemind :as hivemind]))
+            [hive-mcp.hivemind :as hivemind]
+            [hive-mcp.channel.piggyback :as piggyback]))
 
 ;;; Test fixtures
 
@@ -91,3 +92,36 @@
       (is (string? (:error parsed)))
       (is (not (.contains (:error parsed) "coordinator"))
           "Error should not inject 'coordinator' as default agent_id"))))
+
+;;; Piggyback regression tests
+
+(deftest piggyback-message-fallback-to-task-test
+  (testing "Bug: piggyback should use :task when :message is nil"
+    (piggyback/reset-all-cursors!)
+
+    ;; Shout with :task but NO :message - this was causing {:m nil}
+    (hivemind/shout! "task-only-agent" :progress {:task "Doing important work"})
+
+    ;; Get messages via piggyback (simulating coordinator read)
+    (let [msgs (piggyback/get-messages "coordinator" :project-id "global")]
+      (is (seq msgs) "Should have messages")
+      ;; The :m field should contain the task text, not nil
+      (let [msg (first (filter #(= "task-only-agent" (:a %)) msgs))]
+        (is (some? msg) "Should find the agent's message")
+        (is (= "Doing important work" (:m msg))
+            "Bug fix: :m should fall back to :task when :message is nil")))))
+
+(deftest piggyback-message-prefers-message-over-task-test
+  (testing "When both :message and :task present, :message takes precedence"
+    (piggyback/reset-all-cursors!)
+
+    ;; Shout with both :task and :message
+    (hivemind/shout! "both-fields-agent" :progress
+                     {:task "Task description" :message "Message takes priority"})
+
+    (let [msgs (piggyback/get-messages "coordinator" :project-id "global")]
+      (is (seq msgs) "Should have messages")
+      (let [msg (first (filter #(= "both-fields-agent" (:a %)) msgs))]
+        (is (some? msg) "Should find the agent's message")
+        (is (= "Message takes priority" (:m msg))
+            ":message should take precedence over :task")))))

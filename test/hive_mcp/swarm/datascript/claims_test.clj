@@ -10,6 +10,7 @@
    - Wait-queue queries for coeffects
    - Integration with claim release events"
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
+            [datascript.core :as d]
             [hive-mcp.swarm.datascript.claims :as claims]
             [hive-mcp.swarm.datascript.lings :as lings]
             [hive-mcp.swarm.datascript.connection :as conn]
@@ -193,3 +194,44 @@
     (let [waiting (claims/get-waiting-lings "/src/same.clj")]
       ;; Should have only one entry due to upsert behavior
       (is (= 1 (count waiting))))))
+
+;; =============================================================================
+;; CC.3: Prior Hash Capture Tests
+;; =============================================================================
+
+(defn- get-claim-prior-hash
+  "Helper to get prior-hash directly from DataScript entity."
+  [file-path]
+  (let [db @(conn/ensure-conn)]
+    (when-let [e (d/entity db [:claim/file file-path])]
+      (:claim/prior-hash e))))
+
+(deftest claim-file-with-prior-hash-test
+  (testing "claim-file! stores prior-hash when provided"
+    (lings/add-slave! "hash-test-slave" {:status :idle})
+    (lings/claim-file! "/src/hash-test.clj" "hash-test-slave"
+                       {:prior-hash "abc123def456"})
+    (let [claim (queries/get-claims-for-file "/src/hash-test.clj")
+          prior-hash (get-claim-prior-hash "/src/hash-test.clj")]
+      (is (some? claim) "Claim should exist")
+      (is (= "abc123def456" prior-hash) "Prior hash should be stored")))
+
+  (testing "claim-file! works without prior-hash (backward compatible)"
+    (lings/add-slave! "no-hash-slave" {:status :idle})
+    ;; Pass empty opts (no task-id to avoid lookup failure)
+    (lings/claim-file! "/src/no-hash-test.clj" "no-hash-slave" {})
+    (let [claim (queries/get-claims-for-file "/src/no-hash-test.clj")
+          prior-hash (get-claim-prior-hash "/src/no-hash-test.clj")]
+      (is (some? claim) "Claim should exist")
+      (is (nil? prior-hash) "Prior hash should be nil when not provided")))
+
+  (testing "claim-file! upserts prior-hash on existing claim"
+    (lings/add-slave! "upsert-hash-slave" {:status :idle})
+    ;; First claim without hash
+    (lings/claim-file! "/src/upsert-test.clj" "upsert-hash-slave" {})
+    (is (nil? (get-claim-prior-hash "/src/upsert-test.clj")))
+    ;; Upsert with hash
+    (lings/claim-file! "/src/upsert-test.clj" "upsert-hash-slave"
+                       {:prior-hash "new-hash-value"})
+    (is (= "new-hash-value" (get-claim-prior-hash "/src/upsert-test.clj"))
+        "Prior hash should be updated on upsert")))

@@ -61,7 +61,7 @@
 ;; Constants
 ;; =============================================================================
 
-(def ^:const default-model "mistralai/devstral-2512:free")
+(def ^:const default-model "x-ai/grok-code-fast-1")
 (def ^:const debate-preset "drone-worker")
 (def ^:const max-turns 20)
 

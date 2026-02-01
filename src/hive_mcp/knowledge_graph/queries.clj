@@ -30,8 +30,9 @@
   3)
 
 (def ^:private dependency-relations
-  "Relations that indicate dependency (for impact analysis)."
-  #{:depends-on :implements :derived-from})
+  "Relations that indicate dependency (for impact analysis).
+   Includes :refines - when A refines B, and B becomes stale, A should also become stale."
+  #{:depends-on :implements :derived-from :refines})
 
 ;;; =============================================================================
 ;;; Helper Functions

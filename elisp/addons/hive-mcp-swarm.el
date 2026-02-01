@@ -730,27 +730,39 @@ CONTEXT-FILE is an optional path to a temp file containing pre-generated
 catchup context to inject into the system prompt (Architecture > LLM behavior).
 The file is read and deleted after use.
 Returns slave-id on success, or error plist on failure."
-  (let ((injected-context
-         (when (and context-file (file-exists-p context-file))
-           (prog1
-               (with-temp-buffer
-                 (insert-file-contents context-file)
-                 (buffer-string))
-             ;; Clean up temp file after reading
-             (ignore-errors (delete-file context-file))))))
+  ;; CLARITY-I: Validate all optional string params before use
+  ;; (fix for 'stringp, 1' error when MCP passes non-string values)
+  (let* ((valid-cwd (when (stringp cwd) cwd))
+         (valid-kanban-id (when (stringp kanban-task-id) kanban-task-id))
+         (injected-context
+          (when (and context-file (stringp context-file) (file-exists-p context-file))
+            (prog1
+                (with-temp-buffer
+                  (insert-file-contents context-file)
+                  (buffer-string))
+              ;; Clean up temp file after reading
+              (ignore-errors (delete-file context-file))))))
     (hive-mcp-with-fallback
-        (hive-mcp-swarm-spawn name :presets presets :cwd cwd
-                              :terminal (when terminal (intern terminal))
-                              :kanban-task-id kanban-task-id
+        (hive-mcp-swarm-spawn name :presets presets :cwd valid-cwd
+                              ;; CLARITY-I: Guard intern against non-string terminal values
+                              :terminal (when (and terminal (stringp terminal)) (intern terminal))
+                              :kanban-task-id valid-kanban-id
                               :injected-context injected-context)
       `(:error "spawn-failed" :name ,name :reason "unknown"))))
 
 (defun hive-mcp-swarm-api-dispatch (slave-id prompt &optional timeout-ms)
   "API: Dispatch PROMPT to SLAVE-ID with TIMEOUT-MS.
-Returns task-id on success, or error plist on failure."
+Returns structured response plist:
+  - :status \"dispatched\" - prompt sent, :task-id included
+  - :status \"queued\" - terminal not ready, dispatch queued for retry
+  - :status \"error\" - dispatch failed, :error included
+
+FIX (2026-01-31): Now returns structured response to distinguish
+dispatched vs queued vs failed. Enables coordinator to handle
+async spawn timing correctly."
   (hive-mcp-with-fallback
       (hive-mcp-swarm-dispatch slave-id prompt :timeout timeout-ms)
-    `(:error "dispatch-failed" :slave-id ,slave-id :reason "unknown")))
+    `(:status "error" :error "dispatch-failed" :slave-id ,slave-id :reason "unknown")))
 
 (defun hive-mcp-swarm-api-status ()
   "API: Get swarm status as JSON-serializable plist."
@@ -850,11 +862,19 @@ fallback to ensure MCP clients never receive errors."
 
 (defun hive-mcp-swarm-api-kill (slave-id)
   "API: Kill SLAVE-ID.
-Returns result plist. Never fails."
+Returns result plist. Never fails.
+
+BUG FIX: Now checks return value from kill function.
+Kill may be blocked if buffer fails safety validation
+(prevents accidentally killing coordinator)."
   (hive-mcp-with-fallback
-      (progn
-        (hive-mcp-swarm-kill slave-id)
-        `(:killed ,slave-id))
+      (if (hive-mcp-swarm-kill slave-id)
+          `(:killed ,slave-id :success t)
+        ;; Kill was blocked by safety validation
+        `(:error "kill-blocked"
+          :slave-id ,slave-id
+          :reason "buffer-safety-validation-failed"
+          :message "Buffer did not pass safety checks (may have been coordinator or invalid target)"))
     `(:error "kill-failed" :slave-id ,slave-id)))
 
 (defun hive-mcp-swarm-api-kill-all ()

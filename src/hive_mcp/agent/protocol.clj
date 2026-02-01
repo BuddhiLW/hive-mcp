@@ -1,12 +1,61 @@
 (ns hive-mcp.agent.protocol
-  "LLMBackend protocol for agent delegation.
-   
-   Extracted to separate namespace to allow multiple backend implementations
-   without circular dependencies (OCP compliant).")
+  "Unified agent lifecycle protocol for lings and drones.
+
+   Enables polymorphic dispatch - same tools work for both agent types.
+   Drones are ephemeral (stateless API calls), lings are persistent (Claude Code instances).
+
+   Also contains LLMBackend protocol for agent delegation.")
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
+;;; =============================================================================
+;;; IAgent Protocol (Unified Agent Lifecycle)
+;;; =============================================================================
+
+(defprotocol IAgent
+  "Unified agent lifecycle protocol for lings and drones"
+  (spawn! [this opts]
+    "Spawn the agent. Returns agent-id.")
+  (dispatch! [this task-opts]
+    "Send a task to the agent. Returns task-id.")
+  (kill! [this]
+    "Terminate the agent and release resources.")
+  (status [this]
+    "Get current agent status map.")
+  (agent-type [this]
+    "Returns :ling or :drone")
+  (can-chain-tools? [this]
+    "Returns true if agent can chain multiple tool calls (lings only)")
+  (claims [this]
+    "Get list of files currently claimed by this agent.")
+  (claim-files! [this files task-id]
+    "Claim files for exclusive access during task.")
+  (release-claims! [this]
+    "Release all file claims held by this agent.")
+  (upgrade! [this]
+    "Upgrade drone to ling when task requires tool chaining. No-op for lings."))
+
+;;; =============================================================================
+;;; IAgentRegistry Protocol (Agent Tracking)
+;;; =============================================================================
+
+(defprotocol IAgentRegistry
+  "Registry for tracking all active agents (lings + drones)"
+  (register! [this agent]
+    "Add agent to registry")
+  (unregister! [this agent-id]
+    "Remove agent from registry")
+  (get-agent [this agent-id]
+    "Get agent by ID")
+  (list-agents [this]
+    "List all agents")
+  (list-agents-by-type [this agent-type]
+    "List agents filtered by :ling or :drone"))
+
+;;; =============================================================================
+;;; LLMBackend Protocol (Agent Delegation)
+;;; =============================================================================
 
 (defprotocol LLMBackend
   "Protocol for LLM backends that support tool calling."
