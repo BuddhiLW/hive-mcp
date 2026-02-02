@@ -246,3 +246,79 @@ Some details about the second task."
           result (parser/parse-plan content)]
       (is (:success result))
       (is (= 2 (count (get-in result [:plan :steps])))))))
+
+;;; =============================================================================
+;;; Raw EDN Parsing Tests (W3.1 - No ```edn fences)
+;;; =============================================================================
+
+(deftest raw-edn-parsing-test
+  (testing "Raw EDN plan starting with '{' parses successfully"
+    (let [content "{:steps [{:id \"step-1\" :title \"Raw EDN task\" :depends-on []}]}"
+          result (parser/parse-plan content)]
+      (is (:success result) "Raw EDN starting with '{' should parse")
+      (is (= :edn (get-in result [:plan :source-format])))
+      (is (= 1 (count (get-in result [:plan :steps]))))
+      (is (= "step-1" (get-in result [:plan :steps 0 :id])))))
+
+  (testing "EDN plan with leading whitespace parses successfully"
+    (let [content "  \n  {:steps [{:id \"step-1\" :title \"Whitespace prefix\" :depends-on []}]}"
+          result (parser/parse-plan content)]
+      (is (:success result) "EDN with leading whitespace should parse")
+      (is (= "step-1" (get-in result [:plan :steps 0 :id])))))
+
+  (testing "EDN plan embedded in markdown text extracts and parses"
+    (let [content "# Plan Output
+
+Here is the generated plan:
+
+{:id \"embedded-plan\"
+ :title \"Embedded in Markdown\"
+ :steps [{:id \"step-1\" :title \"First\" :depends-on []}
+         {:id \"step-2\" :title \"Second\" :depends-on [\"step-1\"]}]}
+
+Please review the above plan."
+          result (parser/parse-plan content)]
+      (is (:success result) "EDN embedded in markdown should extract and parse")
+      (is (= :edn (get-in result [:plan :source-format])))
+      (is (= 2 (count (get-in result [:plan :steps]))))))
+
+  (testing "Keyword step IDs (:step-1) coerced to strings"
+    (let [content "{:steps [{:id :step-1 :title \"Keyword ID\" :depends-on []}
+                           {:id :step-2 :title \"Also keyword\" :depends-on [:step-1]}]}"
+          result (parser/parse-plan content)]
+      (is (:success result) "Keyword IDs should be coerced to strings")
+      ;; Verify IDs are strings, not keywords
+      (is (string? (get-in result [:plan :steps 0 :id])))
+      (is (= "step-1" (get-in result [:plan :steps 0 :id])))
+      (is (= "step-2" (get-in result [:plan :steps 1 :id])))
+      ;; Verify depends-on items are also strings
+      (is (every? string? (get-in result [:plan :steps 1 :depends-on])))
+      (is (= ["step-1"] (get-in result [:plan :steps 1 :depends-on])))))
+
+  (testing "Namespaced keys (:plan/steps, :step/id) normalize correctly"
+    (let [content "{:plan/steps [{:step/id :s1 :step/title \"Namespaced\" :step/depends-on []}]}"
+          result (parser/parse-plan content)]
+      (is (:success result) "Namespaced keys should normalize")
+      (is (= "s1" (get-in result [:plan :steps 0 :id])))
+      (is (= "Namespaced" (get-in result [:plan :steps 0 :title])))))
+
+  (testing "Mixed keyword and string IDs work together"
+    (let [content "{:steps [{:id \"string-id\" :title \"String ID\" :depends-on []}
+                           {:id :keyword-id :title \"Keyword ID\" :depends-on [\"string-id\"]}]}"
+          result (parser/parse-plan content)]
+      (is (:success result))
+      (is (= "string-id" (get-in result [:plan :steps 0 :id])))
+      (is (= "keyword-id" (get-in result [:plan :steps 1 :id])))))
+
+  (testing "EDN with extra fields (:waves, :problem, etc.) parses gracefully"
+    (let [content "{:id \"saa-style\"
+                   :title \"SAA Generated Plan\"
+                   :problem {:description \"Some problem\"}
+                   :waves {:wave-1 {:steps [\"step-1\"]}}
+                   :steps [{:id :step-1 :title \"Task 1\" :depends-on [] :wave 1}
+                           {:id :step-2 :title \"Task 2\" :depends-on [:step-1] :wave 2}]}"
+          result (parser/parse-plan content)]
+      (is (:success result) "Extra fields should be ignored gracefully")
+      (is (= 2 (count (get-in result [:plan :steps]))))
+      (is (= "step-1" (get-in result [:plan :steps 0 :id])))
+      (is (= "step-2" (get-in result [:plan :steps 1 :id]))))))

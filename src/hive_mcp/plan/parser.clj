@@ -34,17 +34,20 @@
   (->> (re-seq edn-block-pattern content)
        (mapv second)))
 
+(def ^:private edn-plan-pattern
+  "Regex pattern to detect EDN plan structure anywhere in content.
+   Matches {:steps [...] or {:plan/steps [...] with optional whitespace."
+  #"\{[^}]*:(?:plan/)?steps\s*\[")
+
 (defn- looks-like-edn-plan?
   "Check if content looks like raw EDN with plan structure.
 
-   Detects patterns like {:plan/steps or {:steps at the start of content."
+   Detects patterns like {:plan/steps [...] or {:steps [...] anywhere in content.
+   Handles leading whitespace, markdown headers, or other prefixes."
   [content]
   (boolean
    (and (string? content)
-        (let [trimmed (str/trim content)]
-          (and (str/starts-with? trimmed "{")
-               (or (str/includes? trimmed ":plan/steps")
-                   (str/includes? trimmed ":steps")))))))
+        (re-find edn-plan-pattern content))))
 
 (defn contains-edn-block?
   "Check if content contains any ```edn ... ``` blocks."
@@ -71,6 +74,64 @@
     (catch Exception e
       {:success false :error (.getMessage e)})))
 
+(defn- extract-edn-from-content
+  "Extract EDN map from mixed markdown/text content.
+
+   Finds the first balanced {} that contains :steps or :plan/steps.
+   Handles nested braces correctly, respects string literals.
+
+   Args:
+   - content: String that may contain EDN embedded in other text
+
+   Returns:
+   - EDN substring if found, nil otherwise"
+  [content]
+  (when (string? content)
+    (let [start-idx (str/index-of content "{")]
+      (when start-idx
+        (loop [idx start-idx
+               depth 0
+               in-string false
+               escape-next false]
+          (if (>= idx (count content))
+            nil  ;; Unbalanced - no closing brace found
+            (let [c (nth content idx)]
+              (cond
+                ;; Handle escape sequences in strings
+                escape-next
+                (recur (inc idx) depth in-string false)
+
+                ;; Backslash - next char is escaped
+                (and in-string (= c \\))
+                (recur (inc idx) depth in-string true)
+
+                ;; String delimiter
+                (= c \")
+                (recur (inc idx) depth (not in-string) false)
+
+                ;; Inside string - skip brace matching
+                in-string
+                (recur (inc idx) depth in-string false)
+
+                ;; Opening brace
+                (= c \{)
+                (recur (inc idx) (inc depth) in-string false)
+
+                ;; Closing brace
+                (= c \})
+                (let [new-depth (dec depth)]
+                  (if (zero? new-depth)
+                    ;; Found matching close brace - extract substring
+                    (let [edn-str (subs content start-idx (inc idx))]
+                      ;; Verify it contains :steps
+                      (when (re-find #":(?:plan/)?steps\s*\[" edn-str)
+                        edn-str))
+                    (recur (inc idx) new-depth in-string false)))
+
+                ;; Any other character
+                :else
+                (recur (inc idx) depth in-string false)))))))))
+
 (defn- get-steps-key
   "Get the steps from EDN data, checking both namespaced and non-namespaced keys."
   [data]
@@ -91,15 +152,30 @@
     (keyword (name k))
     k))
 
+(defn- keyword->string
+  "Convert keyword to string using name, pass strings through unchanged."
+  [v]
+  (if (keyword? v) (name v) v))
+
 (defn- normalize-edn-step
   "Normalize an EDN step map, converting namespaced keys to non-namespaced.
 
-   :step/id -> :id, :step/title -> :title, etc."
+   :step/id -> :id, :step/title -> :title, etc.
+   Also coerces :id and :depends-on items from keywords to strings."
   [step]
-  (reduce-kv (fn [m k v]
-               (assoc m (strip-namespace k) v))
-             {}
-             step))
+  (let [base (reduce-kv (fn [m k v]
+                          (assoc m (strip-namespace k) v))
+                        {}
+                        step)
+        ;; Coerce :id from keyword to string (schema requires :string)
+        base (if-let [id (:id base)]
+               (assoc base :id (keyword->string id))
+               base)
+        ;; Coerce :depends-on items from keywords to strings
+        base (if-let [deps (:depends-on base)]
+               (assoc base :depends-on (mapv keyword->string deps))
+               base)]
+    base))
 
 (defn- normalize-edn-plan
   "Normalize an EDN plan map, converting namespaced keys to non-namespaced.
@@ -146,9 +222,10 @@
 (defn parse-edn-plan
   "Parse plan from EDN content or EDN blocks.
 
-   Tries two strategies:
+   Tries three strategies in order:
    1. Parse content directly as EDN (for raw EDN plans)
-   2. Find ```edn ... ``` blocks and parse those
+   2. Extract balanced {} containing :steps from mixed content
+   3. Find ```edn ... ``` blocks and parse those
 
    Supports both namespaced (:plan/steps, :step/id) and plain keys.
 
@@ -163,19 +240,39 @@
   (let [direct-parse (try-parse-edn content)]
     (if (and (:success direct-parse) (is-plan-edn? (:data direct-parse)))
       (finalize-edn-plan (:data direct-parse))
-      ;; Strategy 2: Extract from ```edn blocks
-      (let [blocks (extract-edn-blocks content)]
-        (if (empty? blocks)
-          {:success false :error "No EDN plan found (tried direct parse and ```edn blocks)"}
-          (let [results (for [block blocks
-                              :let [parsed (try-parse-edn block)]
-                              :when (:success parsed)
-                              :when (is-plan-edn? (:data parsed))]
-                          (:data parsed))
-                plan-data (first results)]
-            (if plan-data
-              (finalize-edn-plan plan-data)
-              {:success false :error "No valid plan structure found in EDN blocks"})))))))
+      ;; Strategy 2: Extract EDN from mixed markdown/text content
+      (if-let [extracted-edn (extract-edn-from-content content)]
+        (let [extracted-parse (try-parse-edn extracted-edn)]
+          (if (and (:success extracted-parse) (is-plan-edn? (:data extracted-parse)))
+            (finalize-edn-plan (:data extracted-parse))
+            ;; Fall through to strategy 3
+            (let [blocks (extract-edn-blocks content)]
+              (if (empty? blocks)
+                {:success false
+                 :error "No EDN plan found (tried direct parse, embedded extraction, and ```edn blocks)"}
+                (let [results (for [block blocks
+                                    :let [parsed (try-parse-edn block)]
+                                    :when (:success parsed)
+                                    :when (is-plan-edn? (:data parsed))]
+                                (:data parsed))
+                      plan-data (first results)]
+                  (if plan-data
+                    (finalize-edn-plan plan-data)
+                    {:success false :error "No valid plan structure found in EDN blocks"}))))))
+        ;; Strategy 3: Extract from ```edn blocks
+        (let [blocks (extract-edn-blocks content)]
+          (if (empty? blocks)
+            {:success false
+             :error "No EDN plan found (tried direct parse, embedded extraction, and ```edn blocks)"}
+            (let [results (for [block blocks
+                                :let [parsed (try-parse-edn block)]
+                                :when (:success parsed)
+                                :when (is-plan-edn? (:data parsed))]
+                            (:data parsed))
+                  plan-data (first results)]
+              (if plan-data
+                (finalize-edn-plan plan-data)
+                {:success false :error "No valid plan structure found in EDN blocks"}))))))))
 
 ;; =============================================================================
 ;; Markdown Plan Parsing

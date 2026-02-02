@@ -12,6 +12,7 @@
    b) Markdown plan to kanban - Alternative format support
    c) Dependency cycle detection - Graceful rejection
    d) Wave computation - Topological sort validation
+   e) SAA workflow EDN - Keyword IDs and extra fields
 
    AXIOM COMPLIANCE:
    - Tests run via nREPL, NOT bash (per 'Clojure Tests Run via nREPL, Never Bash')
@@ -230,6 +231,86 @@ Implement the parser.
 ## Write tests [id: tests] [depends: parser] [priority: medium]
 
 Add test coverage.")
+
+;; =============================================================================
+;; Test Data: SAA-Style EDN Plans (keyword IDs, extra fields)
+;; =============================================================================
+
+(def saa-style-plan-raw
+  "SAA-style plan with keyword IDs, :waves metadata, and extra fields.
+   Mimics the format from preset-lazy-loading.edn and other SAA outputs."
+  "{:id \"saa-lazy-preset-loading\"
+ :title \"SAA: Lazy Preset Loading\"
+ :created \"2026-01-31\"
+ :status :planned
+
+ :problem
+ {:description \"Full preset content wastes tokens\"
+  :token-analysis {:ling-preset \"~1.5K tokens\"
+                   :estimated-waste \"5-10K tokens per spawn\"}}
+
+ :solution
+ {:approach \"Lazy loading: inject preset NAMES only\"
+  :target-reduction \"80-90%\"}
+
+ :steps
+ [{:id :step-1
+   :title \"Add feature flag defcustom\"
+   :file \"elisp/hive-mcp-swarm-presets.el\"
+   :dependencies []}
+
+  {:id :step-2
+   :title \"Create lazy instructions constant\"
+   :file \"elisp/hive-mcp-swarm-presets.el\"
+   :dependencies [:step-1]}
+
+  {:id :step-3
+   :title \"Create lazy prompt builder function\"
+   :file \"elisp/hive-mcp-swarm-presets.el\"
+   :dependencies [:step-2]}
+
+  {:id :step-4
+   :title \"Modify build-system-prompt\"
+   :file \"elisp/hive-mcp-swarm-presets.el\"
+   :dependencies [:step-3]}
+
+  {:id :step-5
+   :title \"Add list_slim command\"
+   :file \"src/hive_mcp/tools/presets.clj\"
+   :dependencies []
+   :optional true}
+
+  {:id :step-6
+   :title \"Wire list_slim to handlers\"
+   :file \"src/hive_mcp/tools/consolidated/preset.clj\"
+   :dependencies [:step-5]
+   :optional true}]
+
+ :waves
+ {:wave-1 {:steps [:step-1] :parallel false}
+  :wave-2 {:steps [:step-2 :step-3 :step-4] :parallel false}
+  :wave-3 {:steps [:step-5 :step-6] :parallel true}}
+
+ :testing
+ {:manual [\"Set lazy mode to t\" \"Spawn a ling\"]}
+
+ :notes [\"Feature flag controls behavior\"]}")
+
+(def saa-style-plan-embedded
+  "SAA-style plan embedded in markdown context."
+  "# SAA Analysis Complete
+
+The solver-architect agent has produced the following implementation plan:
+
+{:id \"embedded-saa-plan\"
+ :title \"Token Efficiency Optimization\"
+ :steps [{:id :setup :title \"Configure environment\" :depends-on []}
+         {:id :impl :title \"Implement feature\" :depends-on [:setup]}
+         {:id :test :title \"Add tests\" :depends-on [:impl]}]
+ :waves {:wave-1 {:steps [:setup]}
+         :wave-2 {:steps [:impl :test]}}}
+
+Please review and approve before implementation begins.")
 
 ;; =============================================================================
 ;; Test a) EDN Plan to Kanban
@@ -552,6 +633,95 @@ Add test coverage.")
         (is (schema/valid-plan? plan) "Parsed markdown plan should be schema-valid")))))
 
 ;; =============================================================================
+;; Test e) SAA Workflow EDN Integration (W3.2)
+;; =============================================================================
+
+(deftest saa-workflow-edn-test
+  (testing "SAA-style raw EDN with keyword IDs parses successfully"
+    (let [{:keys [success plan]} (parser/parse-plan saa-style-plan-raw)]
+      (is success "SAA-style EDN should parse successfully")
+      (when success
+        ;; Verify keyword IDs coerced to strings
+        (is (= "step-1" (get-in plan [:steps 0 :id]))
+            "Keyword :step-1 should become string \"step-1\"")
+        (is (= "step-2" (get-in plan [:steps 1 :id])))
+        (is (= "step-6" (get-in plan [:steps 5 :id])))
+
+        ;; Verify all IDs are strings
+        (is (every? string? (map :id (:steps plan)))
+            "All step IDs should be strings")
+
+        ;; Verify 6 steps parsed
+        (is (= 6 (count (:steps plan)))
+            "Should have 6 steps")
+
+        ;; Verify titles preserved
+        (is (= "Add feature flag defcustom" (get-in plan [:steps 0 :title])))
+        (is (= "Wire list_slim to handlers" (get-in plan [:steps 5 :title])))
+
+        ;; Verify depends-on keywords coerced (note: SAA uses :dependencies not :depends-on)
+        ;; The parser normalizes this
+        (is (every? string? (get-in plan [:steps 1 :depends-on]))
+            "Dependencies should be coerced to strings"))))
+
+  (testing "SAA-style embedded EDN extracts and parses"
+    (let [{:keys [success plan]} (parser/parse-plan saa-style-plan-embedded)]
+      (is success "Embedded SAA-style EDN should parse")
+      (when success
+        ;; Verify extraction worked
+        (is (= 3 (count (:steps plan)))
+            "Should extract 3 steps from embedded EDN")
+
+        ;; Verify keyword IDs coerced
+        (is (= "setup" (get-in plan [:steps 0 :id])))
+        (is (= "impl" (get-in plan [:steps 1 :id])))
+        (is (= "test" (get-in plan [:steps 2 :id])))
+
+        ;; Verify schema validity
+        (is (schema/valid-plan? plan) "Extracted plan should be schema-valid"))))
+
+  (testing "SAA :waves field ignored gracefully"
+    (let [{:keys [success plan]} (parser/parse-plan saa-style-plan-raw)]
+      (is success "Plan with :waves should still parse")
+      (when success
+        ;; :waves should not break parsing
+        (is (map? plan) "Should return a plan map")
+        ;; :waves may or may not be in the normalized plan - either way is fine
+        ;; The important thing is it doesn't cause an error
+        (is (vector? (:steps plan)) "Steps should be present"))))
+
+  (testing "SAA extra fields (:problem, :solution, :testing, :notes) ignored"
+    (let [{:keys [success plan]} (parser/parse-plan saa-style-plan-raw)]
+      (is success "Plan with extra fields should parse")
+      (when success
+        ;; Core plan structure intact
+        (is (:id plan) "Plan should have ID")
+        (is (:title plan) "Plan should have title")
+        (is (seq (:steps plan)) "Plan should have steps")
+
+        ;; Schema validation passes despite extra fields
+        (is (schema/valid-plan? plan) "Plan should be schema-valid"))))
+
+  (testing "SAA plan to kanban E2E pipeline"
+    (let [memory-id (create-test-memory! saa-style-plan-raw)
+          result (tool/handle-plan-to-kanban {:plan_id memory-id
+                                              :directory "/home/lages/dotfiles/gitthings/hive-mcp"})
+          parsed (parse-json-result result)]
+
+      ;; Assert: Not an error
+      (is (not (:isError result)) "SAA plan should not return error")
+
+      (when-not (:isError result)
+        ;; Assert: Correct number of tasks created
+        (is (= 6 (:task-count parsed)) "Should create 6 tasks from SAA plan")
+
+        ;; Assert: step-mapping has string keys (coerced from keywords)
+        (let [mapping (:step-mapping parsed)]
+          (is (contains? mapping "step-1") "step-1 should be in mapping as string")
+          (is (contains? mapping "step-6") "step-6 should be in mapping as string")
+          (is (= 6 (count mapping)) "Mapping should have 6 entries"))))))
+
+;; =============================================================================
 ;; Run Tests Summary (for nREPL convenience)
 ;; =============================================================================
 
@@ -563,4 +733,5 @@ Add test coverage.")
   ;; Run specific test
   (clojure.test/test-vars [#'edn-plan-to-kanban-test])
   (clojure.test/test-vars [#'wave-computation-test])
-  (clojure.test/test-vars [#'cycle-detection-test]))
+  (clojure.test/test-vars [#'cycle-detection-test])
+  (clojure.test/test-vars [#'saa-workflow-edn-test]))
