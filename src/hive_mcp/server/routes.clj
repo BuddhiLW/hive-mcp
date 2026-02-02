@@ -183,6 +183,14 @@
    Extracts agent-id, project-id, directory from args and binds
    them via hive-mcp.agent.context/with-request-context.
 
+   Directory fallback chain (CLARITY-R: explicit context flow):
+   1. Explicit :directory in args
+   2. Server's working directory (System/getProperty user.dir)
+
+   This ensures tools always have a directory context, preventing
+   scope leakage where entries get stored as 'global' when callers
+   don't explicitly pass directory.
+
    This enables tool handlers to access context via:
    - (ctx/current-agent-id)
    - (ctx/current-project-id)
@@ -191,7 +199,9 @@
   (fn [args]
     (let [agent-id (extract-agent-id args nil)
           project-id (extract-project-id args)
-          directory (or (:directory args) (get args "directory"))]
+          directory (or (:directory args)
+                        (get args "directory")
+                        (System/getProperty "user.dir"))]
       (ctx/with-request-context {:agent-id agent-id
                                  :project-id project-id
                                  :directory directory}

@@ -34,10 +34,12 @@
   (.format (ZonedDateTime/now) (DateTimeFormatter/ofPattern "yyyy-MM-dd'T'HH:mm:ssZ")))
 
 (defn- build-kanban-tags
-  "Build tags for kanban task: ['kanban', status, priority, scope]."
+  "Build tags for kanban task: ['kanban', status, priority, scope].
+   Always includes a scope tag using scope/make-scope-tag for consistency.
+   This ensures 'global' project-id produces 'scope:global' not 'scope:project:global'."
   [status priority project-id]
-  (cond-> ["kanban" status (str "priority-" priority)]
-    project-id (conj (str "scope:project:" project-id))))
+  (conj ["kanban" status (str "priority-" priority)]
+        (scope/make-scope-tag project-id)))
 
 (defn handle-mem-kanban-create
   "Create a kanban task in memory (direct Chroma, no elisp roundtrip).
@@ -54,8 +56,9 @@
                               (System/getenv "CLAUDE_SWARM_SLAVE_ID"))
           priority (or priority "medium")
           status "todo"
-          project-id (when effective-dir
-                       (last (clojure.string/split effective-dir #"/")))
+          ;; Use scope/get-current-project-id for consistent project-id derivation
+          ;; Returns "global" when effective-dir is nil, preventing scope leakage
+          project-id (scope/get-current-project-id effective-dir)
           content {:task-type "kanban"
                    :title title
                    :status status
