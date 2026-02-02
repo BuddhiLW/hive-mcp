@@ -779,9 +779,165 @@
     :handler handle-kg-versioning-status}])
 
 ;;; =============================================================================
+;;; Migration Tool Handlers
+;;; =============================================================================
+
+(defn handle-kg-migrate
+  "Migrate KG data from one backend to another.
+
+   Arguments:
+     source_backend - Current backend (:datascript, :datalevin, or :datahike)
+     target_backend - Target backend to migrate to
+     dry_run        - If true, show what would be migrated without doing it
+     export_path    - Optional path to save EDN backup during migration
+     target_db_path - Optional path for target backend storage (Datahike/Datalevin)"
+  [{:keys [source_backend target_backend dry_run export_path target_db_path]}]
+  (log/info "kg_migrate" {:source source_backend :target target_backend :dry-run dry_run})
+  (try
+    (require 'hive-mcp.knowledge-graph.migration)
+    (let [migrate-fn (resolve 'hive-mcp.knowledge-graph.migration/migrate-store!)
+          source-kw (keyword source_backend)
+          target-kw (keyword target_backend)
+          target-opts (when target_db_path {:db-path target_db_path})
+          result (migrate-fn source-kw target-kw
+                             {:target-opts target-opts
+                              :dry-run (boolean dry_run)
+                              :export-path export_path})]
+      (mcp-json {:success true
+                 :source-backend (name source-kw)
+                 :target-backend (name target-kw)
+                 :dry-run (:dry-run result)
+                 :exported (:exported result)
+                 :imported (:imported result)
+                 :validation (:validation result)
+                 :errors (when (seq (:errors result))
+                           (count (:errors result)))}))
+    (catch Exception e
+      (log/error e "kg_migrate failed")
+      (mcp-error (str "Migration failed: " (.getMessage e))))))
+
+(defn handle-kg-export
+  "Export KG data to EDN file for backup or migration.
+
+   Arguments:
+     path - File path to save the EDN export"
+  [{:keys [path]}]
+  (log/info "kg_export" {:path path})
+  (try
+    (require 'hive-mcp.knowledge-graph.migration)
+    (let [export-fn (resolve 'hive-mcp.knowledge-graph.migration/export-to-file!)
+          result (export-fn path)]
+      (mcp-json {:success true
+                 :path path
+                 :counts (:counts result)
+                 :exported-at (str (:exported-at result))}))
+    (catch Exception e
+      (log/error e "kg_export failed")
+      (mcp-error (str "Export failed: " (.getMessage e))))))
+
+(defn handle-kg-import
+  "Import KG data from EDN file.
+
+   Arguments:
+     path - File path to the EDN export file"
+  [{:keys [path]}]
+  (log/info "kg_import" {:path path})
+  (try
+    (require 'hive-mcp.knowledge-graph.migration)
+    (let [import-fn (resolve 'hive-mcp.knowledge-graph.migration/import-from-file!)
+          result (import-fn path)]
+      (mcp-json {:success true
+                 :path path
+                 :imported (:imported result)
+                 :errors (when (seq (:errors result))
+                           {:count (count (:errors result))
+                            :first-error (first (:errors result))})}))
+    (catch Exception e
+      (log/error e "kg_import failed")
+      (mcp-error (str "Import failed: " (.getMessage e))))))
+
+(defn handle-kg-validate-migration
+  "Validate migration by comparing expected vs actual entity counts.
+
+   Arguments:
+     expected_edges     - Expected number of edges
+     expected_disc      - Expected number of disc entities
+     expected_synthetic - Expected number of synthetic nodes"
+  [{:keys [expected_edges expected_disc expected_synthetic]}]
+  (log/info "kg_validate_migration" {:edges expected_edges :disc expected_disc :synthetic expected_synthetic})
+  (try
+    (require 'hive-mcp.knowledge-graph.migration)
+    (let [validate-fn (resolve 'hive-mcp.knowledge-graph.migration/validate-migration)
+          expected {:edges (or expected_edges 0)
+                    :disc (or expected_disc 0)
+                    :synthetic (or expected_synthetic 0)}
+          result (validate-fn expected)]
+      (mcp-json {:success true
+                 :valid (:valid? result)
+                 :expected (:expected result)
+                 :actual (:actual result)
+                 :missing (:missing result)}))
+    (catch Exception e
+      (log/error e "kg_validate_migration failed")
+      (mcp-error (str "Validation failed: " (.getMessage e))))))
+
+;;; =============================================================================
+;;; Migration Tool Definitions
+;;; =============================================================================
+
+(def migration-tools
+  [{:name "kg_migrate"
+    :description "Migrate Knowledge Graph data from one backend to another. Supports DataScript (in-memory), Datalevin (persistent), and Datahike (time-travel). Use dry_run=true to preview migration without executing."
+    :inputSchema {:type "object"
+                  :properties {"source_backend" {:type "string"
+                                                 :enum ["datascript" "datalevin" "datahike"]
+                                                 :description "Current backend to migrate FROM"}
+                               "target_backend" {:type "string"
+                                                 :enum ["datascript" "datalevin" "datahike"]
+                                                 :description "Target backend to migrate TO"}
+                               "dry_run" {:type "boolean"
+                                          :description "Preview migration without executing (default: false)"}
+                               "export_path" {:type "string"
+                                              :description "Optional path to save EDN backup during migration"}
+                               "target_db_path" {:type "string"
+                                                 :description "Optional storage path for target backend"}}
+                  :required ["source_backend" "target_backend"]}
+    :handler handle-kg-migrate}
+
+   {:name "kg_export"
+    :description "Export all Knowledge Graph data (edges, disc entities, synthetic nodes) to an EDN file. Useful for backup or migration between environments."
+    :inputSchema {:type "object"
+                  :properties {"path" {:type "string"
+                                       :description "File path to save the EDN export"}}
+                  :required ["path"]}
+    :handler handle-kg-export}
+
+   {:name "kg_import"
+    :description "Import Knowledge Graph data from an EDN file. Use after kg_export to restore or migrate data."
+    :inputSchema {:type "object"
+                  :properties {"path" {:type "string"
+                                       :description "File path to the EDN export file"}}
+                  :required ["path"]}
+    :handler handle-kg-import}
+
+   {:name "kg_validate_migration"
+    :description "Validate that a migration completed successfully by comparing expected vs actual entity counts. Use after kg_import to verify data integrity."
+    :inputSchema {:type "object"
+                  :properties {"expected_edges" {:type "integer"
+                                                 :description "Expected number of edges"}
+                               "expected_disc" {:type "integer"
+                                                :description "Expected number of disc entities"}
+                               "expected_synthetic" {:type "integer"
+                                                     :description "Expected number of synthetic nodes"}}
+                  :required []}
+    :handler handle-kg-validate-migration}])
+
+;;; =============================================================================
 ;;; Combined Tool Export
 ;;; =============================================================================
 
 (def all-tools
-  "All KG tools including versioning tools."
-  (into tools versioning-tools))
+  "All KG tools including versioning and migration tools."
+  (-> tools
+      (into versioning-tools)
+      (into migration-tools)))
