@@ -205,32 +205,45 @@
    notes: seq of progress note maps (handles nil, empty, or malformed)
    git-commits: seq of commit strings (handles nil)
 
-   Returns: session summary map suitable for crystallization
+   Returns: session summary map suitable for crystallization, or nil if no content.
 
    CLARITY-I: Inputs are guarded - filters non-map items to prevent
-   'Key must be integer' error when accessing (:tags item) on vectors."
+   'Key must be integer' error when accessing (:tags item) on vectors.
+   Also filters out notes with nil/empty content to prevent '(no content)' entries."
   [notes git-commits]
   (let [;; Guard: ensure notes is a sequence of maps only
         notes (->> (or notes [])
                    (filter map?))
         git-commits (or git-commits [])
-        task-count (count (filter #(some #{"completed-task"} (:tags %)) notes))
+        ;; Filter to only notes with actual content before processing
+        notes-with-content (->> notes
+                                (filter #(let [c (:content %)]
+                                           (and (some? c)
+                                                (if (string? c)
+                                                  (not (str/blank? c))
+                                                  true)))))
+        task-count (count (filter #(some #{"completed-task"} (:tags %)) notes-with-content))
         session (session-id)
-        note-summaries (->> notes
+        note-summaries (->> notes-with-content
                             (map #(extract-content-summary (:content %)))
+                            ;; Extra safety: filter out placeholder values
+                            (remove #(contains? #{"(no content)" "(empty)"} %))
                             (map #(str "- " %))
                             (str/join "\n"))
         commit-summaries (->> git-commits
                               (map #(str "- " %))
-                              (str/join "\n"))]
-    {:type :note
-     :content (str "## Session Summary: " session "\n\n"
-                   "### Completed Tasks: " task-count "\n"
-                   note-summaries
-                   "\n\n### Commits: " (count git-commits) "\n"
-                   commit-summaries)
-     :tags [(session-tag) "session-summary" "wrap-generated"]
-     :duration :short}))
+                              (str/join "\n"))
+        ;; Only create summary if there's actual content
+        has-content? (or (seq notes-with-content) (seq git-commits))]
+    (when has-content?
+      {:type :note
+       :content (str "## Session Summary: " session "\n\n"
+                     "### Completed Tasks: " task-count "\n"
+                     note-summaries
+                     "\n\n### Commits: " (count git-commits) "\n"
+                     commit-summaries)
+       :tags [(session-tag) "session-summary" "wrap-generated"]
+       :duration :short})))
 
 (comment
   ;; Example usage

@@ -417,42 +417,53 @@
 
    FIX: Now stores directly to Chroma instead of elisp memory layer.
    This ensures wrap data persists in the vector database.
+   FIX: Skips memory creation when there's no actual content to summarize.
 
-   Returns: {:summary-id string :promoted [ids] :cleared [ids] :project-id string}"
+   Returns: {:summary-id string :promoted [ids] :cleared [ids] :project-id string}
+            or {:skipped true} when no content to crystallize"
   [{:keys [progress-notes completed-tasks git-commits directory _recalls] :as harvested}]
   (log/info "Crystallizing session:" (crystal/session-id) (when directory (str "directory:" directory)))
 
   ;; Derive project-id for scoped memory creation
   (let [project-id (or (when directory (scope/get-current-project-id directory)) "global")
-        ;; 1. Create session summary
+        ;; 1. Create session summary (returns nil if no content)
         summary (crystal/summarize-session-progress
                  (concat progress-notes completed-tasks)
-                 git-commits)
-        content (:content summary)
-        tags (scope/inject-project-scope (or (:tags summary) []) project-id)
-        ;; Calculate expiration (short-term = 7 days)
-        expires (dur/calculate-expires "short")]
-    (try
-      ;; Store directly to Chroma (FIX: was using elisp before)
-      (let [entry-id (chroma/index-memory-entry!
-                      {:type "note"
-                       :content content
-                       :tags tags
-                       :duration "short"
-                       :expires (or expires "")
-                       :project-id project-id
-                       :content-hash (chroma/content-hash content)})]
-        (log/info "Created session summary in Chroma:" entry-id "project:" project-id)
-        ;; 2. Check for entries to promote (based on recall scores)
-        ;; TODO: Integrate with recall tracking when we have access patterns
-        {:summary-id entry-id
+                 git-commits)]
+    ;; Only persist if there's actual content to save
+    (if (nil? summary)
+      (do
+        (log/info "No content to crystallize for session:" (crystal/session-id))
+        {:skipped true
+         :reason "no-content"
          :session (crystal/session-id)
          :project-id project-id
          :stats (:summary harvested)})
-      (catch Exception e
-        (log/error e "Failed to crystallize session to Chroma")
-        {:error (.getMessage e)
-         :session (crystal/session-id)}))))
+      (let [content (:content summary)
+            tags (scope/inject-project-scope (or (:tags summary) []) project-id)
+            ;; Calculate expiration (short-term = 7 days)
+            expires (dur/calculate-expires "short")]
+        (try
+          ;; Store directly to Chroma (FIX: was using elisp before)
+          (let [entry-id (chroma/index-memory-entry!
+                          {:type "note"
+                           :content content
+                           :tags tags
+                           :duration "short"
+                           :expires (or expires "")
+                           :project-id project-id
+                           :content-hash (chroma/content-hash content)})]
+            (log/info "Created session summary in Chroma:" entry-id "project:" project-id)
+            ;; 2. Check for entries to promote (based on recall scores)
+            ;; TODO: Integrate with recall tracking when we have access patterns
+            {:summary-id entry-id
+             :session (crystal/session-id)
+             :project-id project-id
+             :stats (:summary harvested)})
+          (catch Exception e
+            (log/error e "Failed to crystallize session to Chroma")
+            {:error (.getMessage e)
+             :session (crystal/session-id)}))))))
 
 ;; =============================================================================
 ;; Auto-Wrap Session-End Handler

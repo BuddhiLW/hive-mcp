@@ -51,15 +51,35 @@
       (is (map? (core/summarize-session-progress notes commits))))))
 
 (deftest summarize-session-progress-empty-notes-test
-  (testing "summarize handles empty notes collection"
+  (testing "summarize returns nil for empty notes AND empty commits (no content)"
+    ;; NEW BEHAVIOR: Returns nil when there's nothing to summarize
     (let [result (core/summarize-session-progress [] [])]
-      (is (map? result))
-      (is (string? (:content result))))))
+      (is (nil? result)))))
 
 (deftest summarize-session-progress-nil-notes-test
-  (testing "summarize handles nil notes collection"
+  (testing "summarize returns nil for nil notes AND nil commits (no content)"
     ;; Edge case: what if notes is nil instead of empty?
+    ;; NEW BEHAVIOR: Returns nil when there's nothing to summarize
     (let [result (core/summarize-session-progress nil nil)]
+      (is (nil? result)))))
+
+(deftest summarize-session-progress-all-nil-content-test
+  (testing "summarize returns nil when ALL notes have nil/empty content"
+    ;; NEW BEHAVIOR: Filters out nil/empty content notes BEFORE processing
+    ;; If no notes remain with actual content AND no commits, returns nil
+    (let [notes [{:content nil :tags ["completed-task"]}
+                 {:content "" :tags ["completed-task"]}
+                 {:content "   " :tags ["note"]}  ;; blank string
+                 {:tags ["no-content"]}]          ;; missing key entirely
+          result (core/summarize-session-progress notes [])]
+      (is (nil? result))))
+
+  (testing "summarize returns map when at least one note has content"
+    ;; Even if most notes are nil/empty, having ONE valid note = returns map
+    (let [notes [{:content nil :tags ["completed-task"]}
+                 {:content "Valid content here" :tags ["completed-task"]}
+                 {:content "" :tags ["note"]}]
+          result (core/summarize-session-progress notes [])]
       (is (map? result))
       (is (string? (:content result))))))
 
