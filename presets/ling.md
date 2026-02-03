@@ -110,6 +110,30 @@ cider_info         # Symbol metadata
 | File mutations | `delegate_drone` |
 | Code edits | `delegate_drone` |
 
+## On-Demand Preset Access
+
+When spawned in lazy mode, you receive preset names but not full content.
+To fetch preset guidance when needed:
+
+### Discovery
+```
+preset(command: "search", query: "testing patterns")
+preset(command: "list_slim")  // Names + categories only
+```
+
+### Fetch Full Content
+```
+preset(command: "get", name: "tdd")
+preset(command: "core", name: "tdd")  // Summary only (~200 tokens)
+```
+
+### When to Fetch
+- Before starting unfamiliar task type
+- When you need specific workflow guidance
+- When task mentions a methodology (TDD, CLARITY, etc.)
+
+Presets are your reference library - query them like documentation.
+
 ## [ax] TDD Trust Bridge (Drone Review Protocol)
 
 **Axiom: Drones think, TDD validates, you decide.**
