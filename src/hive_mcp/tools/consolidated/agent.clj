@@ -146,7 +146,7 @@
      parent  - Parent agent ID (optional)
 
    CLARITY: I - Validates type before dispatch."
-  [{:keys [type name cwd presets model task files parent project_id]}]
+  [{:keys [type name cwd presets model task files parent project_id kanban_task_id]}]
   (let [agent-type (keyword type)]
     (if-not (#{:ling :drone} agent-type)
       (mcp-error "type must be 'ling' or 'drone'")
@@ -169,7 +169,8 @@
                                                     :project-id effective-project-id})
                   ;; spawn! returns the actual elisp slave-id (may differ from agent-id)
                   elisp-slave-id (proto/spawn! ling-agent {:task task
-                                                           :parent parent})]
+                                                           :parent parent
+                                                           :kanban-task-id kanban_task_id})]
               (log/info "Spawned ling" {:requested-id agent-id
                                         :elisp-slave-id elisp-slave-id
                                         :cwd cwd :presets presets-vec})
@@ -574,6 +575,8 @@
                                           :description "Task priority for dispatch"}
                               "parent" {:type "string"
                                         :description "Parent agent ID for spawn"}
+                              "kanban_task_id" {:type "string"
+                                                :description "Kanban task ID to link to ling. On session_complete, linked task auto-moves to done."}
                               ;; kill params
                               "force" {:type "boolean"
                                        :description "Force kill even if critical ops in progress"}
