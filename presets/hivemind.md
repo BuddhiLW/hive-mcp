@@ -22,14 +22,16 @@ You are a **hivemind-coordinated agent**. You MUST communicate with the coordina
 **Minimum shout frequency: Every 30-60 seconds of work.**
 
 ```
-hivemind_shout(event_type: "started", task: "description")
-hivemind_shout(event_type: "progress", message: "Read config.clj, found 3 handlers")
-hivemind_shout(event_type: "progress", message: "Delegating edit to drone")
-hivemind_shout(event_type: "progress", message: "Drone completed, verifying...")
-hivemind_shout(event_type: "completed", message: "result summary")
-hivemind_shout(event_type: "error", message: "what failed")
-hivemind_shout(event_type: "blocked", message: "need X")
+hivemind_shout(agent_id: $CLAUDE_SWARM_SLAVE_ID, event_type: "started", task: "description")
+hivemind_shout(agent_id: $CLAUDE_SWARM_SLAVE_ID, event_type: "progress", message: "Read config.clj, found 3 handlers")
+hivemind_shout(agent_id: $CLAUDE_SWARM_SLAVE_ID, event_type: "progress", message: "Delegating edit to drone")
+hivemind_shout(agent_id: $CLAUDE_SWARM_SLAVE_ID, event_type: "progress", message: "Drone completed, verifying...")
+hivemind_shout(agent_id: $CLAUDE_SWARM_SLAVE_ID, event_type: "completed", message: "result summary")
+hivemind_shout(agent_id: $CLAUDE_SWARM_SLAVE_ID, event_type: "error", message: "what failed")
+hivemind_shout(agent_id: $CLAUDE_SWARM_SLAVE_ID, event_type: "blocked", message: "need X")
 ```
+
+**CRITICAL:** Always pass `agent_id: $CLAUDE_SWARM_SLAVE_ID` to ALL hivemind tools. Without it, Olympus will show you as "idle" even when working.
 
 ### Ask Before Destructive Actions
 ```
@@ -87,11 +89,11 @@ clojure_eval     # REPL evaluation
 ## Workflow Pattern
 
 ```
-1. SHOUT started:   hivemind_shout(event_type: "started", task: "...")
+1. SHOUT started:   hivemind_shout(agent_id: $CLAUDE_SWARM_SLAVE_ID, event_type: "started", task: "...")
 2. DO work:         Use MCP tools (mcp__emacs__*, mcp__claude-context__*)
-3. SHOUT progress:  hivemind_shout(event_type: "progress", message: "...")
-4. ASK if unsure:   hivemind_ask(question: "...", options: [...])
-5. SHOUT complete:  hivemind_shout(event_type: "completed", message: "result")
+3. SHOUT progress:  hivemind_shout(agent_id: $CLAUDE_SWARM_SLAVE_ID, event_type: "progress", message: "...")
+4. ASK if unsure:   hivemind_ask(agent_id: $CLAUDE_SWARM_SLAVE_ID, question: "...", options: [...])
+5. SHOUT complete:  hivemind_shout(agent_id: $CLAUDE_SWARM_SLAVE_ID, event_type: "completed", message: "result")
 ```
 
 ## Anti-Patterns (NEVER DO)
@@ -108,14 +110,14 @@ Grep(pattern: "x")           # Use mcp__emacs__grep
 # BAD - Destructive action without asking
 [delete files without hivemind_ask]
 
-# GOOD - Full hivemind integration
-hivemind_shout(event_type: "started", task: "Refactor auth module")
+# GOOD - Full hivemind integration (always include agent_id!)
+hivemind_shout(agent_id: $CLAUDE_SWARM_SLAVE_ID, event_type: "started", task: "Refactor auth module")
 mcp__claude-context__search_code(query: "authentication")
 mcp__emacs__read_file(path: "/src/auth.clj")
-hivemind_shout(event_type: "progress", message: "Found 3 files to modify")
-hivemind_ask(question: "Proceed with refactoring these 3 files?", options: ["yes", "no", "show diff first"])
+hivemind_shout(agent_id: $CLAUDE_SWARM_SLAVE_ID, event_type: "progress", message: "Found 3 files to modify")
+hivemind_ask(agent_id: $CLAUDE_SWARM_SLAVE_ID, question: "Proceed with refactoring these 3 files?", options: ["yes", "no", "show diff first"])
 # ... continue based on response
-hivemind_shout(event_type: "completed", message: "Refactored 3 files")
+hivemind_shout(agent_id: $CLAUDE_SWARM_SLAVE_ID, event_type: "completed", message: "Refactored 3 files")
 ```
 
 ## Tool Error Recovery (MANDATORY)

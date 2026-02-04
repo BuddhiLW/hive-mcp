@@ -35,6 +35,75 @@
           (update :slave/parent #(when % (:slave/id %)))
           (update :slave/current-task #(when % (:task/id %)))))))
 
+(defn get-slave-by-name
+  "Get a slave by name (fallback lookup).
+
+   Used when exact :slave/id match fails. Searches for a slave where
+   :slave/name matches the given identifier. Returns the most recently
+   created slave if multiple matches exist.
+
+   Arguments:
+     name - The slave name to search for (e.g., 'github-connector')
+
+   Returns:
+     Map with slave attributes or nil if not found"
+  [name]
+  (let [c (conn/ensure-conn)
+        db @c
+        ;; Query all slaves with matching name
+        eids (d/q '[:find [?e ...]
+                    :in $ ?name
+                    :where
+                    [?e :slave/id _]
+                    [?e :slave/name ?name]]
+                  db name)]
+    (when (seq eids)
+      ;; If multiple matches, return the most recent (by :slave/created-at)
+      (->> eids
+           (map #(d/entity db %))
+           (map (fn [e]
+                  (-> (into {} e)
+                      (dissoc :db/id)
+                      (update :slave/parent #(when % (:slave/id %)))
+                      (update :slave/current-task #(when % (:task/id %))))))
+           (sort-by :slave/created-at #(compare %2 %1))
+           first))))
+
+(defn get-slave-by-name-or-id
+  "Get a slave by ID, with fallback to name lookup.
+
+   BUG FIX: Resolves agent-id mismatch between hivemind shouts (which may use
+   short IDs like 'ling-github-connector') and DataScript (which stores full
+   spawn IDs like 'swarm-github-connector-1770230187').
+
+   Resolution order:
+   1. Exact match on :slave/id
+   2. Fallback: search by :slave/name (strips 'ling-' prefix if present)
+
+   Arguments:
+     identifier - Either a slave ID or name
+
+   Returns:
+     Map with slave attributes or nil if not found"
+  [identifier]
+  (or
+   ;; Try exact ID match first
+   (get-slave identifier)
+   ;; Fallback: search by name
+   ;; Strip common prefixes that lings might use (ling-, swarm-)
+   (let [name (cond
+                (clojure.string/starts-with? identifier "ling-")
+                (subs identifier 5)
+
+                (clojure.string/starts-with? identifier "swarm-")
+                ;; For swarm-NAME-TIMESTAMP, extract NAME
+                (let [parts (clojure.string/split identifier #"-")]
+                  (when (>= (count parts) 2)
+                    (second parts)))
+
+                :else identifier)]
+     (get-slave-by-name name))))
+
 (defn get-all-slaves
   "Get all slaves in the swarm.
 

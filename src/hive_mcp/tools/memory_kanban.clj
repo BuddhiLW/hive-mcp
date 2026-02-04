@@ -104,6 +104,14 @@
   (let [content (:content entry)]
     (= "kanban" (or (get content :task-type) (get content "task-type")))))
 
+(def ^:private status-enum->tag
+  "Map API enum values to actual tag values.
+   API uses 'inprogress'/'inreview' but tags are 'doing'/'review'."
+  {"inprogress" "doing"
+   "inreview"   "review"
+   "todo"       "todo"
+   "done"       "done"})
+
 (defn handle-mem-kanban-list-slim
   "List kanban tasks with minimal data for token optimization.
    Returns only id, title, status, priority per entry (~10x fewer tokens).
@@ -119,8 +127,10 @@
     (let [effective-dir (or directory (ctx/current-directory))]
       (with-chroma
         (let [project-id (scope/get-current-project-id effective-dir)
+              ;; Normalize status enum to actual tag value
+              status-tag (when status (get status-enum->tag status status))
               ;; Build tag filter - always include "kanban", optionally status
-              required-tags (if status ["kanban" status] ["kanban"])
+              required-tags (if status-tag ["kanban" status-tag] ["kanban"])
               ;; Query from Chroma
               entries (chroma/query-entries :type "note"
                                             :project-id project-id

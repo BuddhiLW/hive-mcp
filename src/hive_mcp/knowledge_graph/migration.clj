@@ -13,6 +13,7 @@
             [hive-mcp.knowledge-graph.store.datascript :as ds-store]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
+            [clojure.string :as str]
             [taoensso.timbre :as log]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -229,7 +230,7 @@
       :validation      {:valid? boolean ...} (nil if dry-run)
       :dry-run         boolean}"
   [source-backend target-backend & [{:keys [target-opts dry-run export-path]
-                                      :or {dry-run false}}]]
+                                     :or {dry-run false}}]]
   (log/info "Starting KG migration" {:source source-backend
                                      :target target-backend
                                      :dry-run dry-run})
@@ -293,6 +294,20 @@
 ;; Convenience Functions
 ;; =============================================================================
 
+(defn detect-current-backend
+  "Detect the currently active backend type.
+   Returns :datascript, :datalevin, :datahike, or :unknown."
+  []
+  (if (proto/store-set?)
+    (let [store (proto/get-store)
+          store-type-name (-> store type .getName)]
+      (cond
+        (str/includes? store-type-name "DataScriptStore") :datascript
+        (str/includes? store-type-name "DatalevinStore")  :datalevin
+        (str/includes? store-type-name "DatahikeStore")   :datahike
+        :else :unknown))
+    :datascript))
+
 (defn migrate-to-datahike!
   "Convenience function to migrate from any backend to Datahike.
 
@@ -307,17 +322,112 @@
   [& [{:keys [db-path backend dry-run export-path]
        :or {db-path "data/kg/datahike-migrated"
             backend :file}}]]
-  (let [source-backend (if (proto/store-set?)
-                         ;; Detect current backend type
-                         (let [store (proto/get-store)
-                               store-type (type store)]
-                           (cond
-                             (= store-type hive_mcp.knowledge_graph.store.datascript.DataScriptStore)
-                             :datascript
-
-                             :else :unknown))
-                         :datascript)]
+  (let [source-backend (detect-current-backend)]
     (migrate-store! source-backend :datahike
                     {:target-opts {:db-path db-path :backend backend}
                      :dry-run dry-run
                      :export-path export-path})))
+
+(defn migrate-to-datalevin!
+  "Convenience function to migrate from any backend to Datalevin.
+
+   Arguments:
+     opts - Options map:
+       :db-path     - Datalevin storage path (default: data/kg/datalevin-migrated)
+       :dry-run     - Preview without migrating
+       :export-path - Optional path to save EDN backup
+
+   Returns migration result map."
+  [& [{:keys [db-path dry-run export-path]
+       :or {db-path "data/kg/datalevin-migrated"}}]]
+  (let [source-backend (detect-current-backend)]
+    (migrate-store! source-backend :datalevin
+                    {:target-opts {:db-path db-path}
+                     :dry-run dry-run
+                     :export-path export-path})))
+
+(defn sync-to-backend!
+  "Sync current KG data to a secondary backend without switching.
+   Useful for maintaining backup/mirror stores.
+
+   Arguments:
+     target-backend - :datascript, :datalevin, or :datahike
+     opts           - Backend-specific options + :export-path
+
+   Returns:
+     {:target-backend keyword
+      :exported       {:edges N :disc N :synthetic N}
+      :imported       {:edges N :disc N :synthetic N}
+      :validation     {...}}"
+  [target-backend & [{:keys [target-opts export-path]}]]
+  (log/info "Syncing KG to secondary backend" {:target target-backend})
+
+  ;; Export from current store
+  (let [export-data (export-to-edn)
+        exported-counts (:counts export-data)
+        ;; Save backup if requested
+        _ (when export-path
+            (let [parent-dir (.getParentFile (io/file export-path))]
+              (when (and parent-dir (not (.exists parent-dir)))
+                (.mkdirs parent-dir)))
+            (spit export-path (pr-str export-data)))
+        ;; Create target store (without switching global store)
+        target-store (create-target-store target-backend target-opts)
+        _ (proto/ensure-conn! target-store)]
+
+    ;; Import to target store directly (bypass global conn)
+    (log/info "Importing to sync target" {:target target-backend})
+    (let [errors (atom [])
+          imported (atom {:edges 0 :disc 0 :synthetic 0})]
+
+      ;; Import disc entities first
+      (doseq [disc (:disc export-data)]
+        (try
+          (proto/transact! target-store [(clean-entity-for-import disc)])
+          (swap! imported update :disc inc)
+          (catch Exception e
+            (swap! errors conj {:type :disc :entity disc :error (.getMessage e)}))))
+
+      ;; Import synthetic nodes
+      (doseq [synth (:synthetic export-data)]
+        (try
+          (proto/transact! target-store [(clean-entity-for-import synth)])
+          (swap! imported update :synthetic inc)
+          (catch Exception e
+            (swap! errors conj {:type :synthetic :entity synth :error (.getMessage e)}))))
+
+      ;; Import edges last
+      (doseq [edge (:edges export-data)]
+        (try
+          (proto/transact! target-store [(clean-entity-for-import edge)])
+          (swap! imported update :edges inc)
+          (catch Exception e
+            (swap! errors conj {:type :edge :entity edge :error (.getMessage e)}))))
+
+      ;; Validate on target
+      (let [target-counts {:edges (count (proto/query target-store
+                                                      '[:find [(pull ?e [*]) ...]
+                                                        :where [?e :kg-edge/id]]))
+                           :disc (count (proto/query target-store
+                                                     '[:find [(pull ?e [*]) ...]
+                                                       :where [?e :disc/path]]))
+                           :synthetic (count (proto/query target-store
+                                                          '[:find [(pull ?e [*]) ...]
+                                                            :where [?e :kg-synthetic/id]]))}
+            valid? (and (= (:edges exported-counts) (:edges target-counts))
+                        (= (:disc exported-counts) (:disc target-counts))
+                        (= (:synthetic exported-counts) (:synthetic target-counts)))]
+
+        (log/info "Sync complete" {:target target-backend
+                                   :imported @imported
+                                   :valid? valid?})
+
+        {:source-backend (detect-current-backend)
+         :target-backend target-backend
+         :exported exported-counts
+         :imported @imported
+         :errors @errors
+         :validation {:valid? valid?
+                      :expected exported-counts
+                      :actual target-counts}
+         :target-store target-store}))))

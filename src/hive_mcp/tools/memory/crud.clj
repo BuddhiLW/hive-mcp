@@ -173,7 +173,7 @@
                 (mcp-json (cond-> (fmt/entry->json-alist created)
                             (seq edge-ids) (assoc :kg_edges_created edge-ids)))))))))
     (catch clojure.lang.ExceptionInfo e
-      (if (= :coercion-error (:type (ex-data e)))
+      (if (#{:coercion-error :embedding-too-long} (:type (ex-data e)))
         (mcp-error (.getMessage e))
         (throw e)))))
 

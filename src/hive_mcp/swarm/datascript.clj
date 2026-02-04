@@ -102,6 +102,8 @@
 
 ;; Slave queries
 (def get-slave queries/get-slave)
+(def get-slave-by-name queries/get-slave-by-name)
+(def get-slave-by-name-or-id queries/get-slave-by-name-or-id)
 (def get-all-slaves queries/get-all-slaves)
 (def get-slaves-by-status queries/get-slaves-by-status)
 (def get-slaves-by-project queries/get-slaves-by-project)

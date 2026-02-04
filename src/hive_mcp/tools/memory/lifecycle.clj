@@ -17,6 +17,7 @@
             [hive-mcp.tools.core :refer [mcp-error coerce-int!]]
             [hive-mcp.chroma :as chroma]
             [hive-mcp.knowledge-graph.edges :as kg-edges]
+            [hive-mcp.agent.context :as ctx]
             [clojure.data.json :as json]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -112,15 +113,26 @@
 ;; ============================================================
 
 (defn handle-expiring-soon
-  "List memory entries expiring within N days (Chroma-only)."
-  [{:keys [days]}]
+  "List memory entries expiring within N days (Chroma-only).
+   When directory is provided, filters results to that project scope.
+   Without directory, returns all expiring entries (no scope filter)."
+  [{:keys [days directory]}]
   (try
-    (let [days-val (coerce-int! days :days 7)]
-      (log/info "mcp-memory-expiring-soon:" days-val)
+    (let [days-val (coerce-int! days :days 7)
+          directory (or directory (ctx/current-directory))]
+      (log/info "mcp-memory-expiring-soon:" days-val "directory:" directory)
       (with-chroma
-        (let [project-id (scope/get-current-project-id)
-              entries (chroma/entries-expiring-soon days-val :project-id project-id)]
-          {:type "text" :text (json/write-str (mapv fmt/entry->json-alist entries))})))
+        (let [project-id (scope/get-current-project-id directory)
+              ;; Fetch all expiring entries (don't filter by project-id in query
+              ;; because we need scope tag filtering, not metadata field matching)
+              all-entries (chroma/entries-expiring-soon days-val)
+              ;; Apply scope filter using tag matching (same pattern as handle-query)
+              scope-filter (when (and project-id (not= project-id "global"))
+                             (scope/make-scope-tag project-id))
+              filtered (if scope-filter
+                         (filter #(scope/matches-scope? % scope-filter) all-entries)
+                         all-entries)]
+          {:type "text" :text (json/write-str (mapv fmt/entry->json-alist filtered))})))
     (catch clojure.lang.ExceptionInfo e
       (if (= :coercion-error (:type (ex-data e)))
         (mcp-error (.getMessage e))

@@ -363,3 +363,64 @@
         (catch Exception _))
       ;; Op should be cleaned up despite exception
       (is (empty? (ds/get-critical-ops slave-id))))))
+
+;; =============================================================================
+;; Agent-ID Resolution Tests (BUG FIX: hivemind status sync)
+;; =============================================================================
+
+(deftest get-slave-by-name-exact-id-match-test
+  (testing "get-slave-by-name-or-id returns slave on exact ID match"
+    (let [slave-id "swarm-github-connector-1770230187"]
+      (ds/add-slave! slave-id {:status :idle :name "github-connector"})
+      (let [slave (ds/get-slave-by-name-or-id slave-id)]
+        (is (some? slave))
+        (is (= slave-id (:slave/id slave)))))))
+
+(deftest get-slave-by-name-fallback-test
+  (testing "get-slave-by-name-or-id finds slave by name when ID doesn't match"
+    (let [spawn-id "swarm-github-connector-1770230187"]
+      (ds/add-slave! spawn-id {:status :working :name "github-connector"})
+      ;; Query using short ling-style ID
+      (let [slave (ds/get-slave-by-name-or-id "ling-github-connector")]
+        (is (some? slave))
+        (is (= spawn-id (:slave/id slave)))
+        (is (= "github-connector" (:slave/name slave)))))))
+
+(deftest get-slave-by-name-strips-ling-prefix-test
+  (testing "get-slave-by-name-or-id strips 'ling-' prefix for name lookup"
+    (let [spawn-id "swarm-worker-123456"]
+      (ds/add-slave! spawn-id {:status :idle :name "worker"})
+      (let [slave (ds/get-slave-by-name-or-id "ling-worker")]
+        (is (some? slave))
+        (is (= spawn-id (:slave/id slave)))))))
+
+(deftest get-slave-by-name-extracts-from-swarm-id-test
+  (testing "get-slave-by-name-or-id extracts name from swarm-NAME-TIMESTAMP format"
+    (let [spawn-id "swarm-reviewer-987654"]
+      (ds/add-slave! spawn-id {:status :idle :name "reviewer"})
+      ;; Query using a different swarm-style ID (different timestamp)
+      ;; Should still find by extracted name
+      (let [slave (ds/get-slave-by-name-or-id "swarm-reviewer-111111")]
+        (is (some? slave))
+        (is (= spawn-id (:slave/id slave)))))))
+
+(deftest get-slave-by-name-not-found-test
+  (testing "get-slave-by-name-or-id returns nil when slave doesn't exist"
+    (is (nil? (ds/get-slave-by-name-or-id "ling-nonexistent")))
+    (is (nil? (ds/get-slave-by-name-or-id "swarm-nonexistent-999")))))
+
+(deftest get-slave-by-name-most-recent-test
+  (testing "get-slave-by-name-or-id returns most recent slave when multiple share name"
+    ;; This can happen if a ling is killed and respawned with same name
+    (let [old-id "swarm-tdd-100"
+          new-id "swarm-tdd-200"]
+      ;; Add older slave first
+      (ds/add-slave! old-id {:status :terminated :name "tdd"
+                             :created-at (java.util.Date. 1000)})
+      ;; Add newer slave
+      (ds/add-slave! new-id {:status :working :name "tdd"
+                             :created-at (java.util.Date. 2000)})
+      (let [slave (ds/get-slave-by-name-or-id "ling-tdd")]
+        (is (some? slave))
+        ;; Should return the more recent one (new-id)
+        (is (= new-id (:slave/id slave)))))))
