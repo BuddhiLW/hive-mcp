@@ -13,7 +13,8 @@
             [hive-mcp.docs :as docs]
             [hive-mcp.agent.context :as ctx]
             [taoensso.timbre :as log]
-            [clojure.spec.alpha :as s]))
+            [clojure.spec.alpha :as s]
+            [clojure.walk :as walk]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -87,19 +88,19 @@
 (defn extract-agent-id
   "Extract agent-id from args map, handling both snake_case and kebab-case keys.
 
-   DRY: Consolidates 4-way fallback pattern for JSON key variation handling.
-   MCP tools may receive agent_id or agent-id in either keyword or string form.
+   NOTE: Args are keywordized by wrap-handler-context, so we only check keyword keys.
+   MCP tools may use agent_id or agent-id naming convention.
 
    Returns default if no agent-id found in args."
   [args default]
   (or (:agent_id args)
       (:agent-id args)
-      (get args "agent_id")
-      (get args "agent-id")
       default))
 
 (defn extract-project-id
-  "Extract project-id from args map, handling various key formats.
+  "Extract project-id from args map.
+
+   NOTE: Args are keywordized by wrap-handler-context, so we only check keyword keys.
 
    Tries directory-based derivation if explicit project-id not found.
    Falls back to ctx/current-directory, then server's cwd as last resort.
@@ -113,11 +114,8 @@
   [args]
   (or (:project_id args)
       (:project-id args)
-      (get args "project_id")
-      (get args "project-id")
       ;; Derive from directory if present, with ctx and user.dir fallbacks
       (when-let [dir (or (:directory args)
-                         (get args "directory")
                          (ctx/current-directory)
                          (System/getProperty "user.dir"))]
         (require 'hive-mcp.tools.memory.scope)
@@ -178,7 +176,10 @@
 
 (defn wrap-handler-context
   "Wrap handler to bind request context for tool execution.
-   SRP: Single responsibility - context binding only.
+   SRP: Single responsibility - context binding + args normalization.
+
+   Normalizes args by keywordizing string keys (MCP SDK passes JSON with
+   string keys, but handlers expect keyword keys for destructuring).
 
    Extracts agent-id, project-id, directory from args and binds
    them via hive-mcp.agent.context/with-request-context.
@@ -194,13 +195,18 @@
    This enables tool handlers to access context via:
    - (ctx/current-agent-id)
    - (ctx/current-project-id)
-   - (ctx/current-directory)"
+   - (ctx/current-directory)
+
+   BUG FIX: MCP clients send JSON args with string keys (e.g. {\"directory\" ...})
+   but Clojure {:keys [directory]} destructuring only matches keyword keys.
+   Keywordizing args ensures handlers work correctly with both MCP and direct calls."
   [handler]
   (fn [args]
-    (let [agent-id (extract-agent-id args nil)
+    ;; Keywordize args to handle both MCP (string keys) and direct calls (keyword keys)
+    (let [args (walk/keywordize-keys args)
+          agent-id (extract-agent-id args nil)
           project-id (extract-project-id args)
           directory (or (:directory args)
-                        (get args "directory")
                         (System/getProperty "user.dir"))]
       (ctx/with-request-context {:agent-id agent-id
                                  :project-id project-id

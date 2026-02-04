@@ -8,6 +8,10 @@
  ;; Enable hot-reload for this Clojure project
  :hot-reload false
 
- ;; Knowledge Graph storage backend (:datascript | :datalevin)
- ;; Datalevin persists to data/kg/datalevin/ via LMDB
+ ;; Knowledge Graph storage backend:
+ ;;   :datascript - In-memory (fast, ephemeral)
+ ;;   :datalevin  - LMDB-backed (persistent, data/kg/datalevin/)
+ ;;   :datahike   - Content-addressed (persistent + time-travel, data/kg/datahike/)
+ ;; Migration: (require '[hive-mcp.knowledge-graph.migration :as mig])
+ ;;            (mig/migrate-to-datahike! {:dry-run true})
  :kg-backend :datalevin}
