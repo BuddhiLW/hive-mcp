@@ -59,6 +59,7 @@
    [hive-mcp.tools.consolidated.session :as c-session]
    [hive-mcp.tools.consolidated.emacs :as c-emacs]
    [hive-mcp.tools.consolidated.wave :as c-wave]
+   [hive-mcp.tools.consolidated.migration :as c-migration]
    ;; Backward-compatibility shims for deprecated tools
    [hive-mcp.tools.compat :as compat]
    [taoensso.timbre :as log]))
@@ -143,6 +144,7 @@
                c-session/tools
                c-emacs/tools
                c-wave/tools
+               c-migration/tools  ; KG/Memory migration operations
                ;; Backward-compatibility shims (deprecated, sunset: 2026-04-01)
                ;; These provide old tool names (magit_status, mcp_memory_add, etc.)
                ;; and delegate to consolidated handlers
@@ -282,6 +284,7 @@
                c-session/tools
                c-emacs/tools
                c-wave/tools
+               c-migration/tools  ; KG/Memory migration operations
                ;; Backward-compatibility shims (deprecated, sunset: 2026-04-01)
                ;; These provide old tool names (magit_status, mcp_memory_add, etc.)
                ;; and delegate to consolidated handlers
