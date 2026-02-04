@@ -170,8 +170,7 @@ The swarm integration requires a **forked version** of [claude-code-ide.el](http
 
 ```elisp
 (package! claude-code-ide
-  :recipe (:host github :repo "BuddhiLW/claude-code-ide.el"
-           :branch "feat/system-prompt-file-spawn"))
+  :recipe (:host github :repo "BuddhiLW/claude-code-ide.el"))
 ```
 
 **Why?** The swarm spawns lings with specialized presets (coordinator, worker, TDD, etc.).
