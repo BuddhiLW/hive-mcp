@@ -162,4 +162,26 @@ docker compose up -d              # Chroma vector DB
 
 ---
 
+## Dependencies & Quirks
+
+### claude-code-ide.el Fork
+
+The swarm integration requires a **forked version** of [claude-code-ide.el](https://github.com/manzaltu/claude-code-ide.el):
+
+```elisp
+(package! claude-code-ide
+  :recipe (:host github :repo "BuddhiLW/claude-code-ide.el"
+           :branch "feat/system-prompt-file-spawn"))
+```
+
+**Why?** The swarm spawns lings with specialized presets (coordinator, worker, TDD, etc.).
+The fork adds a `system-prompt-file` parameter that injects preset content via
+`--system-prompt $(cat file)`. Without this, spawned lings have no context about their role.
+
+The upstream [manzaltu/claude-code-ide.el](https://github.com/manzaltu/claude-code-ide.el)
+only supports `--append-system-prompt` with inline text, which is insufficient for
+multi-page preset injection.
+
+---
+
 [AGPL-3.0-or-later](LICENSE)
