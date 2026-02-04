@@ -29,7 +29,6 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-
 ;;; ============================================================
 ;;; Configuration
 ;;; ============================================================
@@ -79,13 +78,34 @@
 ;;; Embedding Functions
 ;;; ============================================================
 
+(defn- context-length-error?
+  "Check if exception message indicates content exceeded token limit."
+  [ex]
+  (when-let [msg (or (ex-message ex)
+                     (some-> (ex-data ex) :body))]
+    (boolean (re-find #"(?i)context.*(length|limit|size|exceed)|too (long|large|many)|token.*(limit|exceed)|input.*(too|exceed)" msg))))
+
 (defn- get-embedding
-  "Get embedding for a single text from Ollama."
+  "Get embedding for a single text from Ollama.
+   Throws helpful error when content exceeds embedding token limit."
   [host model text]
-  (let [response (make-request host "/api/embeddings"
-                               {:model model
-                                :prompt text})]
-    (:embedding response)))
+  (try
+    (let [response (make-request host "/api/embeddings"
+                                 {:model model
+                                  :prompt text})]
+      (:embedding response))
+    (catch Exception e
+      (if (context-length-error? e)
+        (throw (ex-info
+                (format "Content too long for embedding (~%d chars, ~%d estimated tokens). nomic-embed-text has an 8192 token limit. Please split into smaller memories at section headers or paragraphs."
+                        (count text)
+                        (quot (count text) 4))
+                {:type :embedding-too-long
+                 :char-count (count text)
+                 :estimated-tokens (quot (count text) 4)
+                 :model model
+                 :cause e}))
+        (throw e)))))
 
 (defn- get-embeddings-batch
   "Get embeddings for multiple texts from Ollama.
