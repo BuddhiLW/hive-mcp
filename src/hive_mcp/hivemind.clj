@@ -23,6 +23,7 @@
             [hive-mcp.channel.piggyback :as piggyback]
             [hive-mcp.swarm.protocol :as proto]
             [hive-mcp.swarm.datascript.registry :as registry]
+            [hive-mcp.swarm.datascript.queries :as queries]
             [hive-mcp.swarm.logic :as logic]
             [hive-mcp.guards :as guards]
             [hive-mcp.agent.context :as ctx]
@@ -188,11 +189,15 @@
    Returns true if broadcast succeeded."
   [agent-id event-type data]
   (let [now (System/currentTimeMillis)
+        ;; BUG FIX: Resolve agent-id mismatch between shout (short ID like "ling-NAME")
+        ;; and DataScript (full spawn ID like "swarm-NAME-TIMESTAMP").
+        ;; Uses get-slave-by-name-or-id which tries exact match first, then name fallback.
+        resolved-slave (queries/get-slave-by-name-or-id agent-id)
+        resolved-slave-id (or (:slave/id resolved-slave) agent-id)
         ;; Derive project-id with fallback chain
         explicit-project-id (:project-id data)
         directory (:directory data)
-        slave-cwd (when-let [slave (proto/get-slave registry/default-registry agent-id)]
-                    (:slave/cwd slave))
+        slave-cwd (:slave/cwd resolved-slave)
         project-id (or explicit-project-id
                        (when directory (mem-scope/get-current-project-id directory))
                        (when slave-cwd (mem-scope/get-current-project-id slave-cwd))
@@ -216,11 +221,11 @@
                    new-messages (vec (take-last 10 (conj messages message)))]
                {:messages new-messages
                 :last-seen now})))
-    ;; Update DataScript status if slave exists there
+    ;; Update DataScript status if slave exists there (using resolved slave-id)
     ;; This keeps DataScript in sync with hivemind events
     ;; BUG FIX: Map event-type to valid slave status (not all event types are valid statuses)
-    (when (proto/get-slave registry/default-registry agent-id)
-      (proto/update-slave! registry/default-registry agent-id {:slave/status (event-type->slave-status event-type)}))
+    (when resolved-slave
+      (proto/update-slave! registry/default-registry resolved-slave-id {:slave/status (event-type->slave-status event-type)}))
     ;; Broadcast to Emacs via WebSocket (primary - reliable)
     (when (ws/connected?)
       (ws/emit! (:type event) (dissoc event :type)))
