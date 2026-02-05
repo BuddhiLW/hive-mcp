@@ -10,40 +10,63 @@ Get your working directory from:
 - Your prompt path (e.g., `~/PP/funeraria/sisf-web$`)
 - Run `pwd` in bash
 
-Pass it to: `mcp_memory_query`, `mcp_mem_kanban_*`, `magit_*` tools.
+Pass it to: `mcp__hive__memory`, `mcp__hive__kanban`, `mcp__hive__magit` tools.
 
 ## Instructions
 
 ### 1. Load Context from Memory
 
-**a) Query recent session notes:**
+**a) Query AXIOMS (INVIOLABLE - load first):**
 ```
-mcp__emacs-mcp__mcp_memory_query
+mcp__hive__memory
+  command: "query"
+  type: "axiom"
+  limit: 10
+  directory: "/path/to/your/project"
+```
+
+**b) Query priority conventions (tagged catchup-priority):**
+```
+mcp__hive__memory
+  command: "query"
+  type: "convention"
+  tags: ["catchup-priority"]
+  limit: 10
+  directory: "/path/to/your/project"
+```
+
+**c) Query recent session notes:**
+```
+mcp__hive__memory
+  command: "query"
   type: "note"
   tags: ["session-summary"]
   limit: 3
   directory: "/path/to/your/project"
 ```
 
-**b) Query active decisions:**
+**d) Query active decisions:**
 ```
-mcp__emacs-mcp__mcp_memory_query
+mcp__hive__memory
+  command: "query"
   type: "decision"
   limit: 10
   directory: "/path/to/your/project"
 ```
 
-**c) Query code conventions:**
+**e) Query code conventions (excluding priority ones):**
 ```
-mcp__emacs-mcp__mcp_memory_query
+mcp__hive__memory
+  command: "query"
   type: "convention"
   limit: 10
   directory: "/path/to/your/project"
 ```
 
-**d) Query useful snippets (if needed):**
+**f) Query useful snippets (if needed):**
 ```
-mcp__emacs-mcp__mcp_memory_query_metadata
+mcp__hive__memory
+  command: "query"
   type: "snippet"
   limit: 5
   directory: "/path/to/your/project"
@@ -63,44 +86,53 @@ Read CLAUDE.md
 
 ### 3. Check Kanban Status
 
-**a) Load In-Memory Kanban first:**
+**a) Load Kanban status:**
 ```
-mcp__emacs-mcp__mcp_mem_kanban_stats directory:"/path/to/your/project"
-mcp__emacs-mcp__mcp_mem_kanban_list_slim status:"doing" directory:"/path/to/your/project"
+mcp__hive__kanban
+  command: "status"
+  directory: "/path/to/your/project"
 ```
 
-Show DOING tasks as "In Progress" in the summary.
+**b) List in-progress tasks:**
+```
+mcp__hive__kanban
+  command: "list"
+  status: "inprogress"
+  directory: "/path/to/your/project"
+```
+
+Show INPROGRESS tasks as "In Progress" in the summary.
 
 Check for stale TODO tasks (> 5 days old):
 - Suggest promoting priority if still relevant
-- Suggest moving to DOING if ready to start
+- Suggest moving to INPROGRESS if ready to start
 - Suggest deleting if no longer relevant
-
-**b) Dynamic Kanban:**
-```
-mcp__dynamic-kanban__kanban_status
-mcp__dynamic-kanban__kanban_get_ready_tasks
-```
-
-**c) Vibe Kanban (if applicable):**
-```
-mcp__vibe_kanban__list_tasks
-```
 
 ### 4. Check Git State
 
 **Use magit MCP tools with your working directory:**
 ```
-mcp__emacs-mcp__magit_status directory:"/path/to/your/project"
-mcp__emacs-mcp__magit_branches directory:"/path/to/your/project"
-mcp__emacs-mcp__magit_log directory:"/path/to/your/project"
+mcp__hive__magit
+  command: "status"
+  directory: "/path/to/your/project"
+```
+```
+mcp__hive__magit
+  command: "branches"
+  directory: "/path/to/your/project"
+```
+```
+mcp__hive__magit
+  command: "log"
+  directory: "/path/to/your/project"
 ```
 
 ### 5. Check Memory Health
 
 **a) Check for entries expiring soon:**
 ```
-mcp__emacs-mcp__mcp_memory_expiring_soon
+mcp__hive__memory
+  command: "expiring"
   days: 7
 ```
 
@@ -176,4 +208,4 @@ When reviewing memory entries, understand the duration hierarchy:
 - **long-term**: 90 days, for project-wide knowledge
 - **permanent**: Never expires, for critical info
 
-Use `mcp_memory_promote` or `mcp_memory_demote` to adjust entry durations based on ongoing relevance.
+Use `mcp__hive__memory(command: "promote", id: "...")` or `mcp__hive__memory(command: "demote", id: "...")` to adjust entry durations based on ongoing relevance.
