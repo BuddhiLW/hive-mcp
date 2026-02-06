@@ -14,4 +14,4 @@
  ;;   :datahike   - Content-addressed (persistent + time-travel, data/kg/datahike/)
  ;; Migration: (require '[hive-mcp.knowledge-graph.migration :as mig])
  ;;            (mig/migrate-to-datahike! {:dry-run true})
- :kg-backend :datalevin}
+ :kg-backend :datahike}

@@ -19,7 +19,7 @@ Use data to find the 20% of code causing 80% of performance issues.
 | `scc_file` | Deep dive | Single file metrics |
 | `kondo_find_callers` | Hot path | Trace call frequency |
 | `kondo_namespace_graph` | Architecture | Identify coupling |
-| `mcp__emacs__grep` | Pattern detection | Find N+1, missing cache |
+| `mcp__hive__grep` | Pattern detection | Find N+1, missing cache |
 | `cider_eval_silent` | Measurement | Time specific operations |
 
 ## Performance Analysis Workflow

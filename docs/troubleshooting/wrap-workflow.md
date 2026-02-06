@@ -89,12 +89,12 @@ This happens when tags from Clojure (a vector) are passed to elisp and `cons` is
 
 ### Check wrap_gather data
 ```
-mcp__emacs__wrap_gather
+mcp__hive__wrap_gather
 ```
 
 ### Check wrap_crystallize
 ```
-mcp__emacs__wrap_crystallize
+mcp__hive__wrap_crystallize
 ```
 
 ### Check for corrupted memory entries

@@ -66,9 +66,9 @@ DISPATCH → VALIDATE → [PASS] → COMPLETE
 
 ### 1. Analyze (READ-ONLY)
 ```
-mcp__emacs__read_file(path: "/src/target.clj")
-mcp__emacs__grep(pattern: "defn", path: "/src")
-mcp__emacs__kondo_lint(path: "/src", level: "error")
+mcp__hive__read_file(path: "/src/target.clj")
+mcp__hive__grep(pattern: "defn", path: "/src")
+mcp__hive__kondo_lint(path: "/src", level: "error")
 ```
 
 ### 2. Plan Tasks
@@ -220,13 +220,13 @@ You are a **premium agent** (Claude). Every token you spend on implementation is
 ### Read-Only (Use Freely)
 | Tool | Purpose |
 |------|---------|
-| `mcp__emacs__read_file` | Read file contents |
-| `mcp__emacs__grep` | Search patterns |
-| `mcp__emacs__glob_files` | Find files |
-| `mcp__emacs__kondo_lint` | Check for errors |
-| `mcp__emacs__kondo_analyze` | Code analysis |
-| `mcp__emacs__cider_eval_silent` | REPL queries |
-| `mcp__emacs__magit_status` | Git status |
+| `mcp__hive__read_file` | Read file contents |
+| `mcp__hive__grep` | Search patterns |
+| `mcp__hive__glob_files` | Find files |
+| `mcp__hive__kondo_lint` | Check for errors |
+| `mcp__hive__kondo_analyze` | Code analysis |
+| `mcp__hive__cider_eval_silent` | REPL queries |
+| `mcp__hive__magit_status` | Git status |
 
 ### Orchestration (Your Core Tools)
 | Tool | Purpose | When to Use |

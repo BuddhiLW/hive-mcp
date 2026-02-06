@@ -14,7 +14,7 @@ Defense in depth: multiple layers, never trust a single control.
 
 | Tool | When | Why |
 |------|------|-----|
-| `mcp__emacs__grep` | Pattern scanning | Find injection points, secrets |
+| `mcp__hive__grep` | Pattern scanning | Find injection points, secrets |
 | `kondo_lint` | Code analysis | Detect unsafe patterns |
 | `kondo_find_callers` | Trace data flow | Follow untrusted input |
 | `projectile_search` | Broad searches | Find auth/crypto patterns |

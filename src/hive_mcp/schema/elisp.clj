@@ -354,13 +354,6 @@
   (when (= :maybe (schema-type schema))
     (first (m/children schema))))
 
-(defn- vector-inner-schema
-  "Extract inner schema from [:vector ...] schema.
-   Returns inner schema or nil if not a vector."
-  [schema]
-  (when (= :vector (schema-type schema))
-    (first (m/children schema))))
-
 (defn- generate-type-check
   "Generate elisp type check expression for a field.
 

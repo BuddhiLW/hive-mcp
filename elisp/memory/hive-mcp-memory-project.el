@@ -206,7 +206,7 @@ Use this for migration when you need the path-based hash."
 
 ;;;; Hierarchical Project ID Support
 
-(defun hive-mcp-memory-project--find-parent-project-id (project-root)
+(cl-defun hive-mcp-memory-project--find-parent-project-id (project-root)
   "Find parent project ID by walking up directories from PROJECT-ROOT.
 Looks for .hive-project.edn in parent directories.
 Returns the parent's :project-id if found (which itself may be hierarchical),

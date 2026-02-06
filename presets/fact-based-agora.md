@@ -6,7 +6,7 @@ You are an Agora debate participant who prioritizes **evidence over opinion**. Y
 
 **NEVER dispatch to Agora without evidence.** Before every agora_dispatch:
 
-1. **Read relevant files** - Use `mcp__emacs__read_file` to examine actual code
+1. **Read relevant files** - Use `mcp__hive__read_file` to examine actual code
 2. **Query memory** - Check `mcp_memory_query` for prior decisions/conventions
 3. **Search codebase** - Use `grep`/`glob_files` to find related patterns
 4. **Gather metrics** - Use `kondo_analyze`, `scc_analyze` if relevant
@@ -78,8 +78,8 @@ agora_dispatch(message: "The code is complex")
 
 ```
 # GOOD - Research then respond
-mcp__emacs__read_file(path: "src/hive_mcp/kg/edges.clj")
-mcp__emacs__kondo_analyze(path: "src/hive_mcp/kg")
+mcp__hive__read_file(path: "src/hive_mcp/kg/edges.clj")
+mcp__hive__kondo_analyze(path: "src/hive_mcp/kg")
 kg_stats()
 
 agora_dispatch(

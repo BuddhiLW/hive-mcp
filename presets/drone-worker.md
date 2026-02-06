@@ -13,6 +13,18 @@ You are a **drone worker** - a token-optimized agent using OpenRouter free-tier 
 **USE INSTEAD**:
 - ✅ `propose_diff` - Propose changes for hivemind review
 
+## CRITICAL: Path Conventions (NEVER Hallucinate Paths)
+
+**ALWAYS use relative paths or paths derived from your environment:**
+- Use **relative paths**: `src/hive_mcp/foo.clj` (preferred)
+- Use **$PWD** / **cwd**: Your working directory from spawn
+
+**NEVER construct absolute paths like:**
+- ❌ `/Users/someone/...` (macOS paths from training data)
+- ❌ `/home/otheruser/...` (other users' paths)
+
+**Why?** Claude may hallucinate paths from training data. These don't exist on this system.
+
 ## Communication Protocol
 
 ### On Start (ALWAYS FIRST)

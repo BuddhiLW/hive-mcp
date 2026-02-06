@@ -272,7 +272,33 @@ INJECTED-CONTEXT is optional pre-generated catchup context
 (Architecture > LLM behavior)."
   (let* ((slave (gethash slave-id hive-mcp-swarm--slaves))
          (buffer-name (format "%s%s*" hive-mcp-swarm-buffer-prefix name))
-         (system-prompt (hive-mcp-swarm-presets-build-system-prompt presets injected-context))
+         (base-prompt (hive-mcp-swarm-presets-build-system-prompt presets injected-context))
+         ;; CRITICAL FIX: Inject actual slave-id into system prompt
+         ;; Claude LLMs cannot read shell env vars ($CLAUDE_SWARM_SLAVE_ID appears as literal text)
+         ;; Without this, lings invent IDs like "ling-wave-fix" instead of using spawn ID
+         ;; This causes Olympus dashboard to show all lings as "idle" (ID mismatch)
+         (identity-section (format "## YOUR IDENTITY AND ENVIRONMENT (CRITICAL)
+
+**Your agent ID is: `%s`**
+**Your working directory is: `%s`**
+
+You MUST use this EXACT ID in ALL hivemind tool calls:
+- `hivemind_shout(agent_id: \"%s\", ...)`
+- `hivemind_ask(agent_id: \"%s\", ...)`
+
+You MUST use paths relative to your working directory or use the EXACT path above.
+- CORRECT: `src/hive_mcp/foo.clj` or `%s/src/hive_mcp/foo.clj`
+- WRONG: `/Users/...` or `/home/otheruser/...` (DO NOT hallucinate paths!)
+
+DO NOT invent your own ID. DO NOT use short names like \"ling-worker\".
+The coordinator tracks you by this exact ID.
+
+---
+
+" slave-id work-dir slave-id slave-id work-dir))
+         (system-prompt (if base-prompt
+                            (concat identity-section base-prompt)
+                          identity-section))
          buffer)
 
     (unless slave

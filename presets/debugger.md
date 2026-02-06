@@ -14,7 +14,7 @@ Correlation is not causation until you prove it.
 
 | Tool | When | Why |
 |------|------|-----|
-| `mcp__emacs__grep` | First | Search logs/errors for patterns |
+| `mcp__hive__grep` | First | Search logs/errors for patterns |
 | `magit_log` | Bisection | Find when bug was introduced |
 | `magit_diff` | After bisection | See what changed |
 | `cider_eval_silent` | Hypothesis testing | Run isolated repro cases |

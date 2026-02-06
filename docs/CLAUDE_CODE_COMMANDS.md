@@ -33,10 +33,10 @@ In your command instructions, tell Claude to:
 
 ```
 # WRONG - uses MCP server's directory
-mcp__emacs__magit_status
+mcp__hive__magit_status
 
 # CORRECT - uses caller's project
-mcp__emacs__magit_status directory:"/home/user/my-project"
+mcp__hive__magit_status directory:"/home/user/my-project"
 ```
 
 ---
@@ -78,7 +78,7 @@ Get your working directory from your prompt path or run `pwd`.
 
 **Query recent session notes:**
 \`\`\`
-mcp__emacs__mcp_memory_query
+mcp__hive__mcp_memory_query
   type: "note"
   tags: ["session-summary"]
   limit: 3
@@ -87,7 +87,7 @@ mcp__emacs__mcp_memory_query
 
 **Query active decisions:**
 \`\`\`
-mcp__emacs__mcp_memory_query
+mcp__hive__mcp_memory_query
   type: "decision"
   limit: 10
   directory: "/path/to/your/project"
@@ -96,16 +96,16 @@ mcp__emacs__mcp_memory_query
 ### 2. Check Kanban Status
 
 \`\`\`
-mcp__emacs__mcp_mem_kanban_stats directory:"/path/to/your/project"
-mcp__emacs__mcp_mem_kanban_list_slim status:"doing" directory:"/path/to/your/project"
+mcp__hive__mcp_mem_kanban_stats directory:"/path/to/your/project"
+mcp__hive__mcp_mem_kanban_list_slim status:"doing" directory:"/path/to/your/project"
 \`\`\`
 
 ### 3. Check Git State
 
 \`\`\`
-mcp__emacs__magit_status directory:"/path/to/your/project"
-mcp__emacs__magit_branches directory:"/path/to/your/project"
-mcp__emacs__magit_log directory:"/path/to/your/project"
+mcp__hive__magit_status directory:"/path/to/your/project"
+mcp__hive__magit_branches directory:"/path/to/your/project"
+mcp__hive__magit_log directory:"/path/to/your/project"
 \`\`\`
 
 ### 4. Present Summary
@@ -132,7 +132,7 @@ Preserve session context to memory at session end.
 
 **Store session accomplishments:**
 \`\`\`
-mcp__emacs__mcp_memory_add
+mcp__hive__mcp_memory_add
   type: "note"
   content: "Session YYYY-MM-DD: [accomplishments]"
   tags: ["session-log", "progress"]
@@ -141,7 +141,7 @@ mcp__emacs__mcp_memory_add
 
 **Store important decisions:**
 \`\`\`
-mcp__emacs__mcp_memory_add
+mcp__hive__mcp_memory_add
   type: "decision"
   content: "Decision: [what and why]"
   tags: ["architecture"]
@@ -151,15 +151,15 @@ mcp__emacs__mcp_memory_add
 ### 2. Sync Kanban
 
 \`\`\`
-mcp__emacs__mcp_mem_kanban_stats directory:"/path/to/your/project"
-mcp__emacs__mcp_mem_kanban_list_slim status:"doing" directory:"/path/to/your/project"
+mcp__hive__mcp_mem_kanban_stats directory:"/path/to/your/project"
+mcp__hive__mcp_mem_kanban_list_slim status:"doing" directory:"/path/to/your/project"
 \`\`\`
 
 ### 3. Check Git Status
 
 \`\`\`
-mcp__emacs__magit_status directory:"/path/to/your/project"
-mcp__emacs__magit_feature_branches directory:"/path/to/your/project"
+mcp__hive__magit_status directory:"/path/to/your/project"
+mcp__hive__magit_feature_branches directory:"/path/to/your/project"
 \`\`\`
 
 ### 4. Create Session Summary

@@ -2,21 +2,34 @@
 
 You have access to powerful MCP (Model Context Protocol) tools that are faster and more integrated than native Claude Code tools. **ALWAYS prefer MCP tools.**
 
+## CRITICAL: Path Conventions (NEVER Hallucinate Paths)
+
+**ALWAYS use relative paths or paths derived from your environment:**
+- Use **relative paths**: `src/hive_mcp/foo.clj` (preferred)
+- Use **$PWD** / **cwd**: Your working directory
+- Use **$HOME**: The user's home directory
+
+**NEVER construct absolute paths like:**
+- ❌ `/Users/someone/...` (macOS paths from training data)
+- ❌ `/home/otheruser/...` (other users' paths)
+
+**Why?** Claude may hallucinate paths from training data. These don't exist on this system. Always use relative paths or derive from environment variables.
+
 ## Tool Hierarchy (Use In This Order)
 
-### 1. Emacs MCP (`mcp__emacs__*`) - PREFERRED
-Use these for ALL Emacs-integrated operations:
+### 1. Hive MCP (`mcp__hive__*`) - PREFERRED
+Use these for ALL hive-mcp integrated operations:
 
 | Instead of...          | Use MCP Tool                          |
 |------------------------|---------------------------------------|
-| `Read` file            | `mcp__emacs__get_buffer_content`  |
-| `Grep` search          | `mcp__emacs__projectile_search`   |
-| `Glob` find files      | `mcp__emacs__projectile_files`    |
-| Git status/diff        | `mcp__emacs__magit_status/diff`   |
-| Git commit/push        | `mcp__emacs__magit_commit/push`   |
-| Git branches           | `mcp__emacs__magit_branches`      |
-| Eval elisp             | `mcp__emacs__eval_elisp`          |
-| Eval Clojure           | `mcp__emacs__cider_eval_silent`   |
+| `Read` file            | `mcp__hive__get_buffer_content`  |
+| `Grep` search          | `mcp__hive__projectile_search`   |
+| `Glob` find files      | `mcp__hive__projectile_files`    |
+| Git status/diff        | `mcp__hive__magit_status/diff`   |
+| Git commit/push        | `mcp__hive__magit_commit/push`   |
+| Git branches           | `mcp__hive__magit_branches`      |
+| Eval elisp             | `mcp__hive__eval_elisp`          |
+| Eval Clojure           | `mcp__hive__cider_eval_silent`   |
 
 ### 2. Claude Context (`mcp__claude-context__*`) - Semantic Search
 For **semantic/conceptual** code search (not just text matching):
@@ -42,9 +55,9 @@ For Clojure file editing and REPL:
 
 ### 4. Memory MCP - Persistent Context
 ```
-mcp__emacs__mcp_memory_add     - Store notes/decisions/conventions
-mcp__emacs__mcp_memory_query   - Retrieve with scope filtering
-mcp__emacs__mcp_memory_search_semantic - Semantic search
+mcp__hive__mcp_memory_add     - Store notes/decisions/conventions
+mcp__hive__mcp_memory_query   - Retrieve with scope filtering
+mcp__hive__mcp_memory_search_semantic - Semantic search
 ```
 
 ## Rules
@@ -67,12 +80,12 @@ mcp__emacs__mcp_memory_search_semantic - Semantic search
 ## Example Workflow
 
 ```
-1. Check emacs: mcp__emacs__emacs_status
-2. Get context: mcp__emacs__mcp_get_context
+1. Check emacs: mcp__hive__emacs_status
+2. Get context: mcp__hive__mcp_get_context
 3. Search code: mcp__claude-context__search_code (semantic)
-4. Read file:   mcp__emacs__get_buffer_content (if open)
+4. Read file:   mcp__hive__get_buffer_content (if open)
 5. Edit:        mcp__clojure-mcp-emacs__clojure_edit (structural)
-6. Git:         mcp__emacs__magit_* (status/stage/commit)
+6. Git:         mcp__hive__magit_* (status/stage/commit)
 ```
 
 ## Tool Error Recovery
@@ -101,7 +114,7 @@ When an MCP tool returns `"Missing required field: X"`:
 "What directory?"
 
 # RIGHT - Infer and retry
-mcp__emacs__magit_status(directory: "/home/user/project")
+mcp__hive__magit_status(directory: "/home/user/project")
 ```
 
 **Principle**: Required fields usually have obvious values from context. Only ask when genuinely ambiguous.
@@ -117,7 +130,7 @@ Bash(grep -r "pattern" .)  # Use projectile_search instead
 Read("/path/to/file")      # Use get_buffer_content if open
 
 # GOOD - MCP-first approach
-mcp__emacs__magit_status(directory: "/project")
-mcp__emacs__projectile_search(pattern: "pattern")
-mcp__emacs__get_buffer_content(buffer_name: "file.clj")
+mcp__hive__magit_status(directory: "/project")
+mcp__hive__projectile_search(pattern: "pattern")
+mcp__hive__get_buffer_content(buffer_name: "file.clj")
 ```

@@ -14,7 +14,7 @@ Ship the scaffolding before you move the furniture.
 
 | Tool | When | Why |
 |------|------|-----|
-| `mcp__emacs__grep` | Mapping | Find all usages of deprecated APIs |
+| `mcp__hive__grep` | Mapping | Find all usages of deprecated APIs |
 | `kondo_find_callers` | Impact analysis | Who depends on changing code? |
 | `kondo_namespace_graph` | Dependency map | Understand migration order |
 | `magit_branches` | Feature flags | Track migration branches |

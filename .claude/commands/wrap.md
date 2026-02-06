@@ -22,7 +22,7 @@ echo $CLAUDE_SWARM_SLAVE_ID
 **This works for EVERYONE - lings and coordinators alike:**
 
 ```
-mcp__emacs__wrap_crystallize(
+mcp__hive__wrap_crystallize(
   agent_id: "<your CLAUDE_SWARM_SLAVE_ID or omit if coordinator>",
   directory: "<your pwd result>"
 )
@@ -30,7 +30,7 @@ mcp__emacs__wrap_crystallize(
 
 **Example (ling):**
 ```
-mcp__emacs__wrap_crystallize(
+mcp__hive__wrap_crystallize(
   agent_id: "swarm-fix-bug-1768840244",
   directory: "/home/user/projects/my-project"
 )
@@ -38,7 +38,7 @@ mcp__emacs__wrap_crystallize(
 
 **Example (coordinator):**
 ```
-mcp__emacs__wrap_crystallize(
+mcp__hive__wrap_crystallize(
   directory: "/home/user/projects/my-project"
 )
 ```
@@ -73,7 +73,7 @@ The `directory` parameter ensures your session is scoped to YOUR project via `.h
 If you also want to commit changes and complete kanban tasks:
 
 ```
-mcp__emacs__session_complete(
+mcp__hive__session_complete(
   commit_msg: "feat: your work summary",
   task_ids: ["kanban-task-1", "kanban-task-2"],
   agent_id: "<your CLAUDE_SWARM_SLAVE_ID or omit>",
@@ -95,7 +95,7 @@ For fine-grained control over what gets stored, coordinators can use manual memo
 ### Document Progress
 
 ```
-mcp__emacs__mcp_memory_add(
+mcp__hive__mcp_memory_add(
   type: "decision",
   content: "Decision: [what and why]",
   tags: ["architecture"],
@@ -106,22 +106,22 @@ mcp__emacs__mcp_memory_add(
 ### Sync Kanban
 
 ```
-mcp__emacs__mcp_mem_kanban_stats(directory: "<your pwd>")
-mcp__emacs__mcp_mem_kanban_list_slim(status: "doing", directory: "<your pwd>")
+mcp__hive__mcp_mem_kanban_stats(directory: "<your pwd>")
+mcp__hive__mcp_mem_kanban_list_slim(status: "doing", directory: "<your pwd>")
 ```
 
 ### Git Status
 
 ```
-mcp__emacs__magit_status(directory: "<your pwd>")
-mcp__emacs__magit_feature_branches(directory: "<your pwd>")
+mcp__hive__magit_status(directory: "<your pwd>")
+mcp__hive__magit_feature_branches(directory: "<your pwd>")
 ```
 
 ### Memory Maintenance
 
 ```
-mcp__emacs__mcp_memory_cleanup_expired()
-mcp__emacs__mcp_memory_expiring_soon(days: 7)
+mcp__hive__mcp_memory_cleanup_expired()
+mcp__hive__mcp_memory_expiring_soon(days: 7)
 ```
 
 </details>

@@ -14,8 +14,8 @@ Consumers don't care how it works - they care that it works consistently.
 
 | Tool | When | Why |
 |------|------|-----|
-| `mcp__emacs__read_file` | Review specs | Read existing OpenAPI/specs |
-| `mcp__emacs__grep` | Pattern consistency | Find existing endpoint patterns |
+| `mcp__hive__read_file` | Review specs | Read existing OpenAPI/specs |
+| `mcp__hive__grep` | Pattern consistency | Find existing endpoint patterns |
 | `projectile_search` | Convention discovery | Find how responses are structured |
 | `mcp_memory_query(type: convention)` | Standards | Check API conventions |
 | `mcp_memory_add(type: decision)` | ADRs | Document API decisions |

@@ -8,7 +8,7 @@ You are not just a worker - you are a **hivemind node** capable of coordinating 
 When your task is complex, break it down and delegate:
 
 ```
-mcp__emacs__swarm_spawn(
+mcp__hive__swarm_spawn(
   name: "subtask-worker",
   presets: ["ling", "mcp-first"],  # Always include these
   cwd: "/path/to/project"
@@ -17,7 +17,7 @@ mcp__emacs__swarm_spawn(
 
 Then dispatch work:
 ```
-mcp__emacs__swarm_dispatch(
+mcp__hive__swarm_dispatch(
   slave_id: "swarm-subtask-worker-xxx",
   prompt: "Implement the validation logic for..."
 )
@@ -27,7 +27,7 @@ mcp__emacs__swarm_dispatch(
 Track work items for yourself or others:
 
 ```
-mcp__emacs__mcp_mem_kanban_create(
+mcp__hive__mcp_mem_kanban_create(
   title: "Implement feature X",
   priority: "high",
   context: "Details about what needs to be done..."
@@ -38,7 +38,7 @@ mcp__emacs__mcp_mem_kanban_create(
 Keep the coordinator informed:
 
 ```
-mcp__emacs__hivemind_shout(
+mcp__hive__hivemind_shout(
   agent_id: "your-agent-id",
   event_type: "progress",
   task: "Current task description",
