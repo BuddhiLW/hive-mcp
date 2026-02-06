@@ -1,5 +1,5 @@
 (ns hive-mcp.config
-  "Global configuration loader for ~/.config/hive.edn.
+  "Global configuration loader for ~/.config/hive-mcp/config.edn.
 
    Bounded context: Global user-level configuration for hive-mcp.
 
@@ -13,11 +13,13 @@
    - R: Represented intent — explicit defaults merged with user overrides
    - Y: Yield safe failure — missing/malformed config uses defaults
 
-   Schema (~/.config/hive.edn):
+   Schema (~/.config/hive-mcp/config.edn):
      {:project-roots  [\"path1\" \"path2\"]
       :defaults       {:kg-backend :datahike :hot-reload false}
       :project-overrides {\"proj\" {:hot-reload true}}
-      :parent-rules   [{:path-prefix \"/path/prefix/\" :parent-id \"parent-proj\"}]}
+      :parent-rules   [{:path-prefix \"/path/prefix/\" :parent-id \"parent-proj\"}]
+      :embeddings     {:ollama {:host \"http://localhost:11434\" :model \"nomic-embed-text\"}
+                       :openrouter {:model \"qwen/qwen3-embedding-8b\"}}}
 
    Usage:
      (load-global-config!)       ;; Load from disk, cache in atom
@@ -25,9 +27,12 @@
      (get-project-roots)         ;; Shortcut for :project-roots
      (get-defaults)              ;; Shortcut for :defaults
      (get-project-overrides k)   ;; Overrides for specific project
-     (get-parent-for-path p)     ;; Resolve parent-id via :parent-rules"
+     (get-parent-for-path p)     ;; Resolve parent-id via :parent-rules
+     (get-config-value \"embeddings.ollama.host\") ;; Dotted key path access
+     (set-config-value! \"embeddings.ollama.host\" \"http://new:11434\") ;; Write + persist"
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
+            [clojure.string :as str]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -38,17 +43,24 @@
 ;; =============================================================================
 
 (def ^:private default-config
-  "Default configuration when ~/.config/hive.edn is missing or incomplete."
+  "Default configuration when ~/.config/hive-mcp/config.edn is missing or incomplete."
   {:project-roots []
    :defaults {:kg-backend :datahike
               :hot-reload false
               :presets-path nil}
    :project-overrides {}
-   :parent-rules []})
+   :parent-rules []
+   :embeddings {:ollama {:host "http://localhost:11434"
+                         :model "nomic-embed-text"}
+                :openrouter {:model "qwen/qwen3-embedding-8b"}}})
+
+(def ^:private legacy-config-path
+  "Legacy path for backward compatibility migration."
+  (str (System/getProperty "user.home") "/.config/hive.edn"))
 
 (def ^:private config-path
   "Canonical path for global hive config."
-  (str (System/getProperty "user.home") "/.config/hive.edn"))
+  (str (System/getProperty "user.home") "/.config/hive-mcp/config.edn"))
 
 ;; =============================================================================
 ;; State
@@ -91,7 +103,9 @@
    user-config))
 
 (defn load-global-config!
-  "Load global config from ~/.config/hive.edn, merge with defaults, cache in atom.
+  "Load global config from ~/.config/hive-mcp/config.edn, merge with defaults, cache in atom.
+
+   Falls back to legacy ~/.config/hive.edn if new path not found (migration).
 
    Safe to call multiple times — always re-reads from disk and updates cache.
    Returns the merged config map.
@@ -100,7 +114,13 @@
   ([]
    (load-global-config! config-path))
   ([path]
-   (let [user-config (read-config-file path)
+   (let [;; Try new path first, fall back to legacy
+         user-config (or (read-config-file path)
+                         (when (= path config-path)
+                           (when-let [legacy (read-config-file legacy-config-path)]
+                             (log/info "Migrating config: found legacy" legacy-config-path
+                                       "→ please move to" config-path)
+                             legacy)))
          merged (if user-config
                   (merge-config default-config user-config)
                   default-config)]
@@ -178,6 +198,71 @@
                           (.startsWith norm-path path-prefix))))
            first
            :parent-id))))
+
+;; =============================================================================
+;; Dotted Key Path Access
+;; =============================================================================
+
+;; Parse a dotted key string like "embeddings.ollama.host" into keyword path
+;; [:embeddings :ollama :host].
+(defn parse-key-path
+  [key-str]
+  (when (and key-str (not (str/blank? key-str)))
+    (mapv keyword (str/split key-str #"\."))))
+
+;; Read a value at a dotted key path from the cached config.
+;; Returns nil if the path does not exist.
+;;
+;; Examples:
+;;   (get-config-value "embeddings.ollama.host") => "http://localhost:11434"
+;;   (get-config-value "defaults.kg-backend")    => :datahike
+(defn get-config-value
+  [key-str]
+  (let [path (parse-key-path key-str)]
+    (get-in (get-global-config) path)))
+
+;; =============================================================================
+;; Write Config to Disk
+;; =============================================================================
+
+;; Write the current cached config map to disk as pretty-printed EDN.
+;; Creates parent directories if they don't exist.
+;; CLARITY-I: Ensures parent dir exists before write.
+(defn- write-config!
+  ([] (write-config! config-path))
+  ([path]
+   (let [f (io/file path)
+         parent (.getParentFile f)]
+     (when (and parent (not (.exists parent)))
+       (.mkdirs parent))
+     (spit f (pr-str (get-global-config)))
+     (log/info "Config written to" path))))
+
+;; =============================================================================
+;; Set Config Value
+;; =============================================================================
+
+;; Update a value at a dotted key path in the config atom AND persist to disk.
+;;
+;; Examples:
+;;   (set-config-value! "embeddings.ollama.host" "http://ollama.k8s:11434")
+;;   (set-config-value! "defaults.hot-reload" true)
+;;
+;; Returns the updated config map.
+;; CLARITY-Y: Throws on invalid key path (empty/nil).
+(defn set-config-value!
+  ([key-str value] (set-config-value! key-str value config-path))
+  ([key-str value path]
+   (let [kp (parse-key-path key-str)]
+     (when (empty? kp)
+       (throw (ex-info "Invalid config key path" {:key key-str})))
+     ;; Ensure config is loaded first
+     (when-not @global-config
+       (load-global-config! path))
+     (let [updated (swap! global-config assoc-in kp value)]
+       (write-config! path)
+       (log/info "Config updated:" key-str "=" value)
+       updated))))
 
 ;; =============================================================================
 ;; Reset (for testing)
