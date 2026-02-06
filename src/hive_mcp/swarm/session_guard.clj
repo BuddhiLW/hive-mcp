@@ -29,18 +29,17 @@
 ;; State
 ;; =============================================================================
 
-(defonce ^:private pending-completions
-  "Map of agent-id -> {:timestamp :task :message :timer-future}
-   Tracks lings that have shouted :completed but not called session_complete."
-  (atom {}))
+;; Map of agent-id -> {:timestamp :task :message :timer-future}
+;; Tracks lings that have shouted :completed but not called session_complete.
+(defonce ^:private pending-completions (atom {}))
 
+;; Configuration for session guard.
 (defonce ^:private config
-  "Configuration for session guard."
   (atom {:timeout-ms 30000
          :warning-handler nil}))
 
+;; Scheduled executor for timeout tasks.
 (defonce ^:private scheduler
-  "Scheduled executor for timeout tasks."
   (delay (ScheduledThreadPoolExecutor. 1)))
 
 ;; =============================================================================
@@ -220,7 +219,7 @@
       (let [reg-event (resolve 'hive-mcp.events.core/reg-event)]
         (reg-event :ling/completed
                    []
-                   (fn [coeffects [_ event-data]]
+                   (fn [_coeffects [_ event-data]]
                      ;; Track the completion
                      (handle-ling-completed-event event-data)
                      ;; Return empty effects (just tracking)

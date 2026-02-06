@@ -42,6 +42,9 @@
 (def item-statuses schema/item-statuses)
 (def wave-statuses schema/wave-statuses)
 (def critical-op-types schema/critical-op-types)
+(def daemon-statuses schema/daemon-statuses)
+(def daemon-health-levels schema/daemon-health-levels)
+(def spawn-modes schema/spawn-modes)
 (def schema schema/schema)
 
 ;;; =============================================================================
@@ -96,6 +99,16 @@
 (def release-claims-for-slave! lings/release-claims-for-slave!)
 (def release-claims-for-task! lings/release-claims-for-task!)
 
+;; Headless ling stdout ring buffer
+(def stdout-buffer-max-lines lings/stdout-buffer-max-lines)
+(def init-stdout-buffer! lings/init-stdout-buffer!)
+(def cleanup-stdout-buffer! lings/cleanup-stdout-buffer!)
+(def append-stdout! lings/append-stdout!)
+(def get-stdout lings/get-stdout)
+(def get-stdout-since lings/get-stdout-since)
+(def get-stdout-buffer-info lings/get-stdout-buffer-info)
+(def reset-stdout-buffers! lings/reset-stdout-buffers!)
+
 ;;; =============================================================================
 ;;; Re-exports from queries
 ;;; =============================================================================
@@ -147,6 +160,7 @@
 ;; Waves
 (def create-wave! coordination/create-wave!)
 (def get-wave coordination/get-wave)
+(def get-all-waves coordination/get-all-waves)
 (def update-wave-counts! coordination/update-wave-counts!)
 (def complete-wave! coordination/complete-wave!)
 

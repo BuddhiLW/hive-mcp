@@ -147,8 +147,9 @@
    (signaled by slave-ready event). This prevents dispatch race conditions
    where tasks are queued before the slave is fully initialized.
 
-   Also registers the Emacs daemon (if not already registered) and binds
-   this ling to it for daemon lifecycle tracking (IEmacsDaemon integration)."
+   Multi-Daemon (W1): Uses daemon selection to pick the healthiest daemon
+   with capacity, instead of hardcoding the default daemon. Falls back to
+   default daemon if selection fails or no daemons are registered."
   [event]
   (let [slave-id (get-field event :slave-id)
         name (get-field event :name slave-id)
@@ -157,16 +158,32 @@
         cwd (get-field event :cwd)
         project-id (when cwd (scope/get-current-project-id cwd))
         reg (get-swarm-registry)
-        ;; Daemon integration: use socket name from env or default
-        daemon-id (daemon-store/default-daemon-id)]
+        ;; Multi-Daemon W1: Select best daemon instead of hardcoded default
+        ;; Ensures default daemon is registered before selection
+        _ (daemon-store/ensure-default-daemon!)
+        {:keys [daemon-id reason]} (daemon-store/select-daemon-for-ling
+                                    {:project-id project-id})]
     (when slave-id
       (proto/add-slave! reg slave-id {:status :initializing :name name :depth depth
                                       :parent parent-id :cwd cwd :project-id project-id})
-      ;; IEmacsDaemon integration: ensure daemon registered and bind ling
-      (daemon-store/ensure-default-daemon!)
+      ;; IEmacsDaemon integration: bind ling to selected daemon
       (daemon-store/bind-ling! daemon-id slave-id)
+      ;; Emit to Olympus Web UI (port 7911)
+      (try
+        (when-let [emit-fn (requiring-resolve 'hive-mcp.transport.olympus/emit-agent-event!)]
+          (emit-fn :agent-spawned
+                   {:id slave-id
+                    :name name
+                    :type (if (zero? depth) :coordinator :ling)
+                    :status :initializing
+                    :parent-id parent-id
+                    :project-id project-id
+                    :daemon-id daemon-id
+                    :cwd cwd}))
+        (catch Exception _ nil))
       (log/debug "Sync: registered slave" slave-id "depth:" depth
-                 "status: :initializing, bound to daemon:" daemon-id))))
+                 "status: :initializing, bound to daemon:" daemon-id
+                 "(selection:" reason ")"))))
 
 (defn- handle-slave-ready
   "Handle slave-ready event. Event: {:slave-id}
@@ -192,15 +209,23 @@
 (defn- handle-slave-killed
   "Handle slave killed event. Event: {:slave-id}
    EVENTS-07: Dispatches :ling/completed BEFORE removing from DataScript.
-   IEmacsDaemon integration: Unbinds ling from daemon before removal."
+   IEmacsDaemon integration: Unbinds ling from daemon before removal.
+   Multi-Daemon (W1): Looks up actual daemon binding instead of assuming default."
   [event]
   (let [slave-id (get-field event :slave-id)
         reg (get-swarm-registry)
-        daemon-id (daemon-store/default-daemon-id)]
+        ;; Multi-Daemon W1: Look up the daemon this ling is actually bound to
+        daemon-id (or (:emacs-daemon/id (daemon-store/get-daemon-for-ling slave-id))
+                      (daemon-store/default-daemon-id))]
     (when slave-id
       (dispatch-event! [:ling/completed {:slave-id slave-id :reason "terminated"}])
-      ;; IEmacsDaemon integration: unbind ling from daemon before removal
+      ;; IEmacsDaemon integration: unbind ling from actual daemon before removal
       (daemon-store/unbind-ling! daemon-id slave-id)
+      ;; Emit to Olympus Web UI before removal
+      (try
+        (when-let [emit-fn (requiring-resolve 'hive-mcp.transport.olympus/emit-agent-event!)]
+          (emit-fn :agent-killed {:id slave-id}))
+        (catch Exception _ nil))
       (proto/remove-slave! reg slave-id)
       (log/debug "Sync: removed slave" slave-id "unbound from daemon:" daemon-id))))
 

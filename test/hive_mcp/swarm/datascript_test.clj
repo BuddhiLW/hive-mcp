@@ -424,3 +424,302 @@
         (is (some? slave))
         ;; Should return the more recent one (new-id)
         (is (= new-id (:slave/id slave)))))))
+
+;; =============================================================================
+;; Fuzzy Keyword Matching Tests (BUG FIX: ling status stuck on working)
+;; =============================================================================
+;; Tests for keyword-based fuzzy matching when exact ID/name match fails.
+;; This handles the case where lings shout with IDs like "ling-wave-fix"
+;; but their spawn IDs are "swarm-fix-wave-race-condition-1770255229".
+
+(deftest fuzzy-match-keyword-overlap-test
+  (testing "get-slave-by-name-or-id finds slave via keyword overlap"
+    (let [spawn-id "swarm-fix-wave-race-condition-1770255229"]
+      (ds/add-slave! spawn-id {:status :working})
+      ;; Query with ling-style ID that shares keywords "fix" and "wave"
+      (let [slave (ds/get-slave-by-name-or-id "ling-wave-fix")]
+        (is (some? slave) "Should find slave via keyword overlap")
+        (is (= spawn-id (:slave/id slave)))))))
+
+(deftest fuzzy-match-multiple-keywords-test
+  (testing "get-slave-by-name-or-id matches on multiple keyword overlap"
+    (let [spawn-id "swarm-explore-status-bug-1770256094"]
+      (ds/add-slave! spawn-id {:status :idle})
+      ;; Query with ling-style ID sharing "explore" and "status"
+      (let [slave (ds/get-slave-by-name-or-id "ling-explore-status")]
+        (is (some? slave) "Should find slave with multiple keyword matches")
+        (is (= spawn-id (:slave/id slave)))))))
+
+(deftest fuzzy-match-ignores-timestamp-test
+  (testing "get-slave-by-name-or-id ignores numeric timestamp in matching"
+    (let [spawn-id "swarm-github-connector-1770230187"]
+      (ds/add-slave! spawn-id {:status :working})
+      ;; Query shouldn't be confused by timestamps in the spawn ID
+      (let [slave (ds/get-slave-by-name-or-id "ling-github-connector")]
+        (is (some? slave))
+        (is (= spawn-id (:slave/id slave)))))))
+
+(deftest fuzzy-match-requires-minimum-overlap-test
+  (testing "get-slave-by-name-or-id requires >=50% keyword overlap"
+    (let [spawn-id "swarm-fix-wave-race-condition-1770255229"]
+      (ds/add-slave! spawn-id {:status :working})
+      ;; Query with only 1 of 4 keywords (25% overlap) - should NOT match
+      (let [slave (ds/get-slave-by-name-or-id "ling-fix-unrelated-task-here")]
+        ;; "fix" matches, but that's only 1/4 = 25% < 50% threshold
+        ;; Actually let's recalculate: "fix", "unrelated", "task", "here" = 4 keywords
+        ;; Only "fix" matches, so 1/4 = 25% which is below 50%
+        (is (nil? slave) "Should not match with <50% keyword overlap")))))
+
+(deftest fuzzy-match-prefers-exact-match-test
+  (testing "get-slave-by-name-or-id prefers exact match over fuzzy"
+    (let [exact-id "ling-wave-fix"
+          fuzzy-id "swarm-fix-wave-race-1234"]
+      ;; Add both - one with exact ID, one that would fuzzy match
+      (ds/add-slave! exact-id {:status :idle})
+      (ds/add-slave! fuzzy-id {:status :working})
+      ;; Query should find exact match first
+      (let [slave (ds/get-slave-by-name-or-id "ling-wave-fix")]
+        (is (some? slave))
+        (is (= exact-id (:slave/id slave)) "Should prefer exact match")))))
+
+(deftest fuzzy-match-best-overlap-wins-test
+  (testing "get-slave-by-name-or-id picks slave with best keyword overlap"
+    (let [partial-id "swarm-fix-something-else-1111"
+          better-id "swarm-fix-wave-race-2222"]
+      (ds/add-slave! partial-id {:status :idle})
+      (ds/add-slave! better-id {:status :working})
+      ;; Query "ling-wave-fix" has keywords: "wave", "fix"
+      ;; partial-id has: "fix", "something", "else" -> 1 match
+      ;; better-id has: "fix", "wave", "race" -> 2 matches
+      (let [slave (ds/get-slave-by-name-or-id "ling-wave-fix")]
+        (is (some? slave))
+        (is (= better-id (:slave/id slave)) "Should pick slave with best overlap")))))
+
+(deftest fuzzy-match-no-false-positives-test
+  (testing "get-slave-by-name-or-id doesn't match unrelated slaves"
+    (ds/add-slave! "swarm-github-connector-1234" {:status :idle})
+    (ds/add-slave! "swarm-tdd-runner-5678" {:status :working})
+    ;; Query with completely unrelated keywords
+    (let [slave (ds/get-slave-by-name-or-id "ling-kanban-cleanup")]
+      (is (nil? slave) "Should not match unrelated slaves"))))
+
+;; =============================================================================
+;; Headless Ling Schema Tests
+;; =============================================================================
+
+(deftest spawn-mode-vterm-test
+  (testing "Adding slave with spawn-mode :vterm"
+    (let [slave-id (gen-slave-id)]
+      (ds/add-slave! slave-id {:status :idle})
+      (ds/update-slave! slave-id {:ling/spawn-mode :vterm})
+      (let [slave (ds/get-slave slave-id)]
+        (is (= :vterm (:ling/spawn-mode slave)))))))
+
+(deftest spawn-mode-headless-test
+  (testing "Adding slave with headless spawn-mode and process attrs"
+    (let [slave-id (gen-slave-id)]
+      (ds/add-slave! slave-id {:status :idle})
+      (ds/update-slave! slave-id {:ling/spawn-mode :headless
+                                  :ling/process-pid 12345
+                                  :ling/process-alive? true})
+      (let [slave (ds/get-slave slave-id)]
+        (is (= :headless (:ling/spawn-mode slave)))
+        (is (= 12345 (:ling/process-pid slave)))
+        (is (true? (:ling/process-alive? slave)))))))
+
+(deftest process-alive-update-test
+  (testing "Updating process-alive? on headless ling"
+    (let [slave-id (gen-slave-id)]
+      (ds/add-slave! slave-id {:status :idle})
+      (ds/update-slave! slave-id {:ling/spawn-mode :headless
+                                  :ling/process-pid 99999
+                                  :ling/process-alive? true})
+      ;; Process dies
+      (ds/update-slave! slave-id {:ling/process-alive? false})
+      (let [slave (ds/get-slave slave-id)]
+        (is (false? (:ling/process-alive? slave)))
+        (is (= 99999 (:ling/process-pid slave)))))))
+
+;; =============================================================================
+;; Stdout Ring Buffer Tests
+;; =============================================================================
+
+;; Use a separate fixture for buffer tests to reset buffers
+(defn with-fresh-buffers [f]
+  (ds/reset-stdout-buffers!)
+  (f)
+  (ds/reset-stdout-buffers!))
+
+(use-fixtures :each with-fresh-conn with-fresh-buffers)
+
+(deftest stdout-init-buffer-test
+  (testing "Initializing stdout buffer creates empty buffer"
+    (let [slave-id (gen-slave-id)]
+      (ds/init-stdout-buffer! slave-id)
+      (let [info (ds/get-stdout-buffer-info slave-id)]
+        (is (= 0 (:line-count info)))
+        (is (= 0 (:next-idx info)))
+        (is (nil? (:oldest-idx info)))
+        (is (nil? (:newest-idx info)))))))
+
+(deftest stdout-append-single-string-test
+  (testing "Appending a single string line"
+    (let [slave-id (gen-slave-id)]
+      (ds/init-stdout-buffer! slave-id)
+      (ds/append-stdout! slave-id "hello world")
+      (let [lines (ds/get-stdout slave-id 10)]
+        (is (= 1 (count lines)))
+        (is (= "hello world" (:text (first lines))))
+        (is (= 0 (:idx (first lines))))))))
+
+(deftest stdout-append-multiple-lines-test
+  (testing "Appending multiple lines at once"
+    (let [slave-id (gen-slave-id)]
+      (ds/init-stdout-buffer! slave-id)
+      (ds/append-stdout! slave-id ["line1" "line2" "line3"])
+      (let [lines (ds/get-stdout slave-id 10)]
+        (is (= 3 (count lines)))
+        (is (= "line1" (:text (first lines))))
+        (is (= "line3" (:text (last lines))))
+        (is (= [0 1 2] (mapv :idx lines)))))))
+
+(deftest stdout-append-sequential-test
+  (testing "Sequential appends maintain monotonic indices"
+    (let [slave-id (gen-slave-id)]
+      (ds/init-stdout-buffer! slave-id)
+      (ds/append-stdout! slave-id ["a" "b"])
+      (ds/append-stdout! slave-id ["c" "d"])
+      (let [lines (ds/get-stdout slave-id 10)]
+        (is (= 4 (count lines)))
+        (is (= [0 1 2 3] (mapv :idx lines)))
+        (is (= ["a" "b" "c" "d"] (mapv :text lines)))))))
+
+(deftest stdout-get-last-n-test
+  (testing "get-stdout returns last N lines"
+    (let [slave-id (gen-slave-id)]
+      (ds/init-stdout-buffer! slave-id)
+      (ds/append-stdout! slave-id (mapv str (range 50)))
+      (let [last-5 (ds/get-stdout slave-id 5)]
+        (is (= 5 (count last-5)))
+        (is (= "45" (:text (first last-5))))
+        (is (= "49" (:text (last last-5))))))))
+
+(deftest stdout-get-defaults-to-100-test
+  (testing "get-stdout defaults to 100 lines"
+    (let [slave-id (gen-slave-id)]
+      (ds/init-stdout-buffer! slave-id)
+      (ds/append-stdout! slave-id (mapv str (range 200)))
+      (let [lines (ds/get-stdout slave-id)]
+        (is (= 100 (count lines)))
+        (is (= "100" (:text (first lines))))))))
+
+(deftest stdout-get-nonexistent-test
+  (testing "get-stdout returns empty vector for unknown slave"
+    (is (= [] (ds/get-stdout "nonexistent-slave" 10)))))
+
+(deftest stdout-get-since-test
+  (testing "get-stdout-since returns lines after given index"
+    (let [slave-id (gen-slave-id)]
+      (ds/init-stdout-buffer! slave-id)
+      (ds/append-stdout! slave-id ["a" "b" "c" "d" "e"])
+      ;; Get lines since index 2 (should return idx 3, 4)
+      (let [lines (ds/get-stdout-since slave-id 2)]
+        (is (= 2 (count lines)))
+        (is (= "d" (:text (first lines))))
+        (is (= "e" (:text (last lines))))))))
+
+(deftest stdout-get-since-beginning-test
+  (testing "get-stdout-since with -1 returns all lines"
+    (let [slave-id (gen-slave-id)]
+      (ds/init-stdout-buffer! slave-id)
+      (ds/append-stdout! slave-id ["a" "b" "c"])
+      (let [lines (ds/get-stdout-since slave-id -1)]
+        (is (= 3 (count lines)))))))
+
+(deftest stdout-get-since-future-test
+  (testing "get-stdout-since with index beyond newest returns empty"
+    (let [slave-id (gen-slave-id)]
+      (ds/init-stdout-buffer! slave-id)
+      (ds/append-stdout! slave-id ["a" "b" "c"])
+      (let [lines (ds/get-stdout-since slave-id 999)]
+        (is (= 0 (count lines)))))))
+
+(deftest stdout-get-since-nonexistent-test
+  (testing "get-stdout-since returns empty for unknown slave"
+    (is (= [] (ds/get-stdout-since "nonexistent" 0)))))
+
+(deftest stdout-fifo-eviction-test
+  (testing "Buffer evicts oldest lines at capacity"
+    (let [slave-id (gen-slave-id)
+          cap 5000 ;; ds/stdout-buffer-max-lines
+          ;; Add cap + 500 lines to trigger eviction
+          total (+ cap 500)]
+      (ds/init-stdout-buffer! slave-id)
+      (ds/append-stdout! slave-id (mapv str (range total)))
+      (let [info (ds/get-stdout-buffer-info slave-id)]
+        ;; Buffer should be capped at max
+        (is (= cap (:line-count info)))
+        ;; Oldest line should be index 500 (first 500 evicted)
+        (is (= 500 (:oldest-idx info)))
+        ;; Newest should be total - 1
+        (is (= (dec total) (:newest-idx info)))
+        ;; next-idx should be total
+        (is (= total (:next-idx info)))))))
+
+(deftest stdout-fifo-preserves-recent-test
+  (testing "FIFO eviction preserves most recent lines"
+    (let [slave-id (gen-slave-id)]
+      (ds/init-stdout-buffer! slave-id)
+      ;; Add 5100 lines (100 over cap)
+      (ds/append-stdout! slave-id (mapv str (range 5100)))
+      ;; First 100 should be evicted, get last 5
+      (let [lines (ds/get-stdout slave-id 5)]
+        (is (= 5 (count lines)))
+        (is (= "5095" (:text (first lines))))
+        (is (= "5099" (:text (last lines))))))))
+
+(deftest stdout-cleanup-test
+  (testing "Cleaning up buffer removes it entirely"
+    (let [slave-id (gen-slave-id)]
+      (ds/init-stdout-buffer! slave-id)
+      (ds/append-stdout! slave-id "test line")
+      (is (true? (ds/cleanup-stdout-buffer! slave-id)))
+      (is (nil? (ds/get-stdout-buffer-info slave-id)))
+      (is (= [] (ds/get-stdout slave-id 10))))))
+
+(deftest stdout-cleanup-nonexistent-test
+  (testing "Cleaning up nonexistent buffer returns false"
+    (is (false? (ds/cleanup-stdout-buffer! "nonexistent")))))
+
+(deftest stdout-auto-create-on-append-test
+  (testing "append-stdout! auto-creates buffer if missing"
+    (let [slave-id (gen-slave-id)]
+      ;; Don't call init, just append directly
+      (ds/append-stdout! slave-id "auto-created")
+      (let [lines (ds/get-stdout slave-id 10)]
+        (is (= 1 (count lines)))
+        (is (= "auto-created" (:text (first lines))))))))
+
+(deftest stdout-buffer-info-test
+  (testing "get-stdout-buffer-info returns correct metadata"
+    (let [slave-id (gen-slave-id)]
+      (ds/init-stdout-buffer! slave-id)
+      (ds/append-stdout! slave-id ["a" "b" "c" "d" "e"])
+      (let [info (ds/get-stdout-buffer-info slave-id)]
+        (is (= 5 (:line-count info)))
+        (is (= 5 (:next-idx info)))
+        (is (= 0 (:oldest-idx info)))
+        (is (= 4 (:newest-idx info)))
+        (is (= 5000 (:max-lines info)))))))
+
+(deftest stdout-buffer-info-nonexistent-test
+  (testing "get-stdout-buffer-info returns nil for unknown slave"
+    (is (nil? (ds/get-stdout-buffer-info "nonexistent")))))
+
+(deftest stdout-timestamps-present-test
+  (testing "Each stdout line has a timestamp"
+    (let [slave-id (gen-slave-id)]
+      (ds/init-stdout-buffer! slave-id)
+      (ds/append-stdout! slave-id "timed line")
+      (let [line (first (ds/get-stdout slave-id 1))]
+        (is (inst? (:ts line)))))))

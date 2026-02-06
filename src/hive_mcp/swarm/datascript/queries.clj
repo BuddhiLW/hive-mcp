@@ -11,7 +11,11 @@
    SOLID-I: Interface Segregation - read operations separated from writes."
   (:require [datascript.core :as d]
             [clojure.set]
+            [clojure.string :as str]
             [hive-mcp.swarm.datascript.connection :as conn]))
+
+;; Forward declaration for functions used before definition
+(declare get-all-slaves)
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -69,16 +73,66 @@
            (sort-by :slave/created-at #(compare %2 %1))
            first))))
 
+(defn- extract-keywords
+  "Extract meaningful keywords from an identifier for fuzzy matching.
+
+   Strips prefixes (ling-, swarm-) and filters out timestamp-like parts."
+  [identifier]
+  (let [;; Strip common prefixes
+        stripped (cond
+                   (str/starts-with? identifier "ling-") (subs identifier 5)
+                   (str/starts-with? identifier "swarm-") (subs identifier 6)
+                   :else identifier)
+        ;; Split into parts
+        parts (str/split stripped #"-")
+        ;; Filter out timestamp-like parts (pure numbers)
+        meaningful (remove #(re-matches #"\d+" %) parts)]
+    (set meaningful)))
+
+(defn- keyword-overlap-score
+  "Calculate keyword overlap score between two identifiers.
+   Returns [overlap-count total-query-keywords] for ranking."
+  [query-id candidate-id]
+  (let [query-kw (extract-keywords query-id)
+        candidate-kw (extract-keywords candidate-id)
+        overlap (clojure.set/intersection query-kw candidate-kw)]
+    [(count overlap) (count query-kw)]))
+
+(defn- find-best-keyword-match
+  "Find the slave with highest keyword overlap with the given identifier.
+
+   Returns the best matching slave if overlap >= 50% of query keywords,
+   nil otherwise."
+  [identifier]
+  (let [all-slaves (get-all-slaves)
+        query-kw (extract-keywords identifier)
+        query-count (count query-kw)]
+    (when (pos? query-count)
+      (->> all-slaves
+           (map (fn [slave]
+                  (let [[overlap-count _] (keyword-overlap-score identifier (:slave/id slave))]
+                    {:slave slave
+                     :overlap overlap-count
+                     :ratio (/ overlap-count query-count)})))
+           ;; Require at least 50% keyword match
+           (filter #(>= (:ratio %) 0.5))
+           ;; Sort by overlap count descending
+           (sort-by :overlap #(compare %2 %1))
+           first
+           :slave))))
+
 (defn get-slave-by-name-or-id
-  "Get a slave by ID, with fallback to name lookup.
+  "Get a slave by ID, with fallback to name lookup and fuzzy keyword matching.
 
    BUG FIX: Resolves agent-id mismatch between hivemind shouts (which may use
-   short IDs like 'ling-github-connector') and DataScript (which stores full
-   spawn IDs like 'swarm-github-connector-1770230187').
+   short IDs like 'ling-wave-fix') and DataScript (which stores full
+   spawn IDs like 'swarm-fix-wave-race-condition-1770230187').
 
    Resolution order:
    1. Exact match on :slave/id
-   2. Fallback: search by :slave/name (strips 'ling-' prefix if present)
+   2. Exact match on :slave/name (with prefix stripping)
+   3. Fuzzy match: keyword overlap between shout ID and spawn IDs
+      (e.g., 'ling-wave-fix' matches 'swarm-fix-wave-race-condition-...' via 'fix'+'wave')
 
    Arguments:
      identifier - Either a slave ID or name
@@ -87,22 +141,23 @@
      Map with slave attributes or nil if not found"
   [identifier]
   (or
-   ;; Try exact ID match first
+   ;; 1. Try exact ID match first
    (get-slave identifier)
-   ;; Fallback: search by name
-   ;; Strip common prefixes that lings might use (ling-, swarm-)
+   ;; 2. Try exact name match (with prefix stripping)
    (let [name (cond
-                (clojure.string/starts-with? identifier "ling-")
+                (str/starts-with? identifier "ling-")
                 (subs identifier 5)
 
-                (clojure.string/starts-with? identifier "swarm-")
+                (str/starts-with? identifier "swarm-")
                 ;; For swarm-NAME-TIMESTAMP, extract NAME
-                (let [parts (clojure.string/split identifier #"-")]
+                (let [parts (str/split identifier #"-")]
                   (when (>= (count parts) 2)
                     (second parts)))
 
                 :else identifier)]
-     (get-slave-by-name name))))
+     (get-slave-by-name name))
+   ;; 3. Fuzzy match by keyword overlap
+   (find-best-keyword-match identifier)))
 
 (defn get-all-slaves
   "Get all slaves in the swarm.

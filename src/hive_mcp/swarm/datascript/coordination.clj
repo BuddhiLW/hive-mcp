@@ -320,6 +320,24 @@
           (dissoc :db/id)
           (update :wave/plan #(when % (:change-plan/id %)))))))
 
+(defn get-all-waves
+  "Get all waves.
+
+   Returns:
+     Seq of maps with wave attributes"
+  []
+  (let [c (conn/ensure-conn)
+        db @c
+        eids (d/q '[:find [?e ...]
+                    :where [?e :wave/id _]]
+                  db)]
+    (->> eids
+         (map #(d/entity db %))
+         (map (fn [e]
+                (-> (into {} e)
+                    (dissoc :db/id)
+                    (update :wave/plan #(when % (:change-plan/id %)))))))))
+
 (defn update-wave-counts!
   "Update wave execution counts.
 

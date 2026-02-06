@@ -343,6 +343,10 @@
    When a claim is released, the event system notifies any lings
    that were waiting for access to this file (file-claim event cascade).
 
+   DUAL-STORE SYNC: Also clears claim from logic-db to prevent ghost claims.
+   Claims exist in both DataScript (for queries) and logic-db (for conflict
+   detection). Both must be cleared on release.
+
    Arguments:
      file-path - Path to release
 
@@ -354,6 +358,10 @@
     (when-let [eid (:db/id (d/entity db [:claim/file file-path]))]
       (log/debug "Releasing claim:" file-path)
       (let [result (d/transact! c [[:db/retractEntity eid]])]
+        ;; DUAL-STORE SYNC: Also release from logic-db (core.logic pldb)
+        ;; Use requiring-resolve to avoid cyclic dependency with swarm.logic
+        (when-let [release-logic (requiring-resolve 'hive-mcp.swarm.logic/release-claim-for-file!)]
+          (release-logic file-path))
         ;; Dispatch event for file-claim cascade (impl-1 handles this)
         ;; Use requiring-resolve to avoid cyclic dependency with events.core
         ;; Only dispatch if handler is registered (avoids error during bootstrap)
@@ -443,8 +451,8 @@
   [file-path]
   (when-let [claim (get-claim-info file-path)]
     (when-let [created-at (:created-at claim)]
-      (- (.getTime ^java.util.Date (conn/now))
-         (.getTime ^java.util.Date created-at)))))
+      (- (inst-ms (conn/now))
+         (inst-ms created-at)))))
 
 (defn claim-stale?
   "Check if a claim is stale (older than threshold).
@@ -472,14 +480,14 @@
   ([]
    (get-stale-claims default-stale-threshold-ms))
   ([threshold-ms]
-   (let [now-ms (.getTime ^java.util.Date (conn/now))
+   (let [now-ms (inst-ms (conn/now))
          all-claims (get-all-claims)]
      (->> all-claims
           (filter (fn [{:keys [created-at]}]
-                    (when created-at
-                      (> (- now-ms (.getTime ^java.util.Date created-at)) threshold-ms))))
+                    (when (some? created-at)
+                      (> (- now-ms (inst-ms created-at)) threshold-ms))))
           (map (fn [{:keys [created-at] :as claim}]
-                 (let [age-ms (- now-ms (.getTime ^java.util.Date created-at))]
+                 (let [age-ms (- now-ms (inst-ms created-at))]
                    (assoc claim
                           :age-ms age-ms
                           :age-minutes (Math/round (/ age-ms 60000.0))))))))))
@@ -562,3 +570,172 @@
                (when (and lines-added lines-removed)
                  (str "+/- " lines-added "/" lines-removed)))
     (d/transact! c [tx-data])))
+
+;;; =============================================================================
+;;; Headless Ling Stdout Ring Buffer
+;;; =============================================================================
+;;
+;; Stdout output for headless lings is ephemeral runtime state stored outside
+;; DataScript in an atom registry. Each buffer is a bounded vector of output
+;; lines with monotonically increasing indices for efficient "since" queries.
+;;
+;; Buffer structure per ling:
+;;   {:lines    []    ;; vector of {:idx N :text "..." :ts <inst>}
+;;    :next-idx 0}    ;; next line index (monotonically increasing)
+;;
+;; Design: FIFO eviction at 5000 lines. O(1) append, O(log n) since-query
+;; via binary search on :idx.
+
+(def ^:const stdout-buffer-max-lines
+  "Maximum number of stdout lines retained per headless ling.
+   FIFO eviction drops oldest lines when cap is reached."
+  5000)
+
+(defonce ^{:doc "Registry of stdout ring buffers for headless lings.
+                 Map of slave-id -> atom of {:lines [...] :next-idx N}.
+                 Lives outside DataScript because it's ephemeral mutable state."}
+  stdout-buffers
+  (atom {}))
+
+(defn- ensure-stdout-buffer!
+  "Ensure a stdout buffer exists for the given slave-id.
+   Creates one if missing. Returns the buffer atom."
+  [slave-id]
+  (or (get @stdout-buffers slave-id)
+      (let [buf (atom {:lines [] :next-idx 0})]
+        (swap! stdout-buffers assoc slave-id buf)
+        buf)))
+
+(defn init-stdout-buffer!
+  "Initialize a stdout ring buffer for a headless ling.
+   Called during headless spawn. Idempotent - resets if already exists.
+
+   Arguments:
+     slave-id - The ling's slave-id
+
+   Returns:
+     The buffer atom"
+  [slave-id]
+  (let [buf (atom {:lines [] :next-idx 0})]
+    (swap! stdout-buffers assoc slave-id buf)
+    (log/debug "Initialized stdout buffer for headless ling:" slave-id)
+    buf))
+
+(defn cleanup-stdout-buffer!
+  "Remove the stdout buffer for a ling (call on kill/terminate).
+
+   Arguments:
+     slave-id - The ling's slave-id
+
+   Returns:
+     true if buffer existed and was removed, false otherwise"
+  [slave-id]
+  (let [existed? (contains? @stdout-buffers slave-id)]
+    (swap! stdout-buffers dissoc slave-id)
+    (when existed?
+      (log/debug "Cleaned up stdout buffer for:" slave-id))
+    existed?))
+
+(defn append-stdout!
+  "Append output lines to a headless ling's ring buffer.
+   Evicts oldest lines when buffer exceeds max capacity (FIFO).
+
+   Arguments:
+     slave-id - The ling's slave-id
+     lines    - String or collection of strings to append
+
+   Returns:
+     Number of lines currently in buffer after append"
+  [slave-id lines]
+  (let [buf (ensure-stdout-buffer! slave-id)
+        line-strs (if (string? lines) [lines] (vec lines))
+        now (conn/now)]
+    (swap! buf
+           (fn [{:keys [lines next-idx] :as _state}]
+             (let [;; Create indexed entries for new lines
+                   new-entries (mapv (fn [i text]
+                                       {:idx (+ next-idx i)
+                                        :text text
+                                        :ts now})
+                                     (range)
+                                     line-strs)
+                   all-lines (into lines new-entries)
+                   new-next-idx (+ next-idx (count line-strs))
+                   ;; FIFO eviction: keep only last N lines
+                   trimmed (if (> (count all-lines) stdout-buffer-max-lines)
+                             (subvec all-lines (- (count all-lines) stdout-buffer-max-lines))
+                             all-lines)]
+               {:lines trimmed
+                :next-idx new-next-idx})))
+    (count (:lines @buf))))
+
+(defn get-stdout
+  "Read the last N lines from a headless ling's stdout buffer.
+
+   Arguments:
+     slave-id - The ling's slave-id
+     n        - Number of lines to read (default: 100)
+
+   Returns:
+     Vector of {:idx N :text \"...\" :ts <inst>} maps, ordered oldest-first.
+     Empty vector if no buffer exists."
+  ([slave-id] (get-stdout slave-id 100))
+  ([slave-id n]
+   (if-let [buf (get @stdout-buffers slave-id)]
+     (let [{:keys [lines]} @buf
+           start (max 0 (- (count lines) n))]
+       (subvec lines start))
+     [])))
+
+(defn get-stdout-since
+  "Read lines from a headless ling's stdout buffer since a given index.
+   Uses binary search for O(log n) lookup on the monotonic :idx field.
+
+   Arguments:
+     slave-id  - The ling's slave-id
+     since-idx - Return lines with :idx > since-idx
+
+   Returns:
+     Vector of {:idx N :text \"...\" :ts <inst>} maps after since-idx.
+     Empty vector if no buffer exists or no new lines."
+  [slave-id since-idx]
+  (if-let [buf (get @stdout-buffers slave-id)]
+    (let [{:keys [lines]} @buf
+          n (count lines)]
+      (if (zero? n)
+        []
+        ;; Binary search for first entry with :idx > since-idx
+        (let [find-start (fn []
+                           (loop [lo 0 hi n]
+                             (if (>= lo hi)
+                               lo
+                               (let [mid (quot (+ lo hi) 2)]
+                                 (if (> (:idx (nth lines mid)) since-idx)
+                                   (recur lo mid)
+                                   (recur (inc mid) hi))))))]
+          (subvec lines (find-start)))))
+    []))
+
+(defn get-stdout-buffer-info
+  "Get metadata about a ling's stdout buffer (for diagnostics).
+
+   Arguments:
+     slave-id - The ling's slave-id
+
+   Returns:
+     Map with :line-count, :next-idx, :oldest-idx, :newest-idx
+     or nil if no buffer exists."
+  [slave-id]
+  (when-let [buf (get @stdout-buffers slave-id)]
+    (let [{:keys [lines next-idx]} @buf]
+      {:line-count (count lines)
+       :next-idx next-idx
+       :oldest-idx (when (seq lines) (:idx (first lines)))
+       :newest-idx (when (seq lines) (:idx (peek lines)))
+       :max-lines stdout-buffer-max-lines})))
+
+(defn reset-stdout-buffers!
+  "Reset all stdout buffers (for testing only).
+   Production code should use cleanup-stdout-buffer! per slave."
+  []
+  (reset! stdout-buffers {}))
