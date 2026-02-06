@@ -1,0 +1,15 @@
+# Build artifacts
+/resources/public/js/
+/.shadow-cljs/
+/node_modules/
+
+# Editor
+.nrepl-port
+*.swp
+*~
+
+# OS
+.DS_Store
+
+# Logs
+*.log

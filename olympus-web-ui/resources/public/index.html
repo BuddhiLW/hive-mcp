@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Olympus - Hive Swarm Dashboard</title>
+    
+    <!-- React 18 -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    
+    <!-- ReactFlow (includes dagre for auto-layout) -->
+    <script src="https://unpkg.com/reactflow@11.10.1/dist/umd/index.js"></script>
+    <link href="https://unpkg.com/reactflow@11.10.1/dist/style.css" rel="stylesheet" />
+    
+    <!-- Dagre for graph layout -->
+    <script src="https://unpkg.com/dagre@0.8.5/dist/dagre.min.js"></script>
+    
+    <!-- xterm.js terminal emulator -->
+    <script src="https://unpkg.com/@xterm/xterm@5.5.0/lib/xterm.js"></script>
+    <link href="https://unpkg.com/@xterm/xterm@5.5.0/css/xterm.css" rel="stylesheet" />
+    <script src="https://unpkg.com/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
+    <script src="https://unpkg.com/@xterm/addon-web-links@0.11.0/lib/addon-web-links.js"></script>
+
+    <!-- App styles -->
+    <link href="/css/olympus.css" rel="stylesheet" />
+</head>
+<body>
+    <div id="app">
+        <div class="loading">
+            <div class="loading-spinner"></div>
+            <p>Loading Olympus...</p>
+        </div>
+    </div>
+    
+    <!-- ClojureScript app -->
+    <script src="/js/main.js"></script>
+</body>
+</html>
