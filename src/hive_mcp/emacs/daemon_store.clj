@@ -9,6 +9,8 @@
    DDD: Infrastructure layer - singleton access to repository."
   (:require [hive-mcp.emacs.daemon :as daemon]
             [hive-mcp.emacs.daemon-ds :as daemon-ds]
+            [hive-mcp.emacs.daemon-selection :as selection]
+            [hive-mcp.emacs.daemon-autoheal :as autoheal]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -117,6 +119,37 @@
       (register! id {:socket-name id}))))
 
 ;;; =============================================================================
+;;; Daemon Selection (Multi-Daemon W1)
+;;; =============================================================================
+
+(defn select-daemon-for-ling
+  "Select the best daemon for a new ling spawn.
+
+   Uses health scoring, capacity limits, and project affinity to pick
+   the optimal daemon. Falls back to default daemon if no better option.
+
+   Arguments:
+     opts - Optional map with:
+            :project-id - Target project for affinity scoring
+
+   Returns:
+     Map with :daemon-id and :reason (:selected, :no-daemons, :all-disqualified)"
+  ([]
+   (select-daemon-for-ling {}))
+  ([opts]
+   (selection/select-daemon (get-store)
+                            (merge opts {:default-id (default-daemon-id)}))))
+
+(defn update-daemon-health!
+  "Update a daemon's health score. Delegates to daemon-selection.
+
+   Arguments:
+     daemon-id - Daemon to update
+     score     - New health score (0-100)"
+  [daemon-id score]
+  (selection/update-health-score! daemon-id score))
+
+;;; =============================================================================
 ;;; Heartbeat Loop (Background Thread)
 ;;; =============================================================================
 
@@ -137,25 +170,72 @@
          :last-cleanup nil}))
 
 (defn- heartbeat-loop
-  "Background loop that sends heartbeats and cleans up stale daemons.
+  "Background loop that sends health-scored heartbeats, cleans up stale daemons,
+   auto-heals orphaned lings, and redistributes lings from overloaded daemons.
+
+   W2 Enhancement: Uses selection/heartbeat! which pings Emacs, measures
+   response time, and computes health score (EWMA-based) with degradation
+   from latency, errors, and ling load.
+
+   W3 Enhancement: After stale cleanup, detects orphaned lings (bound to
+   dead/stale/error daemons) and either rebinds them to healthy daemons
+   or gracefully terminates them.
+
+   W4 Enhancement: After auto-heal, redistributes idle lings from degraded
+   or overloaded daemons to healthier ones. Conservative: only idle lings,
+   score threshold, max 2 migrations per cycle.
+
    Runs until running? becomes false."
   []
-  (log/info "Daemon heartbeat loop started")
+  (log/info "Daemon heartbeat loop started (W3: health-scored + auto-heal)")
   (let [daemon-id (default-daemon-id)
         last-cleanup-at (atom (System/currentTimeMillis))]
     (while (:running? @heartbeat-state)
       (try
-        ;; Send heartbeat for default daemon
-        (when (get-daemon daemon-id)
-          (heartbeat! daemon-id)
-          (swap! heartbeat-state assoc :last-heartbeat (java.util.Date.)))
+        ;; W2: Health-scored heartbeat for default daemon (and all active daemons)
+        (let [all-daemons (get-all-daemons)
+              active-daemons (if (seq all-daemons)
+                               (filter #(= :active (:emacs-daemon/status %)) all-daemons)
+                               ;; Fallback: heartbeat default daemon if no daemons registered
+                               (when (get-daemon daemon-id) [{:emacs-daemon/id daemon-id}]))]
+          (doseq [d active-daemons]
+            (let [did (:emacs-daemon/id d)
+                  result (selection/heartbeat! did)]
+              (when result
+                (swap! heartbeat-state assoc
+                       :last-heartbeat (java.util.Date.)
+                       :last-health-score (:health-score result)
+                       :last-health-level (:health-level result))))))
 
-        ;; Periodic stale cleanup
+        ;; Periodic stale cleanup + W3 auto-heal + W4 redistribution
         (let [now (System/currentTimeMillis)
               since-cleanup (- now @last-cleanup-at)]
           (when (>= since-cleanup stale-cleanup-interval-ms)
+            ;; Step 1: Mark stale daemons
             (when-let [stale-ids (seq (cleanup-stale!))]
               (log/warn "Heartbeat: marked" (count stale-ids) "daemons as stale:" stale-ids))
+            ;; Step 2 (W3): Auto-heal orphaned lings on dead/stale/error daemons
+            (when-let [heal-result (autoheal/heal-all-orphans! (get-store))]
+              (log/warn "Heartbeat: auto-healed" (:healed heal-result)
+                        "of" (:orphans-found heal-result) "orphaned lings"
+                        (when (pos? (:failed heal-result))
+                          (str "(" (:failed heal-result) " failed)")))
+              (swap! heartbeat-state assoc
+                     :last-autoheal (java.util.Date.)
+                     :last-autoheal-result (select-keys heal-result
+                                                        [:orphans-found :healed :failed])))
+            ;; Step 3 (W4): Redistribute lings from degraded/overloaded daemons
+            (when-let [redist-result (selection/redistribute-lings! (get-store))]
+              (log/info "Heartbeat: redistributed" (:migrations-executed redist-result)
+                        "of" (:migrations-planned redist-result) "planned migrations"
+                        (when (pos? (:migrations-failed redist-result))
+                          (str "(" (:migrations-failed redist-result) " failed)")))
+              (swap! heartbeat-state assoc
+                     :last-redistribution (java.util.Date.)
+                     :last-redistribution-result (select-keys redist-result
+                                                              [:migrations-planned
+                                                               :migrations-executed
+                                                               :migrations-failed])))
             (reset! last-cleanup-at now)
             (swap! heartbeat-state assoc :last-cleanup (java.util.Date.))))
 
@@ -206,11 +286,66 @@
   "Get current heartbeat loop status.
 
    Returns:
-     Map with :running?, :last-heartbeat, :last-cleanup, :daemon-status"
+     Map with :running?, :last-heartbeat, :last-cleanup, :daemon-status,
+     :health-score, :health-level (W2 additions),
+     :last-autoheal, :last-autoheal-result (W3 additions),
+     :last-redistribution, :last-redistribution-result (W4 additions)"
   []
   (let [daemon-id (default-daemon-id)
         daemon (get-daemon daemon-id)]
-    (merge (select-keys @heartbeat-state [:running? :last-heartbeat :last-cleanup])
+    (merge (select-keys @heartbeat-state [:running? :last-heartbeat :last-cleanup
+                                          :last-health-score :last-health-level
+                                          :last-autoheal :last-autoheal-result
+                                          :last-redistribution :last-redistribution-result])
            {:daemon-id daemon-id
             :daemon-status (:emacs-daemon/status daemon)
-            :daemon-error-count (:emacs-daemon/error-count daemon)})))
+            :daemon-error-count (:emacs-daemon/error-count daemon)
+            :daemon-health-score (:emacs-daemon/health-score daemon)
+            :daemon-health-level (when-let [s (:emacs-daemon/health-score daemon)]
+                                   (selection/health-level s))})))
+
+;;; =============================================================================
+;;; Auto-Heal API (Multi-Daemon W3)
+;;; =============================================================================
+
+(defn heal-orphans!
+  "Manually trigger orphan detection and healing.
+   Useful for immediate cleanup outside the heartbeat cycle.
+
+   Returns:
+     Map with :orphans-found, :healed, :failed, :results
+     or nil if no orphans found."
+  []
+  (autoheal/heal-all-orphans! (get-store)))
+
+(defn orphan-status
+  "Get current orphan status without healing. Monitoring endpoint.
+
+   Returns:
+     Map with :orphan-count, :orphans (with classified actions)
+     or nil if no orphans."
+  []
+  (autoheal/orphan-status (get-store)))
+
+;;; =============================================================================
+;;; Redistribution API (Multi-Daemon W4)
+;;; =============================================================================
+
+(defn redistribute-lings!
+  "Manually trigger ling redistribution from overloaded/degraded daemons.
+   Useful for immediate rebalancing outside the heartbeat cycle.
+
+   Returns:
+     Map with :migrations-planned, :migrations-executed, :migrations-failed, :results
+     or nil if no redistribution needed."
+  []
+  (selection/redistribute-lings! (get-store)))
+
+(defn redistribution-status
+  "Get current redistribution status without executing. Monitoring endpoint.
+
+   Returns:
+     Map with :overloaded-count, :overloaded-daemons, :planned-migrations
+     or nil if system is balanced."
+  []
+  (selection/redistribution-status (get-store)))
