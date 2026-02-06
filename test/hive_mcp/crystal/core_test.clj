@@ -217,3 +217,216 @@
           content (:content result)]
       ;; Should contain "Completed Tasks: 1" since only one valid map has completed-task tag
       (is (re-find #"Completed Tasks: 1" content)))))
+
+;; =============================================================================
+;; Staleness Decay Tests (W2)
+;; =============================================================================
+
+(deftest days-since-test
+  (testing "days-since with valid timestamps"
+    (let [now (java.time.ZonedDateTime/now)
+          week-ago (str (.minusDays now 7))]
+      (is (= 7 (core/days-since week-ago)))))
+
+  (testing "days-since with nil/empty returns nil"
+    (is (nil? (core/days-since nil)))
+    (is (nil? (core/days-since "")))
+    (is (nil? (core/days-since "   "))))
+
+  (testing "days-since with unparseable returns nil"
+    (is (nil? (core/days-since "not-a-date")))))
+
+(deftest decay-candidate-test
+  (testing "low access + non-permanent + non-axiom is candidate"
+    (is (true? (core/decay-candidate? {:access-count 0 :duration "short" :type "note"})))
+    (is (true? (core/decay-candidate? {:access-count 2 :duration "medium" :type "convention"}))))
+
+  (testing "high access count is NOT candidate"
+    (is (false? (core/decay-candidate? {:access-count 5 :duration "short" :type "note"})))
+    (is (false? (core/decay-candidate? {:access-count 3 :duration "short" :type "note"}))))
+
+  (testing "permanent duration is NOT candidate"
+    (is (false? (core/decay-candidate? {:access-count 0 :duration "permanent" :type "note"}))))
+
+  (testing "axiom type is NOT candidate"
+    (is (false? (core/decay-candidate? {:access-count 0 :duration "long" :type "axiom"}))))
+
+  (testing "nil access-count treated as 0 (candidate)"
+    (is (true? (core/decay-candidate? {:access-count nil :duration "short" :type "note"}))))
+
+  (testing "custom access-threshold"
+    (is (true? (core/decay-candidate?
+                {:access-count 4 :duration "short" :type "note"}
+                {:access-threshold 5})))
+    (is (false? (core/decay-candidate?
+                 {:access-count 5 :duration "short" :type "note"}
+                 {:access-threshold 5})))))
+
+(deftest calculate-decay-delta-test
+  (testing "recently accessed entry has no decay"
+    (let [yesterday (str (.minusDays (java.time.ZonedDateTime/now) 1))]
+      (is (= 0.0 (core/calculate-decay-delta
+                  {:access-count 0 :last-accessed yesterday :duration "short"})))))
+
+  (testing "old entry with no access decays"
+    (let [month-ago (str (.minusDays (java.time.ZonedDateTime/now) 30))]
+      (is (pos? (core/calculate-decay-delta
+                 {:access-count 0 :last-accessed month-ago :duration "medium"})))))
+
+  (testing "never-accessed entry (nil last-accessed) decays as 30 days idle"
+    (let [delta (core/calculate-decay-delta
+                 {:access-count 0 :last-accessed nil :duration "medium"})]
+      (is (pos? delta))))
+
+  (testing "ephemeral decays faster than long"
+    (let [month-ago (str (.minusDays (java.time.ZonedDateTime/now) 30))
+          entry-base {:access-count 0 :last-accessed month-ago}
+          ephemeral-delta (core/calculate-decay-delta (assoc entry-base :duration "ephemeral"))
+          long-delta (core/calculate-decay-delta (assoc entry-base :duration "long"))]
+      (is (> ephemeral-delta long-delta))))
+
+  (testing "higher access count dampens decay"
+    (let [month-ago (str (.minusDays (java.time.ZonedDateTime/now) 30))
+          low-access (core/calculate-decay-delta
+                      {:access-count 0 :last-accessed month-ago :duration "medium"})
+          high-access (core/calculate-decay-delta
+                       {:access-count 2 :last-accessed month-ago :duration "medium"})]
+      (is (> low-access high-access))))
+
+  (testing "custom recency-days threshold"
+    (let [five-days-ago (str (.minusDays (java.time.ZonedDateTime/now) 5))]
+      ;; Default recency is 7 days, so 5 days ago should not decay
+      (is (= 0.0 (core/calculate-decay-delta
+                  {:access-count 0 :last-accessed five-days-ago :duration "medium"})))
+      ;; With recency-days=3, 5 days ago SHOULD decay
+      (is (pos? (core/calculate-decay-delta
+                 {:access-count 0 :last-accessed five-days-ago :duration "medium"}
+                 {:recency-days 3}))))))
+
+;; =============================================================================
+;; Cross-Pollination Detection Tests (W5)
+;; =============================================================================
+
+(deftest extract-xpoll-projects-test
+  (testing "no xpoll tags returns empty set"
+    (is (= #{} (core/extract-xpoll-projects {:tags ["scope:project:hive-mcp" "decision"]})))
+    (is (= #{} (core/extract-xpoll-projects {:tags []})))
+    (is (= #{} (core/extract-xpoll-projects {:tags nil})))
+    (is (= #{} (core/extract-xpoll-projects {}))))
+
+  (testing "extracts project IDs from xpoll tags"
+    (is (= #{"k8s-cluster"} (core/extract-xpoll-projects
+                             {:tags ["xpoll:project:k8s-cluster"]})))
+    (is (= #{"k8s" "webapp"} (core/extract-xpoll-projects
+                              {:tags ["xpoll:project:k8s" "xpoll:project:webapp"]})))
+    (is (= #{"a" "b" "c"} (core/extract-xpoll-projects
+                           {:tags ["other-tag" "xpoll:project:a" "scope:project:x"
+                                   "xpoll:project:b" "xpoll:project:c"]}))))
+
+  (testing "deduplicates project IDs"
+    (is (= #{"k8s"} (core/extract-xpoll-projects
+                     {:tags ["xpoll:project:k8s" "xpoll:project:k8s"]})))))
+
+(deftest cross-pollination-count-test
+  (testing "returns count of distinct cross-project accesses"
+    (is (= 0 (core/cross-pollination-count {:tags []})))
+    (is (= 1 (core/cross-pollination-count {:tags ["xpoll:project:a"]})))
+    (is (= 3 (core/cross-pollination-count
+              {:tags ["xpoll:project:a" "xpoll:project:b" "xpoll:project:c"]})))))
+
+(deftest cross-pollination-score-test
+  (testing "score is n-projects * cross-project weight (3.0)"
+    (is (= 0.0 (core/cross-pollination-score {:tags []})))
+    (is (= 3.0 (core/cross-pollination-score {:tags ["xpoll:project:a"]})))
+    (is (= 6.0 (core/cross-pollination-score {:tags ["xpoll:project:a" "xpoll:project:b"]})))
+    (is (= 9.0 (core/cross-pollination-score
+                {:tags ["xpoll:project:a" "xpoll:project:b" "xpoll:project:c"]})))))
+
+(deftest cross-pollination-candidate-test
+  (testing "needs 2+ projects to be candidate"
+    (is (false? (core/cross-pollination-candidate? {:tags [] :duration "short" :type "note"})))
+    (is (false? (core/cross-pollination-candidate?
+                 {:tags ["xpoll:project:a"] :duration "short" :type "note"})))
+    (is (true? (core/cross-pollination-candidate?
+                {:tags ["xpoll:project:a" "xpoll:project:b"] :duration "short" :type "note"}))))
+
+  (testing "permanent entries are NOT candidates"
+    (is (false? (core/cross-pollination-candidate?
+                 {:tags ["xpoll:project:a" "xpoll:project:b"]
+                  :duration "permanent" :type "note"}))))
+
+  (testing "axioms are NOT candidates"
+    (is (false? (core/cross-pollination-candidate?
+                 {:tags ["xpoll:project:a" "xpoll:project:b"]
+                  :duration "long" :type "axiom"}))))
+
+  (testing "custom min-projects threshold"
+    (is (false? (core/cross-pollination-candidate?
+                 {:tags ["xpoll:project:a" "xpoll:project:b"] :duration "short" :type "note"}
+                 {:min-projects 3})))
+    (is (true? (core/cross-pollination-candidate?
+                {:tags ["xpoll:project:a" "xpoll:project:b" "xpoll:project:c"]
+                 :duration "short" :type "note"}
+                {:min-projects 3})))))
+
+(deftest cross-pollination-promotion-tiers-test
+  (testing "0-1 projects = 0 tiers"
+    (is (= 0 (core/cross-pollination-promotion-tiers {:tags []})))
+    (is (= 0 (core/cross-pollination-promotion-tiers {:tags ["xpoll:project:a"]}))))
+
+  (testing "2 projects = 1 tier"
+    (is (= 1 (core/cross-pollination-promotion-tiers
+              {:tags ["xpoll:project:a" "xpoll:project:b"]}))))
+
+  (testing "3 projects = 2 tiers"
+    (is (= 2 (core/cross-pollination-promotion-tiers
+              {:tags ["xpoll:project:a" "xpoll:project:b" "xpoll:project:c"]}))))
+
+  (testing "4+ projects = 4 tiers (promote to permanent)"
+    (is (= 4 (core/cross-pollination-promotion-tiers
+              {:tags ["xpoll:project:a" "xpoll:project:b"
+                      "xpoll:project:c" "xpoll:project:d"]})))
+    (is (= 4 (core/cross-pollination-promotion-tiers
+              {:tags ["xpoll:project:a" "xpoll:project:b"
+                      "xpoll:project:c" "xpoll:project:d" "xpoll:project:e"]})))))
+
+(deftest should-promote-with-cross-pollination-test
+  (testing "cross-pollination boost auto-detected from tags"
+    (let [entry {:duration :ephemeral
+                 :recalls []
+                 :tags ["xpoll:project:a" "xpoll:project:b" "xpoll:project:c"]}
+          result (core/should-promote? entry)]
+      ;; 3 projects * 3.0 weight = 9.0 boost, threshold for ephemeral is 5.0
+      (is (true? (:promote? result)))
+      (is (= 9.0 (:cross-pollination-boost result)))
+      (is (= :short (:next-duration result)))))
+
+  (testing "cross-pollination boost combines with recall score"
+    (let [entry {:duration :short
+                 :recalls [{:context :explicit-reference :count 2}]
+                 :tags ["xpoll:project:a" "xpoll:project:b"]}
+          result (core/should-promote? entry)]
+      ;; recall score: 2.0, xpoll boost: 6.0, total: 8.0
+      ;; short->medium threshold: 10.0, so NOT promoted yet
+      (is (false? (:promote? result)))
+      (is (= 8.0 (:current-score result)))))
+
+  (testing "explicit cross-pollination-boost overrides auto-detection"
+    (let [entry {:duration :ephemeral
+                 :recalls []
+                 :tags ["xpoll:project:a" "xpoll:project:b"]}
+          result (core/should-promote? entry {:cross-pollination-boost 20.0})]
+      (is (true? (:promote? result)))
+      (is (= 20.0 (:cross-pollination-boost result)))))
+
+  (testing "no tags = no boost (backward compatible)"
+    (let [entry {:duration :ephemeral :recalls [] :tags []}
+          result (core/should-promote? entry)]
+      (is (= 0.0 (:cross-pollination-boost result)))
+      (is (false? (:promote? result)))))
+
+  (testing "nil tags = no boost (backward compatible)"
+    (let [entry {:duration :ephemeral :recalls []}
+          result (core/should-promote? entry)]
+      (is (= 0.0 (:cross-pollination-boost result)))
+      (is (false? (:promote? result))))))

@@ -13,19 +13,29 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
+;; Forward declarations for cross-pollination (W5) used in should-promote?
+(declare cross-pollination-score)
+
 ;; =============================================================================
 ;; Recall Context Weights
 ;; =============================================================================
 
 (def recall-weights
   "Weights for different recall contexts.
-   Higher = more meaningful signal for promotion."
+   Higher = more meaningful signal for promotion.
+
+   Includes behavioral signals from signature.clj that track
+   actual task outcomes after memory recall."
   {:catchup-structural 0.1 ; Always loaded at catchup - noise
    :wrap-structural 0.1 ; Always checked at wrap - noise
    :explicit-reference 1.0 ; LLM explicitly cited in reasoning
    :cross-session 2.0 ; Referenced from different session
    :cross-project 3.0 ; Referenced from different project
-   :user-feedback 5.0}) ; Human marked as helpful
+   :user-feedback 5.0 ; Human marked as helpful
+   ;; Behavioral signals (from signature.clj outcome tracking)
+   :behavioral-success 2.0 ; Task completed successfully after recall
+   :behavioral-failure 0.0 ; Task failed after recall (no penalty, just no boost)
+   :behavioral-correction -2.0}) ; User had to correct agent work (demote signal)
 
 (def promotion-thresholds
   "Score thresholds for promotion between durations."
@@ -92,18 +102,57 @@
 
 (defn should-promote?
   "Determine if a memory entry should be promoted.
-   
-   entry: {:id :duration :recalls [...]}
-   
+
+   entry: {:id :duration :recalls [...] :tags [...]}
+   opts: {:behavioral-adjustment float  - Optional adjustment from signature tracking
+          :cross-pollination-boost float - Optional boost from cross-project access (W5)}
+
    Returns: {:promote? bool :current-score float :threshold float :next-duration keyword}"
-  [{:keys [duration recalls] :as _entry}]
-  (let [{:keys [score]} (calculate-promotion-score recalls)
-        threshold (threshold-for-duration duration)
-        should? (>= score threshold)]
-    {:promote? should?
-     :current-score score
-     :threshold threshold
-     :next-duration (when should? (current-duration->next duration))}))
+  ([entry] (should-promote? entry {}))
+  ([{:keys [duration recalls] :as entry} {:keys [behavioral-adjustment cross-pollination-boost]
+                                          :or {behavioral-adjustment 0.0
+                                               cross-pollination-boost 0.0}}]
+   (let [{:keys [score]} (calculate-promotion-score recalls)
+         ;; W5: Auto-compute cross-pollination boost from tags if not explicitly provided
+         xpoll-boost (if (zero? cross-pollination-boost)
+                       (cross-pollination-score entry)
+                       cross-pollination-boost)
+         ;; Apply behavioral adjustment + cross-pollination boost
+         adjusted-score (+ score behavioral-adjustment xpoll-boost)
+         threshold (threshold-for-duration duration)
+         should? (>= adjusted-score threshold)]
+     {:promote? should?
+      :current-score adjusted-score
+      :base-score score
+      :behavioral-adjustment behavioral-adjustment
+      :cross-pollination-boost xpoll-boost
+      :threshold threshold
+      :next-duration (when should? (current-duration->next duration))})))
+
+(defn should-demote?
+  "Determine if a memory entry should be demoted due to poor behavioral outcomes.
+
+   Demotion occurs when:
+   - Behavioral adjustment is strongly negative (many corrections)
+   - Entry has been recalled but consistently led to failures
+
+   entry: {:id :duration :recalls [...]}
+   behavioral-adjustment: float from signature.clj compute-promotion-adjustment
+
+   Returns: {:demote? bool :reason keyword :prev-duration keyword}"
+  [{:keys [duration] :as _entry} behavioral-adjustment]
+  (let [demote? (< behavioral-adjustment -3.0)
+        prev-duration (case (keyword duration)
+                        :permanent :long
+                        :long :medium
+                        :medium :short
+                        :short :ephemeral
+                        :ephemeral :ephemeral
+                        :short)]
+    {:demote? demote?
+     :reason (when demote? :behavioral-corrections)
+     :behavioral-adjustment behavioral-adjustment
+     :prev-duration (when demote? prev-duration)}))
 
 ;; =============================================================================
 ;; Session Tagging
@@ -153,6 +202,146 @@
   "Check if any recall has user feedback."
   [recalls]
   (some #(= :user-feedback (:context %)) recalls))
+
+(defn behavioral-recall?
+  "Is this recall context a behavioral signal (from outcome tracking)?"
+  [context]
+  (contains? #{:behavioral-success :behavioral-failure :behavioral-correction} context))
+
+(defn behavioral-recalls
+  "Filter to only behavioral signal recalls."
+  [recalls]
+  (filter #(behavioral-recall? (:context %)) recalls))
+
+(defn has-behavioral-signal?
+  "Check if any recall has behavioral outcome data."
+  [recalls]
+  (some behavioral-recall? (map :context recalls)))
+
+;; =============================================================================
+;; Staleness Decay (W2: Scheduled Decay Lifecycle)
+;; =============================================================================
+
+(defn days-since
+  "Calculate days elapsed since a timestamp string.
+   Returns nil if timestamp is nil/empty or unparseable."
+  [timestamp-str]
+  (when (and timestamp-str (not (str/blank? (str timestamp-str))))
+    (try
+      (let [then (java.time.ZonedDateTime/parse (str timestamp-str))
+            now (java.time.ZonedDateTime/now)]
+        (.between java.time.temporal.ChronoUnit/DAYS then now))
+      (catch Exception _
+        nil))))
+
+(defn decay-candidate?
+  "Predicate: should this entry be considered for staleness decay?
+
+   Candidates have:
+   - Low access count (< access-threshold, default 3)
+   - Not permanent duration
+   - Not axiom type (axioms are foundational, never decay)
+
+   entry: {:access-count int :duration string :type string}
+   opts: {:access-threshold int (default 3)}"
+  ([entry] (decay-candidate? entry {}))
+  ([{:keys [access-count duration type] :as _entry}
+    {:keys [access-threshold] :or {access-threshold 3}}]
+   (and (< (or access-count 0) access-threshold)
+        (not= duration "permanent")
+        (not= type "axiom"))))
+
+(def ^:private duration-decay-rate
+  "Decay rate multiplier per duration tier.
+   Shorter durations decay faster (they're meant to be ephemeral)."
+  {"ephemeral" 2.0
+   "short"     1.5
+   "medium"    1.0
+   "long"      0.5})
+
+(defn calculate-decay-delta
+  "Calculate staleness-beta increase for a decay cycle.
+
+   Pure function: takes entry data, returns delta (float >= 0).
+
+   Factors:
+   - Days since last access (more days = more decay)
+   - Access count (higher = less decay, logarithmic dampening)
+   - Duration tier (ephemeral decays fastest)
+
+   Returns 0.0 if entry was recently accessed (< recency-days).
+
+   entry: {:access-count int :last-accessed string :duration string}
+   opts:  {:recency-days int (default 7) - grace period}"
+  ([entry] (calculate-decay-delta entry {}))
+  ([{:keys [access-count last-accessed duration] :as _entry}
+    {:keys [recency-days] :or {recency-days 7}}]
+   (let [days-idle (or (days-since last-accessed)
+                       30) ;; Never accessed → treat as 30 days idle
+         access (max 1 (or access-count 0))]
+     (if (< days-idle recency-days)
+       0.0 ;; Recently accessed - no decay
+       (let [time-factor (/ (double days-idle) 30.0) ;; Normalize to ~monthly
+             access-dampening (/ 1.0 (Math/log (+ access 2))) ;; log dampening
+             rate (get duration-decay-rate (or duration "medium") 1.0)]
+         (* time-factor access-dampening rate))))))
+
+;; =============================================================================
+;; Cross-Pollination Detection (W5: Auto-Promotion)
+;; =============================================================================
+
+(defn extract-xpoll-projects
+  "Extract distinct project IDs from cross-pollination tags on an entry.
+
+   xpoll tags have format: 'xpoll:project:<project-id>'
+   The entry's own project-id is NOT included (it's the origin, not cross-access).
+
+   entry: {:tags [string]}
+
+   Returns: set of project-id strings that accessed this entry cross-project."
+  [entry]
+  (let [tags (or (:tags entry) [])]
+    (->> tags
+         (filter #(str/starts-with? % "xpoll:project:"))
+         (map #(subs % (count "xpoll:project:")))
+         set)))
+
+(defn cross-pollination-count
+  "Count distinct projects that accessed this entry cross-project.
+
+   entry: {:tags [string]}
+
+   Returns: int (0 if no cross-project access detected)"
+  [entry]
+  (count (extract-xpoll-projects entry)))
+
+(defn cross-pollination-score
+  "Delegates to hive-knowledge (proprietary). Returns 0.0 when not available.
+   Calculates promotion score contribution from cross-pollination."
+  [entry]
+  (if-let [f (try (requiring-resolve 'hive-knowledge.cross-pollination/cross-pollination-score)
+                  (catch Exception _ nil))]
+    (f entry)
+    0.0))
+
+(defn cross-pollination-candidate?
+  "Delegates to hive-knowledge (proprietary). Returns false when not available.
+   Predicate: is this entry eligible for cross-pollination auto-promotion?"
+  ([entry] (cross-pollination-candidate? entry {}))
+  ([entry opts]
+   (if-let [f (try (requiring-resolve 'hive-knowledge.cross-pollination/cross-pollination-candidate?)
+                   (catch Exception _ nil))]
+     (f entry opts)
+     false)))
+
+(defn cross-pollination-promotion-tiers
+  "Delegates to hive-knowledge (proprietary). Returns 0 when not available.
+   Calculates how many tiers to promote based on cross-pollination breadth."
+  [entry]
+  (if-let [f (try (requiring-resolve 'hive-knowledge.cross-pollination/cross-pollination-promotion-tiers)
+                  (catch Exception _ nil))]
+    (f entry)
+    0))
 
 ;; =============================================================================
 ;; Progress Note Generation
