@@ -113,7 +113,7 @@
           (pr-str {:backup/version 1}))
     (spit (str *test-dir* "/kg-datalevin-20260202T100000.edn")
           (pr-str {:backup/version 1}))
-    
+
     (let [result (migration/cmd-list {:dir *test-dir*})]
       (is (= 2 (:count result)))
       (is (= 2 (count (:backups result)))))))
@@ -124,7 +124,7 @@
           (pr-str {:backup/version 1}))
     (spit (str *test-dir* "/memory-datascript-20260202T100000.edn")
           (pr-str {:backup/version 1}))
-    
+
     (let [result (migration/cmd-list {:dir *test-dir* :scope :kg})]
       (is (= 1 (:count result)))
       (is (= :kg (:scope (first (:backups result))))))))
@@ -134,7 +134,7 @@
     (dotimes [i 10]
       (spit (str *test-dir* "/kg-datascript-2026020" i "T100000.edn")
             (pr-str {:backup/version 1})))
-    
+
     (let [result (migration/cmd-list {:dir *test-dir* :limit 3})]
       (is (= 3 (:count result))))))
 
@@ -262,6 +262,41 @@
         (is (string? (:path result)))
         (is (.exists (io/file (:path result))))))))
 
+(deftest cmd-backup-memory-scope-test
+  (testing "cmd-backup :memory scope creates Chroma backup (mocked)"
+    (with-redefs [hive-mcp.chroma/query-entries
+                  (fn [& _] [{:id "e1" :type "note" :content "test" :tags ["test"]}
+                             {:id "e2" :type "decision" :content "test2" :tags []}])]
+      (let [result (migration/cmd-backup {:dir *test-dir* :scope :memory})]
+        (is (:success result))
+        (is (string? (:path result)))
+        (is (.exists (io/file (:path result))))
+        ;; Verify file structure
+        (let [data (-> (:path result) slurp clojure.edn/read-string)]
+          (is (= :memory (:backup/scope data)))
+          (is (= :chroma (:backup/backend data)))
+          (is (= 2 (get-in data [:data :total]))))))))
+
+(deftest cmd-backup-full-scope-test
+  (testing "cmd-backup :full scope creates combined KG + Memory backup (mocked)"
+    (with-redefs [hive-mcp.knowledge-graph.migration/export-to-edn
+                  (fn [] {:edges [{:id "kg1"}] :disc [] :synthetic []
+                          :counts {:edges 1 :disc 0 :synthetic 0}})
+                  hive-mcp.knowledge-graph.migration/detect-current-backend
+                  (fn [] :datascript)
+                  hive-mcp.chroma/query-entries
+                  (fn [& _] [{:id "m1" :type "note" :content "mem" :tags []}])]
+      (let [result (migration/cmd-backup {:dir *test-dir* :scope :full})]
+        (is (:success result))
+        (is (string? (:path result)))
+        ;; Verify combined structure
+        (let [data (-> (:path result) slurp clojure.edn/read-string)]
+          (is (= :full (:backup/scope data)))
+          (is (map? (get-in data [:backup/counts :kg])))
+          (is (map? (get-in data [:backup/counts :memory])))
+          (is (= 1 (count (get-in data [:data :kg :edges]))))
+          (is (= 1 (count (get-in data [:data :memory :entries])))))))))
+
 ;; =============================================================================
 ;; Restore Command Tests
 ;; =============================================================================
@@ -331,3 +366,256 @@
     (is (thrown-with-msg? clojure.lang.ExceptionInfo
                           #"Target backend required"
                           (migration/cmd-sync {})))))
+
+;; =============================================================================
+;; Project Scope Awareness Tests - Core
+;; =============================================================================
+
+(deftest backup-metadata-includes-project-id-test
+  (testing "backup-metadata includes :backup/project-id when provided"
+    (let [meta (core/backup-metadata :kg :datascript {:edges 5} "hive-mcp")]
+      (is (= "hive-mcp" (:backup/project-id meta)))
+      (is (= 2 (:backup/version meta)))))
+
+  (testing "backup-metadata defaults to 'global' when no project-id"
+    (let [meta (core/backup-metadata :kg :datascript {:edges 5})]
+      (is (= "global" (:backup/project-id meta)))))
+
+  (testing "backup-metadata defaults to 'global' when nil project-id"
+    (let [meta (core/backup-metadata :kg :datascript {:edges 5} nil)]
+      (is (= "global" (:backup/project-id meta))))))
+
+(deftest check-scope-compatibility-same-project-test
+  (testing "Same project is always compatible"
+    (let [result (core/check-scope-compatibility
+                  {:backup/project-id "hive-mcp"} "hive-mcp")]
+      (is (:compatible? result))
+      (is (= "hive-mcp" (:backup-project-id result)))
+      (is (= "hive-mcp" (:target-project-id result))))))
+
+(deftest check-scope-compatibility-global-backup-test
+  (testing "Global backup is compatible with any project"
+    (let [result (core/check-scope-compatibility
+                  {:backup/project-id "global"} "hive-mcp")]
+      (is (:compatible? result))
+      (is (= "global" (:backup-project-id result))))))
+
+(deftest check-scope-compatibility-v1-backup-test
+  (testing "V1 backup (no project-id) is treated as global"
+    (let [result (core/check-scope-compatibility
+                  {:backup/version 1} "hive-mcp")]
+      (is (:compatible? result))
+      (is (= "global" (:backup-project-id result))))))
+
+(deftest check-scope-compatibility-cross-project-test
+  (testing "Cross-project is incompatible by default"
+    (let [result (core/check-scope-compatibility
+                  {:backup/project-id "project-a"} "project-b")]
+      (is (not (:compatible? result)))
+      (is (= "project-a" (:backup-project-id result)))
+      (is (= "project-b" (:target-project-id result)))
+      (is (string? (:reason result))))))
+
+(deftest check-scope-compatibility-nil-target-test
+  (testing "nil target-project-id skips scope check"
+    (let [result (core/check-scope-compatibility
+                  {:backup/project-id "project-a"} nil)]
+      (is (:compatible? result)))))
+
+;; =============================================================================
+;; Project Scope Awareness Tests - Backup Command
+;; =============================================================================
+
+(deftest cmd-backup-includes-project-id-in-file-test
+  (testing "cmd-backup includes project-id in backup file metadata"
+    (with-redefs [hive-mcp.knowledge-graph.migration/export-to-edn
+                  (fn [] {:edges [] :disc [] :synthetic []
+                          :counts {:edges 0 :disc 0 :synthetic 0}})
+                  hive-mcp.knowledge-graph.migration/detect-current-backend
+                  (fn [] :datascript)]
+      (let [result (migration/cmd-backup {:dir *test-dir*
+                                          :scope :kg
+                                          :project-id "my-project"})]
+        (is (:success result))
+        ;; Read back the file and check project-id
+        (let [data (-> (:path result) slurp clojure.edn/read-string)]
+          (is (= "my-project" (:backup/project-id data)))
+          (is (= 2 (:backup/version data))))))))
+
+(deftest cmd-backup-derives-project-id-from-directory-test
+  (testing "cmd-backup derives project-id from directory param"
+    (with-redefs [hive-mcp.knowledge-graph.migration/export-to-edn
+                  (fn [] {:edges [] :disc [] :synthetic []
+                          :counts {:edges 0 :disc 0 :synthetic 0}})
+                  hive-mcp.knowledge-graph.migration/detect-current-backend
+                  (fn [] :datascript)]
+      (let [result (migration/cmd-backup {:dir *test-dir*
+                                          :scope :kg
+                                          :directory "/home/user/projects/cool-project"})]
+        (is (:success result))
+        (let [data (-> (:path result) slurp clojure.edn/read-string)]
+          (is (= "cool-project" (:backup/project-id data))))))))
+
+(deftest cmd-backup-defaults-to-global-without-directory-test
+  (testing "cmd-backup defaults to 'global' when no directory or project-id"
+    (with-redefs [hive-mcp.knowledge-graph.migration/export-to-edn
+                  (fn [] {:edges [] :disc [] :synthetic []
+                          :counts {:edges 0 :disc 0 :synthetic 0}})
+                  hive-mcp.knowledge-graph.migration/detect-current-backend
+                  (fn [] :datascript)]
+      (let [result (migration/cmd-backup {:dir *test-dir* :scope :kg})]
+        (is (:success result))
+        (let [data (-> (:path result) slurp clojure.edn/read-string)]
+          (is (= "global" (:backup/project-id data))))))))
+
+;; =============================================================================
+;; Project Scope Awareness Tests - List Command
+;; =============================================================================
+
+(deftest cmd-list-filters-by-project-id-test
+  (testing "cmd-list filters backups by project-id"
+    ;; Create two backups with different project-ids
+    (spit (str *test-dir* "/kg-datascript-20260201T100000.edn")
+          (pr-str {:backup/version 2
+                   :backup/scope :kg
+                   :backup/backend :datascript
+                   :backup/project-id "project-a"
+                   :backup/counts {:edges 0}}))
+    (spit (str *test-dir* "/kg-datascript-20260202T100000.edn")
+          (pr-str {:backup/version 2
+                   :backup/scope :kg
+                   :backup/backend :datascript
+                   :backup/project-id "project-b"
+                   :backup/counts {:edges 0}}))
+
+    ;; Filter by project-a
+    (let [result (migration/cmd-list {:dir *test-dir* :project-id "project-a"})]
+      (is (= 1 (:count result)))
+      (is (= "project-a" (:project-id-filter result))))
+
+    ;; Filter by project-b
+    (let [result (migration/cmd-list {:dir *test-dir* :project-id "project-b"})]
+      (is (= 1 (:count result))))
+
+    ;; No filter - shows all
+    (let [result (migration/cmd-list {:dir *test-dir*})]
+      (is (= 2 (:count result)))
+      (is (not (contains? result :project-id-filter))))))
+
+(deftest cmd-list-v1-backups-match-global-filter-test
+  (testing "V1 backups (no project-id) match 'global' filter"
+    ;; Create a v1 backup without project-id
+    (spit (str *test-dir* "/kg-datascript-20260201T100000.edn")
+          (pr-str {:backup/version 1
+                   :backup/scope :kg
+                   :backup/counts {:edges 0}}))
+    ;; Create a v2 backup with project-id
+    (spit (str *test-dir* "/kg-datascript-20260202T100000.edn")
+          (pr-str {:backup/version 2
+                   :backup/scope :kg
+                   :backup/project-id "hive-mcp"
+                   :backup/counts {:edges 0}}))
+
+    ;; Filter for global should find v1 backup
+    (let [result (migration/cmd-list {:dir *test-dir* :project-id "global"})]
+      (is (= 1 (:count result))))
+
+    ;; Filter for hive-mcp should find v2 backup
+    (let [result (migration/cmd-list {:dir *test-dir* :project-id "hive-mcp"})]
+      (is (= 1 (:count result))))))
+
+;; =============================================================================
+;; Project Scope Awareness Tests - Restore Command
+;; =============================================================================
+
+(deftest cmd-restore-dry-run-shows-scope-check-test
+  (testing "cmd-restore dry-run shows scope compatibility info"
+    (let [path (str *test-dir* "/restore-scope-test.edn")]
+      (spit path (pr-str {:backup/version 2
+                          :backup/scope :kg
+                          :backup/project-id "hive-mcp"
+                          :backup/counts {:edges 5}
+                          :data {:edges []}}))
+      (let [result (migration/cmd-restore {:path path
+                                           :dry-run true
+                                           :project-id "hive-mcp"})]
+        (is (:dry-run result))
+        (is (some? (:scope-check result)))
+        (is (:compatible? (:scope-check result)))))))
+
+(deftest cmd-restore-blocks-cross-project-test
+  (testing "cmd-restore blocks cross-project restore by default"
+    (let [path (str *test-dir* "/cross-project.edn")]
+      (spit path (pr-str {:backup/version 2
+                          :backup/scope :kg
+                          :backup/project-id "project-a"
+                          :backup/counts {:edges 5}
+                          :data {:edges []}}))
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                            #"Cross-project restore blocked"
+                            (migration/cmd-restore {:path path
+                                                    :project-id "project-b"}))))))
+
+(deftest cmd-restore-allows-cross-project-when-forced-test
+  (testing "cmd-restore allows cross-project when :force-cross-project is true"
+    (let [path (str *test-dir* "/cross-project-forced.edn")]
+      (spit path (pr-str {:backup/version 2
+                          :backup/scope :kg
+                          :backup/project-id "project-a"
+                          :backup/counts {:edges 1}
+                          :data {:edges [{:id "e1"}]}}))
+      (with-redefs [hive-mcp.knowledge-graph.migration/import-from-edn
+                    (fn [data] {:imported {:edges (count (:edges data))}
+                                :errors []})]
+        (let [result (migration/cmd-restore {:path path
+                                             :project-id "project-b"
+                                             :force-cross-project true})]
+          (is (:success result))
+          (is (= "project-b" (:project-id result)))
+          (is (not (:compatible? (:scope-check result)))))))))
+
+(deftest cmd-restore-allows-global-backup-to-any-project-test
+  (testing "cmd-restore allows global backups to restore to any project"
+    (let [path (str *test-dir* "/global-backup.edn")]
+      (spit path (pr-str {:backup/version 2
+                          :backup/scope :kg
+                          :backup/project-id "global"
+                          :backup/counts {:edges 1}
+                          :data {:edges [{:id "e1"}]}}))
+      (with-redefs [hive-mcp.knowledge-graph.migration/import-from-edn
+                    (fn [data] {:imported {:edges (count (:edges data))}
+                                :errors []})]
+        (let [result (migration/cmd-restore {:path path
+                                             :project-id "any-project"})]
+          (is (:success result))
+          (is (:compatible? (:scope-check result))))))))
+
+(deftest cmd-restore-allows-v1-backup-to-any-project-test
+  (testing "cmd-restore allows v1 backups (no project-id) to restore to any project"
+    (let [path (str *test-dir* "/v1-backup.edn")]
+      (spit path (pr-str {:backup/version 1
+                          :backup/scope :kg
+                          :backup/counts {:edges 1}
+                          :data {:edges [{:id "e1"}]}}))
+      (with-redefs [hive-mcp.knowledge-graph.migration/import-from-edn
+                    (fn [data] {:imported {:edges (count (:edges data))}
+                                :errors []})]
+        (let [result (migration/cmd-restore {:path path
+                                             :project-id "any-project"})]
+          (is (:success result))
+          (is (:compatible? (:scope-check result))))))))
+
+;; =============================================================================
+;; Project Scope Awareness Tests - Validate Command
+;; =============================================================================
+
+(deftest cmd-validate-includes-project-id-test
+  (testing "cmd-validate includes project-id in metadata"
+    (let [path (str *test-dir* "/v2-backup.edn")]
+      (spit path (pr-str {:backup/version 2
+                          :backup/scope :kg
+                          :backup/project-id "hive-mcp"
+                          :backup/counts {:edges 0}}))
+      (let [result (migration/cmd-validate {:path path})]
+        (is (:valid? result))
+        (is (= "hive-mcp" (get-in result [:metadata :backup/project-id])))))))

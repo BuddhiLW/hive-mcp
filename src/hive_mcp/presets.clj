@@ -450,7 +450,7 @@
    Output: {:name, :category, :summary (first paragraph), :key-points (first 3-5 bullets)}
 
    This enables lazy loading - lings get summaries instead of full ~1500 token content."
-  [{:keys [name title category _content content] :as preset}]
+  [{:keys [name title category _content content]}]
   (let [md-content (or _content content "")
         summary (extract-first-paragraph md-content)
         key-points (extract-key-bullets md-content 5)]

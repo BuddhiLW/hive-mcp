@@ -13,6 +13,7 @@
             [hive-mcp.embeddings.service :as embedding-service]
             [hive-mcp.embeddings.config :as embedding-config]
             [hive-mcp.transport.websocket :as ws]
+            [hive-mcp.transport.olympus :as olympus-ws]
             [hive-mcp.hooks :as hooks]
             [hive-mcp.crystal.hooks :as crystal-hooks]
             [hive-mcp.events.core :as ev]
@@ -28,7 +29,9 @@
             [hive-hot.core :as hot]
             [hive-hot.events :as hot-events]
             [hive-mcp.swarm.logic :as logic]
-            [hive-mcp.guards :as guards])
+            [hive-mcp.guards :as guards]
+            [hive-mcp.memory.store.chroma :as chroma-store]
+            [hive-mcp.protocols.memory :as mem-proto])
   (:gen-class))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -372,7 +375,14 @@
      (Runtime/getRuntime)
      (Thread.
       (fn []
-        (log/info "JVM shutdown detected - running session-end hooks")
+        (log/info "JVM shutdown detected - running shutdown sequence")
+        ;; Stop Olympus WebSocket server first (close client connections cleanly)
+        ;; CLARITY-Y: Yield safe failure - errors don't break shutdown sequence
+        (try
+          (olympus-ws/stop!)
+          (log/info "Olympus WebSocket server stopped")
+          (catch Exception e
+            (log/warn "Olympus WS shutdown failed (non-fatal):" (.getMessage e))))
         ;; Mark coordinator as terminated in DataScript (Phase 4)
         (when-let [coord-id @coordinator-id-atom]
           (try
@@ -471,12 +481,29 @@
     (start-websocket-server!)
     ;; Initialize embedding provider for semantic search (fails gracefully)
     (init-embedding-provider!)
+    ;; Wire ChromaMemoryStore as active IMemoryStore backend (Phase 1 vectordb abstraction)
+    ;; SOLID-D: Consumers can depend on IMemoryStore protocol instead of chroma directly
+    ;; Must run AFTER init-embedding-provider! since Chroma config is set there
+    (try
+      (let [store (chroma-store/create-store)]
+        (mem-proto/set-store! store)
+        (log/info "ChromaMemoryStore wired as active IMemoryStore backend"))
+      (catch Exception e
+        (log/warn "ChromaMemoryStore initialization failed (non-fatal):" (.getMessage e))))
     ;; Register tools for agent delegation (allows local models to use MCP tools)
     ;; Delegates to routes module for capability-filtered tools
     (routes/register-tools-for-delegation!)
     ;; Start WebSocket channel with auto-healing (primary - Aleph/Netty based)
     ;; This is the reliable push channel for hivemind events
     (start-ws-channel-with-healing!)
+    ;; Start Olympus WebSocket server for Olympus Web UI (port 7911)
+    ;; Sends full snapshot on connect, supports typed event protocol
+    (try
+      (olympus-ws/start!)
+      (olympus-ws/wire-hivemind-events!)
+      (log/info "Olympus WebSocket server started on port 7911")
+      (catch Exception e
+        (log/warn "Olympus WebSocket server failed to start (non-fatal):" (.getMessage e))))
     ;; Start legacy bidirectional channel server (deprecated - kept for backwards compat)
     (let [channel-port (parse-long (or (System/getenv "HIVE_MCP_CHANNEL_PORT") "9998"))]
       (try
@@ -519,7 +546,21 @@
                                      :debounce-ms 100})
             (log/info "Hot-reload watcher started:" {:dirs src-dirs})
             ;; Register MCP auto-heal listener to refresh tools after reload
-            (register-hot-reload-listener!))
+            (register-hot-reload-listener!)
+            ;; Register state protection for DataScript state validation
+            (try
+              (require 'hive-mcp.hot.state)
+              (let [register! (resolve 'hive-mcp.hot.state/register-with-hive-hot!)]
+                (register!))
+              (catch Exception e
+                (log/debug "Hot-state protection not registered:" (.getMessage e))))
+            ;; Register SAA Silence strategy for hot-reload aware exploration
+            (try
+              (require 'hive-mcp.hot.silence)
+              (let [register! (resolve 'hive-mcp.hot.silence/register-with-hive-hot!)]
+                (register!))
+              (catch Exception e
+                (log/debug "SAA Silence not registered:" (.getMessage e)))))
           (catch Exception e
             (log/warn "Hot-reload watcher failed to start (non-fatal):" (.getMessage e))))
         (log/info "Hot-reload disabled via .hive-project.edn")))

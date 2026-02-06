@@ -3,23 +3,30 @@
 
    Commands:
    - status     - Current backend info and data counts
-   - backup     - Create timestamped backup
-   - restore    - Restore from backup
+   - backup     - Create timestamped backup (scope-aware)
+   - restore    - Restore from backup (with cross-project guard)
    - export     - Export with optional adapter transform
    - import     - Import with optional adapter transform
    - switch     - Switch backend with auto-migration
    - sync       - Mirror to secondary backend
-   - list       - List available backups
+   - list       - List available backups (filterable by project)
    - validate   - Validate backup integrity
    - adapters   - List available adapters
+
+   Project Scope Awareness:
+   - backup: Includes :backup/project-id derived from :directory param
+   - restore: Checks scope compatibility, blocks cross-project by default
+   - list: Supports :project-id filtering
 
    CLARITY-T: All operations logged with full context."
   (:require [hive-mcp.migration.core :as core]
             [hive-mcp.migration.adapter :as adapter]
             [hive-mcp.knowledge-graph.connection :as kg-conn]
             [hive-mcp.knowledge-graph.migration :as kg-mig]
-            [hive-mcp.knowledge-graph.protocol :as kg-proto]
+            [hive-mcp.tools.memory.scope :as scope]
+            [hive-mcp.chroma :as chroma]
             [clojure.java.io :as io]
+            [clojure.edn :as edn]
             [taoensso.timbre :as log]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -61,72 +68,139 @@
                :recent (take 3 backups)}}))
 
 ;; =============================================================================
+;; Memory Export Helper
+;; =============================================================================
+
+(defn- export-memory-to-edn
+  "Export all Chroma memory entries to EDN format for backup.
+   Returns {:entries [...] :counts {:note N :snippet N ...} :total N}"
+  []
+  (let [;; Get all entries including expired for complete backup
+        entries (chroma/query-entries :limit 50000 :include-expired? true)
+        ;; Remove :document field (regenerated on import from content)
+        clean-entries (mapv #(dissoc % :document) entries)
+        ;; Group by type for counts
+        by-type (group-by :type entries)]
+    {:entries clean-entries
+     :counts (into {} (map (fn [[k v]] [(keyword k) (count v)]) by-type))
+     :total (count entries)}))
+
+;; =============================================================================
 ;; Backup Command
 ;; =============================================================================
 
 (defn cmd-backup
-  "Create timestamped backup.
+  "Create timestamped backup with project scope metadata.
 
    Parameters:
-     :scope   - :kg, :memory, :full (default: :kg)
-     :dir     - Backup directory (default: data/backups)
-     :adapter - Export adapter :edn, :json (default: :edn)
+     :scope      - :kg, :memory, :full (default: :kg)
+     :dir        - Backup directory (default: data/backups)
+     :adapter    - Export adapter :edn, :json (default: :edn)
+     :directory  - Working directory for project-id derivation (Go ctx pattern)
+     :project-id - Explicit project-id override (default: derived from directory)
 
    Returns:
-     {:success true, :path \"...\", :size N, :counts {...}}"
-  [{:keys [scope dir adapter]
+     {:success true, :path \"...\", :size N, :counts {...}, :project-id \"...\"}"
+  [{:keys [scope dir adapter directory project-id]
     :or {scope :kg
          dir "data/backups"
          adapter :edn}}]
-  (log/info "Creating backup" {:scope scope :dir dir :adapter adapter})
-  (core/ensure-backup-dir! dir)
+  (let [pid (or project-id (scope/get-current-project-id directory))]
+    (log/info "Creating backup" {:scope scope :dir dir :adapter adapter :project-id pid})
+    (core/ensure-backup-dir! dir)
 
-  (case scope
-    :kg
-    (let [;; Export KG data
-          export-data (kg-mig/export-to-edn)
-          counts (:counts export-data)
-          backend (kg-mig/detect-current-backend)
-          ;; Generate unique filename
-          filename (core/generate-backup-name :kg backend)
-          path (str dir "/" filename)
-          ;; Apply adapter transform if not :edn
-          transformed (if (= adapter :edn)
-                        export-data
-                        (adapter/transform-export adapter export-data))
-          ;; Create metadata
-          metadata (core/backup-metadata :kg backend counts)]
-      (core/write-backup! path metadata {:data transformed}))
+    (case scope
+      :kg
+      (let [;; Export KG data
+            export-data (kg-mig/export-to-edn)
+            counts (:counts export-data)
+            backend (kg-mig/detect-current-backend)
+            ;; Generate unique filename
+            filename (core/generate-backup-name :kg backend)
+            path (str dir "/" filename)
+            ;; Apply adapter transform if not :edn
+            transformed (if (= adapter :edn)
+                          export-data
+                          (adapter/transform-export adapter export-data))
+            ;; Create metadata with project scope
+            metadata (core/backup-metadata :kg backend counts pid)]
+        (core/write-backup! path metadata {:data transformed}))
 
-    ;; TODO: :memory and :full scopes
-    (throw (ex-info "Scope not yet implemented" {:scope scope}))))
+      :memory
+      (let [;; Export Memory/Chroma data
+            export-data (export-memory-to-edn)
+            counts (:counts export-data)
+            ;; Generate unique filename
+            filename (core/generate-backup-name :memory :chroma)
+            path (str dir "/" filename)
+            ;; Apply adapter transform if not :edn
+            transformed (if (= adapter :edn)
+                          export-data
+                          (adapter/transform-export adapter export-data))
+            ;; Create metadata with project scope
+            metadata (core/backup-metadata :memory :chroma counts pid)]
+        (core/write-backup! path metadata {:data transformed}))
+
+      :full
+      (let [;; Export both KG and Memory
+            kg-data (kg-mig/export-to-edn)
+            memory-data (export-memory-to-edn)
+            kg-backend (kg-mig/detect-current-backend)
+            ;; Combined counts
+            counts {:kg (:counts kg-data)
+                    :memory (:counts memory-data)}
+            ;; Generate unique filename
+            filename (core/generate-backup-name :full kg-backend)
+            path (str dir "/" filename)
+            ;; Combined data structure
+            combined {:kg kg-data
+                      :memory memory-data}
+            ;; Apply adapter transform if not :edn
+            transformed (if (= adapter :edn)
+                          combined
+                          (adapter/transform-export adapter combined))
+            ;; Create metadata with project scope
+            metadata (core/backup-metadata :full kg-backend counts pid)]
+        (core/write-backup! path metadata {:data transformed}))
+
+      (throw (ex-info "Unknown scope" {:scope scope :valid [:kg :memory :full]})))))
 
 ;; =============================================================================
 ;; Restore Command
 ;; =============================================================================
 
 (defn cmd-restore
-  "Restore from backup file.
+  "Restore from backup file with project scope guard.
 
    Parameters:
-     :path    - Full path to backup file (required if no :latest)
-     :latest  - Restore latest backup for scope (e.g., :kg)
-     :dry-run - Preview without applying (default: false)
-     :adapter - Import adapter (default: :edn)
+     :path                - Full path to backup file (required if no :latest)
+     :latest              - Restore latest backup for scope (e.g., :kg)
+     :dry-run             - Preview without applying (default: false)
+     :adapter             - Import adapter (default: :edn)
+     :directory           - Working directory for project-id derivation (Go ctx pattern)
+     :project-id          - Explicit target project-id (default: derived from directory)
+     :force-cross-project - Allow restoring backup from different project (default: false)
 
    Returns:
-     {:success true, :imported {...}, :validation {...}}"
-  [{:keys [path latest dry-run adapter]
+     {:success true, :imported {...}, :validation {...}, :project-id \"...\"}
+
+   Cross-project guard:
+     By default, restoring a backup from a different project is blocked.
+     Set :force-cross-project true to override. Global backups (project-id='global')
+     are always allowed. V1 backups without project-id are treated as global."
+  [{:keys [path latest dry-run adapter directory project-id force-cross-project]
     :or {dry-run false
-         adapter :edn}}]
+         adapter :edn
+         force-cross-project false}}]
   (let [backup-path (or path
                         (when latest
-                          (:path (core/latest-backup latest))))]
+                          (:path (core/latest-backup latest))))
+        target-pid (or project-id (scope/get-current-project-id directory))]
     (when-not backup-path
       (throw (ex-info "No backup path specified and no latest found"
                       {:latest latest})))
 
-    (log/info "Restoring backup" {:path backup-path :dry-run dry-run})
+    (log/info "Restoring backup" {:path backup-path :dry-run dry-run :target-project-id target-pid})
 
     ;; Validate first
     (let [validation (core/validate-backup backup-path)]
@@ -134,46 +208,70 @@
         (throw (ex-info "Backup validation failed" validation)))
 
       (if dry-run
-        {:dry-run true
-         :path backup-path
-         :metadata (:metadata validation)
-         :would-import (:metadata validation)}
-
-        ;; Actually restore
+        ;; Dry-run: show scope compatibility info
         (let [backup-data (core/read-backup backup-path)
-              data (if (= adapter :edn)
-                     (:data backup-data)
-                     (adapter/transform-import adapter (:data backup-data)))
-              result (kg-mig/import-from-edn data)]
-          {:success (empty? (:errors result))
+              compat (core/check-scope-compatibility backup-data target-pid)]
+          {:dry-run true
            :path backup-path
-           :imported (:imported result)
-           :errors (:errors result)})))))
+           :metadata (:metadata validation)
+           :would-import (:metadata validation)
+           :scope-check compat})
+
+        ;; Actually restore - check scope first
+        (let [backup-data (core/read-backup backup-path)
+              compat (core/check-scope-compatibility backup-data target-pid)]
+
+          ;; Scope guard: block cross-project restore unless forced
+          (when (and (not (:compatible? compat))
+                     (not force-cross-project))
+            (throw (ex-info "Cross-project restore blocked"
+                            {:reason (:reason compat)
+                             :backup-project-id (:backup-project-id compat)
+                             :target-project-id (:target-project-id compat)
+                             :hint "Use :force-cross-project true to override"})))
+
+          (let [data (if (= adapter :edn)
+                       (:data backup-data)
+                       (adapter/transform-import adapter (:data backup-data)))
+                result (kg-mig/import-from-edn data)]
+            {:success (empty? (:errors result))
+             :path backup-path
+             :imported (:imported result)
+             :errors (:errors result)
+             :project-id target-pid
+             :scope-check compat}))))))
 
 ;; =============================================================================
 ;; List Command
 ;; =============================================================================
 
 (defn cmd-list
-  "List available backups.
+  "List available backups with optional project scope filtering.
 
    Parameters:
-     :scope   - Filter by scope (:kg, :memory, :full)
-     :backend - Filter by backend
-     :limit   - Max results (default: 20)
-     :dir     - Backup directory
+     :scope      - Filter by scope (:kg, :memory, :full)
+     :backend    - Filter by backend
+     :limit      - Max results (default: 20)
+     :dir        - Backup directory
+     :directory  - Working directory for project-id derivation (Go ctx pattern)
+     :project-id - Filter by project scope (reads backup metadata)
 
    Returns:
-     {:backups [...], :count N}"
-  [{:keys [scope backend limit dir]
+     {:backups [...], :count N, :project-id-filter \"...\" (when filtered)}"
+  [{:keys [scope backend limit dir directory project-id]
     :or {limit 20
          dir "data/backups"}}]
-  (let [backups (core/list-backups {:scope scope
+  (let [pid-filter (or project-id
+                       (when directory
+                         (scope/get-current-project-id directory)))
+        backups (core/list-backups {:scope scope
                                     :backend backend
+                                    :project-id pid-filter
                                     :limit limit
                                     :dir dir})]
-    {:backups backups
-     :count (count backups)}))
+    (cond-> {:backups backups
+             :count (count backups)}
+      pid-filter (assoc :project-id-filter pid-filter))))
 
 ;; =============================================================================
 ;; Switch Command
@@ -345,7 +443,7 @@
 
   (log/info "Importing data" {:path path :adapter adapter :dry-run dry-run})
 
-  (let [raw-data (-> path slurp clojure.edn/read-string)
+  (let [raw-data (-> path slurp edn/read-string)
         data (adapter/transform-import adapter raw-data)]
 
     (if dry-run
@@ -375,19 +473,27 @@
      :description "Current backend info and data counts"
      :params []}
     {:command "backup"
-     :description "Create timestamped backup"
+     :description "Create timestamped backup (scope-aware, includes project-id)"
      :params [{:name "scope" :type "keyword" :default ":kg"}
               {:name "dir" :type "string" :default "data/backups"}
-              {:name "adapter" :type "keyword" :default ":edn"}]}
+              {:name "adapter" :type "keyword" :default ":edn"}
+              {:name "directory" :type "string" :description "Working dir for project-id derivation"}
+              {:name "project-id" :type "string" :description "Explicit project-id override"}]}
     {:command "restore"
-     :description "Restore from backup file"
+     :description "Restore from backup file (with cross-project guard)"
      :params [{:name "path" :type "string" :required false}
               {:name "latest" :type "keyword" :required false}
-              {:name "dry-run" :type "boolean" :default false}]}
+              {:name "dry-run" :type "boolean" :default false}
+              {:name "directory" :type "string" :description "Working dir for project-id derivation"}
+              {:name "project-id" :type "string" :description "Explicit target project-id"}
+              {:name "force-cross-project" :type "boolean" :default false
+               :description "Allow restoring backup from different project"}]}
     {:command "list"
-     :description "List available backups"
+     :description "List available backups (filterable by project scope)"
      :params [{:name "scope" :type "keyword"}
-              {:name "limit" :type "integer" :default 20}]}
+              {:name "limit" :type "integer" :default 20}
+              {:name "directory" :type "string" :description "Working dir for project-id filtering"}
+              {:name "project-id" :type "string" :description "Filter by project scope"}]}
     {:command "switch"
      :description "Switch backend with auto-migration"
      :params [{:name "target" :type "keyword" :required true}

@@ -8,12 +8,40 @@
    SOLID: Facade pattern - single tool entry point for migration operations.
    CLARITY: L - Thin adapter delegating to domain handlers."
   (:require [hive-mcp.tools.cli :refer [make-cli-handler]]
-            [hive-mcp.tools.migration :as migration-handlers]
-            [taoensso.timbre :as log]))
+            [hive-mcp.tools.migration :as migration-handlers]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
+
+;; =============================================================================
+;; Keyword Coercion (MCP string → keyword for case dispatch)
+;; =============================================================================
+
+(def ^:private keyword-params
+  "Params that must be coerced from string to keyword.
+   MCP sends JSON strings but underlying handlers use `case` with keyword dispatch:
+   - :scope  → (case scope :kg :memory :full ...) in cmd-backup, cmd-export
+   - :target → (case target :datahike :datalevin :datascript ...) in cmd-switch
+   - :adapter → (= adapter :edn) in cmd-backup, cmd-restore, cmd-export
+   - :latest  → passed to core/latest-backup which expects keyword"
+  #{:scope :target :adapter :latest})
+
+(defn- coerce-params
+  "Coerce string values to keywords for params that underlying handlers
+   use with `case` keyword dispatch. MCP clients send JSON strings but
+   Clojure `case` only matches keywords.
+
+   Only coerces params in `keyword-params` set. Leaves other params untouched.
+   Safe for nil values and already-keyword values."
+  [params]
+  (reduce (fn [m k]
+            (let [v (get m k)]
+              (if (string? v)
+                (assoc m k (keyword v))
+                m)))
+          params
+          keyword-params))
 
 ;; =============================================================================
 ;; Handlers Map - Wire commands to existing handlers
@@ -37,8 +65,12 @@
 ;; =============================================================================
 
 (def handle-migration
-  "Unified CLI handler for migration operations."
-  (make-cli-handler handlers))
+  "Unified CLI handler for migration operations.
+   Coerces string params to keywords before dispatch to ensure
+   compatibility with MCP JSON string values."
+  (let [cli-handler (make-cli-handler handlers)]
+    (fn [params]
+      (cli-handler (coerce-params params)))))
 
 ;; =============================================================================
 ;; Tool Definition
@@ -82,7 +114,14 @@
                               "backend" {:type "string"
                                          :description "Filter backups by backend"}
                               "limit" {:type "integer"
-                                       :description "Max results (default: 20)"}}
+                                       :description "Max results (default: 20)"}
+                              ;; project scope params (scope awareness)
+                              "directory" {:type "string"
+                                           :description "Working directory for project-id derivation (Go ctx pattern)"}
+                              "project-id" {:type "string"
+                                            :description "Explicit project-id for scope filtering (backup/restore/list)"}
+                              "force-cross-project" {:type "boolean"
+                                                     :description "Allow restoring backup from different project (default: false)"}}
                  :required ["command"]}
    :handler handle-migration})
 
