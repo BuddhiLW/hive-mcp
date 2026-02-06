@@ -431,7 +431,7 @@
 
 (defn kg-first-fixture [f]
   ;; Initialize KG connection for tests
-  (kg-conn/ensure-initialized!)
+  (kg-conn/ensure-conn!)
   ;; Create temp project directory
   (let [tmp-dir (io/file (System/getProperty "java.io.tmpdir")
                          (str "hive-kg-test-" (System/currentTimeMillis)))]

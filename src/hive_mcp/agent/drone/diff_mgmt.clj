@@ -10,6 +10,7 @@
    CLARITY-T: All diff operations are logged for observability."
   (:require [hive-mcp.tools.diff :as diff]
             [clojure.data.json :as json]
+            [clojure.set]
             [taoensso.timbre :as log]))
 
 ;;; ============================================================
@@ -17,7 +18,7 @@
 ;;; ============================================================
 
 (defrecord DiffResults
-  [applied failed proposed]
+           [applied failed proposed]
   ;; applied  - vector of file paths successfully applied
   ;; failed   - vector of {:file :error} for failed applications
   ;; proposed - vector of diff-ids for review mode
@@ -70,9 +71,9 @@
       (when (seq failed)
         (log/warn "Some drone diffs failed to apply" {:drone drone-id :failures failed}))
       (->diff-results
-        (mapv :file applied)
-        (mapv #(select-keys % [:file :error]) failed)
-        []))))
+       (mapv :file applied)
+       (mapv #(select-keys % [:file :error]) failed)
+       []))))
 
 (defn tag-diffs-with-wave!
   "Tag newly proposed diffs with wave-id for batch review tracking.

@@ -27,7 +27,7 @@
 (defn- format-disc-info
   "Format disc entity info for injection."
   [disc-info file-path]
-  (let [{:keys [disc staleness-score read-count last-read-at]} disc-info
+  (let [{:keys [disc staleness-score read-count]} disc-info
         file-name (last (str/split file-path #"/"))]
     (str "- **" file-name "** (KG-known, staleness: "
          (format "%.1f" (float (or staleness-score 0)))
@@ -193,7 +193,7 @@
         files-to-read (concat needs-read stale)
 
         ;; Build staleness warnings for stale files
-        {:keys [warnings formatted] :as stale-info} (build-staleness-warnings stale)
+        {:keys [warnings formatted]} (build-staleness-warnings stale)
 
         ;; Read files that need reading
         read-results (for [f files-to-read]

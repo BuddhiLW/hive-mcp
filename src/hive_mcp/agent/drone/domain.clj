@@ -17,7 +17,7 @@
 ;;; ============================================================
 
 (defrecord TaskSpec
-  [task files task-type preset cwd parent-id wave-id options]
+           [task files task-type preset cwd parent-id wave-id options]
   ;; task      - Task description string (required)
   ;; files     - Vector of file paths to modify
   ;; task-type - Keyword (:testing, :refactoring, :bugfix, :documentation, :general)
@@ -53,8 +53,7 @@
     :or {files []
          task-type :general
          trace true
-         skip-auto-apply false}
-    :as opts}]
+         skip-auto-apply false}}]
   (when (or (nil? task) (and (string? task) (str/blank? task)))
     (throw (ex-info "TaskSpec requires non-blank :task"
                     {:error-type :validation
@@ -80,8 +79,8 @@
 ;;; ============================================================
 
 (defrecord ExecutionContext
-  [drone-id task-id parent-id model sandbox start-time
-   pre-validation file-contents-before project-root]
+           [drone-id task-id parent-id model sandbox start-time
+            pre-validation file-contents-before project-root]
   ;; drone-id             - Unique drone identifier
   ;; task-id              - Task identifier for claims
   ;; parent-id            - Parent ling ID
@@ -110,22 +109,21 @@
 
    Throws:
      ex-info if :drone-id is missing"
-  [{:keys [drone-id task-id parent-id model sandbox project-root]
-    :as opts}]
+  [{:keys [drone-id task-id parent-id model sandbox project-root]}]
   (when (str/blank? drone-id)
     (throw (ex-info "ExecutionContext requires :drone-id"
                     {:error-type :validation
                      :field :drone-id})))
   (map->ExecutionContext
-    {:drone-id drone-id
-     :task-id (or task-id (str "task-" drone-id))
-     :parent-id parent-id
-     :model model
-     :sandbox sandbox
-     :start-time (System/currentTimeMillis)
-     :pre-validation nil
-     :file-contents-before nil
-     :project-root project-root}))
+   {:drone-id drone-id
+    :task-id (or task-id (str "task-" drone-id))
+    :parent-id parent-id
+    :model model
+    :sandbox sandbox
+    :start-time (System/currentTimeMillis)
+    :pre-validation nil
+    :file-contents-before nil
+    :project-root project-root}))
 
 (defn with-pre-validation
   "Add pre-validation results to execution context."
@@ -152,9 +150,9 @@
 ;;; ============================================================
 
 (defrecord ExecutionResult
-  [status agent-id task-id parent-id
-   files-modified files-failed proposed-diff-ids
-   duration-ms validation result error-info]
+           [status agent-id task-id parent-id
+            files-modified files-failed proposed-diff-ids
+            duration-ms validation result error-info]
   ;; status           - :completed | :failed | :timeout | :cancelled
   ;; agent-id         - Drone ID that executed
   ;; task-id          - Task identifier
@@ -181,17 +179,17 @@
        :error-info     - Error details (for failures)"
   [ctx status {:keys [result diff-results validation error-info]}]
   (map->ExecutionResult
-    {:status status
-     :agent-id (:drone-id ctx)
-     :task-id (:task-id ctx)
-     :parent-id (:parent-id ctx)
-     :files-modified (or (:applied diff-results) [])
-     :files-failed (or (:failed diff-results) [])
-     :proposed-diff-ids (or (:proposed diff-results) [])
-     :duration-ms (elapsed-ms ctx)
-     :validation validation
-     :result result
-     :error-info error-info}))
+   {:status status
+    :agent-id (:drone-id ctx)
+    :task-id (:task-id ctx)
+    :parent-id (:parent-id ctx)
+    :files-modified (or (:applied diff-results) [])
+    :files-failed (or (:failed diff-results) [])
+    :proposed-diff-ids (or (:proposed diff-results) [])
+    :duration-ms (elapsed-ms ctx)
+    :validation validation
+    :result result
+    :error-info error-info}))
 
 (defn success-result
   "Create a successful ExecutionResult."

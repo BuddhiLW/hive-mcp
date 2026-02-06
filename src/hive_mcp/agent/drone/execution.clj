@@ -106,9 +106,9 @@
 
     ;; 1. Register drone in DataScript
     (let [tx-result (ds/add-slave! drone-id {:slave/status :spawning
-                                              :slave/name "drone"
-                                              :slave/depth 2
-                                              :slave/parent parent-id})]
+                                             :slave/name "drone"
+                                             :slave/depth 2
+                                             :slave/parent parent-id})]
       (when-not (and tx-result (seq (:tx-data tx-result)))
         (log/error {:event :drone/registration-failed
                     :drone-id drone-id
@@ -174,15 +174,15 @@
       (let [pre-validation (validation/validate-files-pre files task-id)
             _ (when-not (validation/all-valid? pre-validation :pre)
                 (let [invalid-files (->> pre-validation
-                                          (filter (comp not :pre-valid? val))
-                                          (map key))]
+                                         (filter (comp not :pre-valid? val))
+                                         (map key))]
                   (log/warn {:event :drone/pre-validation-failed
                              :drone-id drone-id
                              :invalid-files invalid-files})))
             ;; Capture file contents for post-validation diff
             file-contents-before (into {}
-                                        (for [f files]
-                                          [f (try (slurp f) (catch Exception _ nil))]))]
+                                       (for [f files]
+                                         [f (try (slurp f) (catch Exception _ nil))]))]
 
         (-> ctx
             (domain/with-pre-validation pre-validation)
@@ -211,7 +211,7 @@
   [ctx task-spec config delegate-fn]
   (let [{:keys [drone-id task-id parent-id project-root pre-validation]} ctx
         {:keys [task files options]} task-spec
-        {:keys [tools preset model step-budget task-type]} config
+        {:keys [tools preset model step-budget]} config
         cwd (or (:cwd task-spec) project-root)
 
         ;; Augment task with context
@@ -298,23 +298,23 @@
 
         ;; Handle diffs
         diff-results (diff-mgmt/handle-diff-results!
-                       drone-id new-diff-ids
-                       {:wave-id wave-id :skip-auto-apply skip-auto-apply})
+                      drone-id new-diff-ids
+                      {:wave-id wave-id :skip-auto-apply skip-auto-apply})
 
         duration-ms (domain/elapsed-ms ctx)
 
         ;; Post-validation
         post-validation (when (and (seq files)
-                                    (= :completed (:status raw-result))
-                                    (not skip-auto-apply))
+                                   (= :completed (:status raw-result))
+                                   (not skip-auto-apply))
                           (validation/validate-files-post
-                            file-contents-before
-                            (or pre-validation {})
-                            {:lint-level :error
-                             :require-modification false}))
+                           file-contents-before
+                           (or pre-validation {})
+                           {:lint-level :error
+                            :require-modification false}))
 
         validation-summary (validation/summarize-validation
-                             (merge (or pre-validation {}) (or post-validation {})))]
+                            (merge (or pre-validation {}) (or post-validation {})))]
 
     ;; Log validation warnings
     (when (and post-validation (not (validation/all-valid? post-validation :post)))
@@ -337,19 +337,19 @@
     ;; Emit completion/failure event
     (if (= :completed (:status raw-result))
       (ev/dispatch [:drone/completed {:drone-id drone-id
-                                       :task-id task-id
-                                       :parent-id parent-id
-                                       :files-modified (:applied diff-results)
-                                       :files-failed (:failed diff-results)
-                                       :proposed-diff-ids (:proposed diff-results)
-                                       :duration-ms duration-ms
-                                       :validation validation-summary}])
+                                      :task-id task-id
+                                      :parent-id parent-id
+                                      :files-modified (:applied diff-results)
+                                      :files-failed (:failed diff-results)
+                                      :proposed-diff-ids (:proposed diff-results)
+                                      :duration-ms duration-ms
+                                      :validation validation-summary}])
       (ev/dispatch [:drone/failed {:drone-id drone-id
-                                    :task-id task-id
-                                    :parent-id parent-id
-                                    :error (str (:result raw-result))
-                                    :error-type :execution
-                                    :files files}]))
+                                   :task-id task-id
+                                   :parent-id parent-id
+                                   :error (str (:result raw-result))
+                                   :error-type :execution
+                                   :files files}]))
 
     ;; Record model metrics
     (let [model-name (or (:model raw-result) model)
@@ -360,36 +360,36 @@
                             (cost/count-tokens (str (:result raw-result))))]
 
       (prom/record-drone-result! {:model model-name
-                                   :task-type (name task-type)
-                                   :success? (= :completed (:status raw-result))
-                                   :duration-ms duration-ms
-                                   :tokens tokens})
+                                  :task-type (name task-type)
+                                  :success? (= :completed (:status raw-result))
+                                  :duration-ms duration-ms
+                                  :tokens tokens})
 
       (cost/track-drone-usage! drone-id
-                                {:input-tokens input-tokens
-                                 :output-tokens output-tokens
-                                 :task-preview task
-                                 :wave-id wave-id})
+                               {:input-tokens input-tokens
+                                :output-tokens output-tokens
+                                :task-preview task
+                                :wave-id wave-id})
 
       (routing/report-execution! task-type model-name raw-result
-                                  {:duration-ms duration-ms
-                                   :directory (:cwd task-spec)
-                                   :agent-id drone-id}))
+                                 {:duration-ms duration-ms
+                                  :directory (:cwd task-spec)
+                                  :agent-id drone-id}))
 
     ;; Record to hivemind
     (hivemind/record-ling-result! drone-id
-                                   {:task task
-                                    :files files
-                                    :result raw-result
-                                    :diff-results diff-results
-                                    :validation validation-summary
-                                    :parent-id parent-id
-                                    :timestamp (System/currentTimeMillis)})
+                                  {:task task
+                                   :files files
+                                   :result raw-result
+                                   :diff-results diff-results
+                                   :validation validation-summary
+                                   :parent-id parent-id
+                                   :timestamp (System/currentTimeMillis)})
 
     ;; Build result
     (domain/success-result ctx {:result raw-result
-                                 :diff-results diff-results
-                                 :validation validation-summary})))
+                                :diff-results diff-results
+                                :validation validation-summary})))
 
 ;;; ============================================================
 ;;; Phase 6: Cleanup - Always Runs
@@ -448,25 +448,25 @@
                                   (min 500 (count (or (:stacktrace structured) ""))))})
 
     (ev/dispatch [:drone/failed {:drone-id drone-id
-                                  :task-id task-id
-                                  :parent-id parent-id
-                                  :error (:message structured)
-                                  :error-type (:error-type structured)
-                                  :stacktrace (:stacktrace structured)
-                                  :files files}])
+                                 :task-id task-id
+                                 :parent-id parent-id
+                                 :error (:message structured)
+                                 :error-type (:error-type structured)
+                                 :stacktrace (:stacktrace structured)
+                                 :files files}])
 
     (prom/record-drone-result! {:model model
-                                 :task-type (name task-type)
-                                 :success? false
-                                 :duration-ms duration-ms
-                                 :retry? (= :timeout (:error-type structured))
-                                 :retry-reason (:error-type structured)})
+                                :task-type (name task-type)
+                                :success? false
+                                :duration-ms duration-ms
+                                :retry? (= :timeout (:error-type structured))
+                                :retry-reason (:error-type structured)})
 
     (routing/report-execution! task-type model
-                                {:status :failed :error (:message structured)}
-                                {:duration-ms duration-ms
-                                 :directory (:cwd task-spec)
-                                 :agent-id drone-id})))
+                               {:status :failed :error (:message structured)}
+                               {:duration-ms duration-ms
+                                :directory (:cwd task-spec)
+                                :agent-id drone-id})))
 
 ;;; ============================================================
 ;;; Orchestrator - Compose Phases
@@ -493,10 +493,10 @@
 
         ;; Create execution context
         ctx (domain/->execution-context
-              {:drone-id drone-id
-               :task-id task-id
-               :parent-id parent-id
-               :project-root cwd})
+             {:drone-id drone-id
+              :task-id task-id
+              :parent-id parent-id
+              :project-root cwd})
 
         ;; Phase 1: Prepare (pure)
         config (phase:prepare task-spec)
