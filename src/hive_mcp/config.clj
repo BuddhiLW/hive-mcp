@@ -19,7 +19,11 @@
       :project-overrides {\"proj\" {:hot-reload true}}
       :parent-rules   [{:path-prefix \"/path/prefix/\" :parent-id \"parent-proj\"}]
       :embeddings     {:ollama {:host \"http://localhost:11434\" :model \"nomic-embed-text\"}
-                       :openrouter {:model \"qwen/qwen3-embedding-8b\"}}}
+                       :openrouter {:model \"qwen/qwen3-embedding-8b\"}}
+      :services       {:chroma {:host \"localhost\" :port 8000}
+                       :ollama {:host \"http://localhost:11434\" :model \"nomic-embed-text\"}
+                       :datahike {:path \"data/kg\"}}
+      :secrets        {:openrouter-api-key nil :openai-api-key nil}}
 
    Usage:
      (load-global-config!)       ;; Load from disk, cache in atom
@@ -28,6 +32,8 @@
      (get-defaults)              ;; Shortcut for :defaults
      (get-project-overrides k)   ;; Overrides for specific project
      (get-parent-for-path p)     ;; Resolve parent-id via :parent-rules
+     (get-service-config :chroma) ;; Service-specific config map
+     (get-secret :openrouter-api-key) ;; Secret with env var fallback
      (get-config-value \"embeddings.ollama.host\") ;; Dotted key path access
      (set-config-value! \"embeddings.ollama.host\" \"http://new:11434\") ;; Write + persist"
   (:require [clojure.edn :as edn]
@@ -52,7 +58,12 @@
    :parent-rules []
    :embeddings {:ollama {:host "http://localhost:11434"
                          :model "nomic-embed-text"}
-                :openrouter {:model "qwen/qwen3-embedding-8b"}}})
+                :openrouter {:model "qwen/qwen3-embedding-8b"}}
+   :services {:chroma {:host "localhost" :port 8000}
+              :ollama {:host "http://localhost:11434" :model "nomic-embed-text"}
+              :datahike {:path "data/kg"}}
+   :secrets {:openrouter-api-key nil
+             :openai-api-key nil}})
 
 (def ^:private legacy-config-path
   "Legacy path for backward compatibility migration."
@@ -198,6 +209,39 @@
                           (.startsWith norm-path path-prefix))))
            first
            :parent-id))))
+
+;; =============================================================================
+;; Service & Secret Accessors
+;; =============================================================================
+
+(defn get-service-config
+  "Return config map for a specific service (e.g., :chroma, :ollama, :datahike).
+   Returns the service-specific config map, or nil if not configured.
+
+   Examples:
+     (get-service-config :chroma)   => {:host \"localhost\" :port 8000}
+     (get-service-config :ollama)   => {:host \"http://localhost:11434\" :model \"nomic-embed-text\"}
+     (get-service-config :datahike) => {:path \"data/kg\"}"
+  [service-key]
+  (get-in (get-global-config) [:services service-key]))
+
+(defn get-secret
+  "Return a secret value, checking config.edn first, then env var fallback.
+
+   The env var name is derived from the secret key by uppercasing and
+   replacing hyphens with underscores:
+     :openrouter-api-key => OPENROUTER_API_KEY
+     :openai-api-key     => OPENAI_API_KEY
+
+   Returns nil if not found in either location.
+
+   CLARITY-Y: Yield safe — never throws, returns nil on missing."
+  [secret-key]
+  (let [config-val (get-in (get-global-config) [:secrets secret-key])
+        env-name (-> (name secret-key)
+                     (str/replace "-" "_")
+                     (str/upper-case))]
+    (or config-val (System/getenv env-name))))
 
 ;; =============================================================================
 ;; Dotted Key Path Access

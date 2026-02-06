@@ -17,7 +17,8 @@
    - Intent Parser: Extract [TOOL:name param=value] markers
    - Proxy Dispatcher: Route to actual tool execution
    - Result Formatter: Return results in Tier 1 consumable format"
-  (:require [clojure.string :as str]
+  (:require [hive-mcp.config :as global-config]
+            [clojure.string :as str]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -300,7 +301,7 @@
      {:tool \"name\" :success bool :content/error \"...\"}"
   [{:keys [tool _params] :as intent} _tools & [{:keys [api-key model]}]]
   (let [config @tier2-config
-        effective-key (or api-key (:api-key config) (System/getenv "OPENROUTER_API_KEY"))
+        effective-key (or api-key (:api-key config) (global-config/get-secret :openrouter-api-key))
         effective-model (or model (:model config))]
     (if-not effective-key
       {:tool tool

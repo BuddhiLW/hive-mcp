@@ -35,6 +35,7 @@
   (:require [hive-mcp.embeddings.config :as config]
             [hive-mcp.embeddings.registry :as registry]
             [hive-mcp.chroma :as chroma]
+            [hive-mcp.config :as global-config]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -258,7 +259,7 @@
   (configure-collection! "hive-mcp-memory" (config/ollama-config))
 
   ;; Presets use OpenRouter if available (more accurate semantic search)
-  (when (System/getenv "OPENROUTER_API_KEY")
+  (when (global-config/get-secret :openrouter-api-key)
     (try
       (configure-collection! "hive-mcp-presets" (config/openrouter-config))
       (catch Exception e
@@ -267,7 +268,7 @@
         (configure-collection! "hive-mcp-presets" (config/ollama-config)))))
 
   ;; Plans use OpenRouter if available (plans are 1000-5000+ chars, exceed Ollama limit)
-  (if (System/getenv "OPENROUTER_API_KEY")
+  (if (global-config/get-secret :openrouter-api-key)
     (try
       (configure-collection! "hive-mcp-plans" (config/openrouter-config))
       (catch Exception e

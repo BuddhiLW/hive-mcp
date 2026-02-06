@@ -16,7 +16,8 @@
      (openai-config {:model \"text-embedding-3-large\"})
 
    Usage with EmbeddingService:
-     (service/configure-collection! \"my-collection\" (config/ollama-config))")
+     (service/configure-collection! \"my-collection\" (config/ollama-config))"
+  (:require [hive-mcp.config :as global-config]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -97,7 +98,10 @@
   ([] (ollama-config {}))
   ([{:keys [model host]
      :or {model "nomic-embed-text"}}]
-   (let [host (or host (System/getenv "OLLAMA_HOST") "http://localhost:11434")
+   (let [host (or host
+                  (:host (global-config/get-service-config :ollama))
+                  (System/getenv "OLLAMA_HOST")
+                  "http://localhost:11434")
          dimension (or (get ollama-models model)
                        (throw (ex-info (str "Unknown Ollama model: " model
                                             ". Supported: " (keys ollama-models))
@@ -115,7 +119,7 @@
   ([] (openai-config {}))
   ([{:keys [model api-key]
      :or {model "text-embedding-3-small"}}]
-   (let [api-key (or api-key (System/getenv "OPENAI_API_KEY"))
+   (let [api-key (or api-key (global-config/get-secret :openai-api-key))
          dimension (or (get openai-models model)
                        (throw (ex-info (str "Unknown OpenAI model: " model
                                             ". Supported: " (keys openai-models))
@@ -136,7 +140,7 @@
   ([] (openrouter-config {}))
   ([{:keys [model api-key]
      :or {model "qwen/qwen3-embedding-8b"}}]
-   (let [api-key (or api-key (System/getenv "OPENROUTER_API_KEY"))
+   (let [api-key (or api-key (global-config/get-secret :openrouter-api-key))
          dimension (get openrouter-models model 4096)] ; Default dimension for unknown models
      (when-not api-key
        (throw (ex-info "OpenRouter API key required. Set OPENROUTER_API_KEY env var or pass :api-key option."

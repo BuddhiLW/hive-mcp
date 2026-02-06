@@ -17,6 +17,7 @@
        (openrouter/->provider {:api-key \"sk-or-...\"
                                :model \"qwen/qwen3-embedding-8b\"}))"
   (:require [hive-mcp.chroma :as chroma]
+            [hive-mcp.config :as global-config]
             [clojure.data.json :as json]
             [taoensso.timbre :as log])
   (:import [java.net URI]
@@ -120,7 +121,7 @@
      - cohere/embed-english-v3.0 (1024 dims, paid)"
   ([] (->provider {}))
   ([{:keys [api-key model] :or {model default-model}}]
-   (let [api-key (or api-key (System/getenv "OPENROUTER_API_KEY"))
+   (let [api-key (or api-key (global-config/get-secret :openrouter-api-key))
          dimension (get models model 4096)] ; Default dimension if unknown model
      (when-not api-key
        (throw (ex-info "OpenRouter API key required. Set OPENROUTER_API_KEY env var or pass :api-key option."

@@ -16,6 +16,7 @@
    CLARITY: L — Pure adapter between ILingStrategy and OpenRouter API."
   (:require [hive-mcp.agent.ling.strategy :refer [ILingStrategy]]
             [hive-mcp.agent.headless :as headless]
+            [hive-mcp.config :as global-config]
             [clojure.data.json :as json]
             [clojure.string :as str]
             [taoensso.timbre :as log])
@@ -86,8 +87,8 @@
    Returns the key string or throws."
   [opts]
   (or (:api-key opts)
-      (System/getenv "OPENROUTER_API_KEY")
-      (throw (ex-info "OpenRouter API key required. Set OPENROUTER_API_KEY env var."
+      (global-config/get-secret :openrouter-api-key)
+      (throw (ex-info "OpenRouter API key required. Set OPENROUTER_API_KEY env var or config.edn :secrets."
                       {:env "OPENROUTER_API_KEY"}))))
 
 ;;; =============================================================================

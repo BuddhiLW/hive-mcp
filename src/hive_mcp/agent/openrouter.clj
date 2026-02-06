@@ -7,6 +7,7 @@
    CLARITY-T: Full telemetry with timing, metrics, and error tracking.
    CLARITY-Y: Validates responses to yield safe failures on empty content."
   (:require [hive-mcp.agent.protocol :as proto]
+            [hive-mcp.config :as global-config]
             [clj-http.client :as http]
             [clojure.data.json :as json]
             [clojure.string :as str]
@@ -237,7 +238,7 @@
      mistralai/mistral-large, mistralai/mixtral-8x7b
      meta-llama/llama-3-70b-instruct"
   [{:keys [api-key model] :or {model "anthropic/claude-3-haiku"}}]
-  (let [key (or api-key (System/getenv "OPENROUTER_API_KEY"))]
+  (let [key (or api-key (global-config/get-secret :openrouter-api-key))]
     (when-not key
       (throw (ex-info "OpenRouter API key required" {:env "OPENROUTER_API_KEY"})))
     (->OpenRouterBackend key model)))

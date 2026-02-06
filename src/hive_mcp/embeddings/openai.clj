@@ -17,6 +17,7 @@
      (chroma/set-embedding-provider! 
        (openai/->provider {:model \"text-embedding-ada-002\"}))"
   (:require [hive-mcp.chroma :as chroma]
+            [hive-mcp.config :as global-config]
             [clojure.data.json :as json]
             [taoensso.timbre :as log])
   (:import [java.net URI]
@@ -25,7 +26,6 @@
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
-
 
 ;;; ============================================================
 ;;; Configuration
@@ -117,7 +117,7 @@
      - text-embedding-ada-002 (1536 dims, legacy)"
   ([] (->provider {}))
   ([{:keys [api-key model] :or {model default-model}}]
-   (let [api-key (or api-key (System/getenv "OPENAI_API_KEY"))
+   (let [api-key (or api-key (global-config/get-secret :openai-api-key))
          dimension (get models model)]
      (when-not api-key
        (throw (ex-info "OpenAI API key required. Set OPENAI_API_KEY env var or pass :api-key option."

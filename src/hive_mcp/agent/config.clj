@@ -3,7 +3,8 @@
    
    Manages task-type to model mappings and preset configurations.
    All state is held in atoms for runtime configurability via MCP."
-  (:require [taoensso.timbre :as log]))
+  (:require [hive-mcp.config :as global-config]
+            [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -177,7 +178,7 @@
   [{:keys [model preset task-type api-key]
     :or {task-type :coding}}]
   (let [resolved-model (resolve-model {:model model :preset preset :task-type task-type})
-        key (or api-key (System/getenv "OPENROUTER_API_KEY"))]
+        key (or api-key (global-config/get-secret :openrouter-api-key))]
     (when-not key
       (throw (ex-info "OpenRouter API key required" {:env "OPENROUTER_API_KEY"})))
     (log/debug "OpenRouter backend" {:preset preset :task-type task-type :model resolved-model})
