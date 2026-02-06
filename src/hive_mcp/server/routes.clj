@@ -59,6 +59,28 @@
           (when (= "text" (:type item)) idx))
         (map-indexed vector (reverse content))))
 
+(defn wrap-delimited-block
+  "Append a delimited block to content.
+   SRP: Single responsibility for delimiter-wrapped embedding.
+   Appends to last text item if exists, otherwise adds new text item.
+
+   Format:
+   ---TAG---
+   <body>
+   ---/TAG---"
+  [content tag body]
+  (if (and body (seq (str body)))
+    (let [block-text (str "\n\n---" tag "---\n"
+                          body
+                          "\n---/" tag "---")]
+      (if-let [last-text-idx (find-last-text-idx content)]
+        (let [actual-idx (- (count content) 1 last-text-idx)
+              last-item (nth content actual-idx)]
+          (assoc content actual-idx
+                 (update last-item :text str block-text)))
+        (conj content {:type "text" :text block-text})))
+    content))
+
 (defn wrap-piggyback
   "Append piggyback messages to content with HIVEMIND delimiters.
    SRP: Single responsibility for piggyback embedding.
@@ -69,17 +91,7 @@
    [{:a \"agent-id\" :e \"event-type\" :m \"message\"}]
    ---/HIVEMIND---"
   [content piggyback]
-  (if (and piggyback (seq piggyback))
-    (let [piggyback-text (str "\n\n---HIVEMIND---\n"
-                              (pr-str piggyback)
-                              "\n---/HIVEMIND---")]
-      (if-let [last-text-idx (find-last-text-idx content)]
-        (let [actual-idx (- (count content) 1 last-text-idx)
-              last-item (nth content actual-idx)]
-          (assoc content actual-idx
-                 (update last-item :text str piggyback-text)))
-        (conj content {:type "text" :text piggyback-text})))
-    content))
+  (wrap-delimited-block content "HIVEMIND" (when (seq piggyback) (pr-str piggyback))))
 
 ;; =============================================================================
 ;; Agent ID and Project ID Extraction
@@ -235,6 +247,45 @@
   (require 'hive-mcp.channel.piggyback)
   ((resolve 'hive-mcp.channel.piggyback/get-messages) agent-id :project-id project-id))
 
+(defn- drain-memory-piggyback
+  "Drain next batch of memory entries for agent+project.
+   SRP: Single responsibility - memory piggyback retrieval.
+   Returns drain result map or nil if nothing pending."
+  [agent-id project-id]
+  (require 'hive-mcp.channel.memory-piggyback)
+  ((resolve 'hive-mcp.channel.memory-piggyback/drain!) agent-id project-id))
+
+(defn wrap-memory-piggyback-content
+  "Append memory piggyback batch to content with MEMORY delimiters.
+   SRP: Single responsibility for memory piggyback embedding.
+
+   Format:
+   ---MEMORY---
+   {:batch [...] :remaining N :total M :delivered D :seq S}
+   ---/MEMORY---"
+  [content drain-result]
+  (wrap-delimited-block content "MEMORY" (when drain-result (pr-str drain-result))))
+
+(defn wrap-handler-memory-piggyback
+  "Wrap handler to attach memory piggyback entries.
+   SRP: Single responsibility - memory piggyback embedding only.
+
+   Drains next batch of buffered memory entries (axioms, conventions)
+   within 32K char budget. Zero-cost when no entries pending.
+
+   Runs BEFORE hivemind piggyback in the middleware chain so both
+   channels can append to content independently."
+  [handler]
+  (fn [args]
+    (let [content (handler args)
+          project-id (extract-project-id args)
+          default-agent-id (if project-id
+                             (str "coordinator-" project-id)
+                             "coordinator")
+          agent-id (extract-agent-id args default-agent-id)
+          drain-result (drain-memory-piggyback agent-id project-id)]
+      (wrap-memory-piggyback-content content drain-result))))
+
 (defn wrap-handler-piggyback
   "Wrap handler to attach hivemind piggyback messages.
    SRP: Single responsibility - piggyback embedding only.
@@ -286,27 +337,31 @@
    - wrap-handler-retry: auto-retry on hot-reload transient errors (CLARITY-Y)
    - wrap-handler-context: binds request context for tool execution
    - wrap-handler-normalize: converts result to content array
+   - wrap-handler-memory-piggyback: drains memory entries (axioms, conventions)
    - wrap-handler-piggyback: embeds hivemind messages with agent-id extraction
    - wrap-handler-response: builds {:content ...} response
 
    Composition via -> threading enables clear data flow:
-   handler -> retry -> normalize -> piggyback -> context -> response
+   handler -> retry -> normalize -> memory-piggyback -> hivemind-piggyback -> context -> response
+
+   Memory piggyback runs before hivemind piggyback so both channels
+   can independently append delimited blocks to content.
 
    CLARITY-Y: wrap-handler-retry is innermost to catch handler exceptions
    before context/normalize processing.
 
-   CRITICAL: context must wrap piggyback so ctx/current-directory is bound
-   when extract-project-id runs. Previous order had context INSIDE piggyback,
-   meaning the dynamic binding exited before piggyback could use it."
+   CRITICAL: context must wrap both piggybacks so ctx/current-directory is bound
+   when extract-project-id runs."
   [{:keys [name description inputSchema handler deprecated]}]
   (cond-> {:name name
            :description description
            :inputSchema inputSchema
            :handler (-> handler
-                        wrap-handler-retry      ; CLARITY-Y: Hot-reload resilience
+                        wrap-handler-retry              ; CLARITY-Y: Hot-reload resilience
                         wrap-handler-normalize
-                        wrap-handler-piggyback  ; needs ctx bound
-                        wrap-handler-context    ; binds ctx for piggyback
+                        wrap-handler-memory-piggyback   ; memory channel (needs ctx bound)
+                        wrap-handler-piggyback          ; hivemind channel (needs ctx bound)
+                        wrap-handler-context            ; binds ctx for both piggybacks
                         wrap-handler-response)}
     deprecated (assoc :deprecated true)))
 
