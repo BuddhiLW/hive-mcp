@@ -105,9 +105,7 @@
   {:extra-paths ["dev" "test"]
    :extra-deps {nrepl/nrepl {:mvn/version "1.3.1"}
                 cider/cider-nrepl {:mvn/version "0.58.0"}
-                refactor-nrepl/refactor-nrepl {:mvn/version "3.11.0"}
-                ;; For local dev, override with local hive-events
-                io.github.hive-agi/hive-events {:local/root "../hive-events"}}
+                refactor-nrepl/refactor-nrepl {:mvn/version "3.11.0"}}
    ;; Suppress Netty sun.misc.Unsafe warnings on Java 17+
    :jvm-opts ["--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED"
               "--add-opens=java.base/java.nio=ALL-UNNAMED"
@@ -155,4 +153,10 @@
   ;; Optional: libpython-clj for Agent SDK bridge (Python interop)
   ;; Usage: clj -A:libpython:dev
   :libpython
-  {:extra-deps {clj-python/libpython-clj {:mvn/version "2.026"}}}}}
+  {:extra-deps {clj-python/libpython-clj {:mvn/version "2.026"}}}
+
+  ;; Local dev overrides for sibling :local/root projects.
+  ;; Usage: clj -A:dev -Sdeps "$(cat deps.local.edn)"
+  ;; Create deps.local.edn (gitignored) with override-deps, e.g.:
+  ;;   {:override-deps {io.github.hive-agi/hive-events {:local/root "../hive-events"}}}
+  }}

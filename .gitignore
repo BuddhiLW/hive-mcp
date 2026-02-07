@@ -26,6 +26,7 @@ test-output/
 
 # Local config
 .clojure-mcp/
+deps.local.edn
 
 # Generated diagrams
 overarch/
