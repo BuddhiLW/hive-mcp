@@ -17,7 +17,8 @@
    - cross_pollinate: Auto-promote entries with cross-project access (W5)
    - rename: Unified project rename (Chroma + KG + .edn + config)
    - batch-add: Batch-add multiple entries [{type, content, tags, ...}, ...]
-   - batch-feedback: Batch-feedback on multiple entries [{id, feedback}, ...]"
+   - batch-feedback: Batch-feedback on multiple entries [{id, feedback}, ...]
+   - batch-get: Batch-get multiple entries by IDs [id1, id2, ...]"
   (:require [hive-mcp.tools.cli :refer [make-cli-handler make-batch-handler]]
             [hive-mcp.tools.memory :as mem]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -49,7 +50,8 @@
    :import      mem/handle-mcp-memory-import-json
    :decay             mem/handle-mcp-memory-decay
    :cross_pollinate   mem/handle-mcp-memory-cross-pollination-promote
-   :rename            mem/handle-mcp-memory-rename-project})
+   :rename            mem/handle-mcp-memory-rename-project
+   :batch-get         mem/handle-mcp-memory-batch-get})
 
 ;; ============================================================
 ;; Batch Helpers
@@ -86,10 +88,10 @@
   "MCP tool definition for consolidated memory operations."
   {:name "memory"
    :consolidated true
-   :description "Consolidated memory operations. Commands: add, query, metadata, get, search, duration, promote, demote, log_access, feedback, helpfulness, tags, cleanup, expiring, expire, migrate, import, decay, cross_pollinate, rename, batch-add, batch-feedback. Use 'help' command to list all."
+   :description "Consolidated memory operations. Commands: add, query, metadata, get, search, duration, promote, demote, log_access, feedback, helpfulness, tags, cleanup, expiring, expire, migrate, import, decay, cross_pollinate, rename, batch-add, batch-feedback, batch-get. Use 'help' command to list all."
    :inputSchema {:type "object"
                  :properties {"command" {:type "string"
-                                         :enum ["add" "query" "metadata" "get" "search" "duration" "promote" "demote" "log_access" "feedback" "helpfulness" "tags" "cleanup" "expiring" "expire" "migrate" "import" "decay" "cross_pollinate" "rename" "batch-add" "batch-feedback" "help"]
+                                         :enum ["add" "query" "metadata" "get" "search" "duration" "promote" "demote" "log_access" "feedback" "helpfulness" "tags" "cleanup" "expiring" "expire" "migrate" "import" "decay" "cross_pollinate" "rename" "batch-add" "batch-feedback" "batch-get" "help"]
                                          :description "Command to execute"}
                               ;; add command params
                               "type" {:type "string"
@@ -134,6 +136,9 @@
                               ;; get/promote/demote/feedback/tags params
                               "id" {:type "string"
                                     :description "[get/promote/demote/feedback/tags] Memory entry ID"}
+                              "ids" {:type "array"
+                                     :items {:type "string"}
+                                     :description "[batch-get] Array of memory entry IDs to retrieve"}
                               ;; search params
                               "query" {:type "string"
                                        :description "[search] Natural language query for semantic search"}

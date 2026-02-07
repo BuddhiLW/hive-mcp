@@ -741,6 +741,32 @@
         (mcp-json result))
       (mcp-json {:error "Entry not found" :id id}))))
 
+(defn handle-batch-get
+  "Get full content of multiple memory entries by IDs in a single call.
+   Returns all found entries with KG edges. Missing IDs reported in :missing."
+  [{:keys [ids]}]
+  (if (or (nil? ids) (empty? ids))
+    (mcp-error "ids is required (array of memory entry ID strings)")
+    (with-chroma
+      (let [results (mapv (fn [id]
+                            (if-let [entry (or (chroma/get-entry-by-id id)
+                                               (plans/get-plan id))]
+                              (let [base (fmt/entry->json-alist entry)
+                                    {:keys [outgoing incoming]}
+                                    (try (get-kg-edges-for-entry id)
+                                         (catch Exception e
+                                           (log/warn "KG edge lookup failed for" id ":" (.getMessage e))
+                                           {:outgoing [] :incoming []}))]
+                                (cond-> base
+                                  (seq outgoing) (assoc :kg_outgoing outgoing)
+                                  (seq incoming) (assoc :kg_incoming incoming)))
+                              {:error "Entry not found" :id id}))
+                          ids)
+            found   (filterv #(not (:error %)) results)
+            missing (filterv :error results)]
+        (mcp-json (cond-> {:entries found :count (count found)}
+                    (seq missing) (assoc :missing (mapv :id missing))))))))
+
 ;; ============================================================
 ;; Check Duplicate Handler
 ;; ============================================================
