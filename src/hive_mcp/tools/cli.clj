@@ -3,7 +3,8 @@
 
    Supports n-depth nested handler trees via parse-command + resolve-handler.
    Single-word commands remain backward compatible."
-  (:require [clojure.string :as str]))
+  (:require [clojure.data.json :as json]
+            [clojure.string :as str]))
 
 ;; =============================================================================
 ;; Command Normalization
@@ -144,3 +145,49 @@
             (handler params)
             {:isError true :text (str "Unknown command: " command
                                       ". Valid: " (keys handlers))}))))))
+
+;; =============================================================================
+;; Batch Handler Factory (generic batch middleware)
+;; =============================================================================
+
+(defn make-batch-handler
+  "Higher-order function: takes a handlers map (same as make-cli-handler),
+   returns a handler that accepts {:operations [{:command ... :param1 ...}, ...], :parallel bool}.
+   Maps each operation through existing dispatch, collects all results (no fail-fast).
+
+   Shared params from the outer call (minus :operations/:parallel/:command) merge
+   with per-op params. Per-op params win on conflict.
+
+   Sequential by default, :parallel true uses pmap.
+
+   Returns: {:results [...] :summary {:total N :success M :failed F}}"
+  [handlers]
+  (fn [{:keys [operations parallel] :as params}]
+    (if (or (nil? operations) (empty? operations))
+      {:isError true :text "operations is required (array of {command, ...} objects)"}
+      (let [shared-params (dissoc params :operations :parallel :command)
+            exec-fn       (if parallel pmap mapv)
+            results       (exec-fn
+                           (fn [op]
+                             (try
+                               (let [cmd-str (normalize-command (:command op))
+                                     path    (parse-command cmd-str)]
+                                 (if (nil? path)
+                                   {:success false :command (:command op)
+                                    :error "Missing or blank command in operation"}
+                                   (let [resolved (resolve-handler handlers path)]
+                                     (if-let [handler (:handler resolved)]
+                                       (let [merged (merge shared-params (dissoc op :command))
+                                             result (handler (assoc merged :command (:command op)))]
+                                         {:success true :command (:command op) :result result})
+                                       {:success false :command (:command op)
+                                        :error (str "Unknown command: " (:command op))}))))
+                               (catch Exception e
+                                 {:success false :command (:command op) :error (ex-message e)})))
+                           operations)]
+        {:type "text"
+         :text (json/write-str
+                {:results (vec results)
+                 :summary {:total   (count operations)
+                           :success (count (filter :success results))
+                           :failed  (count (remove :success results))}})}))))

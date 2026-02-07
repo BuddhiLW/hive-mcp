@@ -184,12 +184,16 @@
 ;;; =============================================================================
 
 (defn plan-to-kanban
-  "Convert a plan memory entry to kanban tasks with KG edges.
+  "Convert a plan memory entry (or file) to kanban tasks with KG edges.
 
    Arguments:
-     plan-memory-id - Memory entry ID containing the plan
+     plan-memory-id - Memory entry ID containing the plan (nil when using plan-path)
      :directory     - Working directory for project scope (optional)
+     :plan-path     - File path to slurp plan content from (alternative to memory ID)
      :auto-assign?  - Auto-assign tasks to lings (optional, not yet implemented)
+
+   When plan-path is provided, the file is slurped directly — zero-token plan
+   loading for large plans. plan-memory-id may be nil in this case.
 
    Returns:
      {:task-ids [...] :kg-edges [...] :plan-id ...}
@@ -198,17 +202,31 @@
      - Creates kanban tasks in memory system
      - Creates KG edges: plan --depends-on--> tasks
      - Creates KG edges: task --depends-on--> task (based on step dependencies)"
-  [plan-memory-id & {:keys [directory]}]
-  (log/info "plan_to_kanban" {:plan-id plan-memory-id :directory directory})
+  [plan-memory-id & {:keys [directory plan-path]}]
+  (log/info "plan_to_kanban" {:plan-id plan-memory-id :plan-path plan-path :directory directory})
   (try
     (let [directory (or directory (ctx/current-directory))
-          agent-id (System/getenv "CLAUDE_SWARM_SLAVE_ID")]
+          agent-id (System/getenv "CLAUDE_SWARM_SLAVE_ID")
 
-      ;; 1. Fetch memory entry (try plans collection first, then memory)
-      (if-let [entry (or (plans/get-plan plan-memory-id)
-                         (chroma/get-entry-by-id plan-memory-id))]
-        (let [content (:content entry)
-              project-id (:project-id entry)]
+          ;; Resolve content: file path takes priority over memory ID
+          [content project-id plan-id]
+          (if plan-path
+            (do (log/info "plan_to_kanban: loading plan from file" {:path plan-path})
+                [(slurp plan-path)
+                 (ctx/current-project-id)
+                 (str "file:" plan-path)])
+            (when-let [entry (or (plans/get-plan plan-memory-id)
+                                 (chroma/get-entry-by-id plan-memory-id))]
+              [(:content entry)
+               (:project-id entry)
+               plan-memory-id]))]
+
+      (if-not content
+        (mcp-error (str "Plan not found. Provide plan_id (memory entry) or plan_path (file). "
+                        (when plan-memory-id (str "Tried memory ID: " plan-memory-id))
+                        (when plan-path (str "Tried file: " plan-path))))
+
+        (let [plan-memory-id (or plan-id plan-memory-id)]
 
           ;; 2. Parse plan content using shared parser
           (let [{:keys [success plan error details]} (parser/parse-plan content {:memory-id plan-memory-id})]
@@ -266,6 +284,7 @@
                               (mcp-json {:success true
                                          :plan-id plan-memory-id
                                          :plan-title (:title plan)
+                                         :plan-source (if plan-path :file :memory)
                                          :decision-id decision-id
                                          :task-ids task-ids
                                          :task-count (count task-ids)
@@ -273,18 +292,22 @@
                                          :max-wave (when (seq waves) (apply max (vals waves)))
                                          :kg-edges all-edges
                                          :edge-count (count all-edges)
-                                         :step-mapping step-id-to-task-id}))))))))))))
-
-        (mcp-error (str "Plan memory entry not found: " plan-memory-id))))
+                                         :step-mapping step-id-to-task-id}))))))))))))))
 
     (catch Exception e
       (log/error e "plan_to_kanban failed")
       (mcp-error (str "Failed to convert plan to kanban: " (.getMessage e))))))
 
 (defn handle-plan-to-kanban
-  "MCP tool handler for plan_to_kanban."
-  [{:keys [plan_id directory auto_assign]}]
-  (plan-to-kanban plan_id :directory directory :auto-assign? auto_assign))
+  "MCP tool handler for plan_to_kanban.
+   Accepts plan_id (memory entry) OR plan_path (file path). At least one required."
+  [{:keys [plan_id plan_path directory auto_assign]}]
+  (if (and (str/blank? plan_id) (str/blank? plan_path))
+    (mcp-error "Either plan_id or plan_path is required")
+    (plan-to-kanban plan_id
+                    :directory directory
+                    :plan-path plan_path
+                    :auto-assign? auto_assign)))
 
 ;;; =============================================================================
 ;;; Tool Definition
@@ -292,13 +315,15 @@
 
 (def tools
   [{:name "plan_to_kanban"
-    :description "Convert an exploration plan memory entry to kanban tasks with KG linking. Parses plan steps from EDN or markdown format, creates kanban tasks, and creates KG edges for plan->task and task->task dependencies."
+    :description "Convert a plan (from memory or file) to kanban tasks with KG linking. Parses plan steps from EDN or markdown format, creates kanban tasks, and creates KG edges for plan->task and task->task dependencies. Use plan_id for memory entries or plan_path for direct file loading (zero-token for large plans)."
     :inputSchema {:type "object"
                   :properties {"plan_id" {:type "string"
-                                          :description "Memory entry ID containing the plan (required)"}
+                                          :description "Memory entry ID containing the plan (alternative to plan_path)"}
+                               "plan_path" {:type "string"
+                                            :description "File path to a plan file. Slurps content directly — zero-token plan loading for large plans (alternative to plan_id)."}
                                "directory" {:type "string"
                                             :description "Working directory for project scope (optional)"}
                                "auto_assign" {:type "boolean"
                                               :description "Auto-assign tasks to lings (optional, not yet implemented)"}}
-                  :required ["plan_id"]}
+                  :required []}
     :handler handle-plan-to-kanban}])

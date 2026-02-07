@@ -100,8 +100,9 @@
   "Valid ling spawn mode values.
    :vterm      - Spawned inside Emacs vterm buffer (default, visual)
    :headless   - Spawned as OS process without Emacs UI (stdout captured to ring buffer)
-   :openrouter - Direct OpenRouter API calls (multi-model, no CLI needed)"
-  #{:vterm :headless :openrouter})
+   :openrouter - Direct OpenRouter API calls (multi-model, no CLI needed)
+   :agent-sdk  - Claude Agent SDK via libpython-clj (in-process, SAA phases)"
+  #{:vterm :headless :openrouter :agent-sdk})
 
 (def ling-model-default
   "Default ling model. When set, uses Claude Code CLI."
@@ -216,7 +217,7 @@
 
    ;; Headless ling support (process-based spawn without Emacs vterm)
    :ling/spawn-mode
-   {:db/doc "Spawn mode: :vterm (Emacs buffer, default) or :headless (OS process, stdout ring buffer)"
+   {:db/doc "Spawn mode: :vterm, :headless, :openrouter, or :agent-sdk"
     :db/index true}
 
    :ling/process-pid

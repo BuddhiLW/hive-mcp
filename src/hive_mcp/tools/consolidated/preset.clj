@@ -94,7 +94,7 @@
   "MCP tool definition for consolidated preset command."
   {:name "preset"
    :consolidated true
-   :description "Swarm preset management: list (all presets), list_slim (names+categories only), get (by name), core (summary without full content), header (generate system prompt header), search (semantic query), add (custom preset), delete (remove), status (integration info), migrate (from files to Chroma). Use command='help' to list all."
+   :description "Swarm preset management: list (all presets, verbosity: full|slim), get (by name, verbosity: full|core), header (generate system prompt header), search (semantic query), add (custom preset), delete (remove), status (integration info), migrate (from files to Chroma). Deprecated aliases: list_slim (use list+verbosity:slim), core (use get+verbosity:core). Use command='help' to list all."
    :inputSchema {:type "object"
                  :properties {"command" {:type "string"
                                          :enum ["list" "list_slim" "get" "core" "header" "search" "add" "delete" "status" "migrate" "help"]

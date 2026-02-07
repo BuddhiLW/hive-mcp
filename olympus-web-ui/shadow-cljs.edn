@@ -1,8 +1,9 @@
 ;; Shadow-cljs build configuration for Olympus Web UI
 ;; ClojureScript dashboard for hive-mcp swarm monitoring
+;; All JS deps from npm (react, react-dom, @xyflow/react, dagre, @xterm/*)
 {:source-paths ["src"]
 
- :dependencies [[reagent "1.2.0"]
+ :dependencies [[reagent "2.0.1"]
                 [re-frame "1.3.0"]
                 [day8.re-frame/http-fx "0.2.4"]
                 [cljs-ajax "0.8.4"]
@@ -16,50 +17,20 @@
         :output-dir "resources/public/js"
         :asset-path "/js"
 
+        ;; xterm.js uses modern JS (let before declaration) that breaks
+        ;; Closure's default ES5 processing. ES2020 output avoids rewriting.
+        :compiler-options {:output-feature-set :es2020}
+
         :modules {:main {:init-fn olympus-web.core/init!}}
 
         :devtools {:http-root "resources/public"
                    :http-port 3000
                    :watch-dir "resources/public"
-                   :preloads [devtools.preload]}
-
-        ;; React/ReactFlow loaded via CDN in index.html
-        :js-options {:resolve {"react" {:target :global
-                                        :global "React"}
-                               "react-dom" {:target :global
-                                            :global "ReactDOM"}
-                               "reactflow" {:target :global
-                                            :global "ReactFlow"}
-                               "@reactflow/core" {:target :global
-                                                  :global "ReactFlow"}
-                               "dagre" {:target :global
-                                        :global "dagre"}
-                               "@xterm/xterm" {:target :global
-                                               :global "Terminal"}
-                               "@xterm/addon-fit" {:target :global
-                                                   :global "FitAddon"}
-                               "@xterm/addon-web-links" {:target :global
-                                                         :global "WebLinksAddon"}}}}
+                   :preloads [devtools.preload]}}
 
   :release {:target :browser
             :output-dir "resources/public/js"
             :asset-path "/js"
             :modules {:main {:init-fn olympus-web.core/init!}}
             :compiler-options {:optimizations :advanced
-                               :pretty-print false}
-            :js-options {:resolve {"react" {:target :global
-                                            :global "React"}
-                                   "react-dom" {:target :global
-                                                :global "ReactDOM"}
-                                   "reactflow" {:target :global
-                                                :global "ReactFlow"}
-                                   "@reactflow/core" {:target :global
-                                                      :global "ReactFlow"}
-                                   "dagre" {:target :global
-                                            :global "dagre"}
-                                   "@xterm/xterm" {:target :global
-                                                   :global "Terminal"}
-                                   "@xterm/addon-fit" {:target :global
-                                                       :global "FitAddon"}
-                                   "@xterm/addon-web-links" {:target :global
-                                                             :global "WebLinksAddon"}}}}}}
+                               :pretty-print false}}}}

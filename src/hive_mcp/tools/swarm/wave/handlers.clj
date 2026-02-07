@@ -75,11 +75,13 @@
      cwd            - Working directory override (optional)
      ensure_dirs    - Create parent directories before dispatch (default: true)
      validate_paths - Fail fast if paths are invalid (default: true)
+     mode           - Execution mode: \"delegate\" (default) or \"agentic\"
+                      When \"agentic\", uses in-process agentic loop with session KG
 
    Returns:
      JSON with wave-id for immediate response.
      Actual execution happens asynchronously."
-  [{:keys [tasks preset trace cwd ensure_dirs validate_paths]}]
+  [{:keys [tasks preset trace cwd ensure_dirs validate_paths mode]}]
   ;; DEPRECATION WARNING: Prefer unified 'delegate' tool
   (log/warn {:event :deprecation-warning
              :tool "dispatch_drone_wave"
@@ -91,6 +93,10 @@
 
     ;; CTX Migration: Use request context fallback for cwd
     (let [effective-cwd (or cwd (ctx/current-directory))
+          ;; Normalize mode: string from MCP → keyword
+          effective-mode (if (= "agentic" (some-> mode name))
+                           :agentic
+                           :delegate)
           ;; Normalize task keys (MCP sends string keys)
           normalized-tasks (mapv (fn [t]
                                    {:file (or (get t "file") (:file t))
@@ -111,13 +117,18 @@
             {:keys [wave-id item-count]} (execution/execute-wave-async!
                                           plan-id
                                           {:trace (if (nil? trace) true trace)
-                                           :cwd effective-cwd})]
+                                           :cwd effective-cwd
+                                           :mode effective-mode})]
         {:type "text"
          :text (json/write-str {:status "dispatched"
                                 :plan_id plan-id
                                 :wave_id wave-id
                                 :item_count item-count
-                                :message "Wave dispatched to background. Poll get_wave_status(wave_id) for progress."})}))
+                                :mode (name effective-mode)
+                                :message (str "Wave dispatched to background"
+                                              (when (= :agentic effective-mode)
+                                                " (agentic mode with session KG)")
+                                              ". Poll get_wave_status(wave_id) for progress.")})}))
 
     (catch clojure.lang.ExceptionInfo e
       (let [data (ex-data e)]

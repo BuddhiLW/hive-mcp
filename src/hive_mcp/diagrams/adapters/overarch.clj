@@ -6,13 +6,13 @@
    
    Requires: overarch JAR or as dependency."
   (:require [hive-mcp.diagrams.core :as diagrams]
+            [hive-mcp.config :as config]
             [clojure.java.shell :refer [sh]]
             [clojure.java.io :as io]
             [clojure.string :as str]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
-
 
 ;;; Configuration
 
@@ -148,8 +148,8 @@
      (let [cli-check (sh "which" "overarch")]
        (when (zero? (:exit cli-check))
          {:type :cli :path (str/trim (:out cli-check))}))
-     ;; 3. OVERARCH_JAR env var
-     (when-let [jar (System/getenv "OVERARCH_JAR")]
+     ;; 3. config.edn :services.overarch.jar > OVERARCH_JAR env var
+     (when-let [jar (config/get-service-value :overarch :jar :env "OVERARCH_JAR")]
        {:type :jar :path jar})
      ;; 4. Default JAR location
      (let [home (System/getProperty "user.home")

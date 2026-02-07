@@ -9,7 +9,8 @@
    - Event system initialization (re-frame inspired)
    - Coordinator registration in DataScript
    - Memory store wiring (IMemoryStore protocol)
-   - Channel bridge + swarm sync + registry sync"
+   - Channel bridge + swarm sync + registry sync
+   - L2 decay scheduler (periodic memory/edge/disc decay)"
   (:require [hive-mcp.chroma :as chroma]
             [hive-mcp.channel.websocket :as ws-channel]
             [hive-mcp.embeddings.ollama :as ollama]
@@ -70,9 +71,8 @@
           openrouter-cfg (get embed-cfg :openrouter {})]
 
       ;; Configure Chroma connection - config.edn :services > env vars > defaults
-      (let [chroma-svc (global-config/get-service-config :chroma)
-            chroma-host (or (:host chroma-svc) (System/getenv "CHROMA_HOST") "localhost")
-            chroma-port (or (:port chroma-svc) (some-> (System/getenv "CHROMA_PORT") Integer/parseInt) 8000)]
+      (let [chroma-host (global-config/get-service-value :chroma :host :env "CHROMA_HOST" :default "localhost")
+            chroma-port (global-config/get-service-value :chroma :port :env "CHROMA_PORT" :parse parse-long :default 8000)]
         (chroma/configure! {:host chroma-host :port chroma-port})
         (log/info "Chroma configured:" chroma-host ":" chroma-port))
 
@@ -80,11 +80,10 @@
       (embedding-service/init!)
 
       ;; Read Ollama host/model from :embeddings > :services > env vars > defaults
-      (let [svc-ollama (global-config/get-service-config :ollama)
-            ollama-host (or (:host ollama-cfg)
-                            (:host svc-ollama)
-                            (System/getenv "OLLAMA_HOST")
-                            "http://localhost:11434")
+      (let [ollama-host (or (:host ollama-cfg)
+                            (global-config/get-service-value :ollama :host
+                                                             :env "OLLAMA_HOST"
+                                                             :default "http://localhost:11434"))
             ollama-model (or (:model ollama-cfg) "nomic-embed-text")
             openrouter-model (or (:model openrouter-cfg) "qwen/qwen3-embedding-8b")]
 
@@ -248,7 +247,7 @@
     (require 'hive-mcp.swarm.datascript.lings)
     (let [register! (resolve 'hive-mcp.swarm.datascript/register-coordinator!)
           add-slave! (resolve 'hive-mcp.swarm.datascript.lings/add-slave!)
-          project-id (or (System/getenv "HIVE_MCP_PROJECT_ID") "hive-mcp")
+          project-id (global-config/get-service-value :project :id :env "HIVE_MCP_PROJECT_ID" :default "hive-mcp")
           cwd (System/getProperty "user.dir")]
       (register! project-id {:project project-id})
       ;; Also register "coordinator" as a slave (depth 0) for bb-mcp compatibility
@@ -320,8 +319,9 @@
   (let [hot-reload-enabled? (get project-config :hot-reload true)]
     (if hot-reload-enabled?
       (try
-        (let [src-dirs (or (some-> (System/getenv "HIVE_MCP_SRC_DIRS")
-                                   (str/split #":"))
+        (let [src-dirs (or (global-config/get-service-value :project :src-dirs
+                                                            :env "HIVE_MCP_SRC_DIRS"
+                                                            :parse #(str/split % #":"))
                            (:watch-dirs project-config)
                            ["src"])
               claim-checker (hot-events/make-claim-checker logic/get-all-claims)]
@@ -362,3 +362,38 @@
     (log/info "Lings registry sync started - lings_available will track elisp lings")
     (catch Exception e
       (log/warn "Lings registry sync failed to start (non-fatal):" (.getMessage e)))))
+
+;; =============================================================================
+;; L2 Decay Scheduler
+;; =============================================================================
+
+(defn start-decay-scheduler!
+  "Start the L2 periodic decay scheduler.
+   Runs memory staleness decay, edge confidence decay, and disc certainty
+   decay on a configurable interval (default: 60 minutes).
+
+   Configure via config.edn :services :scheduler:
+     {:enabled true :interval-minutes 60 :memory-limit 50 :edge-limit 100}
+
+   Non-fatal: if scheduler fails to start, system continues without it.
+   Decay still runs on wrap/catchup hooks as before."
+  []
+  (try
+    (require 'hive-mcp.scheduler.decay)
+    (let [start-fn (resolve 'hive-mcp.scheduler.decay/start!)]
+      (when start-fn
+        (let [result (start-fn)]
+          (if (:started result)
+            (log/info "L2 decay scheduler started:" result)
+            (log/info "L2 decay scheduler not started:" (:reason result))))))
+    (catch Exception e
+      (log/warn "L2 decay scheduler failed to start (non-fatal):" (.getMessage e)))))
+
+(defn stop-decay-scheduler!
+  "Stop the L2 periodic decay scheduler. Called during shutdown."
+  []
+  (try
+    (require 'hive-mcp.scheduler.decay)
+    (when-let [stop-fn (resolve 'hive-mcp.scheduler.decay/stop!)]
+      (stop-fn))
+    (catch Exception _)))

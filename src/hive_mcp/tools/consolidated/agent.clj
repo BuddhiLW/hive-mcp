@@ -8,7 +8,7 @@
 
    SOLID: Facade pattern - single tool entry point for agent lifecycle.
    CLARITY: L - Thin adapter delegating to domain handlers."
-  (:require [hive-mcp.tools.cli :refer [make-cli-handler]]
+  (:require [hive-mcp.tools.cli :refer [make-cli-handler make-batch-handler]]
             [hive-mcp.tools.core :refer [mcp-error mcp-json]]
             [hive-mcp.agent.protocol :as proto]
             [hive-mcp.agent.ling :as ling]
@@ -21,6 +21,7 @@
             [hive-mcp.tools.swarm.core :as swarm-core]
             [hive-mcp.tools.memory.scope :as scope]
             [hive-mcp.knowledge-graph.scope :as kg-scope]
+            [hive-mcp.protocols.dispatch :as dispatch-ctx]
             [hive-mcp.emacsclient :as ec]
             [taoensso.timbre :as log]
             [clojure.data.json :as json]
@@ -410,17 +411,56 @@
 ;; Dispatch Handler
 ;; =============================================================================
 
+(defn- build-dispatch-context
+  "Build an IDispatchContext from dispatch parameters.
+
+   When ctx_refs are provided (pass-by-reference mode), creates a RefContext
+   that carries lightweight context-store IDs + KG node IDs instead of full
+   text blobs (~25x compression). Otherwise wraps prompt as TextContext.
+
+   Arguments:
+     prompt      - Base task prompt string (always present as fallback)
+     ctx_refs    - Map of category->ctx-id for context-store lookups (optional)
+     kg_node_ids - Vector of KG node IDs for graph traversal (optional)
+     scope       - Project scope string for KG traversal (optional)
+
+   Returns:
+     IDispatchContext instance (RefContext or TextContext).
+
+   SOLID-O: Open for extension - new context types via new factory fns.
+   CLARITY-Y: Falls back to TextContext when no refs provided."
+  [prompt ctx_refs kg_node_ids scope]
+  (if (seq ctx_refs)
+    ;; Pass-by-reference mode: create RefContext with context-store IDs
+    (let [refs-map (reduce-kv (fn [m k v] (assoc m (keyword k) v)) {} ctx_refs)]
+      (dispatch-ctx/->ref-context prompt
+                                  {:ctx-refs    refs-map
+                                   :kg-node-ids (vec (or kg_node_ids []))
+                                   :scope       scope}))
+    ;; Plain text mode: wrap string as TextContext (backward compatible)
+    (dispatch-ctx/ensure-context prompt)))
+
 (defn handle-dispatch
   "Dispatch a task to an agent.
 
    Parameters:
-     agent_id - Target agent ID (required)
-     prompt   - Task prompt/description (required)
-     files    - Files to include (optional)
-     priority - Task priority: normal, high, low (optional)
+     agent_id    - Target agent ID (required)
+     prompt      - Task prompt/description, or IDispatchContext (required)
+     files       - Files to include (optional)
+     priority    - Task priority: normal, high, low (optional)
+     ctx_refs    - Map of category->ctx-id for KG-compressed context (optional)
+                   e.g. {\"axioms\": \"ctx-123\", \"decisions\": \"ctx-456\"}
+                   When provided, creates RefContext (~25x compression vs text)
+     kg_node_ids - Vector of KG node IDs for graph traversal seeds (optional)
+     scope       - Project scope for KG traversal (optional, auto-derived)
 
+   Accepts plain string prompts (backward compat) or IDispatchContext instances.
+   When ctx_refs is provided, creates RefContext for pass-by-reference dispatch.
+
+   SOLID-D: Depends on IDispatchContext abstraction, not string concretion.
+   SOLID-O: Open for RefContext extension without modifying TextContext path.
    CLARITY: I - Validates agent exists before dispatch."
-  [{:keys [agent_id prompt files priority]}]
+  [{:keys [agent_id prompt files priority ctx_refs kg_node_ids scope]}]
   (cond
     (empty? agent_id)
     (mcp-error "agent_id is required")
@@ -440,17 +480,26 @@
                       :drone (drone/->drone agent_id {:cwd (:slave/cwd agent-data)
                                                       :parent-id (:slave/parent agent-data)
                                                       :project-id (:slave/project-id agent-data)}))
+              ;; IDispatchContext: build RefContext when ctx_refs provided,
+              ;; TextContext for plain strings (backward compatible)
+              ctx (build-dispatch-context prompt ctx_refs kg_node_ids
+                                          (or scope (:slave/project-id agent-data)))
+              resolved-prompt (:prompt (dispatch-ctx/resolve-context ctx))
               ;; Drones need delegate-fn for execution; lings use elisp or stdin dispatch
-              task-opts (cond-> {:task prompt
+              task-opts (cond-> {:task resolved-prompt
+                                 :dispatch-context ctx
                                  :files files
                                  :priority (keyword (or priority "normal"))}
                           (= agent-type :drone)
                           (assoc :delegate-fn (get-delegate-fn)))
               task-id (proto/dispatch! agent task-opts)]
-          (log/info "Dispatched task to agent" {:agent_id agent_id :task-id task-id})
+          (log/info "Dispatched task to agent" {:agent_id agent_id
+                                                :task-id task-id
+                                                :context-type (dispatch-ctx/context-type ctx)})
           (mcp-json {:success true
                      :agent-id agent_id
                      :task-id task-id
+                     :context-type (name (dispatch-ctx/context-type ctx))
                      :files files}))
         (mcp-error (str "Agent not found: " agent_id)))
       (catch Exception e
@@ -674,6 +723,32 @@
     (handler-fn params)))
 
 ;; =============================================================================
+;; Batch-Spawn Handler (via make-batch-handler HOF)
+;; =============================================================================
+
+(def ^:private batch-spawn-handler
+  "Batch spawn multiple agents in one call.
+   Uses make-batch-handler HOF from cli.clj.
+
+   Each operation in :operations is a spawn call.
+   :command 'spawn' is auto-injected into each operation.
+
+   Parameters:
+     operations - Array of spawn parameter objects:
+                  [{:type 'ling', :name 'a', :cwd '/path', :presets ['ling']}, ...]
+     parallel   - Run spawns in parallel (default: false)
+
+   Returns: {:results [...] :summary {:total N :success M :failed F}}"
+  (let [spawn-handlers {:spawn handle-spawn}
+        batch-fn (make-batch-handler spawn-handlers)]
+    (fn [{:keys [operations] :as params}]
+      (if (or (nil? operations) (empty? operations))
+        (mcp-error "operations is required (array of spawn parameter objects)")
+        (let [;; Auto-inject :command "spawn" into each operation
+              ops-with-command (mapv #(assoc % :command "spawn") operations)]
+          (batch-fn (assoc params :operations ops-with-command)))))))
+
+;; =============================================================================
 ;; Handlers Map
 ;; =============================================================================
 
@@ -682,11 +757,12 @@
    Supports n-depth dispatch via cli/make-cli-handler:
    - Flat: spawn, status, kill, kill-batch, dispatch, claims, collect, broadcast, cleanup
    - Nested: dag start, dag stop, dag status (dag alone defaults to status)"
-  {:spawn      handle-spawn
-   :status     handle-status
-   :kill       handle-kill
-   :kill-batch handle-kill-batch
-   :dispatch   handle-dispatch
+  {:spawn       handle-spawn
+   :status      handle-status
+   :kill        handle-kill
+   :kill-batch  handle-kill-batch
+   :batch-spawn batch-spawn-handler
+   :dispatch    handle-dispatch
    :claims     handle-claims
    :collect    handle-collect
    :broadcast  handle-broadcast
@@ -721,10 +797,10 @@
   "MCP tool definition for consolidated agent command."
   {:name "agent"
    :consolidated true
-   :description "Unified agent operations: spawn (create ling/drone), status (query agents), kill (terminate), kill-batch (terminate multiple agents in one call), dispatch (send task), claims (file ownership), list (deprecated alias for status), collect (get task result), broadcast (prompt all), cleanup (remove orphan agents after Emacs restart). Type: 'ling' (Claude Code instance) or 'drone' (OpenRouter leaf worker). Nested: dag (start/stop/status DAGWave scheduler). Use command='help' to list all."
+   :description "Unified agent operations: spawn (create ling/drone), status (query agents), kill (terminate), kill-batch (terminate multiple agents in one call), batch-spawn (spawn multiple agents at once via operations array), dispatch (send task), claims (file ownership), list (deprecated alias for status), collect (get task result), broadcast (prompt all), cleanup (remove orphan agents after Emacs restart). Type: 'ling' (Claude Code instance) or 'drone' (OpenRouter leaf worker). Nested: dag (start/stop/status DAGWave scheduler). Use command='help' to list all."
    :inputSchema {:type "object"
                  :properties {"command" {:type "string"
-                                         :enum ["spawn" "status" "kill" "kill-batch" "dispatch" "claims" "list" "collect" "broadcast" "cleanup" "dag start" "dag stop" "dag status" "help"]
+                                         :enum ["spawn" "status" "kill" "kill-batch" "batch-spawn" "dispatch" "claims" "list" "collect" "broadcast" "cleanup" "dag start" "dag stop" "dag status" "help"]
                                          :description "Agent operation to perform"}
                               ;; spawn params
                               "type" {:type "string"
@@ -750,6 +826,12 @@
                               "agent_ids" {:type "array"
                                            :items {:type "string"}
                                            :description "Array of agent IDs for kill-batch"}
+                              ;; batch-spawn params
+                              "operations" {:type "array"
+                                            :items {:type "object"}
+                                            :description "Array of spawn parameter objects for batch-spawn. Each object: {type, name, cwd, presets, model, task, spawn_mode, parent, kanban_task_id}"}
+                              "parallel" {:type "boolean"
+                                          :description "Run batch operations in parallel (default: false)"}
                               "project_id" {:type "string"
                                             :description "Project ID filter for status"}
                               ;; dispatch params
@@ -761,6 +843,14 @@
                               "priority" {:type "string"
                                           :enum ["low" "normal" "high"]
                                           :description "Task priority for dispatch"}
+                              ;; KG-compressed context params (dispatch)
+                              "ctx_refs" {:type "object"
+                                          :description "[dispatch] Map of category->ctx-id for KG-compressed context. When provided, creates RefContext (~25x compression vs text). E.g. {\"axioms\": \"ctx-123\", \"decisions\": \"ctx-456\"}"}
+                              "kg_node_ids" {:type "array"
+                                             :items {:type "string"}
+                                             :description "[dispatch] KG node IDs for graph traversal seeds. Combined with ctx_refs for structural context reconstruction."}
+                              "scope" {:type "string"
+                                       :description "[dispatch] Project scope for KG traversal (auto-derived from agent if omitted)"}
                               "parent" {:type "string"
                                         :description "Parent agent ID for spawn"}
                               "kanban_task_id" {:type "string"
@@ -810,14 +900,27 @@
   ;; Kill multiple agents in one call
   ;; (handle-kill-batch {:agent_ids ["ling-1" "ling-2" "drone-3"]})
 
-  ;; Dispatch a task
+  ;; Dispatch a task (plain text)
   ;; (handle-dispatch {:agent_id "ling-123" :prompt "Fix the bug" :files ["src/bug.clj"]})
+
+  ;; Dispatch with KG-compressed context (pass-by-reference)
+  ;; (handle-dispatch {:agent_id "ling-123"
+  ;;                   :prompt "Fix the bug"
+  ;;                   :ctx_refs {"axioms" "ctx-123" "decisions" "ctx-456"}
+  ;;                   :kg_node_ids ["20260207-dec1"]
+  ;;                   :scope "hive-mcp"})
 
   ;; Get claims for an agent
   ;; (handle-claims {:agent_id "drone-456"})
 
   ;; List all agents (deprecated — use status)
   ;; (handle-agent {:command "status"})
+
+  ;; Batch spawn multiple agents at once
+  ;; (handle-agent {:command "batch-spawn"
+  ;;               :operations [{:type "ling" :name "worker-1" :cwd "/project" :presets ["ling"]}
+  ;;                             {:type "ling" :name "worker-2" :cwd "/project" :presets ["ling"]}]
+  ;;               :parallel true})
 
   ;; DAG Scheduler (n-depth subcommands)
   ;; (handle-agent {:command "dag status"})

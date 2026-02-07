@@ -12,6 +12,7 @@
   (:require [hive-mcp.tools :as tools]
             [hive-mcp.docs :as docs]
             [hive-mcp.agent.context :as ctx]
+            [hive-mcp.channel.async-result :as async-buf]
             [taoensso.timbre :as log]
             [clojure.spec.alpha :as s]
             [clojure.walk :as walk]))
@@ -274,15 +275,22 @@
    within 32K char budget. Zero-cost when no entries pending.
 
    Runs BEFORE hivemind piggyback in the middleware chain so both
-   channels can append to content independently."
+   channels can append to content independently.
+
+   CURSOR FIX: Always uses session-level coordinator identity, NOT
+   extract-agent-id from args or ctx. Both args and ctx may contain
+   a target agent_id (e.g. agent dispatch sets ctx from args), which
+   would create spurious cursor keys per target agent."
   [handler]
   (fn [args]
     (let [content (handler args)
           project-id (extract-project-id args)
-          default-agent-id (if project-id
-                             (str "coordinator-" project-id)
-                             "coordinator")
-          agent-id (extract-agent-id args default-agent-id)
+          ;; Always use coordinator identity for piggyback cursor.
+          ;; ctx/current-agent-id and args both polluted by target agent_id
+          ;; on dispatch-type tools. Piggyback cursor must be session-stable.
+          agent-id (if project-id
+                     (str "coordinator-" project-id)
+                     "coordinator")
           drain-result (drain-memory-piggyback agent-id project-id)]
       (wrap-memory-piggyback-content content drain-result))))
 
@@ -291,26 +299,110 @@
    SRP: Single responsibility - piggyback embedding only.
 
    Expects handler to return normalized content (vector of items).
-   Extracts agent-id and project-id from args, retrieves piggyback,
+   Uses reader identity for cursor tracking, retrieves piggyback,
    embeds in content.
 
    CRITICAL: project-id scoping ensures coordinators only see their
    project's shouts, preventing cross-project message consumption.
 
    CURSOR ISOLATION FIX: When no explicit agent-id provided, use
-   'coordinator-{project-id}' to prevent cursor sharing across projects."
+   'coordinator-{project-id}' to prevent cursor sharing across projects.
+
+   CURSOR IDENTITY FIX: Always uses session-level coordinator identity,
+   NOT extract-agent-id from args or ctx. Both may contain target
+   agent_id (e.g. agent dispatch sets ctx from args), which would
+   create spurious cursor keys causing ALL accumulated shouts to be
+   re-delivered from timestamp 0 on every dispatch to a new target."
   [handler]
   (fn [args]
     (let [content (handler args)
           project-id (extract-project-id args)
-          ;; Generate project-scoped coordinator ID to prevent cursor sharing
-          ;; Without this, all coordinators would share cursor ["coordinator" "global"]
-          default-agent-id (if project-id
-                             (str "coordinator-" project-id)
-                             "coordinator")
-          agent-id (extract-agent-id args default-agent-id)
+          ;; Always use coordinator identity for piggyback cursor.
+          ;; ctx/current-agent-id and args both polluted by target agent_id
+          ;; on dispatch-type tools. Piggyback cursor must be session-stable.
+          agent-id (if project-id
+                     (str "coordinator-" project-id)
+                     "coordinator")
           piggyback (get-piggyback-messages agent-id project-id)]
       (wrap-piggyback content piggyback))))
+
+(defn wrap-handler-async
+  "Wrap handler to intercept async tool calls.
+   SRP: Single responsibility - async interception only.
+
+   When args contain :async true, returns immediate ack and spawns
+   a future for the real handler execution. The future's result is
+   enqueued into the async-result buffer for piggyback delivery.
+
+   When :async is absent or false, passes through to handler normally.
+
+   Position in chain: AFTER normalize (so ack goes through piggyback chain)
+   but BEFORE piggybacks (so ack still gets hivemind/memory blocks).
+
+   The :_tool-name key is injected by wrap-handler-context-with-toolname
+   (or extracted from args) for result attribution."
+  [handler tool-name]
+  (fn [args]
+    (if (:async args)
+      (let [task-id (str "atask-" (random-uuid))
+            project-id (extract-project-id args)
+            ;; Always use coordinator identity for buffer key alignment
+            ;; with drain wrapper. See CURSOR IDENTITY FIX in piggyback wrappers.
+            agent-id (if project-id
+                       (str "coordinator-" project-id)
+                       "coordinator")]
+        ;; Spawn background execution
+        (future
+          (try
+            (let [;; Remove :async flag before passing to real handler
+                  clean-args (dissoc args :async)
+                  result (handler clean-args)]
+              (async-buf/enqueue-result! agent-id project-id
+                                         {:task-id task-id
+                                          :tool tool-name
+                                          :status :completed
+                                          :result result}))
+            (catch Exception e
+              (log/error e "async-result: background execution failed for task" task-id)
+              (async-buf/enqueue-result! agent-id project-id
+                                         {:task-id task-id
+                                          :tool tool-name
+                                          :status :error
+                                          :error (.getMessage e)}))))
+        ;; Return immediate ack (goes through normalize → piggyback chain)
+        [{:type "text"
+          :text (pr-str {:queued true :task-id task-id :tool tool-name})}])
+      ;; No async flag → pass through
+      (handler args))))
+
+(defn wrap-handler-async-piggyback
+  "Wrap handler to drain async results as piggyback content.
+   SRP: Single responsibility - async result delivery only.
+
+   Drains completed async results for the calling agent+project
+   and appends them as ---TOOLRESULT--- delimited blocks.
+
+   Zero-cost when no async results pending.
+
+   Runs alongside memory-piggyback and hivemind-piggyback in the
+   middleware chain so all three channels can append independently.
+
+   Format:
+   ---TOOLRESULT---
+   {:results [...] :remaining N :total M :delivered D}
+   ---/TOOLRESULT---"
+  [handler]
+  (fn [args]
+    (let [content (handler args)
+          project-id (extract-project-id args)
+          ;; Always use coordinator identity for buffer key alignment
+          ;; with async enqueue. See CURSOR IDENTITY FIX in piggyback wrappers.
+          agent-id (if project-id
+                     (str "coordinator-" project-id)
+                     "coordinator")
+          drain-result (async-buf/drain! agent-id project-id)]
+      (wrap-delimited-block content "TOOLRESULT"
+                            (when drain-result (pr-str drain-result))))))
 
 (defn wrap-handler-response
   "Wrap handler to build SDK response format.
@@ -335,22 +427,27 @@
 
    Uses composable handler wrappers (SRP: each wrapper single responsibility):
    - wrap-handler-retry: auto-retry on hot-reload transient errors (CLARITY-Y)
-   - wrap-handler-context: binds request context for tool execution
+   - wrap-handler-async: intercept async:true calls, return ack, spawn future
    - wrap-handler-normalize: converts result to content array
+   - wrap-handler-async-piggyback: drains async results (completed futures)
    - wrap-handler-memory-piggyback: drains memory entries (axioms, conventions)
    - wrap-handler-piggyback: embeds hivemind messages with agent-id extraction
+   - wrap-handler-context: binds request context for tool execution
    - wrap-handler-response: builds {:content ...} response
 
    Composition via -> threading enables clear data flow:
-   handler -> retry -> normalize -> memory-piggyback -> hivemind-piggyback -> context -> response
+   handler -> retry -> async-intercept -> normalize -> async-piggyback -> memory-piggyback -> hivemind-piggyback -> context -> response
 
-   Memory piggyback runs before hivemind piggyback so both channels
-   can independently append delimited blocks to content.
+   The async interceptor sits AFTER retry (so it can retry on hot-reload errors)
+   but BEFORE normalize (so the ack [{:type text}] passes through the piggyback chain).
+
+   Memory/async/hivemind piggybacks all run in parallel, each appending
+   their own delimited blocks to content independently.
 
    CLARITY-Y: wrap-handler-retry is innermost to catch handler exceptions
    before context/normalize processing.
 
-   CRITICAL: context must wrap both piggybacks so ctx/current-directory is bound
+   CRITICAL: context must wrap all piggybacks so ctx/current-directory is bound
    when extract-project-id runs."
   [{:keys [name description inputSchema handler deprecated]}]
   (cond-> {:name name
@@ -358,10 +455,12 @@
            :inputSchema inputSchema
            :handler (-> handler
                         wrap-handler-retry              ; CLARITY-Y: Hot-reload resilience
+                        (wrap-handler-async name)       ; async:true → ack + future
                         wrap-handler-normalize
+                        wrap-handler-async-piggyback    ; async results channel
                         wrap-handler-memory-piggyback   ; memory channel (needs ctx bound)
                         wrap-handler-piggyback          ; hivemind channel (needs ctx bound)
-                        wrap-handler-context            ; binds ctx for both piggybacks
+                        wrap-handler-context            ; binds ctx for all piggybacks
                         wrap-handler-response)}
     deprecated (assoc :deprecated true)))
 

@@ -1,13 +1,15 @@
 (ns hive-mcp.agent.executor
-  "Tool execution with permission gates.
+  "Tool execution with permission gates and allowlist enforcement.
 
    Application layer use case for executing tool calls with:
+   - Tool allowlist enforcement (drones can only call allowed tools)
    - Permission checking (dangerous tools require approval)
    - Human approval flow via hivemind
    - Result formatting for conversation history
    - Agent-id context propagation (P1: drone attribution)"
   (:require [hive-mcp.agent.registry :as registry]
             [hive-mcp.agent.context :as ctx]
+            [hive-mcp.agent.drone.tool-allowlist :as allowlist]
             [hive-mcp.hivemind :as hivemind]
             [hive-mcp.permissions :as permissions]
             [clojure.data.json :as json]
@@ -79,21 +81,47 @@
               (str "Error: " (:error result)))})
 
 (defn execute-tool-calls
-  "Execute a batch of tool calls, respecting permissions.
+  "Execute a batch of tool calls, respecting allowlist and permissions.
+
+   Enforcement order:
+   1. Allowlist check (if provided) — reject tools not on the list
+   2. Permission check — dangerous tools require human approval
+   3. Execute — run the tool handler
 
    Binds request context during execution so that tools like
    hivemind_shout can identify the calling agent without requiring
    explicit agent_id parameter.
 
+   Arguments:
+     agent-id    - The agent making the calls
+     tool-calls  - Vector of {:id :name :arguments} maps
+     permissions - Set of permission keywords (e.g., #{:auto-approve})
+     opts        - Optional map with:
+                   :tool-allowlist - Set of allowed tool names (nil = no filtering)
+                   :task-type      - Task type for profile-based allowlist
+
    Returns vector of tool result messages for conversation history."
-  [agent-id tool-calls permissions]
-  (ctx/with-request-context {:agent-id agent-id}
-    (mapv (fn [{:keys [id name arguments]}]
-            (let [approved? (or (not (requires-approval? name permissions))
-                                (request-approval! agent-id name arguments))]
-              (if approved?
-                (let [result (execute-tool name arguments)]
-                  (format-tool-result id name result))
-                (format-tool-result id name
-                                    {:success false :error "Rejected by human"}))))
-          tool-calls)))
+  ([agent-id tool-calls permissions]
+   (execute-tool-calls agent-id tool-calls permissions nil))
+  ([agent-id tool-calls permissions {:keys [tool-allowlist task-type] :as opts}]
+   (ctx/with-request-context {:agent-id agent-id}
+     (let [;; Resolve allowlist if any filtering options provided
+           effective-allowlist (when (or tool-allowlist task-type)
+                                 (allowlist/resolve-allowlist opts))
+           ;; Partition into allowed and rejected
+           {:keys [allowed rejected]}
+           (if effective-allowlist
+             (allowlist/enforce-allowlist tool-calls effective-allowlist)
+             {:allowed tool-calls :rejected []})
+           ;; Execute allowed calls with permission gates
+           executed (mapv (fn [{:keys [id name arguments]}]
+                            (let [approved? (or (not (requires-approval? name permissions))
+                                                (request-approval! agent-id name arguments))]
+                              (if approved?
+                                (let [result (execute-tool name arguments)]
+                                  (format-tool-result id name result))
+                                (format-tool-result id name
+                                                    {:success false :error "Rejected by human"}))))
+                          allowed)]
+       ;; Combine: rejected results first, then executed results
+       (into (vec rejected) executed)))))

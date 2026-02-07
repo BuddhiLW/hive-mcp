@@ -10,7 +10,8 @@
    - ExecutionResult: Execution outcome with metrics
 
    All constructors validate inputs (CLARITY-I: Inputs guarded)."
-  (:require [clojure.string :as str]))
+  (:require [clojure.string :as str]
+            [hive-mcp.protocols.kg :as kg]))
 
 ;;; ============================================================
 ;;; TaskSpec - Immutable Task Configuration
@@ -78,9 +79,17 @@
 ;;; ExecutionContext - Runtime Execution State
 ;;; ============================================================
 
+(def ^:dynamic *drone-kg-store*
+  "Dynamic var for per-drone KG store binding.
+   Alternative to threading kg-store through ExecutionContext.
+   Bind via (binding [*drone-kg-store* my-store] ...) in code paths
+   that don't have access to the execution context.
+   nil = use global store."
+  nil)
+
 (defrecord ExecutionContext
            [drone-id task-id parent-id model sandbox start-time
-            pre-validation file-contents-before project-root]
+            pre-validation file-contents-before project-root kg-store]
   ;; drone-id             - Unique drone identifier
   ;; task-id              - Task identifier for claims
   ;; parent-id            - Parent ling ID
@@ -90,6 +99,7 @@
   ;; pre-validation       - Pre-execution validation results
   ;; file-contents-before - File contents snapshot for post-validation
   ;; project-root         - Resolved project root path
+  ;; kg-store             - Optional IKGStore instance for per-drone KG isolation (nil = use global)
   )
 
 (defn ->execution-context
@@ -103,13 +113,14 @@
        :model        - Selected model
        :sandbox      - Sandbox config map
        :project-root - Project root path
+       :kg-store     - Optional IKGStore for per-drone KG isolation (nil = use global)
 
    Returns:
      ExecutionContext record
 
    Throws:
      ex-info if :drone-id is missing"
-  [{:keys [drone-id task-id parent-id model sandbox project-root]}]
+  [{:keys [drone-id task-id parent-id model sandbox project-root kg-store]}]
   (when (str/blank? drone-id)
     (throw (ex-info "ExecutionContext requires :drone-id"
                     {:error-type :validation
@@ -123,7 +134,8 @@
     :start-time (System/currentTimeMillis)
     :pre-validation nil
     :file-contents-before nil
-    :project-root project-root}))
+    :project-root project-root
+    :kg-store kg-store}))
 
 (defn with-pre-validation
   "Add pre-validation results to execution context."
@@ -144,6 +156,27 @@
   "Calculate elapsed milliseconds since context start."
   [ctx]
   (- (System/currentTimeMillis) (:start-time ctx)))
+
+(defn get-kg-store
+  "Get the KG store for a drone execution context.
+
+   Resolution order:
+   1. :kg-store from ExecutionContext (explicit per-drone store)
+   2. *drone-kg-store* dynamic var (bound in current thread)
+   3. Global store via kg/get-store (singleton fallback)
+
+   This allows per-drone KG isolation when needed while
+   maintaining backward compatibility (nil = global behavior).
+
+   Arguments:
+     ctx - ExecutionContext (or nil for dynamic/global fallback)
+
+   Returns:
+     IKGStore instance"
+  [ctx]
+  (or (:kg-store ctx)
+      *drone-kg-store*
+      (kg/get-store)))
 
 ;;; ============================================================
 ;;; ExecutionResult - Execution Outcome

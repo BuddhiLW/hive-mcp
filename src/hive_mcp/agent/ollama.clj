@@ -4,6 +4,7 @@
    Provides local LLM access via Ollama HTTP API.
    Uses OpenAI-compatible tool calling format."
   (:require [hive-mcp.agent.protocol :as proto]
+            [hive-mcp.config :as config]
             [clojure.data.json :as json]
             [taoensso.timbre :as log])
   (:import [java.net URI]
@@ -12,7 +13,6 @@
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
-
 
 ;;; ============================================================
 ;;; HTTP Client
@@ -99,12 +99,15 @@
 
 (defn ollama-backend
   "Create an Ollama backend for agent delegation.
-   
+
    Options:
-     :host - Ollama server URL (default: http://localhost:11434)
-     :model - Model name (default: devstral-small:24b)"
+     :host - Ollama server URL (default: from config.edn :services.ollama.host)
+     :model - Model name (default: from config.edn :services.drone.default-model)"
   ([] (ollama-backend {}))
-  ([{:keys [host model]
-     :or {host "http://localhost:11434"
-          model "devstral-small:24b"}}]
-   (->OllamaBackend host model)))
+  ([{:keys [host model]}]
+   (let [host (or host (config/get-service-value :ollama :host
+                                                 :env "OLLAMA_HOST"
+                                                 :default "http://localhost:11434"))
+         model (or model (config/get-service-value :drone :default-model
+                                                   :default "devstral-small:24b"))]
+     (->OllamaBackend host model))))

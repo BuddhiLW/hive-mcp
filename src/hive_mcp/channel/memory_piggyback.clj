@@ -64,18 +64,27 @@
    This prevents repeated /catchup calls from re-enqueuing entries.
 
    Entries should be ordered: axioms first, then priority conventions.
-   Each entry should have at minimum :id and :content (or :preview)."
-  [agent-id project-id entries]
-  (let [buffer-key [(or agent-id "coordinator") (or project-id "global")]]
-    (if (get @buffers buffer-key)
-      (log/debug "memory-piggyback: buffer already exists for" buffer-key "- skipping enqueue")
-      (let [formatted (mapv format-entry entries)]
-        (swap! buffers assoc buffer-key
-               {:entries formatted
-                :cursor 0
-                :done false
-                :seq-num 0})
-        (log/info "memory-piggyback: enqueued" (count formatted) "entries for" buffer-key)))))
+   Each entry should have at minimum :id and :content (or :preview).
+
+   Optional context-refs: map of category->ctx-id from context-store.
+   When provided, refs are included in the first drain batch to enable
+   future :ref mode where piggyback sends only refs instead of full content."
+  ([agent-id project-id entries]
+   (enqueue! agent-id project-id entries nil))
+  ([agent-id project-id entries context-refs]
+   (let [buffer-key [(or agent-id "coordinator") (or project-id "global")]]
+     (if (get @buffers buffer-key)
+       (log/debug "memory-piggyback: buffer already exists for" buffer-key "- skipping enqueue")
+       (let [formatted (mapv format-entry entries)]
+         (swap! buffers assoc buffer-key
+                (cond-> {:entries formatted
+                         :cursor 0
+                         :done false
+                         :seq-num 0}
+                  (some? context-refs)
+                  (assoc :context-refs context-refs)))
+         (log/info "memory-piggyback: enqueued" (count formatted) "entries for" buffer-key
+                   (when context-refs (str " with " (count context-refs) " context-refs"))))))))
 
 (defn drain!
   "Drain next batch of entries within char budget for an agent+project.
@@ -132,7 +141,11 @@
                  :total total
                  :delivered delivered
                  :seq new-seq}
-          is-done (assoc :done true))))))
+          is-done (assoc :done true)
+          ;; Include context-refs on FIRST drain only (seq-num was 0 → new-seq is 1)
+          ;; This enables :ref mode where consumers can use refs instead of full content
+          (and (= new-seq 1) (some? (:context-refs buf)))
+          (assoc :context-refs (:context-refs buf)))))))
 
 (defn has-pending?
   "Check if an agent+project has undrained memory entries."

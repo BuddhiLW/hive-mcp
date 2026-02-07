@@ -32,14 +32,6 @@
       (agora-handlers/handle-agora-list-debates params)
       (agora-handlers/handle-agora-list-dialogues params))))
 
-(defn- handle-list-debates-shim
-  "DEPRECATED: Backward-compat shim. Use 'list' with type:'debate' instead."
-  [params]
-  (log/warn {:event :deprecation-warning
-             :command "list-debates"
-             :message "DEPRECATED: Use 'list' with type:'debate' instead."})
-  (handle-list-unified (assoc params :type "debate")))
-
 ;; =============================================================================
 ;; F8: Unified debate handler (staged param)
 ;; =============================================================================
@@ -55,14 +47,6 @@
     (agora-handlers/handle-agora-create-staged-debate params)
     (agora-handlers/handle-agora-create-debate params)))
 
-(defn- handle-staged-shim
-  "DEPRECATED: Backward-compat shim. Use 'debate' with staged:true instead."
-  [params]
-  (log/warn {:event :deprecation-warning
-             :command "staged"
-             :message "DEPRECATED: Use 'debate' with staged:true instead."})
-  (handle-debate-unified (assoc params :staged true)))
-
 (defn- handle-debate-status-unified
   "Unified debate-status handler. Routes to stage-status or debate-status based on staged param.
 
@@ -74,21 +58,31 @@
     (agora-handlers/handle-agora-stage-status params)
     (agora-handlers/handle-agora-debate-status params)))
 
-(defn- handle-stage-status-shim
-  "DEPRECATED: Backward-compat shim. Use 'debate-status' with staged:true instead."
-  [params]
-  (log/warn {:event :deprecation-warning
-             :command "stage-status"
-             :message "DEPRECATED: Use 'debate-status' with staged:true instead."})
-  (handle-debate-status-unified (assoc params :staged true)))
-
 ;; =============================================================================
-;; Handlers Map - Wire commands to existing handlers
+;; Deprecated Alias Support
 ;; =============================================================================
 
-(def handlers
-  "Map of command keywords to handler functions.
-   NOTE: list-debates, staged, stage-status are deprecated aliases."
+(def ^:private deprecated-aliases
+  "Map of deprecated command keywords to {:canonical kw :params map}.
+   :params is merged into the request before forwarding to canonical handler."
+  {:list-debates  {:canonical :list          :params {:type "debate"}}
+   :staged        {:canonical :debate        :params {:staged true}}
+   :stage-status  {:canonical :debate-status :params {:staged true}}})
+
+(defn- wrap-deprecated
+  "Wrap a handler fn to emit a deprecation warning and merge alias params before delegating."
+  [alias-kw {:keys [canonical params]} handler-fn]
+  (fn [request-params]
+    (log/warn (str "DEPRECATED: command '" (name alias-kw)
+                   "' is deprecated, use '" (name canonical) "' instead."))
+    (handler-fn (merge request-params params))))
+
+;; =============================================================================
+;; Handlers Map
+;; =============================================================================
+
+(def canonical-handlers
+  "Map of canonical command keywords to handler functions."
   {:dialogue       agora-handlers/handle-agora-create-dialogue
    :dispatch       agora-handlers/handle-agora-dispatch
    :consensus      agora-handlers/handle-agora-check-consensus
@@ -97,11 +91,16 @@
    :history        agora-handlers/handle-agora-get-history
    :debate         handle-debate-unified
    :debate-status  handle-debate-status-unified
-   :continue       agora-handlers/handle-agora-continue-debate
-   ;; Deprecated aliases (backward compat)
-   :list-debates   handle-list-debates-shim
-   :staged         handle-staged-shim
-   :stage-status   handle-stage-status-shim})
+   :continue       agora-handlers/handle-agora-continue-debate})
+
+(def handlers
+  "Canonical handlers merged with deprecated aliases (with log warnings)."
+  (merge canonical-handlers
+         (reduce-kv (fn [m alias-kw alias-spec]
+                      (assoc m alias-kw
+                             (wrap-deprecated alias-kw alias-spec
+                                              (get canonical-handlers (:canonical alias-spec)))))
+                    {} deprecated-aliases)))
 
 ;; =============================================================================
 ;; CLI Handler
@@ -119,7 +118,7 @@
   "MCP tool definition for consolidated agora command."
   {:name "agora"
    :consolidated true
-   :description "Agora dialogue system: dialogue (create), dispatch (send message), consensus (check Nash equilibrium), list (all dialogues), join (add participant), history (transcript), debate/debate-status/continue (drone debates), staged/stage-status (two-stage). Use command='help' to list all."
+   :description "Agora dialogue system: dialogue (create), dispatch (send message), consensus (check Nash equilibrium), list (all dialogues), join (add participant), history (transcript), debate/debate-status/continue (drone debates). Deprecated aliases: list-debates (use list+type:debate), staged (use debate+staged:true), stage-status (use debate-status+staged:true). Use command='help' to list all."
    :inputSchema {:type "object"
                  :properties {"command" {:type "string"
                                          :enum ["dialogue" "dispatch" "consensus" "list" "join" "history" "debate" "debate-status" "continue" "list-debates" "staged" "stage-status" "help"]

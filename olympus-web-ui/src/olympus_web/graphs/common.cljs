@@ -1,31 +1,32 @@
 (ns olympus-web.graphs.common
   "Common graph utilities for ReactFlow integration.
-   
+
    Provides:
    - Dagre layout calculation
    - ReactFlow component wrappers
    - Node/edge conversion helpers"
-  (:require [olympus-web.config :as config]))
+  (:require [olympus-web.config :as config]
+            ["@xyflow/react" :as xyflow]
+            ["dagre" :as dagre-lib]))
 
 ;; =============================================================================
-;; ReactFlow Interop
+;; ReactFlow Interop (from npm @xyflow/react v12)
 ;; =============================================================================
 
-(def ReactFlow (.-default js/ReactFlow))
-(def Controls (.-Controls js/ReactFlow))
-(def MiniMap (.-MiniMap js/ReactFlow))
-(def Background (.-Background js/ReactFlow))
-(def useNodesState (.-useNodesState js/ReactFlow))
-(def useEdgesState (.-useEdgesState js/ReactFlow))
+(def ReactFlow (.-ReactFlow xyflow))
+(def Controls (.-Controls xyflow))
+(def MiniMap (.-MiniMap xyflow))
+(def Background (.-Background xyflow))
 
 ;; =============================================================================
-;; Dagre Layout
+;; Dagre Layout (from npm dagre)
 ;; =============================================================================
 
 (defn create-dagre-graph
   "Create a new dagre graph with default settings."
   [direction]
-  (let [g (js/dagre.graphlib.Graph.)]
+  (let [Graph (.. dagre-lib -graphlib -Graph)
+        g (new Graph)]
     (.setDefaultEdgeLabel g (fn [] #js {}))
     (.setGraph g #js {:rankdir (or direction "TB")
                       :nodesep (:nodesep config/dagre-config)
@@ -47,7 +48,7 @@
     (doseq [{:keys [source target]} edges]
       (.setEdge g source target))
     ;; Calculate layout
-    (js/dagre.layout g)
+    (.layout dagre-lib g)
     ;; Extract positions
     (mapv (fn [{:keys [id] :as node}]
             (let [dagre-node (.node g id)]

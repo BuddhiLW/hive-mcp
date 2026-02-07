@@ -36,6 +36,7 @@
             [hive-mcp.agent.mcp :as mcp]
             [hive-mcp.agent.drone :as drone]
             [hive-mcp.channel :as channel]
+            [hive-mcp.config :as global-config]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -79,7 +80,6 @@
      (delegate! {:backend :ollama :task \"Fix the bug\" :model \"devstral-small:24b\"})"
   [{:keys [backend model host task preset task-type api-key tools permissions max-steps trace]
     :or {backend :openrouter
-         host "http://localhost:11434"
          max-steps 50
          permissions #{}
          trace false}
@@ -90,11 +90,17 @@
   (when-not task
     (throw (ex-info "Task is required" {:opts opts})))
 
-  (let [;; Only use default Ollama model if backend is :ollama and no model provided
+  (let [;; Resolve Ollama host from config > env > default
+        host (or host (global-config/get-service-value :ollama :host
+                                                       :env "OLLAMA_HOST"
+                                                       :default "http://localhost:11434"))
+        ;; Only use default Ollama model if backend is :ollama and no model provided
+        default-drone-model (global-config/get-service-value :drone :default-model
+                                                             :default "devstral-small:24b")
         effective-model (or model
-                            (when (= backend :ollama) "devstral-small:24b"))
+                            (when (= backend :ollama) default-drone-model))
         backend-instance (case backend
-                           :ollama (ollama/ollama-backend {:host host :model (or effective-model "devstral-small:24b")})
+                           :ollama (ollama/ollama-backend {:host host :model (or effective-model default-drone-model)})
                            :openrouter (config/openrouter-backend {:model effective-model
                                                                    :preset preset
                                                                    :task-type (or task-type :coding)
@@ -141,6 +147,14 @@
    See hive-mcp.agent.drone/delegate! for full documentation."
   [opts]
   (drone/delegate! opts delegate!))
+
+(defn delegate-agentic-drone!
+  "Delegate a task to an in-process agentic drone with session KG.
+   Unlike delegate-drone! (which passes delegate! as external fn),
+   this runs the full agentic loop in-process with Datalevin KG.
+   See hive-mcp.agent.drone/delegate-agentic! for full documentation."
+  [opts]
+  (drone/delegate-agentic! opts))
 
 ;;; ============================================================
 ;;; MCP Tool Definitions (delegated to agent/mcp.clj)

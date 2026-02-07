@@ -7,9 +7,11 @@
    - FitAddon handles automatic resizing
    - Tab bar allows switching between multiple lings"
   (:require [reagent.core :as r]
-            [reagent.dom :as rdom]
             [re-frame.core :as rf]
-            [olympus-web.config :as config]))
+            [olympus-web.config :as config]
+            ["@xterm/xterm" :refer [Terminal]]
+            ["@xterm/addon-fit" :refer [FitAddon]]
+            ["@xterm/addon-web-links" :refer [WebLinksAddon]]))
 
 ;; =============================================================================
 ;; xterm.js Terminal Instance Management
@@ -21,33 +23,24 @@
   "Create a new xterm.js Terminal instance with FitAddon."
   [ling-id container-el]
   (when container-el
-    (let [;; xterm.js 5.x exposes as window.Terminal (from UMD bundle)
-          Terminal (or (aget js/window "Terminal")
-                       (when (exists? js/Terminal) js/Terminal))
-          FitAddon (or (aget js/window "FitAddon")
-                       (when (exists? js/FitAddon) js/FitAddon))
-          WebLinksAddon (or (aget js/window "WebLinksAddon")
-                            (when (exists? js/WebLinksAddon) js/WebLinksAddon))
-          term-opts (clj->js (merge config/terminal-options
+    (let [term-opts (clj->js (merge config/terminal-options
                                     {:theme (clj->js config/terminal-theme)}))
-          term (when Terminal (new Terminal term-opts))
-          fit (when (and term FitAddon) (new FitAddon))
-          web-links (when (and term WebLinksAddon) (new WebLinksAddon))]
-      (when term
-        ;; Load addons
-        (when fit (.loadAddon term fit))
-        (when web-links (.loadAddon term web-links))
-        ;; Open terminal in container
-        (.open term container-el)
-        ;; Fit to container
-        (when fit
-          (js/setTimeout #(.fit fit) 50))
-        ;; Store reference
-        (swap! terminals assoc ling-id {:term term :fit fit})
-        ;; Write welcome message
-        (.writeln term (str "\u001b[36m--- Ling output: " ling-id " ---\u001b[0m"))
-        (.writeln term "")
-        term))))
+          term (Terminal. term-opts)
+          fit (FitAddon.)
+          web-links (WebLinksAddon.)]
+      ;; Load addons
+      (.loadAddon term fit)
+      (.loadAddon term web-links)
+      ;; Open terminal in container
+      (.open term container-el)
+      ;; Fit to container
+      (js/setTimeout #(.fit fit) 50)
+      ;; Store reference
+      (swap! terminals assoc ling-id {:term term :fit fit})
+      ;; Write welcome message
+      (.writeln term (str "\u001b[36m--- Ling output: " ling-id " ---\u001b[0m"))
+      (.writeln term "")
+      term)))
 
 (defn- destroy-terminal!
   "Dispose of a terminal instance."
@@ -139,19 +132,21 @@
 
 ;; =============================================================================
 ;; Single Terminal Pane (Form-3 Reagent Component)
+;; Uses React ref instead of deprecated findDOMNode (removed in React 19)
 ;; =============================================================================
 
 (defn terminal-pane
   "A single xterm.js terminal pane for one ling."
   [ling-id]
   (let [prev-buffer-count (atom 0)
-        resize-handler (atom nil)]
+        resize-handler (atom nil)
+        container-ref (atom nil)]
     (r/create-class
      {:display-name (str "terminal-pane-" ling-id)
 
       :component-did-mount
-      (fn [this]
-        (let [node (rdom/dom-node this)]
+      (fn [_this]
+        (when-let [node @container-ref]
           ;; Create terminal
           (create-terminal! ling-id node)
           ;; Request history on mount
@@ -182,7 +177,8 @@
       (fn [ling-id]
         @(rf/subscribe [:terminal/buffer-for ling-id])  ;; Force re-render on buffer change
         [:div.terminal-container
-         {:style {:width "100%" :height "100%"}}])})))
+         {:ref #(reset! container-ref %)
+          :style {:width "100%" :height "100%"}}])})))
 
 ;; =============================================================================
 ;; Main Terminal View

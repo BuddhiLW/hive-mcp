@@ -14,6 +14,7 @@
    CLARITY-Y: Auto-initializes Datalevin if no store configured."
   (:require [hive-mcp.knowledge-graph.protocol :as proto]
             [hive-mcp.knowledge-graph.store.datascript :as ds-store]
+            [hive-mcp.config :as config]
             [clojure.java.io :as io]
             [clojure.edn :as edn]
             [taoensso.timbre :as log]))
@@ -37,12 +38,12 @@
 
 (defn- detect-backend
   "Detect the desired KG backend from configuration sources.
-   Priority: env var > .hive-project.edn > default (:datalevin).
+   Priority: config.edn :services.kg > env var > .hive-project.edn > default (:datalevin).
    Returns keyword :datascript, :datalevin, or :datahike."
   []
-  (let [env-val (System/getenv "HIVE_KG_BACKEND")
-        env-backend (when (and env-val (seq env-val))
-                      (keyword env-val))
+  (let [env-backend (config/get-service-value :kg :backend
+                                              :env "HIVE_KG_BACKEND"
+                                              :parse keyword)
         project-backend (read-project-config)
         backend (or env-backend project-backend :datalevin)]
     (log/debug "KG backend detection" {:env env-backend

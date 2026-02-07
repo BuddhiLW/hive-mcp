@@ -26,6 +26,8 @@
             [hive-mcp.tools.catchup.spawn :as catchup-spawn]
             [hive-mcp.tools.catchup.permeation :as permeation]
             [hive-mcp.channel.memory-piggyback :as memory-piggyback]
+            [hive-mcp.channel.context-store :as context-store]
+            [hive-mcp.knowledge-graph.disc :as disc]
             [hive-mcp.project.tree :as project-tree]
             [clojure.data.json :as json]
             [taoensso.timbre :as log]))
@@ -124,15 +126,82 @@
                                     (log/debug "Project tree scan failed (non-fatal):" (.getMessage e))
                                     {:scanned false :error (.getMessage e)}))
 
+              ;; P0.2: Apply disc certainty time-decay at catchup (L1 maintenance)
+              ;; Discs lose certainty over time proportional to their volatility class.
+              ;; Catchup is the natural cadence: runs at session start, periodic.
+              ;; Bounded, idempotent, non-blocking (errors caught inside).
+              disc-decay-stats (try
+                                 (disc/apply-time-decay-to-all-discs! :project-id project-id)
+                                 (catch Exception e
+                                   (log/debug "Disc time-decay failed (non-fatal):" (.getMessage e))
+                                   {:updated 0 :skipped 0 :errors 1 :error (.getMessage e)}))
+              _ (when (pos? (:updated disc-decay-stats 0))
+                  (log/info "catchup: disc time-decay applied"
+                            {:updated (:updated disc-decay-stats)
+                             :errors (:errors disc-decay-stats)}))
+
               ;; Memory piggyback: enqueue axioms + priority conventions for
               ;; incremental delivery via ---MEMORY--- blocks on subsequent calls.
               ;; Axioms first (highest priority), then priority conventions.
-              agent-id (or (:agent_id args) (:agent-id args)
-                           (when project-id (str "coordinator-" project-id))
-                           "coordinator")
+              ;;
+              ;; CURSOR IDENTITY FIX: Must use the SAME stable coordinator identity
+              ;; as wrap-handler-memory-piggyback in routes.clj for the buffer key.
+              ;; Previously used (or (:agent_id args) ...) which diverged from the
+              ;; middleware's drain key when caller passed agent_id (e.g. "coordinator").
+              ;; See decision 20260207012136-1c3339e5.
+              piggyback-agent-id (if project-id
+                                   (str "coordinator-" project-id)
+                                   "coordinator")
               piggyback-entries (into (vec axioms) priority-conventions)
+
+              ;; Dual-write: Cache entry categories in context-store for pass-by-ref mode.
+              ;; Each category gets its own ctx-id with 'catchup' + category tags.
+              ;; TTL: 10 minutes (catchup context useful for the session duration).
+              ;; Non-fatal: context-store failure doesn't break catchup.
+              catchup-ttl 600000
+              context-refs
+              (try
+                (let [refs (cond-> {}
+                             (seq axioms)
+                             (assoc :axioms (context-store/context-put!
+                                             axioms
+                                             :tags #{"catchup" "axioms" (or project-id "global")}
+                                             :ttl-ms catchup-ttl))
+                             (seq priority-conventions)
+                             (assoc :priority-conventions (context-store/context-put!
+                                                           priority-conventions
+                                                           :tags #{"catchup" "priority-conventions" (or project-id "global")}
+                                                           :ttl-ms catchup-ttl))
+                             (seq sessions)
+                             (assoc :sessions (context-store/context-put!
+                                               sessions
+                                               :tags #{"catchup" "sessions" (or project-id "global")}
+                                               :ttl-ms catchup-ttl))
+                             (seq decisions)
+                             (assoc :decisions (context-store/context-put!
+                                                decisions
+                                                :tags #{"catchup" "decisions" (or project-id "global")}
+                                                :ttl-ms catchup-ttl))
+                             (seq conventions)
+                             (assoc :conventions (context-store/context-put!
+                                                  conventions
+                                                  :tags #{"catchup" "conventions" (or project-id "global")}
+                                                  :ttl-ms catchup-ttl))
+                             (seq snippets)
+                             (assoc :snippets (context-store/context-put!
+                                               snippets
+                                               :tags #{"catchup" "snippets" (or project-id "global")}
+                                               :ttl-ms catchup-ttl)))]
+                  (when (seq refs)
+                    (log/info "catchup: stored" (count refs) "categories in context-store"
+                              {:refs (keys refs)}))
+                  refs)
+                (catch Exception e
+                  (log/warn e "catchup: context-store caching failed (non-fatal)")
+                  nil))
+
               _ (when (seq piggyback-entries)
-                  (memory-piggyback/enqueue! agent-id project-id piggyback-entries))]
+                  (memory-piggyback/enqueue! piggyback-agent-id project-id piggyback-entries context-refs))]
 
           (fmt/build-catchup-response
            {:project-name project-name :project-id project-id
@@ -141,7 +210,8 @@
             :sessions-meta sessions-meta :decisions-meta decisions-enriched
             :conventions-meta conventions-enriched :snippets-meta snippets-meta
             :expiring-meta expiring-meta :kg-insights kg-insights
-            :project-tree-scan project-tree-scan}))
+            :project-tree-scan project-tree-scan
+            :context-refs context-refs}))
         (catch Exception e
           (fmt/catchup-error e))))))
 

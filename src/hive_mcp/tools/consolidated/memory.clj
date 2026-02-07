@@ -15,8 +15,10 @@
    - expire: Force-expire (delete) entry by ID
    - decay: Scheduled staleness decay for low-access entries (W2)
    - cross_pollinate: Auto-promote entries with cross-project access (W5)
-   - rename: Unified project rename (Chroma + KG + .edn + config)"
-  (:require [hive-mcp.tools.cli :refer [make-cli-handler]]
+   - rename: Unified project rename (Chroma + KG + .edn + config)
+   - batch-add: Batch-add multiple entries [{type, content, tags, ...}, ...]
+   - batch-feedback: Batch-feedback on multiple entries [{id, feedback}, ...]"
+  (:require [hive-mcp.tools.cli :refer [make-cli-handler make-batch-handler]]
             [hive-mcp.tools.memory :as mem]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -50,12 +52,31 @@
    :rename            mem/handle-mcp-memory-rename-project})
 
 ;; ============================================================
+;; Batch Helpers
+;; ============================================================
+
+(defn- make-single-command-batch
+  "Wraps make-batch-handler for batch ops that all target one command.
+   Auto-injects :command into each operation so callers don't need to."
+  [cmd-kw handler-fn]
+  (let [batch-fn (make-batch-handler {cmd-kw handler-fn})]
+    (fn [{:keys [operations] :as params}]
+      (batch-fn (assoc params :operations
+                       (mapv #(assoc % :command (name cmd-kw)) operations))))))
+
+(def canonical-handlers
+  "Full handler map including batch commands."
+  (assoc handlers
+         :batch-add      (make-single-command-batch :add (:add handlers))
+         :batch-feedback (make-single-command-batch :feedback (:feedback handlers))))
+
+;; ============================================================
 ;; CLI Handler
 ;; ============================================================
 
 (def handle-memory
   "CLI-style handler that dispatches on :command param."
-  (make-cli-handler handlers))
+  (make-cli-handler canonical-handlers))
 
 ;; ============================================================
 ;; Tool Definition
@@ -65,10 +86,10 @@
   "MCP tool definition for consolidated memory operations."
   {:name "memory"
    :consolidated true
-   :description "Consolidated memory operations. Commands: add, query, metadata, get, search, duration, promote, demote, log_access, feedback, helpfulness, tags, cleanup, expiring, expire, migrate, import, decay, cross_pollinate, rename. Use 'help' command to list all available commands."
+   :description "Consolidated memory operations. Commands: add, query, metadata, get, search, duration, promote, demote, log_access, feedback, helpfulness, tags, cleanup, expiring, expire, migrate, import, decay, cross_pollinate, rename, batch-add, batch-feedback. Use 'help' command to list all."
    :inputSchema {:type "object"
                  :properties {"command" {:type "string"
-                                         :enum ["add" "query" "metadata" "get" "search" "duration" "promote" "demote" "log_access" "feedback" "helpfulness" "tags" "cleanup" "expiring" "expire" "migrate" "import" "decay" "cross_pollinate" "rename" "help"]
+                                         :enum ["add" "query" "metadata" "get" "search" "duration" "promote" "demote" "log_access" "feedback" "helpfulness" "tags" "cleanup" "expiring" "expire" "migrate" "import" "decay" "cross_pollinate" "rename" "batch-add" "batch-feedback" "help"]
                                          :description "Command to execute"}
                               ;; add command params
                               "type" {:type "string"
@@ -132,7 +153,13 @@
                               "new-project-id" {:type "string"
                                                 :description "[rename/migrate] New project-id to rename to"}
                               "dry-run" {:type "boolean"
-                                         :description "[rename] Preview what would happen without modifying (default: false)"}}
+                                         :description "[rename] Preview what would happen without modifying (default: false)"}
+                              ;; batch params
+                              "operations" {:type "array"
+                                            :items {:type "object"}
+                                            :description "[batch-add/batch-feedback] Array of operation objects. batch-add: [{type, content, tags, ...}]. batch-feedback: [{id, feedback}]."}
+                              "parallel" {:type "boolean"
+                                          :description "[batch-add/batch-feedback] Run batch operations in parallel (default: false)"}}
                  :required ["command"]}
    :handler handle-memory})
 

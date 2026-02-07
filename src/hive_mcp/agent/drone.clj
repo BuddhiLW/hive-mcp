@@ -122,6 +122,63 @@
     (execution/run-execution! task-spec delegate-fn)))
 
 ;;; ============================================================
+;;; Agentic Delegation (In-Process Multi-Turn Loop)
+;;; ============================================================
+
+(defn delegate-agentic!
+  "Delegate a task to an in-process agentic drone with session KG.
+
+   Unlike delegate! (which requires an external delegate-fn), this runs
+   the full agentic loop in-process:
+   - Creates an OpenRouter LLM backend
+   - Runs a think-act-observe loop with tool calling
+   - Uses a Datalevin-backed session KG for context compression
+   - Terminates via structural heuristics (completion language, max turns)
+   - Merges session KG edges to global KG on success
+
+   This is the primary entry point for autonomous drone task execution.
+   No external execution function needed — everything runs in-process.
+
+   Options:
+     :task           - Task description (required)
+     :files          - List of files the drone will modify (contents pre-injected)
+     :task-type      - Explicit task type (:testing, :refactoring, :bugfix, :documentation, :general)
+                       If nil, auto-inferred from task description
+     :preset         - Override preset (default: auto-selected based on task-type)
+     :trace          - Enable progress events (default: true)
+     :parent-id      - Parent ling's slave-id (for swarm status sync)
+     :cwd            - Working directory override for path resolution
+     :skip-auto-apply - When true, don't auto-apply diffs (for validated wave mode)
+     :wave-id        - Wave ID to tag proposed diffs for batch review
+
+   Returns:
+     ExecutionResult record with :status, :agent-id, :files-modified, etc.
+
+   Throws ex-info if file conflicts detected (files locked by another drone).
+
+   Example:
+     (delegate-agentic! {:task \"Fix the nil check in parse-config\"
+                          :files [\"src/config.clj\"]
+                          :cwd \"/home/user/project\"})"
+  [{:keys [task files task-type preset trace parent-id cwd skip-auto-apply wave-id]
+    :or {trace true
+         skip-auto-apply false}}]
+  ;; Create TaskSpec from options (CLARITY-R: Represented Intent)
+  (let [task-spec (domain/->task-spec
+                   {:task task
+                    :files files
+                    :task-type task-type
+                    :preset preset
+                    :cwd cwd
+                    :parent-id parent-id
+                    :wave-id wave-id
+                    :trace trace
+                    :skip-auto-apply skip-auto-apply})]
+    ;; Delegate to agentic execution orchestrator
+    ;; Uses in-process agentic loop with session KG (Datalevin)
+    (execution/run-agentic-execution! task-spec)))
+
+;;; ============================================================
 ;;; Retry-Enabled Delegation
 ;;; ============================================================
 

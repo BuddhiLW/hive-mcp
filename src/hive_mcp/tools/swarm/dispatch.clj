@@ -18,6 +18,7 @@
             [hive-mcp.swarm.coordinator :as coord]
             [hive-mcp.swarm.datascript.queries :as queries]
             [hive-mcp.knowledge-graph.disc :as kg-disc]
+            [hive-mcp.protocols.dispatch :as dispatch-ctx]
             [clojure.data.json :as json]
             [clojure.string :as str]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -292,18 +293,25 @@
 
    Parameters:
    - slave_id: Target slave for dispatch (required)
-   - prompt: The prompt/task to send (required)
+   - prompt: The prompt/task to send, or IDispatchContext (required)
    - timeout_ms: Optional timeout in milliseconds
    - files: Optional explicit list of files task will modify
 
+   Accepts plain string prompts (backward compat) or IDispatchContext instances.
+   Uses ensure-context + resolve-context to normalize both paths.
+
+   SOLID-D: Depends on IDispatchContext abstraction.
    CLARITY: I - Inputs validated via coordinator pre-flight
    SOLID: OCP - Open for extension via coordinator actions"
   [{:keys [slave_id prompt timeout_ms files]}]
   (core/with-swarm
-    ;; Pre-flight check: detect conflicts before dispatch
-    (let [preflight (coord/dispatch-or-queue!
+    ;; IDispatchContext: wrap raw strings, pass through existing contexts
+    (let [ctx (dispatch-ctx/ensure-context prompt)
+          resolved-prompt (:prompt (dispatch-ctx/resolve-context ctx))
+          ;; Pre-flight check: detect conflicts before dispatch
+          preflight (coord/dispatch-or-queue!
                      {:slave-id slave_id
-                      :prompt prompt
+                      :prompt resolved-prompt
                       :files files
                       :timeout-ms timeout_ms})]
       (case (:action preflight)
@@ -317,7 +325,7 @@
 
         ;; Approved - proceed with dispatch
         :dispatch
-        (execute-dispatch slave_id prompt timeout_ms (:files preflight))
+        (execute-dispatch slave_id resolved-prompt timeout_ms (:files preflight))
 
         ;; Fallback for unknown action
         (core/mcp-error-json {:error "Unknown pre-flight result"

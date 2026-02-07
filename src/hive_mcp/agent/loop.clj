@@ -75,7 +75,11 @@
                              "- [TOOL:propose_diff file_path=/src/foo.clj old_content=\"...\" new_content=\"...\"]\n\n"
                              "Available tools: " (clojure.string/join ", " (map :name tool-schemas)) "\n\n"
                              "Be concise. Use tools to gather information and make changes.")
-                        "You are a helpful coding assistant. Use tools to complete the task. Be concise.")
+                        (str "You are a coding drone. You MUST use the propose_diff tool for ALL file changes. "
+                             "NEVER output code as plain text or markdown code blocks. "
+                             "Every file modification MUST go through the propose_diff tool with file_path, old_content, and new_content parameters. "
+                             "If you output code as text instead of calling propose_diff, your changes will be LOST and the task will FAIL. "
+                             "Use read_file to examine files, then propose_diff to make changes. Be concise and focused."))
         initial-messages [{:role "system" :content system-prompt}
                           {:role "user" :content task}]
         emit! (fn [event-type data]

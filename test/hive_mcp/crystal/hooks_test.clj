@@ -35,16 +35,19 @@
   "Bind mocks for all crystallize-session dependencies.
 
    opts keys:
-     :summary     - return value for crystal/summarize-session-progress (nil = no-content path)
-     :promotion   - return value for kg-edges/promote-co-access-edges!
-     :decay       - return value for kg-edges/decay-unverified-edges!
-     :xpoll       - return value for lifecycle/run-cross-pollination-cycle!
-     :xpoll-fn    - custom fn for xpoll (overrides :xpoll)
-     :entry-id    - return value for chroma/index-memory-entry!
-     :project-id  - return value for scope/get-current-project-id"
+     :summary       - return value for crystal/summarize-session-progress (nil = no-content path)
+     :promotion     - return value for kg-edges/promote-co-access-edges!
+     :decay         - return value for kg-edges/decay-unverified-edges!
+     :xpoll         - return value for lifecycle/run-cross-pollination-cycle!
+     :xpoll-fn      - custom fn for xpoll (overrides :xpoll)
+     :memory-decay   - return value for lifecycle/run-decay-cycle!
+     :memory-decay-fn - custom fn for memory decay (overrides :memory-decay)
+     :entry-id      - return value for chroma/index-memory-entry!
+     :project-id    - return value for scope/get-current-project-id"
   [opts & body]
   `(let [opts# ~opts
-         xpoll-calls# (atom [])]
+         xpoll-calls# (atom [])
+         memory-decay-calls# (atom [])]
      (with-redefs [crystal/summarize-session-progress
                    (fn [& _#] (:summary opts#))
 
@@ -85,10 +88,21 @@
                      (fn [args#]
                        (swap! xpoll-calls# conj args#)
                        (get opts# :xpoll
-                            {:promoted 0 :candidates 0 :total-scanned 0})))]
+                            {:promoted 0 :candidates 0 :total-scanned 0})))
+
+                   lifecycle/run-decay-cycle!
+                   (if-let [custom-fn# (:memory-decay-fn opts#)]
+                     (fn [args#]
+                       (swap! memory-decay-calls# conj args#)
+                       (custom-fn# args#))
+                     (fn [args#]
+                       (swap! memory-decay-calls# conj args#)
+                       (get opts# :memory-decay
+                            {:decayed 0 :expired 0 :total-scanned 0})))]
        (let [result# (do ~@body)]
          {:result result#
-          :xpoll-calls @xpoll-calls#}))))
+          :xpoll-calls @xpoll-calls#
+          :memory-decay-calls @memory-decay-calls#}))))
 
 ;; =============================================================================
 ;; No-content path tests
@@ -243,7 +257,7 @@
 ;; =============================================================================
 
 (deftest crystallize-session-xpoll-runs-after-promotion-and-decay
-  (testing "Cross-pollination runs after co-access promotion and edge decay"
+  (testing "Cross-pollination runs after co-access promotion and edge decay, memory decay runs last"
     (let [call-order (atom [])
           {_result :result}
           (with-redefs [crystal/summarize-session-progress (fn [& _] nil)
@@ -254,11 +268,97 @@
                         (fn [_] (swap! call-order conj :promotion)
                           {:promoted 0 :skipped 0 :below 0 :evaluated 0})
                         kg-edges/decay-unverified-edges!
-                        (fn [_] (swap! call-order conj :decay)
+                        (fn [_] (swap! call-order conj :edge-decay)
                           {:decayed 0 :pruned 0 :fresh 0 :evaluated 0})
                         lifecycle/run-cross-pollination-cycle!
                         (fn [_] (swap! call-order conj :xpoll)
-                          {:promoted 0 :candidates 0 :total-scanned 0})]
+                          {:promoted 0 :candidates 0 :total-scanned 0})
+                        lifecycle/run-decay-cycle!
+                        (fn [_] (swap! call-order conj :memory-decay)
+                          {:decayed 0 :expired 0 :total-scanned 0})]
             (hooks/crystallize-session base-harvested))]
-      (is (= [:promotion :decay :xpoll] @call-order)
-          "Execution order must be: promotion → decay → cross-pollination"))))
+      (is (= [:promotion :edge-decay :xpoll :memory-decay] @call-order)
+          "Execution order: promotion → edge-decay → cross-pollination → memory-decay"))))
+
+;; =============================================================================
+;; P0.3: Memory decay (L2 time-decay) tests
+;; =============================================================================
+
+(deftest crystallize-session-no-content-includes-memory-decay-stats
+  (testing "No-content path includes :memory-decay-stats in return map"
+    (let [{:keys [result]}
+          (with-crystallize-mocks
+            {:summary nil
+             :memory-decay {:decayed 5 :expired 2 :total-scanned 50}}
+            (hooks/crystallize-session base-harvested))]
+      (is (:skipped result) "Should be skipped (no-content path)")
+      (is (contains? result :memory-decay-stats) "Return map must include :memory-decay-stats")
+      (is (= 5 (:decayed (:memory-decay-stats result))))
+      (is (= 2 (:expired (:memory-decay-stats result))))
+      (is (= 50 (:total-scanned (:memory-decay-stats result)))))))
+
+(deftest crystallize-session-content-includes-memory-decay-stats
+  (testing "Content path includes :memory-decay-stats in return map"
+    (let [{:keys [result]}
+          (with-crystallize-mocks
+            {:summary {:content "Session summary" :tags ["wrap"]}
+             :entry-id "entry-decay-001"
+             :memory-decay {:decayed 3 :expired 1 :total-scanned 30}}
+            (hooks/crystallize-session
+             (assoc base-harvested
+                    :progress-notes [{:content "did stuff"}])))]
+      (is (not (:skipped result)) "Should NOT be skipped (content path)")
+      (is (contains? result :memory-decay-stats) "Return map must include :memory-decay-stats")
+      (is (= 3 (:decayed (:memory-decay-stats result))))
+      (is (= 1 (:expired (:memory-decay-stats result)))))))
+
+(deftest crystallize-session-memory-decay-failure-non-blocking
+  (testing "Memory decay failure does NOT block crystallization"
+    (let [{:keys [result]}
+          (with-crystallize-mocks
+            {:summary nil
+             :memory-decay-fn (fn [_] (throw (Exception. "Chroma timeout")))}
+            (hooks/crystallize-session base-harvested))]
+      (is (:skipped result) "Should still return skipped result")
+      (is (contains? result :memory-decay-stats) "Must still have :memory-decay-stats key")
+      (is (string? (:error (:memory-decay-stats result))) "Should contain error message")
+      (is (= 0 (:decayed (:memory-decay-stats result))) "Decayed should be 0 on error"))))
+
+(deftest crystallize-session-memory-decay-receives-directory
+  (testing "Memory decay receives correct directory arg"
+    (let [{:keys [memory-decay-calls]}
+          (with-crystallize-mocks
+            {:summary nil}
+            (hooks/crystallize-session
+             (assoc base-harvested :directory "/home/test/my-project")))]
+      (is (= 1 (count memory-decay-calls)) "memory-decay should be called exactly once")
+      (is (= "/home/test/my-project" (:directory (first memory-decay-calls)))
+          "Should pass directory from harvested data")
+      (is (= 50 (:limit (first memory-decay-calls)))
+          "Should pass limit 50"))))
+
+(deftest crystallize-session-memory-decay-stats-keys-consistent
+  (testing "Both paths return same memory-decay-stats keys via select-keys"
+    (let [{:keys [result]}
+          (with-crystallize-mocks
+            {:summary nil
+             :memory-decay {:decayed 1 :expired 2 :total-scanned 10
+                            :extra-field "should-not-leak"}}
+            (hooks/crystallize-session base-harvested))
+          no-content-keys (set (keys (:memory-decay-stats result)))
+
+          {content-result :result}
+          (with-crystallize-mocks
+            {:summary {:content "Content" :tags []}
+             :entry-id "eid-2"
+             :memory-decay {:decayed 1 :expired 2 :total-scanned 10
+                            :extra-field "should-not-leak"}}
+            (hooks/crystallize-session
+             (assoc base-harvested :progress-notes [{:content "x"}])))
+          content-keys (set (keys (:memory-decay-stats content-result)))]
+      (is (= no-content-keys content-keys)
+          "Both paths should select-keys the same fields")
+      (is (= #{:decayed :expired :total-scanned} no-content-keys)
+          "Should only include :decayed :expired :total-scanned (no extra fields)")
+      (is (not (contains? no-content-keys :extra-field))
+          ":extra-field should NOT leak through select-keys"))))

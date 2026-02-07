@@ -94,6 +94,10 @@
                               "lint_level" {:type "string"
                                             :enum ["error" "warning" "info"]
                                             :description "Lint severity threshold"}
+                              ;; execution mode
+                              "mode" {:type "string"
+                                      :enum ["delegate" "agentic"]
+                                      :description "Execution mode: 'delegate' (default, external fn) or 'agentic' (in-process loop with session KG)"}
                               ;; status/review/approve/reject params
                               "wave_id" {:type "string"
                                          :description "Wave ID to operate on"}

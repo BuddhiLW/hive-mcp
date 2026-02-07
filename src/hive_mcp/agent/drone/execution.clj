@@ -17,14 +17,20 @@
   (:require [hive-mcp.agent.drone.domain :as domain]
             [hive-mcp.agent.drone.diff-mgmt :as diff-mgmt]
             [hive-mcp.agent.drone.augment :as augment]
+            [hive-mcp.agent.drone.kg-factory :as kg-factory]
+            [hive-mcp.agent.drone.session-kg :as session-kg]
+            [hive-mcp.agent.drone.loop :as agentic-loop]
             [hive-mcp.agent.drone.sandbox :as sandbox]
             [hive-mcp.agent.drone.tools :as drone-tools]
             [hive-mcp.agent.drone.preset :as preset]
             [hive-mcp.agent.drone.decompose :as decompose]
             [hive-mcp.agent.drone.validation :as validation]
             [hive-mcp.agent.drone.errors :as errors]
+            [hive-mcp.agent.drone.tool-allowlist :as allowlist]
             [hive-mcp.agent.routing :as routing]
+            [hive-mcp.agent.registry :as registry]
             [hive-mcp.agent.cost :as cost]
+            [hive-mcp.protocols.kg :as kg]
             [hive-mcp.swarm.coordinator :as coordinator]
             [hive-mcp.swarm.datascript :as ds]
             [hive-mcp.hivemind :as hivemind]
@@ -249,18 +255,137 @@
                        {:task (str "Drone: " (subs task 0 (min 80 (count task))))
                         :message (format "Delegated drone %s working" drone-id)}))
 
-    ;; Execute
-    (delegate-fn {:backend :openrouter
-                  :preset preset
-                  :model model
-                  :task augmented-task
-                  :tools tools
-                  :max-steps step-budget
-                  :trace (:trace options true)
-                  :sandbox {:allowed-files (:allowed-files drone-sandbox)
-                            :allowed-dirs (:allowed-dirs drone-sandbox)
-                            :blocked-patterns (map str (:blocked-patterns drone-sandbox))
-                            :blocked-tools (:blocked-tools drone-sandbox)}})))
+    ;; Execute with per-drone KG isolation via dynamic binding.
+    ;; This ensures any KG operations during execution use the drone's
+    ;; isolated store instead of the global singleton.
+    (binding [domain/*drone-kg-store* (:kg-store ctx)]
+      (delegate-fn {:backend :openrouter
+                    :preset preset
+                    :model model
+                    :task augmented-task
+                    :tools tools
+                    :max-steps step-budget
+                    :trace (:trace options true)
+                    :sandbox {:allowed-files (:allowed-files drone-sandbox)
+                              :allowed-dirs (:allowed-dirs drone-sandbox)
+                              :blocked-patterns (map str (:blocked-patterns drone-sandbox))
+                              :blocked-tools (:blocked-tools drone-sandbox)}}))))
+
+;;; ============================================================
+;;; Phase 4b: Execute Agentic - In-Process Multi-Turn Loop
+;;; ============================================================
+
+(defn phase:execute-agentic!
+  "Phase 4b: Execute task via in-process agentic loop with session KG.
+
+   Unlike phase:execute! (which delegates to an external function),
+   this creates an LLM backend and runs the agentic loop in-process:
+   - Multi-turn think-act-observe loop
+   - Session KG (Datalevin) for context compression
+   - Tool execution via executor with allowlist enforcement
+   - Termination heuristics (completion language, max turns, failures)
+
+   Side effects:
+   - Emits :drone/started event
+   - Shouts to parent ling
+   - Records observations in session KG
+   - Executes tools via agent executor
+
+   Arguments:
+     ctx       - ExecutionContext (must have :kg-store for session KG)
+     task-spec - TaskSpec record
+     config    - Prepared config from phase:prepare
+
+   Returns:
+     Agentic loop result map with :status, :result, :steps, :tokens, etc."
+  [ctx task-spec config]
+  (let [{:keys [drone-id task-id parent-id project-root pre-validation]} ctx
+        {:keys [task files options]} task-spec
+        {:keys [tools preset model step-budget]} config
+        cwd (or (:cwd task-spec) project-root)
+
+        ;; Augment task with context
+        augmented-task (augment/augment-task task files {:project-root cwd})
+
+        ;; Create sandbox
+        effective-root (or cwd (diff/get-project-root))
+        drone-sandbox (sandbox/create-sandbox (or files []) effective-root)]
+
+    ;; Security check: Reject path escape attempts
+    (when (seq (:rejected-files drone-sandbox))
+      (log/error {:event :drone/path-escape-blocked
+                  :drone-id drone-id
+                  :rejected-files (:rejected-files drone-sandbox)})
+      (throw (ex-info "File paths escape project directory"
+                      {:error-type :path-escape
+                       :rejected-files (:rejected-files drone-sandbox)})))
+
+    (log/info "Drone agentic sandbox created"
+              {:drone-id drone-id
+               :allowed-files (count (:allowed-files drone-sandbox))
+               :blocked-tools (count (:blocked-tools drone-sandbox))
+               :max-turns step-budget
+               :model model})
+
+    ;; Emit started event
+    (ev/dispatch [:drone/started {:drone-id drone-id
+                                  :task-id task-id
+                                  :parent-id parent-id
+                                  :files files
+                                  :task task
+                                  :mode :agentic
+                                  :pre-validation (validation/summarize-validation (or pre-validation {}))}])
+
+    ;; Shout to parent ling
+    (when parent-id
+      (hivemind/shout! parent-id :started
+                       {:task (str "Agentic drone: " (subs task 0 (min 80 (count task))))
+                        :message (format "Agentic drone %s starting multi-turn loop" drone-id)}))
+
+    ;; Ensure tool registry is initialized
+    (registry/ensure-registered!)
+
+    ;; Create LLM backend
+    (let [backend (try
+                    (require 'hive-mcp.agent.config)
+                    ((resolve 'hive-mcp.agent.config/openrouter-backend)
+                     {:model model :preset preset})
+                    (catch Exception e
+                      (log/error {:event :drone/backend-creation-failed
+                                  :drone-id drone-id
+                                  :model model
+                                  :error (.getMessage e)})
+                      (throw (ex-info "Failed to create LLM backend"
+                                      {:drone-id drone-id
+                                       :model model
+                                       :error (.getMessage e)}
+                                      e))))
+
+          ;; Resolve tool allowlist for this drone
+          effective-tools (or tools
+                              (let [al (allowlist/resolve-allowlist
+                                        {:task-type (:task-type task-spec)})]
+                                (vec al)))
+
+          ;; Build permissions set from sandbox
+          permissions (if (get options :auto-approve)
+                        #{:auto-approve}
+                        #{})]
+
+      ;; Execute agentic loop with per-drone KG isolation
+      (binding [domain/*drone-kg-store* (:kg-store ctx)]
+        (agentic-loop/run-agentic-loop
+         {:task augmented-task
+          :files (or files [])
+          :cwd cwd}
+         {:drone-id drone-id
+          :kg-store (:kg-store ctx)}
+         {:max-turns (or step-budget 10)
+          :backend backend
+          :tools effective-tools
+          :permissions permissions
+          :trace? (get options :trace true)
+          :agent-id drone-id})))))
 
 ;;; ============================================================
 ;;; Phase 5: Finalize - Diffs, Validation, Metrics
@@ -295,6 +420,23 @@
         ;; Calculate new diffs
         diffs-after (diff-mgmt/capture-diffs-before)
         new-diff-ids (diff-mgmt/get-new-diff-ids diffs-before diffs-after)
+
+        ;; CLARITY-T: Warn if drone completed with 0 diffs (likely text-only response)
+        _ (when (and (= :completed (:status raw-result))
+                     (empty? new-diff-ids)
+                     (seq files))
+            (let [result-text (str (:result raw-result))
+                  has-code-blocks? (re-find #"```" result-text)]
+              (log/warn {:event :drone/zero-diff-completion
+                         :drone-id drone-id
+                         :files-expected (count files)
+                         :has-code-blocks? (boolean has-code-blocks?)
+                         :result-preview (subs result-text 0 (min 200 (count result-text)))
+                         :message (str "Drone completed with 0 diffs but " (count files)
+                                       " files expected. Model likely returned code as text "
+                                       "instead of calling propose_diff."
+                                       (when has-code-blocks?
+                                         " CODE BLOCKS DETECTED in text response."))})))
 
         ;; Handle diffs
         diff-results (diff-mgmt/handle-diff-results!
@@ -386,6 +528,20 @@
                                    :parent-id parent-id
                                    :timestamp (System/currentTimeMillis)})
 
+    ;; Merge drone KG edges into global store (per-drone KG isolation)
+    (when-let [drone-store (:kg-store ctx)]
+      (try
+        (when (kg/store-set?)
+          (let [merge-result (kg-factory/merge-drone-results! drone-store (kg/get-store))]
+            (log/info {:event :drone/kg-merge
+                       :drone-id drone-id
+                       :edges-found (:edges-found merge-result)
+                       :edges-merged (:edges-merged merge-result)})))
+        (catch Exception e
+          (log/warn {:event :drone/kg-merge-failed
+                     :drone-id drone-id
+                     :error (.getMessage e)}))))
+
     ;; Build result
     (domain/success-result ctx {:result raw-result
                                 :diff-results diff-results
@@ -400,6 +556,7 @@
 
    Side effects:
    - Releases file claims
+   - Closes per-drone KG store (deregisters from factory)
    - Removes drone from DataScript
 
    Arguments:
@@ -411,6 +568,15 @@
     (when (seq files)
       (coordinator/release-task-claims! task-id)
       (log/info "Drone released file locks:" drone-id))
+    ;; Close per-drone KG store if one was created
+    (when (:kg-store ctx)
+      (try
+        (kg-factory/close-drone-store! drone-id)
+        (log/debug "Drone KG store closed:" drone-id)
+        (catch Exception e
+          (log/warn {:event :drone/kg-cleanup-failed
+                     :drone-id drone-id
+                     :error (.getMessage e)}))))
     (ds/remove-slave! drone-id)))
 
 ;;; ============================================================
@@ -491,12 +657,22 @@
                       (System/getenv "CLAUDE_SWARM_SLAVE_ID"))
         cwd (or (:cwd task-spec) (diff/get-project-root))
 
-        ;; Create execution context
+        ;; Create per-drone isolated KG store
+        drone-kg-store (try
+                         (kg-factory/create-drone-store drone-id)
+                         (catch Exception e
+                           (log/warn {:event :drone/kg-store-creation-failed
+                                      :drone-id drone-id
+                                      :error (.getMessage e)})
+                           nil))
+
+        ;; Create execution context with per-drone KG store
         ctx (domain/->execution-context
              {:drone-id drone-id
               :task-id task-id
               :parent-id parent-id
-              :project-root cwd})
+              :project-root cwd
+              :kg-store drone-kg-store})
 
         ;; Phase 1: Prepare (pure)
         config (phase:prepare task-spec)
@@ -524,4 +700,92 @@
 
       (finally
         ;; Phase 6: Cleanup (always)
+        (phase:cleanup! ctx task-spec)))))
+
+;;; ============================================================
+;;; Agentic Orchestrator - In-Process Multi-Turn Execution
+;;; ============================================================
+
+(defn run-agentic-execution!
+  "Orchestrate agentic drone execution through all phases.
+
+   Like run-execution! but uses the in-process agentic loop (phase:execute-agentic!)
+   instead of delegating to an external function. The agentic loop provides:
+   - Multi-turn think-act-observe with session KG (Datalevin)
+   - Context compression via KG reconstruction (~5-10x vs raw history)
+   - Termination heuristics (completion language, max turns, failures)
+   - Per-drone KG isolation with merge-back to global
+
+   This is the primary entry point for in-process drone execution.
+
+   Arguments:
+     task-spec - TaskSpec record (or map coercible to one)
+
+   Returns:
+     ExecutionResult record."
+  [task-spec]
+  (let [drone-id (domain/generate-drone-id)
+        task-id (domain/generate-task-id drone-id)
+        parent-id (or (:parent-id task-spec)
+                      (System/getenv "CLAUDE_SWARM_SLAVE_ID"))
+        cwd (or (:cwd task-spec) (diff/get-project-root))
+
+        ;; Create per-drone isolated session KG (Datalevin-backed)
+        session-kg-store (try
+                           (session-kg/create-session-kg! drone-id)
+                           (catch Exception e
+                             (log/warn {:event :drone/session-kg-creation-failed
+                                        :drone-id drone-id
+                                        :error (.getMessage e)})
+                             ;; Fall back to DataScript in-memory KG
+                             (try
+                               (kg-factory/create-drone-store drone-id)
+                               (catch Exception e2
+                                 (log/warn {:event :drone/kg-store-fallback-failed
+                                            :drone-id drone-id
+                                            :error (.getMessage e2)})
+                                 nil))))
+
+        ;; Create execution context with session KG store
+        ctx (domain/->execution-context
+             {:drone-id drone-id
+              :task-id task-id
+              :parent-id parent-id
+              :project-root cwd
+              :kg-store session-kg-store})
+
+        ;; Phase 1: Prepare (pure)
+        config (phase:prepare task-spec)
+        ctx (assoc ctx :model (:model config))]
+
+    (try
+      ;; Phase 2: Register
+      (let [ctx (phase:register! ctx task-spec)
+            ;; Capture diffs before execution
+            diffs-before (diff-mgmt/capture-diffs-before)]
+
+        ;; Phase 3: Validate
+        (let [ctx (phase:validate ctx task-spec)]
+
+          (try
+            ;; Phase 4b: Execute Agentic (in-process multi-turn loop)
+            (let [raw-result (phase:execute-agentic! ctx task-spec config)]
+
+              ;; Phase 5: Finalize
+              (phase:finalize! ctx task-spec config raw-result diffs-before))
+
+            (catch Exception e
+              (phase:handle-error! ctx task-spec config e)
+              (throw e)))))
+
+      (finally
+        ;; Phase 6: Cleanup (always)
+        ;; Close session KG and clean up temp directory
+        (when session-kg-store
+          (try
+            (session-kg/close-session-kg! session-kg-store drone-id)
+            (catch Exception e
+              (log/warn {:event :drone/session-kg-cleanup-failed
+                         :drone-id drone-id
+                         :error (.getMessage e)}))))
         (phase:cleanup! ctx task-spec)))))

@@ -932,3 +932,82 @@
   (testing "tool description mentions dag"
     (is (str/includes? (:description agent/tool-def) "dag")
         "tool description should mention dag")))
+
+;; =============================================================================
+;; KG-Compressed Context Dispatch Tests (RefContext wiring)
+;; =============================================================================
+
+(deftest test-handle-dispatch-with-ctx-refs-creates-ref-context
+  (testing "dispatch with ctx_refs creates RefContext instead of TextContext"
+    (add-test-slave! "ling-ref-ctx" {:depth 1 :status :idle})
+
+    (let [result (agent/handle-dispatch {:agent_id "ling-ref-ctx"
+                                         :prompt "Fix the bug in core.clj"
+                                         :ctx_refs {"axioms" "ctx-ax-123"
+                                                    "decisions" "ctx-dec-456"}
+                                         :kg_node_ids ["node-A" "node-B"]
+                                         :scope "test-project"})
+          parsed (parse-response result)]
+      (is (not (:isError result))
+          (str "RefContext dispatch should succeed, got: " (:text result)))
+      (is (:success parsed))
+      (is (= "ling-ref-ctx" (:agent-id parsed)))
+      (is (string? (:task-id parsed)))
+      ;; Context type should be :ref (RefContext), not :text
+      (is (= "ref" (:context-type parsed))
+          "ctx_refs should trigger RefContext creation"))))
+
+(deftest test-handle-dispatch-without-ctx-refs-uses-text-context
+  (testing "dispatch without ctx_refs uses TextContext (backward compat)"
+    (add-test-slave! "ling-text-ctx" {:depth 1 :status :idle})
+
+    (let [result (agent/handle-dispatch {:agent_id "ling-text-ctx"
+                                         :prompt "Plain text task"})
+          parsed (parse-response result)]
+      (is (not (:isError result)))
+      (is (= "text" (:context-type parsed))
+          "No ctx_refs should use TextContext"))))
+
+(deftest test-handle-dispatch-ref-context-auto-derives-scope
+  (testing "dispatch auto-derives scope from agent's project-id when not provided"
+    (add-test-slave! "ling-auto-scope" {:depth 1 :status :idle
+                                        :project-id "derived-project"})
+
+    (let [result (agent/handle-dispatch {:agent_id "ling-auto-scope"
+                                         :prompt "Task with refs"
+                                         :ctx_refs {"axioms" "ctx-123"}})
+          parsed (parse-response result)]
+      (is (not (:isError result)))
+      ;; Should succeed with auto-derived scope
+      (is (= "ref" (:context-type parsed))))))
+
+(deftest test-handle-dispatch-ctx-refs-with-empty-map-uses-text-context
+  (testing "dispatch with empty ctx_refs map falls back to TextContext"
+    (add-test-slave! "ling-empty-refs" {:depth 1 :status :idle})
+
+    (let [result (agent/handle-dispatch {:agent_id "ling-empty-refs"
+                                         :prompt "Task with empty refs"
+                                         :ctx_refs {}})
+          parsed (parse-response result)]
+      (is (not (:isError result)))
+      (is (= "text" (:context-type parsed))
+          "Empty ctx_refs should fall back to TextContext"))))
+
+(deftest test-tool-schema-includes-ref-context-params
+  (testing "tool schema includes ctx_refs, kg_node_ids, scope params"
+    (let [props (get-in agent/tool-def [:inputSchema :properties])]
+      (is (contains? props "ctx_refs")
+          "Schema should include ctx_refs param")
+      (is (contains? props "kg_node_ids")
+          "Schema should include kg_node_ids param")
+      (is (contains? props "scope")
+          "Schema should include scope param")))
+
+  (testing "ctx_refs schema is object type"
+    (let [ctx-refs-schema (get-in agent/tool-def [:inputSchema :properties "ctx_refs"])]
+      (is (= "object" (:type ctx-refs-schema)))))
+
+  (testing "kg_node_ids schema is array of strings"
+    (let [kg-schema (get-in agent/tool-def [:inputSchema :properties "kg_node_ids"])]
+      (is (= "array" (:type kg-schema)))
+      (is (= "string" (get-in kg-schema [:items :type]))))))

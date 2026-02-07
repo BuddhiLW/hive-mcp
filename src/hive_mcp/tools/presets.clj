@@ -5,6 +5,7 @@
    Presets can be queried by natural language (e.g., 'find testing-focused preset')."
   (:require [hive-mcp.presets :as presets]
             [hive-mcp.chroma :as chroma]
+            [hive-mcp.config :as config]
             [hive-mcp.tools.swarm.prompt :as prompt]
             [clojure.data.json :as json]
             [clojure.string :as str]
@@ -48,7 +49,7 @@
   (log/info "preset-get:" name)
   (if-not (chroma/embedding-configured?)
     ;; Fallback to file-based
-    (let [preset-dir (System/getenv "HIVE_MCP_PRESETS_DIR")
+    (let [preset-dir (config/get-service-value :presets :dir :env "HIVE_MCP_PRESETS_DIR")
           preset-dir (or preset-dir
                          (str (System/getProperty "user.dir") "/presets"))]
       (if-let [preset (presets/get-preset-from-file preset-dir name)]
@@ -113,7 +114,7 @@
   (log/info "preset core:" name)
   (if-not (chroma/embedding-configured?)
     ;; Fallback to file-based
-    (let [preset-dir (System/getenv "HIVE_MCP_PRESETS_DIR")
+    (let [preset-dir (config/get-service-value :presets :dir :env "HIVE_MCP_PRESETS_DIR")
           preset-dir (or preset-dir
                          (str (System/getProperty "user.dir") "/presets"))]
       (if-let [preset (presets/get-preset-from-file preset-dir name)]
@@ -166,7 +167,7 @@
         (let [preset-contents
               (for [name preset-names]
                 (if-let [preset (or (presets/get-preset name)
-                                    (let [dir (or (System/getenv "HIVE_MCP_PRESETS_DIR")
+                                    (let [dir (or (config/get-service-value :presets :dir :env "HIVE_MCP_PRESETS_DIR")
                                                   (str (System/getProperty "user.dir") "/presets"))]
                                       (presets/get-preset-from-file dir name)))]
                   {:name name :content (:content preset)}

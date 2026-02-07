@@ -23,8 +23,11 @@
             [manifold.deferred :as d]
             [clojure.core.async :as async]
             [clojure.data.json :as json]
+            [clojure.java.io :as io]
+            [clojure.string :as str]
             [datascript.core :as d-core]
             [taoensso.timbre :as log]
+            [hive-mcp.config :as config]
             [hive-mcp.swarm.datascript.queries :as ds-queries]
             [hive-mcp.swarm.datascript.connection :as ds-conn]
             [hive-mcp.project.tree :as project-tree]))
@@ -422,21 +425,90 @@
              "Access-Control-Allow-Headers" "Content-Type"}
    :body (json/write-str data)})
 
+;; =============================================================================
+;; Static File Serving (Olympus Web UI assets)
+;; =============================================================================
+
+(def ^:private content-types
+  "MIME types for static file serving."
+  {"html" "text/html; charset=utf-8"
+   "css"  "text/css; charset=utf-8"
+   "js"   "application/javascript; charset=utf-8"
+   "json" "application/json"
+   "svg"  "image/svg+xml"
+   "png"  "image/png"
+   "ico"  "image/x-icon"
+   "map"  "application/json"})
+
+(defn- resolve-static-root
+  "Find the olympus-web-ui/resources/public directory.
+   Searches relative to project root (cwd)."
+  []
+  (let [candidates ["olympus-web-ui/resources/public"
+                    "resources/public"]
+        found (some (fn [p]
+                      (let [f (io/file p)]
+                        (when (.isDirectory f) f)))
+                    candidates)]
+    (when found
+      (log/debug "Olympus static root:" (.getAbsolutePath found)))
+    found))
+
+(defonce ^:private static-root-cache (atom nil))
+
+(defn- get-static-root
+  "Get the static root directory, resolving lazily on first call."
+  []
+  (or @static-root-cache
+      (reset! static-root-cache (resolve-static-root))))
+
+(defn- websocket-upgrade?
+  "Check if the request is a WebSocket upgrade request."
+  [req]
+  (let [upgrade (get-in req [:headers "upgrade"] "")]
+    (= "websocket" (str/lower-case upgrade))))
+
+(defn- serve-static-file
+  "Serve a static file from the Olympus web UI public directory.
+   Returns nil if file not found."
+  [uri]
+  (when-let [root (get-static-root)]
+    (let [;; Normalize path: / -> /index.html
+          path (if (= uri "/") "/index.html" uri)
+          ;; Security: prevent directory traversal
+          clean-path (str/replace path #"\.\." "")
+          file (io/file root (subs clean-path 1))]
+      (when (and (.exists file) (.isFile file) (.canRead file))
+        (let [ext (last (str/split (.getName file) #"\."))
+              content-type (get content-types ext "application/octet-stream")]
+          {:status 200
+           :headers {"Content-Type" content-type
+                     "Cache-Control" "no-cache"
+                     "Access-Control-Allow-Origin" "*"}
+           :body file})))))
+
 (defn- http-handler
   "HTTP handler for Olympus WS server.
    Routes:
-     GET /health       -> Health check
-     GET /api/snapshot -> Full state snapshot
-     GET /api/agents   -> Agents only
-     GET /api/waves    -> Waves only
-     GET /api/kg       -> KG/Memory snapshot
-     GET /api/stats    -> DataScript statistics
-     OPTIONS *         -> CORS preflight
-     *                 -> WebSocket upgrade"
+     WebSocket upgrade  -> WebSocket handler (Upgrade: websocket header)
+     GET /health        -> Health check
+     GET /api/snapshot  -> Full state snapshot
+     GET /api/agents    -> Agents only
+     GET /api/waves     -> Waves only
+     GET /api/kg        -> KG/Memory snapshot
+     GET /api/project-tree -> Project tree snapshot
+     GET /api/stats     -> DataScript statistics
+     OPTIONS *          -> CORS preflight
+     GET /ws            -> Explicit WebSocket endpoint (alternative to upgrade)
+     GET /*             -> Static files from olympus-web-ui/resources/public/"
   [req]
   (let [uri (:uri req)
         method (:request-method req)]
     (cond
+      ;; WebSocket upgrade request (browser connects with Upgrade: websocket)
+      (websocket-upgrade? req)
+      (ws-connection-handler req)
+
       ;; CORS preflight
       (= method :options)
       {:status 204
@@ -494,9 +566,28 @@
                               (catch Exception e
                                 {:error (.getMessage e)}))})
 
-      ;; WebSocket upgrade (default)
+      ;; Explicit WebSocket endpoint (for clients that prefer /ws path)
+      (and (= method :get) (= uri "/ws"))
+      (ws-connection-handler req)
+
+      ;; Static file serving (Olympus Web UI)
+      ;; Serves HTML, CSS, JS from olympus-web-ui/resources/public/
+      (= method :get)
+      (or (serve-static-file uri)
+          ;; SPA fallback: serve index.html for unknown paths
+          (serve-static-file "/index.html")
+          ;; No static root found - return helpful error
+          (json-response 404
+                         {:error "Olympus Web UI static files not found"
+                          :hint "Ensure olympus-web-ui/resources/public/ exists with built JS"
+                          :build-cmd "cd olympus-web-ui && npx shadow-cljs compile app"}))
+
+      ;; Catch-all: method not allowed
       :else
-      (ws-connection-handler req))))
+      {:status 405
+       :headers {"Content-Type" "text/plain"
+                 "Access-Control-Allow-Origin" "*"}
+       :body "Method not allowed"})))
 
 ;; =============================================================================
 ;; Public API - Server Lifecycle
@@ -512,8 +603,10 @@
   ([] (start! {}))
   ([{:keys [port]}]
    (let [port (or port
-                  (some-> (System/getenv "HIVE_MCP_OLYMPUS_WS_PORT") parse-long)
-                  7911)]
+                  (config/get-service-value :olympus :ws-port
+                                            :env "HIVE_MCP_OLYMPUS_WS_PORT"
+                                            :parse parse-long
+                                            :default 7911))]
      (if @server-atom
        (do
          (log/warn "Olympus WS server already running on port" (:port @server-atom))

@@ -10,8 +10,16 @@
    - Abstract: Synthesize observations into a plan using crystal/core scoring
    - Act: Execute the plan with full tool access
 
-   Each phase maps to a Claude Agent SDK query() call with different tool sets.
-   Sessions allow resuming context between phases.
+   Each phase maps to a Claude Agent SDK ClaudeSDKClient session with different
+   tool sets and permissions. ClaudeSDKClient enables multi-turn session
+   persistence across SAA phases (vs query() which is one-shot).
+
+   Python Bridge Architecture:
+   - ClaudeAgentOptions constructed as real Python objects via py-call-kw
+   - Options injected into Python __main__ namespace via py-set-global!
+   - Async execution via asyncio.run() bridge (required because libpython-clj
+     cannot directly bridge Python async generators/coroutines)
+   - Results extracted via py-get-global + py->clj
 
    Graceful Degradation:
    - If libpython-clj is not on classpath → returns :unavailable
@@ -182,7 +190,7 @@
   (get @session-registry ling-id))
 
 ;;; =============================================================================
-;;; Python Bridge Helpers
+;;; Python Bridge Helpers (libpython-clj interop)
 ;;; =============================================================================
 
 (defn- py-import
@@ -222,6 +230,19 @@
                 {:attr attr :error (ex-message e)})
       nil)))
 
+(defn- py-call-kw
+  "Call a Python callable with positional and keyword arguments.
+   Uses libpython-clj2.python/call-kw for proper kwargs passing."
+  [callable positional-args kw-args]
+  (try
+    (let [call-kw-fn (requiring-resolve 'libpython-clj2.python/call-kw)]
+      (call-kw-fn callable positional-args kw-args))
+    (catch Exception e
+      (log/error "[headless-sdk] Python keyword call failed"
+                 {:error (ex-message e)})
+      (throw (ex-info "Python keyword call failed"
+                      {:error (ex-message e)} e)))))
+
 (defn- py->clj
   "Convert a Python object to Clojure data."
   [py-obj]
@@ -238,37 +259,76 @@
   (let [run-fn (requiring-resolve 'libpython-clj2.python/run-simple-string)]
     (run-fn code)))
 
+(defn- py-set-global!
+  "Set a variable in Python's __main__ namespace.
+   Used to inject Clojure-constructed Python objects into scripts."
+  [var-name value]
+  (try
+    (let [set-fn (requiring-resolve 'libpython-clj2.python/set-attr!)
+          main-mod (py-import "__main__")]
+      (set-fn main-mod var-name value))
+    (catch Exception e
+      (log/error "[headless-sdk] Failed to set Python global"
+                 {:var-name var-name :error (ex-message e)})
+      (throw (ex-info "Failed to set Python global"
+                      {:var-name var-name :error (ex-message e)} e)))))
+
+(defn- py-get-global
+  "Get a variable from Python's __main__ namespace.
+   Used to extract results from async bridge scripts."
+  [var-name]
+  (try
+    (let [main-mod (py-import "__main__")]
+      (py-attr main-mod var-name))
+    (catch Exception e
+      (log/warn "[headless-sdk] Failed to get Python global"
+                {:var-name var-name :error (ex-message e)})
+      nil)))
+
 ;;; =============================================================================
-;;; SDK Query Execution
+;;; SDK Query Execution (ClaudeSDKClient multi-turn)
 ;;; =============================================================================
 
-(defn- build-query-options-dict
-  "Build a Python dict string for ClaudeAgentOptions constructor.
+(defn- build-options-obj
+  "Build a ClaudeAgentOptions Python object using proper libpython-clj interop.
+
+   Creates the options object as a real Python dataclass instance via call-kw,
+   instead of interpolating into a Python string template. This is safer
+   (no injection), more correct (proper types), and more maintainable.
 
    Arguments:
      phase - SAA phase keyword (:silence :abstract :act)
      opts  - Map with :cwd :system-prompt :session-id :mcp-servers"
-  [phase {:keys [cwd system-prompt session-id mcp-servers]}]
+  [phase {:keys [cwd system-prompt session-id _mcp-servers]}]
   (let [phase-config (get saa-phases phase)
         full-prompt (str (or system-prompt "")
                          "\n\n"
                          (:system-prompt-suffix phase-config))
-        tools (:allowed-tools phase-config)
-        perm-mode (:permission-mode phase-config)]
-    ;; Build Python dict literal
-    (str "{"
-         "\"allowed_tools\": " (pr-str tools) ", "
-         "\"permission_mode\": " (pr-str perm-mode) ", "
-         "\"system_prompt\": " (pr-str full-prompt)
-         (when session-id (str ", \"resume\": " (pr-str session-id)))
-         (when cwd (str ", \"cwd\": " (pr-str cwd)))
-         "}")))
+        sdk-mod (py-import "claude_agent_sdk")
+        opts-class (py-attr sdk-mod "ClaudeAgentOptions")]
+    (py-call-kw opts-class []
+      (cond-> {:allowed_tools (:allowed-tools phase-config)
+               :permission_mode (:permission-mode phase-config)
+               :system_prompt full-prompt}
+        cwd        (assoc :cwd cwd)
+        session-id (assoc :resume session-id)))))
 
 (defn- execute-phase!
-  "Execute a single SAA phase via Claude Agent SDK query().
+  "Execute a single SAA phase via Claude Agent SDK ClaudeSDKClient.
 
-   Runs the query synchronously in a background thread, collecting all messages.
-   Uses asyncio.run() to bridge Python async → synchronous execution.
+   Architecture:
+   1. Constructs ClaudeAgentOptions as a real Python object (build-options-obj)
+   2. Injects options into Python __main__ namespace (py-set-global!)
+   3. Runs async bridge script that uses ClaudeSDKClient (multi-turn capable)
+   4. Extracts results via py-get-global + py->clj
+
+   ClaudeSDKClient is used instead of query() because:
+   - Multi-turn: Same session across SAA phases (connect → query → receive → disconnect)
+   - Interactive: Can interrupt or send follow-ups
+   - Stateful: Maintains conversation context between phases
+
+   The async bridge via asyncio.run() is required because libpython-clj
+   cannot directly bridge Python async generators/coroutines.
 
    Arguments:
      ling-id - Ling identifier
@@ -290,28 +350,34 @@
     ;; Execute query in background thread
     (async/thread
       (try
-        (let [options-dict (build-query-options-dict phase opts)
-              ;; Build Python script that runs query and collects results
-              py-script (str "import asyncio\n"
-                             "from claude_agent_sdk import query, ClaudeAgentOptions\n"
-                             "\n"
-                             "async def _run_saa_query():\n"
-                             "    results = []\n"
-                             "    session_id = None\n"
-                             "    async for msg in query(\n"
-                             "        prompt=" (pr-str prompt) ",\n"
-                             "        options=ClaudeAgentOptions(**" options-dict ")\n"
-                             "    ):\n"
-                             "        results.append(str(msg))\n"
-                             "        if hasattr(msg, 'subtype') and msg.subtype == 'init':\n"
-                             "            session_id = getattr(msg, 'session_id', None)\n"
-                             "    return results, session_id\n"
-                             "\n"
-                             "_query_results, _session_id = asyncio.run(_run_saa_query())\n")]
-          (py-run py-script)
-          ;; Extract results from Python namespace
-          (let [results (py->clj (py-run "_query_results"))
-                session-id (py->clj (py-run "_session_id"))]
+        (let [options-obj (build-options-obj phase opts)]
+          ;; Inject pre-built options object into Python namespace
+          (py-set-global! "_hive_phase_options" options-obj)
+          ;; Async bridge: ClaudeSDKClient with pre-built options object
+          ;; The options object is a real Python ClaudeAgentOptions instance,
+          ;; not a string template — proper types, no injection risk.
+          (py-run (str "import asyncio\n"
+                       "from claude_agent_sdk import ClaudeSDKClient\n"
+                       "\n"
+                       "async def _hive_run_phase():\n"
+                       "    results = []\n"
+                       "    session_id = None\n"
+                       "    client = ClaudeSDKClient(options=_hive_phase_options)\n"
+                       "    await client.connect()\n"
+                       "    try:\n"
+                       "        await client.query(" (pr-str prompt) ")\n"
+                       "        async for msg in client.receive_response():\n"
+                       "            results.append(str(msg))\n"
+                       "            if hasattr(msg, 'session_id'):\n"
+                       "                session_id = msg.session_id\n"
+                       "    finally:\n"
+                       "        await client.disconnect()\n"
+                       "    return results, session_id\n"
+                       "\n"
+                       "_hive_phase_results, _hive_phase_session_id = asyncio.run(_hive_run_phase())\n"))
+          ;; Extract results via proper Python object access
+          (let [results (py->clj (py-get-global "_hive_phase_results"))
+                session-id (py->clj (py-get-global "_hive_phase_session_id"))]
             ;; Store session ID for phase chaining
             (when session-id
               (update-session! ling-id {:session-id session-id}))

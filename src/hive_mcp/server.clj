@@ -159,6 +159,11 @@
     (init/init-hot-reload-watcher! server-context-atom (lifecycle/read-project-config))
     (init/start-registry-sync!)
 
+    ;; Phase 6.5: L2 Decay Scheduler (periodic memory/edge/disc decay)
+    ;; Must run after config loaded (Phase 5.5) and embedding provider (Phase 4).
+    ;; Daemon thread — dies with JVM, no explicit shutdown needed.
+    (init/start-decay-scheduler!)
+
     ;; Phase 7: Start MCP server (must be last - blocks on stdio)
     ;; NOTE: routes/build-server-spec must be called AFTER init-embedding-provider!
     ;; to get accurate Chroma availability for capability-based tool switching

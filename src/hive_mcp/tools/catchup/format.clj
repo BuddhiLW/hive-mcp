@@ -153,7 +153,7 @@
   [{:keys [project-name project-id scopes git-info permeation
            axioms-meta priority-meta sessions-meta decisions-meta
            conventions-meta snippets-meta expiring-meta kg-insights
-           project-tree-scan disc-decay]}]
+           project-tree-scan disc-decay context-refs]}]
   (let [total-enqueued (+ (count axioms-meta) (count priority-meta))]
     [(make-block "header"
                  {:_block "header"
@@ -170,8 +170,11 @@
                            :snippets (count snippets-meta)
                            :expiring (count expiring-meta)}
                   :memory-piggyback
-                  {:enqueued total-enqueued
-                   :note "Axioms and conventions will arrive via ---MEMORY--- blocks on subsequent tool calls. No manual fetch needed."}})
+                  (cond-> {:enqueued total-enqueued
+                           :note "Axioms and conventions will arrive via ---MEMORY--- blocks on subsequent tool calls. No manual fetch needed."}
+                    (seq context-refs)
+                    (assoc :context-refs context-refs
+                           :ref-note "Context refs point to ephemeral context-store entries (10min TTL). Future :ref mode can send only refs instead of full content."))})
      (make-block "context"
                  {:_block "context"
                   :context {:sessions sessions-meta

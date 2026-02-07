@@ -109,17 +109,21 @@
 ;; Datalevin Store Implementation
 ;; =============================================================================
 
-(defrecord DatalevinStore [conn-atom db-path]
+(defrecord DatalevinStore [conn-atom db-path extra-schema]
   kg/IKGStore
 
   (ensure-conn! [_this]
     (when (nil? @conn-atom)
       (log/info "Initializing Datalevin KG store" {:path db-path})
       (validate-db-path! db-path)
-      (let [dtlv-schema (datalevin-schema)]
+      (let [base-schema (datalevin-schema)
+            merged-schema (if extra-schema
+                            (merge base-schema (translate-schema extra-schema))
+                            base-schema)]
         (log/debug "Datalevin schema translated"
-                   {:attributes (count dtlv-schema)})
-        (reset! conn-atom (dtlv/get-conn db-path dtlv-schema))))
+                   {:attributes (count merged-schema)
+                    :extra-attributes (when extra-schema (count extra-schema))})
+        (reset! conn-atom (dtlv/get-conn db-path merged-schema))))
     @conn-atom)
 
   (transact! [this tx-data]
@@ -178,16 +182,20 @@
 
    Arguments:
      opts - Optional map with:
-       :db-path - Path for LMDB storage (default: data/kg/datalevin)
+       :db-path      - Path for LMDB storage (default: data/kg/datalevin)
+       :extra-schema - Additional DataScript-format schema to merge with base KG schema.
+                       Useful for per-drone session KG attributes (obs/*, reason/*, etc.)
+                       that shouldn't pollute the global KG schema.
 
    Returns an IKGStore implementation.
 
    CLARITY-Y: If Datalevin fails to initialize, logs warning
    and returns nil (caller should fall back to DataScript)."
-  [& [{:keys [db-path] :or {db-path default-db-path}}]]
+  [& [{:keys [db-path extra-schema] :or {db-path default-db-path}}]]
   (try
-    (log/info "Creating Datalevin graph store" {:path db-path})
-    (->DatalevinStore (atom nil) db-path)
+    (log/info "Creating Datalevin graph store" {:path db-path
+                                                :extra-schema? (some? extra-schema)})
+    (->DatalevinStore (atom nil) db-path extra-schema)
     (catch Exception e
       (log/error "Failed to create Datalevin store, falling back to DataScript"
                  {:error (.getMessage e) :path db-path})

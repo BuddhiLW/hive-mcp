@@ -1,8 +1,9 @@
 (ns olympus-web.core
   "Main entry point for Olympus Web UI.
-   
-   Initializes re-frame app and mounts to DOM."
-  (:require [reagent.dom :as rdom]
+
+   Initializes re-frame app and mounts to DOM.
+   Uses Reagent 2.0.1 reagent.dom.client API for React 19 createRoot."
+  (:require [reagent.dom.client :as rdc]
             [re-frame.core :as rf]
             ;; WebSocket client (side-effects: registers :ws/open, :ws/close effects)
             [olympus-web.ws.client]
@@ -21,18 +22,22 @@
             ;; View
             [olympus-web.views.app :as app]))
 
+;; React 19 root — created once, reused on hot-reload
+(defonce root (atom nil))
+
 (defn ^:dev/after-load mount-root
-  "Mount the app to the DOM. Called on hot-reload."
+  "Re-render the app. Called on hot-reload."
   []
   (rf/clear-subscription-cache!)
-  (let [root-el (.getElementById js/document "app")]
-    (rdom/unmount-component-at-node root-el)
-    (rdom/render [app/app] root-el)))
+  (when-let [r @root]
+    (rdc/render r [app/app])))
 
 (defn init!
   "Initialize the application. Called once on page load."
   []
-  (js/console.log "🏛️ Olympus Web UI initializing...")
+  (js/console.log "Olympus Web UI initializing...")
   (rf/dispatch-sync [:app/initialize])
-  (mount-root)
-  (js/console.log "🏛️ Olympus Web UI ready"))
+  (let [root-el (.getElementById js/document "app")]
+    (reset! root (rdc/create-root root-el))
+    (rdc/render @root [app/app]))
+  (js/console.log "Olympus Web UI ready"))

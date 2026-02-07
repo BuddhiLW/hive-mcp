@@ -8,16 +8,18 @@
    - Coordinate via hivemind
    - Delegate to drones for file mutations
 
-   Supports three spawn modes via Strategy Protocol:
+   Supports four spawn modes via Strategy Protocol:
    - :vterm      (default) - Spawned inside Emacs vterm buffer (visual, interactive)
    - :headless              - Spawned as OS process without Emacs (stdout ring buffer)
    - :openrouter            - Direct OpenRouter API calls (multi-model, no CLI needed)
+   - :agent-sdk             - Claude Agent SDK via libpython-clj (in-process, SAA phases)
 
    Architecture (SOLID Open-Closed via Strategy Pattern):
    - ILingStrategy protocol defines mode-specific ops (spawn/dispatch/status/kill)
    - VtermStrategy implements via emacsclient/elisp
    - HeadlessStrategy implements via ProcessBuilder
    - OpenRouterStrategy implements via OpenRouter HTTP API streaming
+   - AgentSDKStrategy implements via libpython-clj + Claude Agent SDK
    - This file is the thin facade — delegates mode ops to strategy
 
    Implements IAgent protocol for unified lifecycle management."
@@ -26,12 +28,14 @@
             [hive-mcp.agent.ling.vterm :as vterm]
             [hive-mcp.agent.ling.headless-strategy :as headless-strat]
             [hive-mcp.agent.ling.openrouter-strategy :as openrouter-strat]
+            [hive-mcp.agent.ling.agent-sdk-strategy :as sdk-strat]
             [hive-mcp.agent.headless :as headless]
             [hive-mcp.agent.hints :as hints]
             [hive-mcp.swarm.datascript.lings :as ds-lings]
             [hive-mcp.swarm.datascript.queries :as ds-queries]
             [hive-mcp.swarm.datascript.claims :as ds-claims]
             [hive-mcp.swarm.datascript.schema :as schema]
+            [hive-mcp.protocols.dispatch :as dispatch-ctx]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -45,7 +49,7 @@
   "Get the ILingStrategy implementation for a spawn mode.
 
    Arguments:
-     mode - :vterm, :headless, or :openrouter
+     mode - :vterm, :headless, :openrouter, or :agent-sdk
 
    Returns:
      ILingStrategy instance"
@@ -53,6 +57,7 @@
   (case mode
     :headless (headless-strat/->headless-strategy)
     :openrouter (openrouter-strat/->openrouter-strategy)
+    :agent-sdk (sdk-strat/->agent-sdk-strategy)
     ;; default: vterm
     (vterm/->vterm-strategy)))
 
@@ -160,6 +165,9 @@
                                                 :ling/process-alive? true)
                                          ;; OpenRouter mode: mark as alive (HTTP-based, no PID)
                                          (= mode :openrouter)
+                                         (assoc :ling/process-alive? true)
+                                         ;; Agent SDK mode: mark as alive (in-process, no PID)
+                                         (= mode :agent-sdk)
                                          (assoc :ling/process-alive? true)))
 
       ;; For vterm mode, the task is NOT embedded in strategy-spawn! (spawn only
@@ -167,7 +175,7 @@
       ;; For headless mode, the task is already baked into the CLI arg by
       ;; strategy-spawn!, so no separate dispatch needed.
       ;; For openrouter mode, the task is dispatched in strategy-spawn! directly.
-      (when (and enriched-task (not (#{:headless :openrouter} mode)))
+      (when (and enriched-task (not (#{:headless :openrouter :agent-sdk} mode)))
         (let [task-ling (->ling slave-id {:cwd cwd
                                           :presets (or (:presets opts) presets)
                                           :project-id project-id
@@ -180,9 +188,21 @@
     "Dispatch a task to this ling.
 
      Common: update status, register task, claim files.
-     Mode-specific: delegate to strategy."
-    (let [{:keys [task files timeout-ms]
+     Mode-specific: delegate to strategy.
+
+     Accepts :task as plain string or IDispatchContext.
+     Also accepts :dispatch-context for pre-resolved context (from consolidated handler).
+     Uses ensure-context + resolve-context for normalization.
+
+     SOLID-D: Depends on IDispatchContext abstraction."
+    (let [{:keys [task files timeout-ms dispatch-context]
            :or {timeout-ms 60000}} task-opts
+          ;; IDispatchContext support: resolve context to plain string for strategies
+          ctx (or dispatch-context
+                  (when task (dispatch-ctx/ensure-context task)))
+          resolved-task (if ctx
+                          (:prompt (dispatch-ctx/resolve-context ctx))
+                          task)
           task-id (str "task-" (System/currentTimeMillis) "-" (subs id 0 (min 8 (count id))))
           mode (or spawn-mode
                    (when-let [slave (ds-queries/get-slave id)]
@@ -192,25 +212,28 @@
       ;; Common: Update status and register task
       (ds-lings/update-slave! id {:slave/status :working})
       (ds-lings/add-task! task-id id {:status :dispatched
-                                      :prompt task
+                                      :prompt resolved-task
                                       :files files})
       (when (seq files)
         (.claim-files! this files task-id))
 
-      ;; Delegate to strategy
-      (try
-        (strategy/strategy-dispatch! strat (ling-ctx this) task-opts)
-        (log/info "Task dispatched to ling" {:ling-id id :task-id task-id
-                                             :mode mode :files files})
-        task-id
-        (catch Exception e
-          (log/error "Failed to dispatch to ling"
-                     {:ling-id id :task-id task-id :mode mode :error (ex-message e)})
-          (ds-lings/update-task! task-id {:status :failed
-                                          :error (ex-message e)})
-          (throw (ex-info "Failed to dispatch to ling"
-                          {:ling-id id :task-id task-id :error (ex-message e)}
-                          e))))))
+      ;; Delegate to strategy with resolved plain-string task
+      (let [resolved-opts (assoc task-opts :task resolved-task)]
+        (try
+          (strategy/strategy-dispatch! strat (ling-ctx this) resolved-opts)
+          (log/info "Task dispatched to ling" {:ling-id id :task-id task-id
+                                               :mode mode :files files
+                                               :context-type (when ctx
+                                                               (dispatch-ctx/context-type ctx))})
+          task-id
+          (catch Exception e
+            (log/error "Failed to dispatch to ling"
+                       {:ling-id id :task-id task-id :mode mode :error (ex-message e)})
+            (ds-lings/update-task! task-id {:status :failed
+                                            :error (ex-message e)})
+            (throw (ex-info "Failed to dispatch to ling"
+                            {:ling-id id :task-id task-id :error (ex-message e)}
+                            e)))))))
 
   (status [this]
     "Get current ling status from DataScript with mode-appropriate liveness check.
@@ -302,7 +325,7 @@
             :cwd        - Working directory
             :presets    - Collection of preset names
             :project-id - Project ID for scoping
-            :spawn-mode - :vterm (default), :headless, or :openrouter
+            :spawn-mode - :vterm (default), :headless, :openrouter, or :agent-sdk
             :model      - Model identifier (default: 'claude' = Claude Code CLI)
                           Non-claude models automatically use :openrouter spawn-mode.
 
@@ -433,7 +456,13 @@
                                          :model "deepseek/deepseek-chat"}))
   ;; spawn-mode will be :openrouter automatically
 
-  ;; Check status (works for both modes — strategy handles it)
+  ;; === Agent SDK mode (in-process via libpython-clj) ===
+  (def sdk-ling (->ling "ling-004" {:cwd "/home/user/project"
+                                    :presets ["worker"]
+                                    :project-id "hive-mcp"
+                                    :spawn-mode :agent-sdk}))
+
+  ;; Check status (works for all modes — strategy handles it)
   ;; (.status my-ling)
   ;; (.status headless-ling)
 

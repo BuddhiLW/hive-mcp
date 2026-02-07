@@ -20,9 +20,15 @@
       :parent-rules   [{:path-prefix \"/path/prefix/\" :parent-id \"parent-proj\"}]
       :embeddings     {:ollama {:host \"http://localhost:11434\" :model \"nomic-embed-text\"}
                        :openrouter {:model \"qwen/qwen3-embedding-8b\"}}
-      :services       {:chroma {:host \"localhost\" :port 8000}
-                       :ollama {:host \"http://localhost:11434\" :model \"nomic-embed-text\"}
-                       :datahike {:path \"data/kg\"}}
+      :services       {:chroma {:mode :local :host \"localhost\" :port 8000}
+                       :ollama {:mode :local :host \"http://localhost:11434\" :model \"nomic-embed-text\"}
+                       :datahike {:mode :local :path \"data/kg\"}
+                       :kg {:mode :local :backend :datalevin}
+                       :project {:mode :local :id nil :dir nil :src-dirs [\"src\"]}
+                       :drone {:mode :local :default-model \"devstral-small:24b\" :default-backend :openrouter}
+                       :scheduler {:mode :local :enabled true :interval-minutes 60
+                                   :memory-limit 50 :edge-limit 100 :disc-enabled true}}
+      ;; :mode values: :local (localhost defaults) or :remote (use :host/:port as-is)
       :secrets        {:openrouter-api-key nil :openai-api-key nil}}
 
    Usage:
@@ -59,18 +65,23 @@
    :embeddings {:ollama {:host "http://localhost:11434"
                          :model "nomic-embed-text"}
                 :openrouter {:model "qwen/qwen3-embedding-8b"}}
-   :services {:chroma {:host "localhost" :port 8000}
-              :ollama {:host "http://localhost:11434" :model "nomic-embed-text"}
-              :datahike {:path "data/kg"}
-              :nrepl {:port 7910}
-              :prometheus {:url "http://localhost:9090"}
-              :loki {:url "http://localhost:3100"}
-              :websocket {:enabled false :port nil :project-dir nil}
-              :ws-channel {:port 9999}
-              :channel {:port 9998}
-              :olympus {:ws-port 7911}
-              :overarch {:jar nil}
-              :presets {:dir nil}}
+   :services {:chroma {:mode :local :host "localhost" :port 8000}
+              :ollama {:mode :local :host "http://localhost:11434" :model "nomic-embed-text"}
+              :datahike {:mode :local :path "data/kg"}
+              :nrepl {:mode :local :port 7910}
+              :prometheus {:mode :local :url "http://localhost:9090"}
+              :loki {:mode :local :url "http://localhost:3100"}
+              :websocket {:mode :local :enabled false :port nil :project-dir nil}
+              :ws-channel {:mode :local :port 9999}
+              :channel {:mode :local :port 9998}
+              :olympus {:mode :local :ws-port 7911}
+              :overarch {:mode :local :jar nil}
+              :presets {:mode :local :dir nil}
+              :kg {:mode :local :backend :datalevin}
+              :project {:mode :local :id nil :dir nil :src-dirs ["src"]}
+              :drone {:mode :local :default-model "devstral-small:24b" :default-backend :openrouter}
+              :scheduler {:mode :local :enabled true :interval-minutes 60
+                          :memory-limit 50 :edge-limit 100 :disc-enabled true}}
    :secrets {:openrouter-api-key nil
              :openai-api-key nil}})
 
@@ -226,16 +237,30 @@
 (defn get-service-config
   "Return config map for a specific service (e.g., :chroma, :ollama, :datahike).
    Returns the service-specific config map, or nil if not configured.
+   Each service includes a :mode key (:local or :remote).
 
    Examples:
-     (get-service-config :chroma)   => {:host \"localhost\" :port 8000}
-     (get-service-config :ollama)   => {:host \"http://localhost:11434\" :model \"nomic-embed-text\"}
-     (get-service-config :datahike) => {:path \"data/kg\"}"
+     (get-service-config :chroma)   => {:mode :local :host \"localhost\" :port 8000}
+     (get-service-config :ollama)   => {:mode :local :host \"http://localhost:11434\" :model \"nomic-embed-text\"}
+     (get-service-config :datahike) => {:mode :local :path \"data/kg\"}"
   [service-key]
   (get-in (get-global-config) [:services service-key]))
 
+(defn get-service-mode
+  "Return the :mode for a service (:local or :remote, defaults to :local).
+
+   Examples:
+     (get-service-mode :chroma)   => :local
+     (get-service-mode :unknown)  => :local"
+  [service-key]
+  (get-in (get-global-config) [:services service-key :mode] :local))
+
 (defn get-service-value
-  "Get a specific field from service config with env var fallback.
+  "Get a specific field from service config with mode-aware host/port resolution.
+
+   Each service supports a :mode key (:local or :remote, default :local).
+   When :mode is :remote, the service's :host/:port come from config as-is
+   (pointing to a remote machine). When :local, localhost defaults apply.
 
    Priority: config.edn :services > env var > default value.
 
@@ -246,13 +271,25 @@
 
    Examples:
      (get-service-value :nrepl :port :env \"HIVE_MCP_NREPL_PORT\" :parse parse-long :default 7910)
-     (get-service-value :prometheus :url :env \"PROMETHEUS_URL\" :default \"http://localhost:9090\")"
+     (get-service-value :prometheus :url :env \"PROMETHEUS_URL\" :default \"http://localhost:9090\")
+     ;; With :mode :remote, :host/:port are used from config directly
+     ;; With :mode :local (default), behavior is unchanged"
   [service-key field-key & {:keys [env parse default]}]
-  (let [config-val (get-in (get-global-config) [:services service-key field-key])
+  (let [svc-cfg (get-in (get-global-config) [:services service-key])
+        mode (get svc-cfg :mode :local)
+        config-val (get svc-cfg field-key)
+        ;; When :mode is :local and requesting :host, prefer localhost defaults
+        ;; When :mode is :remote, use the configured :host/:port as-is
+        effective-val (if (and (= mode :local)
+                               (#{:host :url} field-key)
+                               (nil? config-val))
+                        ;; :local mode without explicit host — let env/default handle it
+                        nil
+                        config-val)
         env-val (when env
                   (when-let [raw (System/getenv env)]
                     (if parse (parse raw) raw)))]
-    (or config-val env-val default)))
+    (or effective-val env-val default)))
 
 (defn get-secret
   "Return a secret value, checking config.edn first, then env var fallback.

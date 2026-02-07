@@ -1,7 +1,8 @@
 (ns hive-mcp.channel.memory-piggyback-test
   "Unit tests for the memory piggyback buffer module."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
-            [hive-mcp.channel.memory-piggyback :as mp]))
+            [hive-mcp.channel.memory-piggyback :as mp]
+            [hive-mcp.channel.context-store :as ctx]))
 
 ;; Reset buffer state between tests
 (use-fixtures :each
@@ -212,3 +213,97 @@
     (let [result (mp/drain! "agent-g" "proj-g")
           entry (first (:batch result))]
       (is (not (contains? entry :tags))))))
+
+;; =============================================================================
+;; Context-Refs Dual-Write (Task 2.1)
+;; =============================================================================
+
+(deftest enqueue-with-context-refs-test
+  (testing "3-arity enqueue (backward compat) works without context-refs"
+    (mp/enqueue! "agent-3a" "proj-3a"
+                 [{:id "bc-1" :type "axiom" :content "Backward compat" :tags []}])
+    (let [result (mp/drain! "agent-3a" "proj-3a")]
+      (is (= 1 (count (:batch result))))
+      (is (not (contains? result :context-refs)))))
+
+  (testing "4-arity enqueue with nil context-refs omits :context-refs from buffer"
+    (mp/enqueue! "agent-4n" "proj-4n"
+                 [{:id "nil-1" :type "axiom" :content "Nil refs" :tags []}]
+                 nil)
+    (let [result (mp/drain! "agent-4n" "proj-4n")]
+      (is (= 1 (count (:batch result))))
+      (is (not (contains? result :context-refs)))))
+
+  (testing "4-arity enqueue with context-refs stores them in buffer"
+    (let [refs {:axioms "ctx-123-abc" :sessions "ctx-456-def"}]
+      (mp/enqueue! "agent-4r" "proj-4r"
+                   [{:id "ref-1" :type "axiom" :content "With refs" :tags []}]
+                   refs)
+      (is (mp/has-pending? "agent-4r" "proj-4r")))))
+
+(deftest drain-context-refs-first-batch-only-test
+  (testing "context-refs appear in first drain batch (seq=1) only"
+    (let [refs {:axioms "ctx-aaa-111" :decisions "ctx-bbb-222"}
+          ;; Create entries that will span multiple batches
+          big-content (apply str (repeat 12000 "z"))
+          entries (mapv (fn [i]
+                          {:id (str "mb-" i) :type "axiom"
+                           :content big-content :tags []})
+                        (range 4))]
+      (mp/enqueue! "agent-dr" "proj-dr" entries refs)
+
+      ;; First drain: should have context-refs
+      (let [r1 (mp/drain! "agent-dr" "proj-dr")]
+        (is (= 1 (:seq r1)))
+        (is (contains? r1 :context-refs))
+        (is (= refs (:context-refs r1))))
+
+      ;; Second drain: should NOT have context-refs
+      (when (mp/has-pending? "agent-dr" "proj-dr")
+        (let [r2 (mp/drain! "agent-dr" "proj-dr")]
+          (is (> (:seq r2) 1))
+          (is (not (contains? r2 :context-refs)))))))
+
+  (testing "context-refs appear even when all entries fit in one batch"
+    (let [refs {:snippets "ctx-ccc-333"}]
+      (mp/enqueue! "agent-s1" "proj-s1"
+                   [{:id "s-1" :type "note" :content "small" :tags []}]
+                   refs)
+      (let [result (mp/drain! "agent-s1" "proj-s1")]
+        (is (= 1 (:seq result)))
+        (is (true? (:done result)))
+        (is (= refs (:context-refs result)))))))
+
+(deftest context-refs-with-context-store-integration-test
+  (testing "context-refs from context-store can be round-tripped through piggyback"
+    ;; Clean context-store
+    (ctx/reset-all!)
+    (try
+      ;; Simulate what catchup.clj does: put data in context-store, get refs
+      (let [axiom-data [{:id "ax-1" :content "Rule 1"} {:id "ax-2" :content "Rule 2"}]
+            session-data [{:id "sess-1" :content "Session summary"}]
+            ax-ref (ctx/context-put! axiom-data :tags #{"catchup" "axioms"} :ttl-ms 60000)
+            sess-ref (ctx/context-put! session-data :tags #{"catchup" "sessions"} :ttl-ms 60000)
+            refs {:axioms ax-ref :sessions sess-ref}]
+
+        ;; Enqueue with refs (what catchup.clj does)
+        (mp/enqueue! "agent-int" "proj-int"
+                     [{:id "ax-1" :type "axiom" :content "Rule 1" :tags []}
+                      {:id "ax-2" :type "axiom" :content "Rule 2" :tags []}]
+                     refs)
+
+        ;; Drain and verify refs are present
+        (let [result (mp/drain! "agent-int" "proj-int")]
+          (is (map? (:context-refs result)))
+          (is (string? (:axioms (:context-refs result))))
+          (is (string? (:sessions (:context-refs result))))
+
+          ;; Verify the refs actually resolve in context-store
+          (let [ax-entry (ctx/context-get (:axioms (:context-refs result)))
+                sess-entry (ctx/context-get (:sessions (:context-refs result)))]
+            (is (some? ax-entry))
+            (is (some? sess-entry))
+            (is (= axiom-data (:data ax-entry)))
+            (is (= session-data (:data sess-entry))))))
+      (finally
+        (ctx/reset-all!)))))

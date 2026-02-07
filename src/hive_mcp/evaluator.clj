@@ -12,6 +12,7 @@
   - OCP: Extend via new protocol implementations, not modification"
   (:require [bencode.core :as bencode]
             [hive-mcp.emacsclient :as ec]
+            [hive-mcp.config :as config]
             [clojure.data.json :as json]
             [taoensso.timbre :as log])
   (:import [java.net Socket InetSocketAddress]
@@ -325,14 +326,18 @@
     (create-direct-nrepl-evaluator {:host \"localhost\" :port 7910 :timeout-ms 5000})"
   [{:keys [host port timeout-ms session-id]
     :or {host "localhost"
-         port 7910
          timeout-ms 120000}}]
-  (->DirectNreplEvaluator host port timeout-ms session-id))
+  (let [effective-port (or port
+                           (config/get-service-value :nrepl :port
+                                                     :env "HIVE_MCP_NREPL_PORT"
+                                                     :parse parse-long
+                                                     :default 7910))]
+    (->DirectNreplEvaluator host effective-port timeout-ms session-id)))
 
 (defn default-evaluator
-  "Create a default evaluator (DirectNreplEvaluator on port 7910)"
+  "Create a default evaluator (DirectNreplEvaluator on configured nREPL port)"
   []
-  (create-direct-nrepl-evaluator {:port 7910}))
+  (create-direct-nrepl-evaluator {}))
 
 ;; ============================================================================
 ;; EmacsCiderEvaluator Implementation (EXPLICIT/INTERACTIVE mode)
@@ -472,8 +477,10 @@
   ([{:keys [port host]
      :or {host "localhost"}}]
    (let [effective-port (or port
-                            (some-> (System/getenv "HIVE_MCP_NREPL_PORT") parse-long)
-                            7910)
+                            (config/get-service-value :nrepl :port
+                                                      :env "HIVE_MCP_NREPL_PORT"
+                                                      :parse parse-long
+                                                      :default 7910))
          start-time (System/currentTimeMillis)
          evaluator (create-direct-nrepl-evaluator {:host host
                                                    :port effective-port
