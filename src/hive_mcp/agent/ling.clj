@@ -9,10 +9,10 @@
    - Delegate to drones for file mutations
 
    Supports four spawn modes via Strategy Protocol:
-   - :vterm      (default) - Spawned inside Emacs vterm buffer (visual, interactive)
-   - :headless              - Spawned as OS process without Emacs (stdout ring buffer)
-   - :openrouter            - Direct OpenRouter API calls (multi-model, no CLI needed)
-   - :agent-sdk             - Claude Agent SDK via libpython-clj (in-process, SAA phases)
+   - :vterm      (default for interactive) - Spawned inside Emacs vterm buffer (visual)
+   - :headless   (alias for :agent-sdk)    - Auto-mapped to :agent-sdk since 0.12.0
+   - :openrouter                           - Direct OpenRouter API calls (multi-model)
+   - :agent-sdk  (default for headless)    - Claude Agent SDK via libpython-clj
 
    Architecture (SOLID Open-Closed via Strategy Pattern):
    - ILingStrategy protocol defines mode-specific ops (spawn/dispatch/status/kill)
@@ -66,12 +66,14 @@
 
    Extracts fields strategies need without coupling them to the Ling record."
   [ling]
-  {:id (:id ling)
-   :cwd (:cwd ling)
-   :presets (:presets ling)
-   :project-id (:project-id ling)
-   :spawn-mode (:spawn-mode ling)
-   :model (:model ling)})
+  (cond-> {:id (:id ling)
+           :cwd (:cwd ling)
+           :presets (:presets ling)
+           :project-id (:project-id ling)
+           :spawn-mode (:spawn-mode ling)
+           :model (:model ling)}
+    ;; Only include agents when present (avoids nil noise in logging)
+    (:agents ling) (assoc :agents (:agents ling))))
 
 ;;; =============================================================================
 ;;; Forward Declarations
@@ -83,7 +85,7 @@
 ;;; Ling Record - IAgent Implementation (Strategy-Delegating Facade)
 ;;; =============================================================================
 
-(defrecord Ling [id cwd presets project-id spawn-mode model]
+(defrecord Ling [id cwd presets project-id spawn-mode model agents]
   IAgent
 
   (spawn! [this opts]
@@ -102,9 +104,11 @@
           effective-model (or (:model opts) model)
           non-claude? (and effective-model
                            (not (schema/claude-model? effective-model)))
-          mode (if non-claude?
-                 :openrouter
-                 (or (:spawn-mode opts) spawn-mode :vterm))
+          ;; :headless maps to :agent-sdk (default headless mechanism since 0.12.0)
+          raw-mode (if non-claude?
+                     :openrouter
+                     (or (:spawn-mode opts) spawn-mode :vterm))
+          mode (if (= raw-mode :headless) :agent-sdk raw-mode)
           strat (resolve-strategy mode)
           ctx (assoc (ling-ctx this) :model effective-model)
           {:keys [depth parent kanban-task-id]
@@ -194,10 +198,14 @@
      Also accepts :dispatch-context for pre-resolved context (from consolidated handler).
      Uses ensure-context + resolve-context for normalization.
 
+     L2 Phase 3: Passes dispatch-context through to strategy so L2-aware
+     strategies (HeadlessStrategy) can build L2 context envelopes instead
+     of losing structured refs by resolving to text prematurely.
+
      SOLID-D: Depends on IDispatchContext abstraction."
     (let [{:keys [task files timeout-ms dispatch-context]
            :or {timeout-ms 60000}} task-opts
-          ;; IDispatchContext support: resolve context to plain string for strategies
+          ;; IDispatchContext support: resolve context for task registration
           ctx (or dispatch-context
                   (when task (dispatch-ctx/ensure-context task)))
           resolved-task (if ctx
@@ -217,8 +225,12 @@
       (when (seq files)
         (.claim-files! this files task-id))
 
-      ;; Delegate to strategy with resolved plain-string task
-      (let [resolved-opts (assoc task-opts :task resolved-task)]
+      ;; L2 Phase 3: Pass dispatch-context through to strategy
+      ;; HeadlessStrategy uses it to build L2 envelope instead of losing refs.
+      ;; VtermStrategy and others ignore it and use :task (resolved text).
+      (let [resolved-opts (cond-> (assoc task-opts :task resolved-task)
+                            ;; Preserve dispatch-context for L2-aware strategies
+                            ctx (assoc :dispatch-context ctx))]
         (try
           (strategy/strategy-dispatch! strat (ling-ctx this) resolved-opts)
           (log/info "Task dispatched to ling" {:ling-id id :task-id task-id
@@ -326,23 +338,34 @@
             :presets    - Collection of preset names
             :project-id - Project ID for scoping
             :spawn-mode - :vterm (default), :headless, :openrouter, or :agent-sdk
+                          NOTE: :headless is accepted but maps to :agent-sdk
+                          (agent-sdk is the default headless mechanism since 0.12.0)
             :model      - Model identifier (default: 'claude' = Claude Code CLI)
                           Non-claude models automatically use :openrouter spawn-mode.
+            :agents     - Subagent definitions map (optional, agent-sdk mode only)
+                          Map of name -> {:description :prompt :tools :model}
+                          Passed to ClaudeAgentOptions.agents for custom
+                          subagent definitions in the Claude SDK session.
 
    Returns:
      Ling record implementing IAgent protocol"
   [id opts]
   (let [model-val (:model opts)
         ;; Non-claude models use OpenRouter API directly
+        ;; :headless maps to :agent-sdk (default headless mechanism since 0.12.0)
+        raw-spawn-mode (:spawn-mode opts :vterm)
         effective-spawn-mode (if (and model-val (not (schema/claude-model? model-val)))
                                :openrouter
-                               (:spawn-mode opts :vterm))]
-    (map->Ling {:id id
-                :cwd (:cwd opts)
-                :presets (:presets opts [])
-                :project-id (:project-id opts)
-                :spawn-mode effective-spawn-mode
-                :model model-val})))
+                               (if (= raw-spawn-mode :headless)
+                                 :agent-sdk
+                                 raw-spawn-mode))]
+    (map->Ling (cond-> {:id id
+                        :cwd (:cwd opts)
+                        :presets (:presets opts [])
+                        :project-id (:project-id opts)
+                        :spawn-mode effective-spawn-mode
+                        :model model-val}
+                 (:agents opts) (assoc :agents (:agents opts))))))
 
 (defn create-ling!
   "Create and spawn a new ling agent.

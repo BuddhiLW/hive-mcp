@@ -1,4 +1,5 @@
 {:project-id  "hive-mcp"
+ :parent "hive"
  :aliases ["emacs-mcp"]
  :description "Hivemind MCP server for Claude Code + Emacs integration"
 

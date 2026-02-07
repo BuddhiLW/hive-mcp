@@ -58,6 +58,12 @@
 ;; Separate from swarm connection to avoid schema conflicts.
 (defonce ^:private conn (atom nil))
 
+;; Cached project tree structure.
+;; Populated by scan-project-tree!, queried by get-cached-tree.
+;; Structure: {:roots [...] :by-id {...} :children {...}}
+;; Invalidated on rescan.
+(defonce ^:private tree-cache (atom nil))
+
 (defn- get-conn
   "Get or create the project tree DataScript connection."
   []
@@ -253,16 +259,55 @@
          project-id))
 
 ;; =============================================================================
+;; Tree Cache (HCR Wave 5: Avoid re-traversal)
+;; =============================================================================
+
+(defn get-cached-tree
+  "Get the cached project tree, rebuilding from DataScript if cache is empty.
+   Returns {:roots [...] :by-id {...} :children {...}} or nil if no data."
+  []
+  (or @tree-cache
+      (let [projects (query-all-projects)]
+        (when (seq projects)
+          (let [tree (build-project-tree projects)]
+            (reset! tree-cache tree)
+            tree)))))
+
+(defn invalidate-tree-cache!
+  "Clear the cached tree. Called on rescan or when hierarchy changes."
+  []
+  (reset! tree-cache nil))
+
+(defn has-children?
+  "Check if a project has any children in the hierarchy.
+   Uses cached tree for O(1) lookup."
+  [project-id]
+  (when-let [tree (get-cached-tree)]
+    (boolean (seq (get (:children tree) project-id)))))
+
+(defn get-descendant-ids
+  "Get all descendant project IDs as a set.
+   Uses cached tree for efficient traversal.
+
+   Example:
+     (get-descendant-ids \"hive\")
+     => #{\"hive-mcp\" \"hive-agent-bridge\"}
+
+   Returns empty set if project has no children or tree not populated."
+  [project-id]
+  (if-let [tree (get-cached-tree)]
+    (set (get-descendants tree project-id))
+    #{}))
+
+;; =============================================================================
 ;; HCR Wave 3: Descendant Scope Tags
 ;; =============================================================================
 
 (defn get-descendant-scope-tags
   "Get all descendant scope tags for a given project-id.
 
-   HCR Wave 3: Enables memory queries to include child project memories.
+   HCR Wave 3+5: Uses cached tree for O(1) lookup instead of re-querying DataScript.
    This is the inverse of visible-scope-tags (which goes UP to ancestors).
-
-   Uses cached tree structure when available, falls back to DataScript query.
 
    Args:
      project-id - The project to get descendants for
@@ -273,24 +318,15 @@
 
    Example:
      (get-descendant-scope-tags \"hive-mcp\")
-     => #{\"scope:project:hive-mcp:agora\" \"scope:project:hive-mcp:memory\"}"
+     => #{\"scope:project:hive-agent-bridge\"}"
   [project-id]
   (when (and project-id (not= project-id "global"))
-    (try
-      (let [;; Get all projects and build tree
-            all-projects (query-all-projects)
-            tree (build-project-tree all-projects)
-            ;; Get all descendant IDs
-            descendant-ids (get-descendants tree project-id)]
-        ;; Convert to scope tags
-        (set (map #(str "scope:project:" %) descendant-ids)))
-      (catch Exception e
-        (log/debug "Failed to get descendant scope tags:" (.getMessage e))
-        #{}))))
+    (set (map #(str "scope:project:" %) (get-descendant-ids project-id)))))
 
 (defn get-descendant-scopes
   "Get all descendant project IDs for a given project-id.
 
+   HCR Wave 3+5: Uses cached tree for O(1) lookup instead of re-querying DataScript.
    Lower-level function that returns raw project IDs, not scope tags.
    Use get-descendant-scope-tags for memory query filtering.
 
@@ -302,13 +338,7 @@
      Returns empty vector if project has no children."
   [project-id]
   (when (and project-id (not= project-id "global"))
-    (try
-      (let [all-projects (query-all-projects)
-            tree (build-project-tree all-projects)]
-        (get-descendants tree project-id))
-      (catch Exception e
-        (log/debug "Failed to get descendant scopes:" (.getMessage e))
-        []))))
+    (vec (get-descendant-ids project-id))))
 
 ;; =============================================================================
 ;; Main Scan Function
@@ -346,8 +376,9 @@
                         (map config->entity)
                         (filter some?))
 
-          ;; Build tree structure
+          ;; Build tree structure and cache for cheap subsequent lookups
           tree (build-project-tree entities)
+          _ (reset! tree-cache tree)
 
           ;; Register configs in scope cache for HCR resolution
           _ (doseq [{:keys [config]} discovered]

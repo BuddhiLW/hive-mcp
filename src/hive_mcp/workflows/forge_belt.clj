@@ -132,21 +132,23 @@
    Uses resources:
      :agent-ops  {:spawn-fn, :dispatch-fn, :wait-ready-fn}
      :kanban-ops {:update-fn}
-     :config     {:max-slots N, :presets [...]}
+     :config     {:max-slots N, :presets [...], :spawn-mode kw, :model string-or-nil}
      :directory   string"
   [resources data]
   (let [{:keys [agent-ops kanban-ops config directory]} resources
         {:keys [spawn-fn dispatch-fn wait-ready-fn]} agent-ops
         {:keys [update-fn]} kanban-ops
-        {:keys [max-slots presets]} config
+        {:keys [max-slots presets spawn-mode model]} config
         tasks (get-in data [:survey-result :tasks] [])
-        result (spawn-fn {:directory directory
-                          :max-slots (or max-slots 10)
-                          :presets (or presets ["ling" "mcp-first" "saa"])
-                          :tasks tasks
-                          :dispatch-fn dispatch-fn
-                          :wait-ready-fn wait-ready-fn
-                          :update-fn update-fn})]
+        result (spawn-fn (cond-> {:directory directory
+                                  :max-slots (or max-slots 10)
+                                  :presets (or presets ["ling" "mcp-first" "saa"])
+                                  :tasks tasks
+                                  :dispatch-fn dispatch-fn
+                                  :wait-ready-fn wait-ready-fn
+                                  :update-fn update-fn}
+                           spawn-mode (assoc :spawn-mode spawn-mode)
+                           model (assoc :model model)))]
     (let [clock-fn (or (:clock-fn resources) #(java.time.Instant/now))]
       (-> data
           (assoc :phase ::cycle-complete
@@ -214,25 +216,25 @@
   {:fsm
    {::fsm/start
     {:handler    handle-start
-     :dispatches [[::halt    quenched?]
-                  [::smite   always]]}
+     :dispatches [[::fsm/halt quenched?]
+                  [::smite    always]]}
 
     ::smite
     {:handler    handle-smite
-     :dispatches [[::halt    quenched?]
-                  [::survey  always]]}
+     :dispatches [[::fsm/halt quenched?]
+                  [::survey   always]]}
 
     ::survey
     {:handler    handle-survey
-     :dispatches [[::halt    quenched?]
-                  [::spark   has-tasks?]
-                  [::fsm/end no-tasks?]]}
+     :dispatches [[::fsm/halt quenched?]
+                  [::spark    has-tasks?]
+                  [::fsm/end  no-tasks?]]}
 
     ::spark
     {:handler    handle-spark
-     :dispatches [[::halt         quenched?]
-                  [::fsm/start    continuous?]
-                  [::fsm/end      single-shot?]]}
+     :dispatches [[::fsm/halt    quenched?]
+                  [::fsm/start   continuous?]
+                  [::fsm/end     single-shot?]]}
 
     ::fsm/end
     {:handler handle-end}

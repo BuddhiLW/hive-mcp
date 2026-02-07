@@ -248,14 +248,19 @@
    claude --print reads ALL of stdin until EOF before processing.
    Keeping stdin open for future dispatches would cause it to hang.
 
+   L2 Phase 3 (P3-T4): When system-prompt is provided, appends it to the
+   Claude Code built-in system prompt via --append-system-prompt flag.
+   This replaces the previous pattern of prepending L2 context to the task.
+
    Arguments:
-     claude-cmd - Override command (e.g., 'cat' for tests)
-     model      - Model identifier (nil or 'claude' for default Claude Code CLI)
-     task       - Initial task string (appended as positional arg for claude)
+     claude-cmd    - Override command (e.g., 'cat' for tests)
+     model         - Model identifier (nil or 'claude' for default Claude Code CLI)
+     task          - Initial task string (appended as positional arg for claude)
+     system-prompt - Optional text to append to the system prompt (L2 context)
 
    Returns:
      Vector of command parts"
-  [claude-cmd model task]
+  [claude-cmd model task system-prompt]
   (let [claude-like? (str/includes? (or claude-cmd "claude") "claude")
         ;; Determine if this is a non-claude OpenRouter model
         openrouter-model? (and model
@@ -270,6 +275,9 @@
       claude-like? (conj "--output-format" "stream-json" "--verbose")
       ;; Add --model for non-default model selection (Claude Code CLI supports --model)
       openrouter-model? (conj "--model" model)
+      ;; L2 Phase 3: Append L2 context to system prompt (not task prefix)
+      ;; Uses --append-system-prompt to preserve Claude Code's built-in system prompt
+      (and system-prompt claude-like?) (conj "--append-system-prompt" system-prompt)
       ;; For non-claude commands (e.g., 'cat' in tests), just append task
       (and task (not claude-like?)) (conj task))))
 
@@ -295,6 +303,8 @@
                :env-extra   - Extra environment variables map (optional)
                :claude-cmd  - Override claude command (default: 'claude')
                :buffer-capacity - Ring buffer size (default: 5000)
+               :system-prompt - Text to append to system prompt via
+                                --append-system-prompt (L2 context, optional)
 
    Returns:
      Map with:
@@ -307,7 +317,7 @@
 
    Throws:
      ExceptionInfo on failure to start process"
-  [ling-id {:keys [cwd task presets model env-extra claude-cmd buffer-capacity]
+  [ling-id {:keys [cwd task presets model env-extra claude-cmd buffer-capacity system-prompt]
             :or {claude-cmd "claude"
                  buffer-capacity default-buffer-capacity}}]
   {:pre [(string? ling-id)
@@ -321,7 +331,8 @@
                     {:ling-id ling-id})))
 
   (let [;; Build command using helper for multi-model support
-        cmd-parts (build-command-parts claude-cmd model task)
+        ;; L2 Phase 3: system-prompt flows to --append-system-prompt CLI flag
+        cmd-parts (build-command-parts claude-cmd model task system-prompt)
 
         ;; Create ProcessBuilder
         pb (ProcessBuilder. ^java.util.List (vec cmd-parts))

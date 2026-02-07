@@ -1,6 +1,9 @@
 (ns hive-mcp.tools.catchup.scope-test
   "Tests for catchup scope resolution and query functions.
-   Extracted from catchup.clj in Sprint 1 refactoring."
+   Extracted from catchup.clj in Sprint 1 refactoring.
+
+   HCR Wave 5: Added tests for compute-hierarchy-project-ids,
+   scope-filter-entries, scope-pierce-entries helpers."
   (:require [clojure.test :refer [deftest is testing]]))
 
 ;; =============================================================================

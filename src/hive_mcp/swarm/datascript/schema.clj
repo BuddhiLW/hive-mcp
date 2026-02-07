@@ -7,7 +7,8 @@
    - Schema documentation
 
    SOLID-S: Single Responsibility - only schema definitions.
-   DDD: Value Objects for status enums, schema as domain model.")
+   DDD: Value Objects for status enums, schema as domain model."
+  (:require [clojure.string :as str]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -98,10 +99,10 @@
 
 (def spawn-modes
   "Valid ling spawn mode values.
-   :vterm      - Spawned inside Emacs vterm buffer (default, visual)
-   :headless   - Spawned as OS process without Emacs UI (stdout captured to ring buffer)
+   :vterm      - Spawned inside Emacs vterm buffer (default for interactive)
+   :headless   - Alias for :agent-sdk (ProcessBuilder legacy, auto-mapped since 0.12.0)
    :openrouter - Direct OpenRouter API calls (multi-model, no CLI needed)
-   :agent-sdk  - Claude Agent SDK via libpython-clj (in-process, SAA phases)"
+   :agent-sdk  - Claude Agent SDK via libpython-clj (default for headless since 0.12.0)"
   #{:vterm :headless :openrouter :agent-sdk})
 
 (def ling-model-default
@@ -110,11 +111,15 @@
 
 (defn claude-model?
   "Check if a model identifier represents a Claude Code CLI ling (default).
-   Returns true for nil, 'claude', or any 'anthropic/claude-*' model."
+   Returns true for nil, 'claude', or any 'anthropic/claude-*' model.
+   This determines routing: claude models use Claude Code CLI,
+   non-claude models route to OpenRouter API."
   [model]
   (or (nil? model)
       (= model "claude")
-      (= model ling-model-default)))
+      (= model ling-model-default)
+      (and (string? model)
+           (str/starts-with? model "anthropic/"))))
 
 (def task-types
   "Valid task type values for drone routing.

@@ -24,8 +24,10 @@
   ILingStrategy
 
   (strategy-spawn! [_ ling-ctx opts]
-    (let [{:keys [id cwd presets model]} ling-ctx
-          {:keys [task]} opts]
+    (let [{:keys [id cwd presets model agents]} ling-ctx
+          {:keys [task]} opts
+          ;; Agents from opts take precedence over ling-ctx (spawn-time override)
+          effective-agents (or (:agents opts) agents)]
       ;; Graceful degradation: check SDK availability before attempting spawn
       (when-not (sdk/available?)
         (throw (ex-info "Claude Agent SDK not available for spawn"
@@ -37,11 +39,13 @@
                                  :no-sdk "Run: pip install claude-agent-sdk"
                                  :not-initialized "Python initialization failed"
                                  "Unknown SDK issue")})))
-      (let [result (sdk/spawn-headless-sdk! id {:cwd cwd
-                                                 :system-prompt (str "Agent " id " in project")
-                                                 :presets presets})]
+      (let [result (sdk/spawn-headless-sdk! id (cond-> {:cwd cwd
+                                                        :system-prompt (str "Agent " id " in project")
+                                                        :presets presets}
+                                                 effective-agents (assoc :agents effective-agents)))]
         (log/info "Ling spawned via Agent SDK" {:id id :cwd cwd :model (or model "claude")
-                                                  :backend :agent-sdk :phase (:phase result)})
+                                                :backend :agent-sdk :phase (:phase result)
+                                                :agents-count (count effective-agents)})
         ;; If initial task provided, dispatch immediately
         (when task
           (sdk/dispatch-headless-sdk! id task))
@@ -57,7 +61,7 @@
                         {:ling-id id})))
       (let [result-ch (sdk/dispatch-headless-sdk! id task dispatch-opts)]
         (log/info "Task dispatched to Agent SDK ling" {:ling-id id
-                                                        :has-result-ch? (some? result-ch)})
+                                                       :has-result-ch? (some? result-ch)})
         ;; Return the result channel so callers can consume SAA messages
         result-ch)))
 

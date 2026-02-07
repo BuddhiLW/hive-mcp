@@ -176,12 +176,15 @@
      files      - Files for drone to work on (optional, drone only)
      parent     - Parent agent ID (optional)
      spawn_mode - Spawn mode for lings: 'vterm' (default) or 'headless' (optional)
-                  Headless mode spawns Claude CLI as a subprocess without Emacs.
-                  Non-claude models automatically force 'headless' mode.
+                  'headless' maps to :agent-sdk (Claude Agent SDK, default since 0.12.0).
+                  Non-claude models automatically force headless/openrouter mode.
+     agents     - Subagent definitions map (optional, agent-sdk/headless mode only)
+                  Map of agent-name -> {description, prompt, tools?, model?}
+                  Passed to ClaudeAgentOptions.agents for custom subagent definitions.
 
    HCR Wave 4: Inherits project scope from parent hierarchy.
    CLARITY: I - Validates type before dispatch."
-  [{:keys [type name cwd presets model task files parent project_id kanban_task_id spawn_mode]}]
+  [{:keys [type name cwd presets model task files parent project_id kanban_task_id spawn_mode agents]}]
   (let [agent-type (keyword type)]
     (if-not (#{:ling :drone} agent-type)
       (mcp-error "type must be 'ling' or 'drone'")
@@ -198,18 +201,32 @@
                                 (string? presets) [presets]
                                 (sequential? presets) (vec presets)
                                 :else [presets])
-                  ;; Resolve spawn mode (default :vterm for backward compat)
-                  ;; Non-claude models automatically force headless
+                  ;; Resolve spawn mode: 'headless' maps to :agent-sdk (default since 0.12.0)
+                  ;; Non-claude models automatically force headless via ->ling
                   effective-spawn-mode (keyword (or spawn_mode "vterm"))
-                  _ (when-not (#{:vterm :headless} effective-spawn-mode)
-                      (throw (ex-info "spawn_mode must be 'vterm' or 'headless'"
+                  _ (when-not (#{:vterm :headless :agent-sdk} effective-spawn-mode)
+                      (throw (ex-info "spawn_mode must be 'vterm', 'headless', or 'agent-sdk'"
                                       {:spawn-mode spawn_mode})))
+                  ;; Normalize agents map: convert string keys to keyword keys for agent specs
+                  ;; MCP JSON sends {"name": {"description": "...", "prompt": "...", "tools": [...]}}
+                  ;; Clojure side expects {"name" {:description "..." :prompt "..." :tools [...]}}
+                  normalized-agents (when (map? agents)
+                                      (reduce-kv
+                                       (fn [m agent-name agent-spec]
+                                         (assoc m (clojure.core/name agent-name)
+                                                (if (map? agent-spec)
+                                                  (reduce-kv (fn [m2 k v]
+                                                               (assoc m2 (keyword k) v))
+                                                             {} agent-spec)
+                                                  agent-spec)))
+                                       {} agents))
                   ;; ->ling handles auto-forcing headless for non-claude models
-                  ling-agent (ling/->ling agent-id {:cwd cwd
-                                                    :presets presets-vec
-                                                    :project-id effective-project-id
-                                                    :spawn-mode effective-spawn-mode
-                                                    :model model})
+                  ling-agent (ling/->ling agent-id (cond-> {:cwd cwd
+                                                            :presets presets-vec
+                                                            :project-id effective-project-id
+                                                            :spawn-mode effective-spawn-mode
+                                                            :model model}
+                                                     normalized-agents (assoc :agents normalized-agents)))
                   ;; spawn! returns the actual slave-id
                   ;; For vterm: may differ from agent-id (elisp assigns)
                   ;; For headless: same as agent-id (we control it)
@@ -819,7 +836,9 @@
                                       :description "Initial task to dispatch on spawn"}
                               "spawn_mode" {:type "string"
                                             :enum ["vterm" "headless"]
-                                            :description "Spawn mode for lings: 'vterm' (default, Emacs buffer) or 'headless' (OS subprocess, no Emacs required). Headless mode captures stdout to ring buffer and supports stdin dispatch."}
+                                            :description "Spawn mode for lings: 'vterm' (default, Emacs buffer) or 'headless' (OS subprocess, no Emacs required). Headless mode captures stdout to ring buffer and supports stdin dispatch. Note: 'headless' maps to :agent-sdk (Claude Agent SDK) since 0.12.0."}
+                              "agents" {:type "object"
+                                        :description "[spawn] Subagent definitions for Claude Agent SDK sessions. Map of agent-name to agent definition object. Each definition: {description: string, prompt: string, tools?: string[], model?: 'sonnet'|'opus'|'haiku'|'inherit'}. Only effective with agent-sdk spawn mode (headless)."}
                               ;; common params
                               "agent_id" {:type "string"
                                           :description "Agent ID for status/kill/dispatch/claims"}

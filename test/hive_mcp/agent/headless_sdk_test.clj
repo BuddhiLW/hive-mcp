@@ -287,6 +287,60 @@
       (is (every? :score scored)))))
 
 ;; =============================================================================
+;; Subagent (agents) Field Threading Tests
+;; =============================================================================
+
+(deftest spawn-stores-agents-in-session-test
+  (testing "spawn-headless-sdk! stores agents map in session registry"
+    (when (sdk/available?)
+      (let [ling-id (gen-ling-id)
+            test-agents {"code-reviewer" {:description "Reviews code"
+                                          :prompt "You review code"
+                                          :tools ["Read" "Grep"]
+                                          :model "sonnet"}}
+            _ (sdk/spawn-headless-sdk! ling-id {:cwd "/tmp"
+                                                :agents test-agents})
+            session (sdk/get-session ling-id)]
+        (is (some? session) "Session should be registered")
+        (is (= test-agents (:agents session))
+            "Session should store agents map from spawn opts")
+        (sdk/kill-headless-sdk! ling-id)))))
+
+(deftest spawn-without-agents-stores-nil-test
+  (testing "spawn-headless-sdk! without agents stores nil in session"
+    (when (sdk/available?)
+      (let [ling-id (gen-ling-id)
+            _ (sdk/spawn-headless-sdk! ling-id {:cwd "/tmp"})
+            session (sdk/get-session ling-id)]
+        (is (some? session))
+        (is (nil? (:agents session))
+            "Session agents should be nil when not provided")
+        (sdk/kill-headless-sdk! ling-id)))))
+
+(deftest spawn-agents-multiple-definitions-test
+  (testing "spawn-headless-sdk! stores multiple agent definitions"
+    (when (sdk/available?)
+      (let [ling-id (gen-ling-id)
+            test-agents {"analyzer" {:description "Analyzes code"
+                                     :prompt "You analyze code"
+                                     :tools ["Read" "Grep" "Glob"]}
+                         "tester" {:description "Writes tests"
+                                   :prompt "You write tests"
+                                   :tools ["Read" "Write" "Bash"]
+                                   :model "sonnet"}
+                         "documenter" {:description "Writes docs"
+                                       :prompt "You write documentation"}}
+            _ (sdk/spawn-headless-sdk! ling-id {:cwd "/tmp"
+                                                :agents test-agents})
+            session (sdk/get-session ling-id)]
+        (is (= 3 (count (:agents session)))
+            "Session should store all 3 agent definitions")
+        (is (= #{"analyzer" "tester" "documenter"}
+               (set (keys (:agents session))))
+            "All agent names should be preserved")
+        (sdk/kill-headless-sdk! ling-id)))))
+
+;; =============================================================================
 ;; Integration Test Placeholder (requires actual Python + SDK)
 ;; =============================================================================
 

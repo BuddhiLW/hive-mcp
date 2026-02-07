@@ -42,14 +42,18 @@
 
 (defn- matches-scope-filter?
   "Check if a search result matches the scope filter.
-   Search results have different structure than entries - tags are in metadata."
+   Search results have different structure than entries - tags are in metadata.
+
+   HCR Wave 5: scope-filter can be a string (single tag) or a set of tags.
+   Matches if any entry tag is in the filter set."
   [result scope-filter]
   (if (nil? scope-filter)
     true
     (let [tags-str (get-in result [:metadata :tags] "")
           tags (when (and tags-str (not= tags-str ""))
-                 (set (str/split tags-str #",")))]
-      (or (contains? tags scope-filter)
+                 (set (str/split tags-str #",")))
+          scope-set (if (set? scope-filter) scope-filter #{scope-filter})]
+      (or (some tags scope-set)
           (contains? tags "scope:global")))))
 
 (defn handle-search-semantic
@@ -103,18 +107,24 @@
                                           :query query
                                           :scope project-id})})
                 ;; Default: search memory collection (Ollama, 768 dims)
-                (let [;; Compute visible project-ids for DB-level $in filtering
+                (let [;; HCR Wave 5: Compute visible + descendant project-ids for DB-level $in
+                      ;; Includes ancestors (upward) AND descendants (downward) using
+                      ;; cached hierarchy tree for O(1) descendant resolution.
                       visible-ids (when in-project?
-                                    (let [visible (kg-scope/visible-scopes project-id)]
-                                      (vec (remove #(= "global" %) visible))))
+                                    (let [visible (kg-scope/visible-scopes project-id)
+                                          descendants (kg-scope/descendant-scopes project-id)
+                                          all-ids (distinct (concat visible descendants))]
+                                      (vec (remove #(= "global" %) all-ids))))
                       ;; Reduced over-fetch with DB-level filtering
                       results (chroma/search-similar query
                                                      :limit (* limit-val 2)
                                                      :type type
                                                      :project-ids visible-ids)
-                      ;; Safety net: apply scope filter (belt-and-suspenders)
+                      ;; Safety net: apply scope filter using full hierarchy tags
+                      ;; HCR Wave 5: Uses set of scope tags (self + ancestors + descendants)
                       scope-filter (when in-project?
-                                     (scope/make-scope-tag project-id))
+                                     (let [full-tags (kg-scope/full-hierarchy-scope-tags project-id)]
+                                       (disj full-tags "scope:global")))
                       filtered (if scope-filter
                                  (filter #(matches-scope-filter? % scope-filter) results)
                                  results)

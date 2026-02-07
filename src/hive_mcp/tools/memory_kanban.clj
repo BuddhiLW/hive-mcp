@@ -13,6 +13,7 @@
             [hive-mcp.tools.memory.scope :as scope]
             [hive-mcp.tools.memory.core :refer [with-chroma]]
             [hive-mcp.chroma :as chroma]
+            [hive-mcp.project.tree :as tree]
             [hive-mcp.agent.context :as ctx]
             [clojure.data.json :as json]
             [taoensso.timbre :as log])
@@ -82,19 +83,45 @@
       {:type "text" :text (str "Error: " (.getMessage e)) :isError true})))
 
 ;; ============================================================
+;; Descendant Aggregation Helpers (HCR Wave 5)
+;; ============================================================
+
+(defn- resolve-project-ids-with-descendants
+  "Resolve project-id to a vector including all descendant project-ids.
+   When project has children in the hierarchy, automatically includes them.
+   Returns nil when no descendants (caller should use singular :project-id)."
+  [project-id]
+  (when (and project-id (not= project-id "global"))
+    (let [descendant-ids (tree/get-descendant-ids project-id)]
+      (when (seq descendant-ids)
+        (vec (cons project-id descendant-ids))))))
+
+(defn- extract-project-id-from-tags
+  "Extract project-id from entry tags.
+   Looks for scope:project:X tag and extracts X."
+  [entry]
+  (some (fn [tag]
+          (when (and (string? tag) (.startsWith ^String tag "scope:project:"))
+            (subs tag (count "scope:project:"))))
+        (:tags entry)))
+
+;; ============================================================
 ;; Slim/Metadata Formatting (Token Optimization)
 ;; ============================================================
 
 (defn- task->slim
   "Convert kanban task to slim format.
    Returns only id, title, status, priority - strips context bloat.
+   When multi-project is true, includes :project field for disambiguation.
    ~10x fewer tokens than full entry."
-  [entry]
-  (let [content (:content entry)]
-    {:id (:id entry)
-     :title (get content :title (get content "title"))
-     :status (get content :status (get content "status"))
-     :priority (get content :priority (get content "priority"))}))
+  ([entry] (task->slim entry false))
+  ([entry multi-project?]
+   (let [content (:content entry)]
+     (cond-> {:id (:id entry)
+              :title (get content :title (get content "title"))
+              :status (get content :status (get content "status"))
+              :priority (get content :priority (get content "priority"))}
+       multi-project? (assoc :project (extract-project-id-from-tags entry))))))
 
 (defn- kanban-entry?
   "Check if entry is a kanban task."
@@ -115,6 +142,10 @@
    Returns only id, title, status, priority per entry (~10x fewer tokens).
    When directory is provided, scopes query to that project.
 
+   HCR Wave 5: Automatically aggregates descendant project tasks when
+   querying from a parent project. Adds :project field to entries when
+   results span multiple projects.
+
    CTX Migration: Uses request context for directory extraction.
    Fallback chain: explicit param → ctx binding.
 
@@ -125,14 +156,21 @@
     (let [effective-dir (or directory (ctx/current-directory))]
       (with-chroma
         (let [project-id (scope/get-current-project-id effective-dir)
+              ;; HCR Wave 5: Check for descendant projects
+              all-project-ids (resolve-project-ids-with-descendants project-id)
+              multi-project? (boolean all-project-ids)
               ;; Normalize status enum to actual tag value
               status-tag (when status (get status-enum->tag status status))
               ;; Build tag filter - always include "kanban", optionally status
               required-tags (if status-tag ["kanban" status-tag] ["kanban"])
-              ;; Query from Chroma
-              entries (chroma/query-entries :type "note"
-                                            :project-id project-id
-                                            :limit 100)
+              ;; Query from Chroma - use :project-ids when aggregating descendants
+              entries (if all-project-ids
+                        (chroma/query-entries :type "note"
+                                              :project-ids all-project-ids
+                                              :limit 500)
+                        (chroma/query-entries :type "note"
+                                              :project-id project-id
+                                              :limit 100))
               ;; Filter by required tags
               tag-filtered (filter (fn [entry]
                                      (let [entry-tags (set (:tags entry))]
@@ -140,8 +178,8 @@
                                    entries)
               ;; Filter to only kanban entries
               kanban-entries (filter kanban-entry? tag-filtered)
-              ;; Convert to slim format
-              slim-entries (mapv task->slim kanban-entries)]
+              ;; Convert to slim format (with project label when multi-project)
+              slim-entries (mapv #(task->slim % multi-project?) kanban-entries)]
           {:type "text" :text (json/write-str slim-entries)})))
     (catch Exception e
       (log/error e "kanban-list-slim failed")
@@ -207,6 +245,10 @@
   "Get kanban statistics by status.
    When directory is provided, scopes query to that project.
 
+   HCR Wave 5: Automatically aggregates descendant project stats when
+   querying from a parent project. Returns per-project breakdown in
+   :by-project field when results span multiple projects.
+
    CTX Migration: Uses request context for directory extraction.
    Fallback chain: explicit param → ctx binding.
 
@@ -217,22 +259,41 @@
     (let [effective-dir (or directory (ctx/current-directory))]
       (with-chroma
         (let [project-id (scope/get-current-project-id effective-dir)
-              ;; Query all kanban tasks
-              entries (chroma/query-entries :type "note"
-                                            :project-id project-id
-                                            :limit 500)
+              ;; HCR Wave 5: Check for descendant projects
+              all-project-ids (resolve-project-ids-with-descendants project-id)
+              multi-project? (boolean all-project-ids)
+              ;; Query all kanban tasks - use :project-ids when aggregating
+              entries (if all-project-ids
+                        (chroma/query-entries :type "note"
+                                              :project-ids all-project-ids
+                                              :limit 500)
+                        (chroma/query-entries :type "note"
+                                              :project-id project-id
+                                              :limit 500))
               ;; Filter to kanban entries with "kanban" tag
               kanban-entries (->> entries
                                   (filter #(contains? (set (:tags %)) "kanban"))
                                   (filter kanban-entry?))
-              ;; Count by status
+              ;; Count by status (aggregate totals)
               stats (reduce (fn [counts entry]
                               (let [content (:content entry)
                                     status (or (get content :status) (get content "status") "todo")]
                                 (update counts (keyword status) (fnil inc 0))))
                             {:todo 0 :doing 0 :review 0}
-                            kanban-entries)]
-          {:type "text" :text (json/write-str stats)})))
+                            kanban-entries)
+              ;; HCR Wave 5: Per-project breakdown when multi-project
+              result (if multi-project?
+                       (let [by-project
+                             (reduce (fn [acc entry]
+                                       (let [proj (or (extract-project-id-from-tags entry) "unknown")
+                                             content (:content entry)
+                                             status (or (get content :status) (get content "status") "todo")]
+                                         (update-in acc [proj (keyword status)] (fnil inc 0))))
+                                     {}
+                                     kanban-entries)]
+                         (assoc stats :by-project by-project))
+                       stats)]
+          {:type "text" :text (json/write-str result)})))
     (catch Exception e
       (log/error e "kanban-stats failed")
       {:type "text" :text (str "Error: " (.getMessage e)) :isError true})))

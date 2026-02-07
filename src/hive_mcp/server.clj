@@ -155,6 +155,10 @@
       (catch Exception e
         (log/warn "Phase 5.5: Auto-gen scan failed (non-fatal):" (.getMessage e))))
 
+    ;; Phase 5.7: FSM Workflow Engine (registry + IWorkflowEngine wiring)
+    ;; Must run after services (handlers use memory/kanban at runtime).
+    (init/init-workflow-engine!)
+
     ;; Phase 6: Hot-reload + Registry sync
     (init/init-hot-reload-watcher! server-context-atom (lifecycle/read-project-config))
     (init/start-registry-sync!)

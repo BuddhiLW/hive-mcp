@@ -17,6 +17,8 @@
             [hive-mcp.agent.ling :as ling]
             [hive-mcp.agent.hints :as hints]
             [hive-mcp.agent.headless :as headless]
+            [hive-mcp.agent.headless-sdk :as sdk]
+            [clojure.core.async :as async]
             [hive-mcp.swarm.datascript :as ds]
             [hive-mcp.swarm.datascript.lings :as ds-lings]
             [hive-mcp.swarm.datascript.queries :as ds-queries]
@@ -28,10 +30,12 @@
 ;; =============================================================================
 
 (defn reset-datascript-fixture
-  "Reset DataScript state before and after each test."
+  "Reset DataScript and SDK state before and after each test."
   [f]
   (ds/reset-conn!)
+  (try (sdk/kill-all-sdk!) (catch Exception _))
   (f)
+  (try (sdk/kill-all-sdk!) (catch Exception _))
   (ds/reset-conn!))
 
 (use-fixtures :each reset-datascript-fixture)
@@ -254,21 +258,25 @@
             (is (= :vterm (:ling/spawn-mode slave)))))))))
 
 (deftest facade-spawn-uses-headless-strategy
-  (testing "Ling facade uses headless strategy when spawn-mode is :headless"
+  (testing "Ling facade maps :headless to :agent-sdk since 0.12.0"
     (let [ling (ling/->ling "facade-headless"
                             {:cwd "/tmp" :project-id "test"
                              :spawn-mode :headless})]
-      (is (= :headless (:spawn-mode ling)))
-      (with-redefs [headless/spawn-headless!
+      ;; ->ling maps :headless → :agent-sdk at factory level
+      (is (= :agent-sdk (:spawn-mode ling)))
+      (with-redefs [sdk/available? (constantly true)
+                    sdk/sdk-status (constantly :available)
+                    sdk/spawn-headless-sdk!
                     (fn [ling-id _opts]
-                      {:ling-id ling-id :pid 54321})
-                    headless/headless-status
-                    (fn [_] {:alive? true :pid 54321})]
+                      {:ling-id ling-id :status :spawned
+                       :backend :agent-sdk :phase :idle})
+                    sdk/get-session
+                    (fn [_] {:session-id "test-sess" :status :idle})]
         (let [slave-id (proto/spawn! ling {:depth 1})]
           (is (= "facade-headless" slave-id))
           (let [slave (ds-queries/get-slave "facade-headless")]
             (is (some? slave))
-            (is (= :headless (:ling/spawn-mode slave)))))))))
+            (is (= :agent-sdk (:ling/spawn-mode slave)))))))))
 
 (deftest facade-auto-openrouter-for-non-claude
   (testing "Non-claude models automatically use openrouter strategy"
@@ -282,16 +290,23 @@
 
 (deftest facade-dispatch-delegates-to-strategy
   (testing "Dispatch delegates to correct strategy based on mode"
-    ;; Register a headless ling in DataScript
+    ;; Register ling in DataScript — facade maps :headless → :agent-sdk
     (ds-lings/add-slave! "dispatch-delegate" {:status :idle :cwd "/tmp"})
-    (ds-lings/update-slave! "dispatch-delegate" {:ling/spawn-mode :headless})
+    (ds-lings/update-slave! "dispatch-delegate" {:ling/spawn-mode :agent-sdk})
 
     (let [ling (ling/->ling "dispatch-delegate" {:cwd "/tmp" :spawn-mode :headless})]
-      (with-redefs [headless/dispatch-via-stdin!
-                    (fn [ling-id message]
+      (with-redefs [sdk/available? (constantly true)
+                    sdk/sdk-status (constantly :available)
+                    sdk/dispatch-headless-sdk!
+                    (fn [ling-id message & _]
                       (is (= "dispatch-delegate" ling-id))
                       (is (= "Analyze code" message))
-                      true)]
+                      (let [ch (async/chan 1)]
+                        (async/put! ch {:task-id "task-1" :result "ok"})
+                        (async/close! ch)
+                        ch))
+                    sdk/get-session
+                    (fn [_] {:session-id "test-sess" :status :idle})]
         (let [task-id (proto/dispatch! ling {:task "Analyze code"})]
           (is (string? task-id))
           ;; Verify common DataScript updates
@@ -302,10 +317,15 @@
   (testing "Kill delegates to correct strategy and cleans up DataScript"
     (ds-lings/add-slave! "kill-delegate" {:status :idle})
 
+    ;; facade maps :headless → :agent-sdk
     (let [ling (ling/->ling "kill-delegate" {:spawn-mode :headless})]
-      (with-redefs [headless/kill-headless!
+      (with-redefs [sdk/available? (constantly true)
+                    sdk/sdk-status (constantly :available)
+                    sdk/kill-headless-sdk!
                     (fn [ling-id]
-                      {:killed? true :ling-id ling-id :pid 333})]
+                      {:killed? true :ling-id ling-id})
+                    sdk/get-session
+                    (fn [_] nil)]
         (let [result (proto/kill! ling)]
           (is (true? (:killed? result)))
           ;; Common: should be removed from DataScript
@@ -313,33 +333,40 @@
               "Should be removed from DataScript after kill"))))))
 
 (deftest facade-status-delegates-to-strategy
-  (testing "Status delegates to correct strategy"
+  (testing "Status delegates to correct strategy (agent-sdk since :headless maps to it)"
     (ds-lings/add-slave! "status-delegate" {:status :idle})
-    (ds-lings/update-slave! "status-delegate" {:ling/spawn-mode :headless})
+    (ds-lings/update-slave! "status-delegate" {:ling/spawn-mode :agent-sdk})
 
+    ;; facade maps :headless → :agent-sdk
     (let [ling (ling/->ling "status-delegate" {:spawn-mode :headless})]
-      (with-redefs [headless/headless-status
-                    (fn [_] {:alive? true :pid 444 :uptime-ms 10000
-                             :stdout {:current-lines 50}
-                             :stderr {:current-lines 1}})]
+      (with-redefs [sdk/available? (constantly true)
+                    sdk/sdk-status (constantly :available)
+                    sdk/sdk-status-for
+                    (fn [ling-id]
+                      {:session-id "sess-444" :status :idle
+                       :model "claude" :phase :act})
+                    sdk/get-session
+                    (fn [_] {:session-id "sess-444" :status :idle})]
         (let [status (proto/status ling)]
-          (is (true? (:headless-alive? status)))
-          (is (= 444 (:headless-pid status))))))))
+          ;; Agent-SDK status has different fields than headless
+          (is (some? status) "Status should be returned")
+          (is (= :idle (:slave/status status))))))))
 
 ;; =============================================================================
 ;; Section 5: Query Functions (mode-independent, unaffected by refactoring)
 ;; =============================================================================
 
 (deftest query-fns-preserve-spawn-mode
-  (testing "get-ling preserves spawn-mode from DataScript for claude models"
+  (testing "get-ling maps :headless to :agent-sdk for claude models (0.12.0+)"
     (ds-lings/add-slave! "mode-preserved" {:status :idle :depth 1})
     (ds-lings/update-slave! "mode-preserved" {:ling/spawn-mode :headless
                                               :ling/model "claude"})
 
     (let [ling (ling/get-ling "mode-preserved")]
       (is (some? ling))
-      (is (= :headless (:spawn-mode ling))
-          "spawn-mode should be preserved from DataScript for claude models")
+      ;; ->ling factory maps :headless → :agent-sdk for claude models
+      (is (= :agent-sdk (:spawn-mode ling))
+          "spawn-mode should be mapped from :headless to :agent-sdk")
       (is (= "claude" (:model ling))
           "model should be preserved from DataScript")))
 
@@ -364,7 +391,7 @@
 ;; =============================================================================
 
 (deftest headless-spawn-with-hints-injects-into-task
-  (testing "Headless spawn with kanban-task-id prepends hints to task in CLI arg"
+  (testing "Headless spawn with kanban-task-id prepends hints to task (via agent-sdk)"
     (let [captured-task (atom nil)
           ling-inst (ling/->ling "hints-headless-001"
                                  {:cwd "/tmp/project"
@@ -390,19 +417,25 @@
                     (fn [hint-data & {:keys [project-name]}]
                       (is (= "test-project" project-name))
                       "## Memory Hints (Auto-Injected)\n\nMocked hint block")
-                    ;; Mock headless spawn — capture the task passed
-                    headless/spawn-headless!
-                    (fn [ling-id opts]
-                      (reset! captured-task (:task opts))
-                      {:ling-id ling-id :pid 99999})
-                    headless/headless-status
-                    (fn [_] {:alive? true :pid 99999})]
+                    ;; Mock SDK spawn — returns plain map (not channel)
+                    sdk/available? (constantly true)
+                    sdk/sdk-status (constantly :available)
+                    sdk/spawn-headless-sdk!
+                    (fn [ling-id _opts]
+                      {:ling-id ling-id :status :spawned :backend :agent-sdk :phase :idle})
+                    ;; Capture task from dispatch (SDK strategy dispatches after spawn)
+                    sdk/dispatch-headless-sdk!
+                    (fn [_ling-id task & _]
+                      (reset! captured-task task)
+                      nil)
+                    sdk/get-session
+                    (fn [_] {:session-id "test-sess" :status :idle})]
         (let [slave-id (proto/spawn! ling-inst {:task "Fix the authentication bug"
                                                 :kanban-task-id "kanban-task-42"
                                                 :depth 1})]
           (is (= "hints-headless-001" slave-id))
-          ;; The task passed to headless/spawn-headless! should contain hints
-          (is (some? @captured-task) "Task should be passed to spawn")
+          ;; The task dispatched via sdk/dispatch-headless-sdk! should contain hints
+          (is (some? @captured-task) "Task should be passed to dispatch")
           (is (str/includes? @captured-task "Memory Hints")
               "Task should contain hint block")
           (is (str/includes? @captured-task "Mocked hint block")
@@ -416,18 +449,23 @@
               "Should have separator between hints and task"))))))
 
 (deftest headless-spawn-without-kanban-task-id-no-hints
-  (testing "Headless spawn without kanban-task-id passes task as-is"
+  (testing "Headless spawn without kanban-task-id passes task as-is (via agent-sdk)"
     (let [captured-task (atom nil)
           ling-inst (ling/->ling "no-hints-headless"
                                  {:cwd "/tmp/project"
                                   :project-id "test-project"
                                   :spawn-mode :headless})]
-      (with-redefs [headless/spawn-headless!
-                    (fn [ling-id opts]
-                      (reset! captured-task (:task opts))
-                      {:ling-id ling-id :pid 88888})
-                    headless/headless-status
-                    (fn [_] {:alive? true :pid 88888})]
+      (with-redefs [sdk/available? (constantly true)
+                    sdk/sdk-status (constantly :available)
+                    sdk/spawn-headless-sdk!
+                    (fn [ling-id _opts]
+                      {:ling-id ling-id :status :spawned :backend :agent-sdk :phase :idle})
+                    sdk/dispatch-headless-sdk!
+                    (fn [_ling-id task & _]
+                      (reset! captured-task task)
+                      nil)
+                    sdk/get-session
+                    (fn [_] {:session-id "test-sess" :status :idle})]
         (let [slave-id (proto/spawn! ling-inst {:task "Simple task"
                                                 :depth 1})]
           (is (= "no-hints-headless" slave-id))
@@ -437,7 +475,7 @@
               "No hints should be injected"))))))
 
 (deftest headless-spawn-hints-failure-is-non-fatal
-  (testing "Hint generation failure doesn't prevent spawn"
+  (testing "Hint generation failure doesn't prevent spawn (via agent-sdk)"
     (let [captured-task (atom nil)
           ling-inst (ling/->ling "hints-fail-headless"
                                  {:cwd "/tmp/project"
@@ -445,12 +483,17 @@
                                   :spawn-mode :headless})]
       (with-redefs [hints/generate-task-hints
                     (fn [_] (throw (Exception. "Chroma down")))
-                    headless/spawn-headless!
-                    (fn [ling-id opts]
-                      (reset! captured-task (:task opts))
-                      {:ling-id ling-id :pid 77777})
-                    headless/headless-status
-                    (fn [_] {:alive? true :pid 77777})]
+                    sdk/available? (constantly true)
+                    sdk/sdk-status (constantly :available)
+                    sdk/spawn-headless-sdk!
+                    (fn [ling-id _opts]
+                      {:ling-id ling-id :status :spawned :backend :agent-sdk :phase :idle})
+                    sdk/dispatch-headless-sdk!
+                    (fn [_ling-id task & _]
+                      (reset! captured-task task)
+                      nil)
+                    sdk/get-session
+                    (fn [_] {:session-id "test-sess" :status :idle})]
         (let [slave-id (proto/spawn! ling-inst {:task "Important task"
                                                 :kanban-task-id "failing-task"
                                                 :depth 1})]
@@ -460,21 +503,29 @@
               "Task should be passed without hints on failure"))))))
 
 (deftest headless-spawn-with-hints-no-task-no-crash
-  (testing "Headless spawn with kanban-task-id but no task doesn't crash"
-    (let [ling-inst (ling/->ling "no-task-headless"
+  (testing "Headless spawn with kanban-task-id but no task doesn't crash (via agent-sdk)"
+    (let [dispatch-called? (atom false)
+          ling-inst (ling/->ling "no-task-headless"
                                  {:cwd "/tmp/project"
                                   :project-id "test-project"
                                   :spawn-mode :headless})]
-      (with-redefs [headless/spawn-headless!
-                    (fn [ling-id opts]
-                      (is (nil? (:task opts)) "No task should be passed")
-                      {:ling-id ling-id :pid 66666})
-                    headless/headless-status
-                    (fn [_] {:alive? true :pid 66666})]
+      (with-redefs [sdk/available? (constantly true)
+                    sdk/sdk-status (constantly :available)
+                    sdk/spawn-headless-sdk!
+                    (fn [ling-id _opts]
+                      {:ling-id ling-id :status :spawned :backend :agent-sdk :phase :idle})
+                    sdk/dispatch-headless-sdk!
+                    (fn [_ling-id _task & _]
+                      (reset! dispatch-called? true)
+                      nil)
+                    sdk/get-session
+                    (fn [_] {:session-id "test-sess" :status :idle})]
         (let [slave-id (proto/spawn! ling-inst {:kanban-task-id "task-no-prompt"
                                                 :depth 1})]
           (is (= "no-task-headless" slave-id)
-              "Should spawn successfully without task"))))))
+              "Should spawn successfully without task")
+          (is (not @dispatch-called?)
+              "No dispatch should happen when no task provided"))))))
 
 (deftest vterm-spawn-with-hints-dispatches-enriched-task
   (testing "Vterm spawn with kanban-task-id dispatches hints-enriched task via elisp"

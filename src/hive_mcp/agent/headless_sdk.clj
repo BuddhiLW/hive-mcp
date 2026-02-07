@@ -289,6 +289,42 @@
 ;;; SDK Query Execution (ClaudeSDKClient multi-turn)
 ;;; =============================================================================
 
+(defn- build-agents-dict
+  "Build a Python dict of AgentDefinition objects from Clojure agent specs.
+
+   Converts Clojure agent definitions map into Python AgentDefinition instances
+   suitable for ClaudeAgentOptions.agents parameter.
+
+   Each agent spec is a map with:
+     :description - Agent description string (required)
+     :prompt      - Agent system prompt string (required)
+     :tools       - List of tool name strings (optional)
+     :model       - Model name: 'sonnet', 'opus', 'haiku', 'inherit' (optional)
+
+   Arguments:
+     agents - Map of agent-name -> agent-spec, e.g.:
+              {\"code-reviewer\" {:description \"Reviews code\"
+                                 :prompt \"You are a reviewer\"
+                                 :tools [\"Read\" \"Grep\"]
+                                 :model \"sonnet\"}}
+
+   Returns:
+     Python dict of {name: AgentDefinition(...)} or nil if agents is empty."
+  [agents]
+  (when (seq agents)
+    (let [sdk-mod (py-import "claude_agent_sdk")
+          agent-def-class (py-attr sdk-mod "AgentDefinition")]
+      (reduce-kv
+       (fn [m agent-name agent-spec]
+         (let [{:keys [description prompt tools model]} agent-spec
+               ;; Only include non-nil fields
+               kw-args (cond-> {:description (or description "")
+                                :prompt (or prompt "")}
+                         tools (assoc :tools (vec tools))
+                         model (assoc :model model))]
+           (assoc m agent-name (py-call-kw agent-def-class [] kw-args))))
+       {} agents))))
+
 (defn- build-options-obj
   "Build a ClaudeAgentOptions Python object using proper libpython-clj interop.
 
@@ -298,20 +334,25 @@
 
    Arguments:
      phase - SAA phase keyword (:silence :abstract :act)
-     opts  - Map with :cwd :system-prompt :session-id :mcp-servers"
-  [phase {:keys [cwd system-prompt session-id _mcp-servers]}]
+     opts  - Map with :cwd :system-prompt :session-id :mcp-servers :agents
+
+   The :agents field is a map of agent-name -> agent-spec that gets converted
+   to Python AgentDefinition objects. See build-agents-dict for spec format."
+  [phase {:keys [cwd system-prompt session-id _mcp-servers agents]}]
   (let [phase-config (get saa-phases phase)
         full-prompt (str (or system-prompt "")
                          "\n\n"
                          (:system-prompt-suffix phase-config))
         sdk-mod (py-import "claude_agent_sdk")
-        opts-class (py-attr sdk-mod "ClaudeAgentOptions")]
+        opts-class (py-attr sdk-mod "ClaudeAgentOptions")
+        agents-dict (build-agents-dict agents)]
     (py-call-kw opts-class []
-      (cond-> {:allowed_tools (:allowed-tools phase-config)
-               :permission_mode (:permission-mode phase-config)
-               :system_prompt full-prompt}
-        cwd        (assoc :cwd cwd)
-        session-id (assoc :resume session-id)))))
+                (cond-> {:allowed_tools (:allowed-tools phase-config)
+                         :permission_mode (:permission-mode phase-config)
+                         :system_prompt full-prompt}
+                  cwd         (assoc :cwd cwd)
+                  session-id  (assoc :resume session-id)
+                  agents-dict (assoc :agents agents-dict)))))
 
 (defn- execute-phase!
   "Execute a single SAA phase via Claude Agent SDK ClaudeSDKClient.
@@ -410,6 +451,10 @@
                :system-prompt - Base system prompt (optional)
                :mcp-servers   - MCP server configurations (optional)
                :presets       - Preset names (optional)
+               :agents        - Subagent definitions map (optional)
+                                Map of name -> {:description :prompt :tools :model}
+                                Passed to ClaudeAgentOptions.agents for custom
+                                subagent definitions in the Claude SDK session.
 
    Returns:
      {:ling-id    ling-id
@@ -419,7 +464,7 @@
 
    Throws:
      ExceptionInfo if SDK not available or ling-id already exists"
-  [ling-id {:keys [cwd system-prompt mcp-servers presets] :as _opts}]
+  [ling-id {:keys [cwd system-prompt mcp-servers presets agents] :as _opts}]
   {:pre [(string? ling-id)
          (string? cwd)]}
   ;; Check availability
@@ -452,6 +497,7 @@
                       :system-prompt system-prompt
                       :mcp-servers mcp-servers
                       :presets presets
+                      :agents agents
                       :session-id nil}]
     (register-session! ling-id session-data)
     (log/info "[headless-sdk] Spawned SDK ling" {:ling-id ling-id :cwd cwd})
@@ -488,7 +534,8 @@
     (let [out-ch (chan 4096)
           session-opts {:cwd (:cwd session)
                         :system-prompt (:system-prompt session)
-                        :mcp-servers (:mcp-servers session)}]
+                        :mcp-servers (:mcp-servers session)
+                        :agents (:agents session)}]
       ;; Run SAA phases in a background thread
       (async/thread
         (try

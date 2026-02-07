@@ -71,8 +71,9 @@
                              :exclusions [org.apache.logging.log4j/log4j-slf4j2-impl]}
 
         ;; hive-events - re-frame inspired event system for JVM
+        ;; v0.2.0 adds hive.events.fsm (deterministic workflow engine)
         io.github.hive-agi/hive-events
-        {:git/tag "v0.1.0" :git/sha "240a09e"}
+        {:git/tag "v0.2.0" :git/sha "fa1358f"}
 
         ;; hive-hot - unified hot-reload with events integration
         io.github.hive-agi/hive-hot
@@ -104,7 +105,9 @@
   {:extra-paths ["dev" "test"]
    :extra-deps {nrepl/nrepl {:mvn/version "1.3.1"}
                 cider/cider-nrepl {:mvn/version "0.58.0"}
-                refactor-nrepl/refactor-nrepl {:mvn/version "3.11.0"}}
+                refactor-nrepl/refactor-nrepl {:mvn/version "3.11.0"}
+                ;; For local dev, override with local hive-events
+                io.github.hive-agi/hive-events {:local/root "../hive-events"}}
    ;; Suppress Netty sun.misc.Unsafe warnings on Java 17+
    :jvm-opts ["--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED"
               "--add-opens=java.base/java.nio=ALL-UNNAMED"

@@ -1,37 +1,40 @@
 (ns hive-mcp.events.core
-  "Re-frame inspired event system for hive-mcp.
-   
-   Provides:
-   - Interceptor chain execution (before/after phases)
-   - Coeffects (inputs) and Effects (outputs) management
-   - Event dispatch infrastructure
-   - Input validation at dispatch boundary (CLARITY: Inputs are guarded)
-   
-   Adapted from re-frame/interceptor.cljc for JVM-only use.
-   
-   ## Core Concepts
-   
-   **Interceptors** are maps with optional :before and :after functions:
-   ```clojure
-   {:id     :my-interceptor
-    :before (fn [context] ...) ; called during forward pass
-    :after  (fn [context] ...)} ; called during reverse pass
-   ```
-   
-   **Context** flows through the interceptor chain:
-   ```clojure
-   {:coeffects {:event [:event-id data]  ; inputs
-                :db    app-state}
-    :effects   {:db new-state            ; outputs
-                :fx [[:dispatch ...]]}
-    :queue     [...]                      ; remaining interceptors
-    :stack     [...]}                     ; completed interceptors
-   ```
-   
-   SOLID: Single responsibility - interceptor execution only
-   CLARITY: Composition over modification - chain interceptors
+  "Event system facade for hive-mcp.
+
+   Delegates core event machinery to hive-events library (hive.events),
+   adding hive-mcp-specific extensions:
+   - Prometheus telemetry in dispatch
+   - Malli schema validation at dispatch boundary
+   - Metrics interceptor for observability
+   - validate-event interceptor for data validation
+   - init! for hive-mcp-specific coeffect registration
+
+   Core event machinery (interceptor chain, fx, cofx) lives in
+   hive-events (io.github.hive-agi/hive-events). This namespace is
+   a thin facade that re-exports the canonical API and adds hive-mcp
+   extensions.
+
+   ## Architecture
+
+   Delegated to hive.events:
+   - Interceptor primitives (->interceptor, enqueue, execute)
+   - Effect registration & lookup (reg-fx, get-fx)
+   - Coeffect registration & injection (reg-cofx, inject-cofx)
+   - Built-in interceptors (trim-v)
+
+   Kept in hive-mcp (extensions):
+   - Event registry & dispatch (Prometheus + malli wrapping)
+   - Metrics interceptor (rolling window telemetry)
+   - Debug interceptor (timbre instead of println)
+   - Validation interceptor (malli schema)
+   - init! / reset-all! / with-clean-registry
+
+   SOLID: Single Responsibility - facade + hive-mcp extensions
+   CLARITY: Composition over modification - wraps hive.events
    CLARITY: Inputs are guarded - malli validation at dispatch boundary"
-  (:require [clojure.set :as set]
+  (:require [hive.events.interceptor :as interceptor]
+            [hive.events.fx :as fx]
+            [hive.events.cofx :as cofx]
             [malli.core :as m]
             [malli.error :as me]
             [hive-mcp.events.schemas :as schemas]
@@ -45,16 +48,17 @@
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 ;; =============================================================================
-;; State
+;; State (hive-mcp specific)
 ;; =============================================================================
 
 (defonce ^:private *initialized (atom false))
-(defonce ^:private *fx-handlers (atom {}))
-(defonce ^:private *cofx-handlers (atom {}))
+
+;; Event handler registry - kept in hive-mcp for custom dispatch flow
+;; (Prometheus + malli wrapping not available in hive.events.router)
 (defonce ^:private *event-handlers (atom {}))
 
 ;; =============================================================================
-;; Metrics State (CLARITY: Telemetry first)
+;; Metrics State (CLARITY: Telemetry first) - hive-mcp specific
 ;; =============================================================================
 
 (def ^:private *metrics
@@ -118,11 +122,17 @@
                     :timings []}))
 
 ;; =============================================================================
-;; Interceptor Construction
+;; Re-exports from hive.events — Interceptor Primitives
+;; (THE canonical implementations — zero duplication)
 ;; =============================================================================
 
-(def ^:private mandatory-interceptor-keys #{:id})
-(def ^:private optional-interceptor-keys #{:before :after :comment})
+(def ->interceptor
+  "Create an interceptor from keyword arguments. Delegated to hive.events.interceptor."
+  interceptor/->interceptor)
+
+(def enqueue
+  "Add interceptors to the context's queue. Delegated to hive.events.interceptor."
+  interceptor/enqueue)
 
 (defn interceptor?
   "Returns true if m is a valid interceptor map."
@@ -130,38 +140,8 @@
   (and (map? m)
        (contains? m :id)))
 
-(defn ->interceptor
-  "Create an interceptor from keyword arguments.
-   
-   Args:
-   - :id      - Required identifier keyword
-   - :before  - Optional fn [context] -> context, called in forward pass
-   - :after   - Optional fn [context] -> context, called in reverse pass
-   - :comment - Optional documentation string
-   
-   Example:
-   ```clojure
-   (->interceptor
-     :id :debug
-     :before (fn [ctx] (println \"Event:\" (get-coeffect ctx :event)) ctx)
-     :after  (fn [ctx] (println \"Effects:\" (:effects ctx)) ctx))
-   ```"
-  [& {:as m :keys [id before after comment]}]
-  (when-let [unknown-keys (seq (set/difference
-                                (set (keys m))
-                                mandatory-interceptor-keys
-                                optional-interceptor-keys))]
-    (throw (ex-info (str "->interceptor has unknown keys: " unknown-keys)
-                    {:unknown-keys unknown-keys :interceptor m})))
-  (when-not id
-    (throw (ex-info "->interceptor requires :id" {:interceptor m})))
-  (cond-> {:id id
-           :before (or before identity)
-           :after (or after identity)}
-    comment (assoc :comment comment)))
-
 ;; =============================================================================
-;; Context Access
+;; Context Access — simple utilities kept inline for ergonomics
 ;; =============================================================================
 
 (defn get-coeffect
@@ -203,107 +183,24 @@
   (apply update-in context [:effects key] f args))
 
 ;; =============================================================================
-;; Queue Management
+;; Re-exports from hive.events — Fx/Cofx
 ;; =============================================================================
 
-(defn enqueue
-  "Add interceptors to the context's queue."
-  [context interceptors]
-  (update context :queue into interceptors))
+(def reg-fx
+  "Register an effect handler. Delegated to hive.events.fx.
 
-;; =============================================================================
-;; Interceptor Execution
-;; =============================================================================
-
-(defn- invoke-interceptor-fn
-  "Invoke a single interceptor function in the given direction."
-  [context interceptor direction]
-  (if-let [f (get interceptor direction)]
-    (try
-      (f context)
-      (catch Exception e
-        (throw (ex-info (str "Interceptor " (:id interceptor) " " direction " threw exception")
-                        {:interceptor-id (:id interceptor)
-                         :direction direction
-                         :cause e}
-                        e))))
-    context))
-
-(defn- invoke-interceptors
-  "Execute all interceptors in the queue for the given direction.
-   
-   Walks the queue, calling each interceptor's direction fn,
-   moving processed interceptors to the stack."
-  [context direction]
-  (loop [ctx context]
-    (let [queue (:queue ctx)]
-      (if (empty? queue)
-        ctx
-        (let [interceptor (first queue)
-              stack (:stack ctx)]
-          (recur (-> ctx
-                     (assoc :queue (vec (rest queue)))
-                     (assoc :stack (conj (or stack []) interceptor))
-                     (invoke-interceptor-fn interceptor direction))))))))
-
-(defn- change-direction
-  "Prepare context for the :after phase by reversing the stack into queue."
-  [context]
-  (-> context
-      (assoc :queue (:stack context))
-      (assoc :stack [])))
-
-(defn- create-context
-  "Create a fresh execution context."
-  ([event interceptors]
-   {:coeffects {:event event
-                :original-event event}
-    :effects {}
-    :queue (vec interceptors)
-    :stack []})
-  ([event interceptors initial-coeffects]
-   (-> (create-context event interceptors)
-       (update :coeffects merge initial-coeffects))))
-
-(defn execute
-  "Execute an interceptor chain for the given event.
-   
-   Walks interceptors calling :before functions, then reverses
-   and walks calling :after functions.
-   
-   Args:
-   - event        - The event vector, e.g. [:event-id data]
-   - interceptors - Collection of interceptor maps
-   
-   Returns the final context with :coeffects and :effects."
-  ([event interceptors]
-   (execute event interceptors {}))
-  ([event interceptors initial-coeffects]
-   (-> (create-context event interceptors initial-coeffects)
-       (invoke-interceptors :before)
-       change-direction
-       (invoke-interceptors :after))))
-
-;; =============================================================================
-;; Effect & Coeffect Registration
-;; =============================================================================
-
-(defn reg-fx
-  "Register an effect handler.
-   
    Effect handlers execute side effects described in the :effects map.
-   
+
    Example:
    ```clojure
    (reg-fx :shout
      (fn [data]
        (hivemind/shout! (:event-type data) (:message data))))
    ```"
-  [id handler-fn]
-  (swap! *fx-handlers assoc id handler-fn))
+  fx/reg-fx)
 
-(defn reg-cofx
-  "Register a coeffect handler.
+(def reg-cofx
+  "Register a coeffect handler. Delegated to hive.events.cofx.
 
    Coeffect handlers inject values into the context's :coeffects.
 
@@ -313,63 +210,68 @@
      (fn [coeffects]
        (assoc coeffects :now (java.time.Instant/now))))
    ```"
-  [id handler-fn]
-  (swap! *cofx-handlers assoc id handler-fn))
+  cofx/reg-cofx)
+
+(def inject-cofx
+  "Create an interceptor that injects a coeffect. Delegated to hive.events.cofx.
+
+   The coeffect handler registered with `reg-cofx` will be called
+   during the :before phase."
+  cofx/inject-cofx)
 
 (defn get-fx-handler
   "Get a registered effect handler by id. Primarily for testing."
   [id]
-  (get @*fx-handlers id))
+  (fx/get-fx id))
 
 (defn get-cofx-handler
   "Get a registered coeffect handler by id. Primarily for testing."
   [id]
-  (get @*cofx-handlers id))
-
-(defn inject-cofx
-  "Create an interceptor that injects a coeffect.
-   
-   The coeffect handler registered with `reg-cofx` will be called
-   during the :before phase."
-  ([id]
-   (->interceptor
-    :id (keyword (str "cofx-" (name id)))
-    :before (fn [context]
-              (if-let [handler (get @*cofx-handlers id)]
-                (update context :coeffects handler)
-                (do
-                  (log/warn "No coeffect handler for" id)
-                  context)))))
-  ([id value]
-   (->interceptor
-    :id (keyword (str "cofx-" (name id)))
-    :before (fn [context]
-              (if-let [handler (get @*cofx-handlers id)]
-                (update context :coeffects #(handler % value))
-                (do
-                  (log/warn "No coeffect handler for" id)
-                  context))))))
+  (cofx/get-cofx id))
 
 ;; =============================================================================
-;; Effect Execution
+;; Interceptor Execution — wraps hive.events.interceptor/execute
+;; =============================================================================
+
+(defn execute
+  "Execute an interceptor chain for the given event.
+
+   Creates context from event + interceptors, then delegates to
+   hive.events.interceptor/execute for the actual chain execution
+   (with proper LIFO :after ordering).
+
+   Args:
+   - event        - The event vector, e.g. [:event-id data]
+   - interceptors - Collection of interceptor maps
+
+   Returns the final context with :coeffects and :effects."
+  ([event interceptors]
+   (execute event interceptors {}))
+  ([event interceptors initial-coeffects]
+   (interceptor/execute
+    {:coeffects (merge {:event event} initial-coeffects)
+     :effects {}
+     :queue (vec interceptors)
+     :stack []})))
+
+;; =============================================================================
+;; Effect Execution — wraps hive.events.fx with metrics tracking
 ;; =============================================================================
 
 (defn do-fx
   "Execute all effects in the context's :effects map.
-   
+
+   Uses hive.events.fx/get-fx for handler lookup (unified registry).
+   Tracks effect execution metrics (effects-executed, errors).
+
    Arities:
-   - [context] - Uses global fx-handlers registry (production)
-   - [context fx-handlers] - Uses provided registry (testing)
-   
-   Looks up registered effect handlers and calls them.
-   Increments metrics counters for effects executed and errors.
-   
+   - [context] - Uses hive.events global fx registry (production)
+   - [context fx-handlers] - Legacy 2-arity (uses global registry)
+
    CLARITY: Telemetry first - tracks effect execution metrics."
   ([context]
-   (do-fx context @*fx-handlers))
-  ([context fx-handlers]
    (doseq [[effect-id effect-data] (:effects context)]
-     (if-let [handler (get fx-handlers effect-id)]
+     (if-let [handler (fx/get-fx effect-id)]
        (try
          (handler effect-data)
          (swap! *metrics update :effects-executed inc)
@@ -377,7 +279,11 @@
            (swap! *metrics update :errors inc)
            (log/error "Effect" effect-id "failed:" (.getMessage e))))
        (log/warn "No effect handler for" effect-id)))
-   context))
+   context)
+  ([context _fx-handlers]
+   ;; Legacy 2-arity preserved for backwards compatibility.
+   ;; Uses hive.events.fx global registry (fx-handlers arg ignored).
+   (do-fx context)))
 
 ;; =============================================================================
 ;; Event Registration & Dispatch
@@ -385,7 +291,10 @@
 
 (defn reg-event
   "Register an event handler with interceptors.
-   
+
+   Stores handler + interceptors in the hive-mcp event registry.
+   The handler-interceptor is built at dispatch time.
+
    Example:
    ```clojure
    (reg-event :task-complete
@@ -401,43 +310,40 @@
 
 (defn dispatch
   "Dispatch an event through its registered handler chain.
-   
-   Arities:
-   - [event] - Uses global registries (production)
-   - [event handlers fx-handlers] - Uses provided registries (testing)
-   
-   Validates event format at boundary (CLARITY: Inputs are guarded),
-   then looks up the event handler, builds the interceptor chain,
-   executes it, and runs effects.
-   
+
+   Wraps the core interceptor execution with:
+   1. Malli schema validation at boundary (CLARITY: Inputs are guarded)
+   2. Prometheus telemetry (CLARITY-T: Telemetry first)
+
+   Uses hive.events.interceptor/execute for chain processing and
+   hive.events.fx/get-fx for effect handler lookup.
+
    Throws: ExceptionInfo if event is invalid or no handler registered."
-  ([event]
-   (dispatch event @*event-handlers @*fx-handlers))
-  ([event handlers fx-handlers]
-   (schemas/validate-event! event) ;; CLARITY: Guard inputs at boundary
-   (let [event-id (first event)
-         start-ns (System/nanoTime)]
-     ;; CLARITY-T: Record event to Prometheus
-     (prom/inc-events-total! event-id :info)
-     (if-let [{:keys [interceptors handler]} (get handlers event-id)]
-       (let [;; Handler interceptor converts coeffects to effects
-             handler-interceptor (->interceptor
-                                  :id :handler
-                                  :before (fn [context]
-                                            (let [coeffects (:coeffects context)
-                                                  effects (handler coeffects event)]
-                                              (update context :effects merge effects))))
-             ;; Build full chain: registered interceptors + handler
-             full-chain (conj (vec interceptors) handler-interceptor)
-             ;; Execute and apply effects
-             result (execute event full-chain)
-             ;; CLARITY-T: Record dispatch duration to Prometheus
-             elapsed-sec (/ (- (System/nanoTime) start-ns) 1e9)]
-         (prom/observe-request-duration! (str "event-dispatch-" (name event-id)) elapsed-sec)
-         (do-fx result fx-handlers)
-         result)
-       (throw (ex-info (str "No handler registered for event: " event-id)
-                       {:event event}))))))
+  [event]
+  (schemas/validate-event! event) ;; CLARITY: Guard inputs at boundary
+  (let [event-id (first event)
+        start-ns (System/nanoTime)]
+    ;; CLARITY-T: Record event to Prometheus
+    (prom/inc-events-total! event-id :info)
+    (if-let [{:keys [interceptors handler]} (get @*event-handlers event-id)]
+      (let [;; Handler interceptor converts coeffects to effects
+            handler-interceptor (->interceptor
+                                 :id :handler
+                                 :before (fn [context]
+                                           (let [coeffects (:coeffects context)
+                                                 effects (handler coeffects event)]
+                                             (update context :effects merge effects))))
+            ;; Build full chain: registered interceptors + handler
+            full-chain (conj (vec interceptors) handler-interceptor)
+            ;; Execute via hive.events interceptor engine
+            result (execute event full-chain)
+            ;; CLARITY-T: Record dispatch duration to Prometheus
+            elapsed-sec (/ (- (System/nanoTime) start-ns) 1e9)]
+        (prom/observe-request-duration! (str "event-dispatch-" (name event-id)) elapsed-sec)
+        (do-fx result)
+        result)
+      (throw (ex-info (str "No handler registered for event: " event-id)
+                      {:event event})))))
 
 (defn dispatch-sync
   "Synchronous dispatch - same as dispatch for now.
@@ -451,10 +357,10 @@
 
 (def debug
   "Interceptor that logs event and effects for debugging.
-   Uses timbre logging to avoid stdout pollution in MCP context."
+   Uses timbre logging to avoid stdout pollution in MCP context.
+   (Overrides hive.events/debug which uses println.)"
   (->interceptor
    :id :debug
-   :comment "Logs event in :before, effects in :after"
    :before (fn [context]
              (log/debug "Event:" (get-coeffect context :event))
              context)
@@ -476,7 +382,6 @@
    CLARITY Principle: Telemetry first - observable system behavior."
   (->interceptor
    :id :metrics
-   :comment "Tracks event dispatch metrics for observability"
    :before (fn [context]
              (let [event (get-coeffect context :event)
                    event-id (when (vector? event) (first event))]
@@ -504,54 +409,50 @@
 
 (def trim-v
   "Interceptor that removes the event-id from the event vector.
-   
-   Transforms [:event-id arg1 arg2] to [arg1 arg2] in :event coeffect."
-  (->interceptor
-   :id :trim-v
-   :before (fn [context]
-             (let [event (get-coeffect context :event)]
-               (assoc-coeffect context :event (vec (rest event)))))))
+   Delegated to hive.events.interceptor/trim-v."
+  interceptor/trim-v)
 
+;; =============================================================================
+;; Validation Interceptor (hive-mcp specific - malli integration)
 ;; =============================================================================
 
 (defn validate-event
   "Create a validation interceptor that validates event data against a malli schema.
-   
+
    The validation interceptor runs in the :before phase and validates:
    1. Event vector structure (always - uses schemas/Event)
    2. Event data (optional - if schema is provided)
-   
+
    When schema is provided, it validates the event data (second element of
    the event vector) against the malli schema.
-   
+
    Args:
    - schema (optional) - Malli schema to validate the event data against
-   
+
    Usage:
    ```clojure
    ;; Basic structure validation only
    (reg-event :my-event
      [(validate-event)]
      handler-fn)
-   
+
    ;; Structure + data schema validation
    (def TaskData [:map [:id :string] [:title :string]])
    (reg-event :task/create
      [(validate-event TaskData)]
      handler-fn)
    ```
-   
+
    On validation failure, throws ex-info with:
    - :event       - The invalid event
    - :error       - Humanized error message
    - :schema-type - :structure or :data (which validation failed)
-   
+
    CLARITY Principle: Inputs are guarded at boundaries.
    POC-14: Validation interceptor for event system."
   ([]
    (->interceptor
     :id :validate-event
-    :comment "Validates event structure"
     :before (fn [context]
               (let [event (get-coeffect context :event)]
                 ;; Always validate basic event structure
@@ -564,7 +465,6 @@
   ([data-schema]
    (->interceptor
     :id :validate-event
-    :comment "Validates event structure and data schema"
     :before (fn [context]
               (let [event (get-coeffect context :event)]
                 ;; First validate basic event structure
@@ -583,22 +483,32 @@
                                      :schema-type :data}))))
                 context)))))
 
+;; =============================================================================
 ;; Initialization
 ;; =============================================================================
 
 (defn init!
   "Initialize the event system.
-   
+
    Registers built-in coeffects including:
    - :now         - Current timestamp (java.time.Instant)
    - :random      - Random number (0-1)
    - :agent-context - Swarm agent environment context (EVENTS-05)
    - :db-snapshot  - Current DataScript database state (EVENTS-05)
-   
+
+   Also registers built-in effects:
+   - :channel-publish - Emit event to WebSocket channel (POC-05)
+   - :prometheus      - Report Prometheus metrics
+   - :log             - Structured logging
+
+   Note: hive.events registers built-in :now/:random/:uuid cofx at load time.
+   hive-mcp overrides :now with java.time.Instant (vs millis).
+
    Safe to call multiple times."
   []
   (when-not @*initialized
-    ;; Register built-in coeffects
+    ;; Register built-in coeffects (override hive.events defaults
+    ;; with hive-mcp-specific implementations)
     (reg-cofx :now
               (fn [coeffects]
                 (assoc coeffects :now (java.time.Instant/now))))
@@ -665,19 +575,30 @@
     (log/info "Registered effects: :channel-publish"))
   @*initialized)
 
+;; =============================================================================
+;; Query Helpers
+;; =============================================================================
+
 (defn handler-registered?
   "Check if a handler is registered for the given event-id.
    Public API to avoid accessing private state."
   [event-id]
   (contains? @*event-handlers event-id))
 
+;; =============================================================================
+;; Testing Helpers
+;; =============================================================================
+
 (defmacro with-clean-registry
   "Execute body with fresh, isolated registries. For testing.
-   
+
    Creates a clean slate for event handlers, effect handlers, and
    coeffect handlers, then restores the original state after the
    body executes (even if an exception occurs).
-   
+
+   Saves/restores both hive-mcp event registry AND hive.events
+   fx/cofx registries (accessed via var-get for testing only).
+
    Example:
    ```clojure
    (with-clean-registry
@@ -686,38 +607,41 @@
      ;; registries reset after block
    )
    ```
-   
+
    SOLID: Enables unit testing without global state pollution
    CLARITY: Clean boundary for test isolation"
   [& body]
-  `(let [event-handlers# (var-get #'*event-handlers)
-         fx-handlers# (var-get #'*fx-handlers)
-         cofx-handlers# (var-get #'*cofx-handlers)
+  `(let [;; Save hive-mcp event registry
+         event-handlers# (var-get #'*event-handlers)
          old-handlers# @event-handlers#
-         old-fx# @fx-handlers#
-         old-cofx# @cofx-handlers#]
+         ;; Save hive.events fx/cofx registries (private atoms, testing only)
+         fx-atom# (var-get #'hive.events.fx/fx-registry)
+         cofx-atom# (var-get #'hive.events.cofx/cofx-registry)
+         old-fx# @fx-atom#
+         old-cofx# @cofx-atom#]
      (try
        (clojure.core/reset! event-handlers# {})
-       (clojure.core/reset! fx-handlers# {})
-       (clojure.core/reset! cofx-handlers# {})
+       (clojure.core/reset! fx-atom# {})
+       (clojure.core/reset! cofx-atom# {})
        ~@body
        (finally
          (clojure.core/reset! event-handlers# old-handlers#)
-         (clojure.core/reset! fx-handlers# old-fx#)
-         (clojure.core/reset! cofx-handlers# old-cofx#)))))
+         (clojure.core/reset! fx-atom# old-fx#)
+         (clojure.core/reset! cofx-atom# old-cofx#)))))
 
 (defn reset-all!
   "Reset all event system state. Primarily for testing.
 
    Resets handlers, coeffects, effects, and metrics.
+   Clears both hive-mcp event registry and hive.events fx/cofx registries.
 
    CLARITY-Y: Guarded - skipped if coordinator is running to protect production."
   []
   (guards/when-not-coordinator
    "ev/reset-all! blocked"
    (clojure.core/reset! *initialized false)
-   (clojure.core/reset! *fx-handlers {})
-   (clojure.core/reset! *cofx-handlers {})
    (clojure.core/reset! *event-handlers {})
+   (fx/clear-fx)
+   (cofx/clear-cofx)
    (reset-metrics!)
    nil))

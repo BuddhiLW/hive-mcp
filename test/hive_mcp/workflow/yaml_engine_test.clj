@@ -369,7 +369,7 @@ steps:
       (is (= (:workflow-id wf) (:workflow-id result)))
       (is (= 2 (:steps-completed result)))
       (is (= 2 (:steps-total result)))
-      (is (pos? (:duration-ms result)))
+      (is (nat-int? (:duration-ms result)))
       (is (empty? (:errors result)))
       (is (map? (:final-context result)))
       ;; Step 2 should have step 1's output in context

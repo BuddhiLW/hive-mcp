@@ -2,17 +2,21 @@
   "Consolidated Workflow CLI tool — Forja Belt automation.
 
    Canonical commands:
-     catchup        — delegates to session/catchup
-     wrap           — delegates to session/wrap
-     complete       — delegates to session/complete
-     forge-strike   — ONE cycle: smite→survey→spark
-     forge-status   — belt dashboard
-     forge-quench   — graceful stop, no new spawns
+     catchup               — delegates to session/catchup
+     wrap                  — delegates to session/wrap
+     complete              — delegates to session/complete
+     forge-strike          — ONE FSM-driven cycle: smite→survey→spark
+     forge-strike-legacy   — DEPRECATED imperative path (behind :legacy-forge config flag)
+     forge-status          — belt dashboard (includes FSM trace data)
+     forge-quench          — graceful stop, no new spawns
 
-   The forge-strike command implements the Forja Belt cycle:
+   The forge-strike command implements the Forja Belt cycle via FSM:
    1. SMITE  — kill completed/zombie lings
    2. SURVEY — kanban(todo), check readiness, rank by priority
    3. SPARK  — spawn lings up to max_slots, dispatch tasks
+
+   Config flag :legacy-forge (services.forge.legacy) — when true, 'forge strike'
+   delegates to the imperative path instead of FSM. For emergency rollback only.
 
    Usage via MCP: workflow {\"command\": \"forge strike\", \"max_slots\": 10}
 
@@ -28,8 +32,10 @@
             [hive-mcp.agent.ling :as ling]
             [hive-mcp.tools.memory.scope :as scope]
             [hive-mcp.agent.context :as ctx]
+            [hive-mcp.config :as config]
             [hive-mcp.emacsclient :as ec]
             [hive-mcp.agent.headless :as headless]
+            [hive-mcp.workflows.forge-belt :as forge-belt]
             [clojure.data.json :as json]
             [taoensso.timbre :as log]
             [clojure.string :as str]))
@@ -44,6 +50,7 @@
 (defonce ^:private forge-state
   (atom {:quenched? false
          :last-strike nil
+         :last-fsm-result nil
          :total-smited 0
          :total-sparked 0
          :total-strikes 0}))
@@ -265,8 +272,10 @@
 
    Convention: Spawn then dispatch separately (spawn+task param unreliable).
    CLARITY: I - Validates slot availability before spawning."
-  [{:keys [directory max_slots presets tasks]}]
+  [{:keys [directory max_slots presets tasks spawn_mode spawn-mode model]}]
   (let [max-slots (or max_slots 10)
+        ;; Resolve spawn mode (FSM uses :spawn-mode, MCP uses :spawn_mode)
+        effective-spawn-mode (or spawn_mode spawn-mode)
         ;; Count currently active lings
         active-agents (queries/get-all-slaves)
         active-lings (->> active-agents
@@ -293,11 +302,13 @@
                  (try
                    ;; Spawn ling
                    (let [spawn-result (c-agent/handle-spawn
-                                       {:type "ling"
-                                        :name agent-name
-                                        :cwd effective-dir
-                                        :presets default-presets
-                                        :kanban_task_id task-id})
+                                       (cond-> {:type "ling"
+                                                :name agent-name
+                                                :cwd effective-dir
+                                                :presets default-presets
+                                                :kanban_task_id task-id}
+                                         effective-spawn-mode (assoc :spawn_mode (name effective-spawn-mode))
+                                         model (assoc :model model)))
                          ;; Extract agent-id from spawn result
                          spawn-text (when (map? spawn-result) (:text spawn-result))
                          spawn-parsed (when (string? spawn-text)
@@ -322,8 +333,9 @@
                                                      :new_status "inprogress"
                                                      :directory effective-dir})
                             (catch Exception _ nil)))
-                     (log/info "SPARK: spawned+dispatched" {:agent agent-id :task title})
-                     {:agent-id agent-id :task-title title :task-id task-id :spawned true})
+                     (log/info "SPARK: spawned+dispatched" {:agent agent-id :task title :model (or model "claude")})
+                     {:agent-id agent-id :task-title title :task-id task-id :spawned true
+                      :model (or model "claude")})
                    (catch Exception e
                      (log/warn "SPARK: failed" {:task title :error (ex-message e)})
                      {:agent-id agent-name :task-title title :task-id task-id
@@ -336,27 +348,74 @@
          :max-slots max-slots}))))
 
 ;; =============================================================================
-;; Forge Strike — ONE cycle: smite → survey → spark
+;; FSM Resource Adapter — bridges FSM handlers to imperative implementations
 ;; =============================================================================
 
-(defn handle-forge-strike
-  "Execute ONE forge cycle: SMITE → SURVEY → SPARK.
+(defn build-fsm-resources
+  "Build the resources map for the Forge Belt FSM.
 
-   Parameters:
-     directory  - Working directory for project scoping (optional)
-     max_slots  - Max concurrent lings (default: 10)
-     presets    - Ling presets (default: [ling mcp-first saa])
+   Wraps the imperative smite!/survey/spark! implementations into the
+   pure resource function contracts that FSM handlers expect.
 
-   Returns combined result of all three phases.
+   Args:
+     params — {:directory string, :max_slots int, :presets [string],
+               :spawn_mode string, :model string}
 
-   CLARITY: A - Architectural orchestration of the belt cycle."
-  [{:keys [directory max_slots presets] :as params}]
+   Returns a resources map conforming to forge_belt.clj's contract:
+     {:agent-ops, :kanban-ops, :scope-fn, :clock-fn, :config, :directory}
+
+   SOLID: D — FSM depends on abstractions (resource fns), not concretions.
+   CLARITY: L — Adapter at boundary between pure FSM and imperative tools."
+  [{:keys [directory max_slots presets spawn_mode model]}]
+  (let [effective-spawn-mode (when spawn_mode (keyword spawn_mode))]
+    {:directory  directory
+     :config     {:max-slots  (or max_slots 10)
+                  :presets    (or presets ["ling" "mcp-first" "saa"])
+                  :spawn-mode effective-spawn-mode
+                  :model      model}
+     :agent-ops  {:kill-fn  (fn [dir _project-id]
+                              (smite! {:directory dir}))
+                  :spawn-fn (fn [{:keys [directory max-slots presets tasks] :as opts}]
+                              (spark! (cond-> {:directory directory
+                                               :max_slots max-slots
+                                               :presets presets
+                                               :tasks tasks}
+                                        ;; Forward spawn-mode from opts (set by FSM handle-spark)
+                                        ;; or fall back to config-level spawn mode
+                                        (or (:spawn-mode opts) effective-spawn-mode)
+                                        (assoc :spawn-mode (or (:spawn-mode opts) effective-spawn-mode))
+                                        ;; Forward model from config if not overridden in opts
+                                        (or (:model opts) model)
+                                        (assoc :model (or (:model opts) model)))))}
+     :kanban-ops {:list-fn   (fn [dir] (survey {:directory dir}))
+                  :update-fn (fn [_opts] nil)}
+     :scope-fn   (fn [dir]
+                   (when dir (scope/get-current-project-id dir)))
+     :clock-fn   #(java.time.Instant/now)}))
+
+;; =============================================================================
+;; Forge Strike (Legacy) — DEPRECATED, use 'forge strike' (FSM) instead
+;; =============================================================================
+
+(defn handle-forge-strike-legacy
+  "DEPRECATED: Execute ONE forge cycle via imperative smite!/survey/spark!.
+
+   Retained behind config flag {:services {:forge {:legacy true}}} for
+   emergency rollback. Use 'forge strike' (FSM-driven) instead.
+   This legacy path will be removed in a future release.
+
+   CLARITY: A - Legacy orchestration, superseded by FSM path."
+  [{:keys [directory max_slots presets spawn_mode model] :as params}]
+  (log/warn "DEPRECATED: forge strike-legacy called. Use 'forge strike' (FSM) instead."
+            {:directory directory})
   (if (:quenched? @forge-state)
     (mcp-json {:success false
                :message "Forge is quenched. Use forge-status to check or restart."
                :quenched? true})
     (try
-      (log/info "FORGE STRIKE: Starting cycle" {:directory directory :max-slots max_slots})
+      (log/info "FORGE STRIKE (legacy): Starting cycle" {:directory directory :max-slots max_slots
+                                                         :spawn-mode (or spawn_mode "vterm")
+                                                         :model (or model "claude")})
 
       ;; Phase 1: SMITE
       (let [smite-result (smite! params)
@@ -370,7 +429,8 @@
             spark-result (spark! (assoc params
                                         :tasks (:tasks survey-result)
                                         :max_slots max_slots
-                                        :presets presets))
+                                        :presets presets
+                                        :model model))
             _ (log/info "FORGE STRIKE: SPARK complete" {:spawned (:count spark-result)})]
 
         ;; Update forge state
@@ -383,16 +443,102 @@
                      (assoc :last-strike (str (java.time.Instant/now))))))
 
         (mcp-json {:success true
+                   :mode :imperative
+                   :deprecated true
+                   :spawn-mode (or spawn_mode "vterm")
+                   :model (or model "claude")
                    :smite smite-result
                    :survey {:todo-count (:count survey-result)
                             :task-titles (mapv :title (:tasks survey-result))}
                    :spark spark-result
-                   :summary (str "Smited " (:count smite-result)
+                   :summary (str "DEPRECATED legacy: Smited " (:count smite-result)
                                  ", surveyed " (:count survey-result) " tasks"
-                                 ", sparked " (:count spark-result) " lings")}))
+                                 ", sparked " (:count spark-result) " lings"
+                                 " (mode: " (or spawn_mode "vterm")
+                                 ", model: " (or model "claude") ")")}))
       (catch Exception e
-        (log/error "FORGE STRIKE failed" {:error (ex-message e)})
-        (mcp-error (str "Forge strike failed: " (ex-message e)))))))
+        (log/error "FORGE STRIKE (legacy) failed" {:error (ex-message e)})
+        (mcp-error (str "Forge strike (legacy) failed: " (ex-message e)))))))
+
+;; =============================================================================
+;; Forge Strike — FSM-driven cycle (DEFAULT since 0.12.0)
+;; =============================================================================
+
+(defn- fsm-forge-strike
+  "FSM-driven forge strike implementation (internal).
+   Called by handle-forge-strike when not in legacy mode."
+  [{:keys [directory max_slots spawn_mode model] :as params}]
+  (try
+    (log/info "FORGE STRIKE: Starting FSM cycle" {:directory directory :max-slots max_slots
+                                                  :spawn-mode (or spawn_mode "vterm")
+                                                  :model (or model "claude")})
+    (let [resources (build-fsm-resources params)
+          result (forge-belt/run-single-strike resources)]
+      ;; Update forge state from FSM result
+      (swap! forge-state
+             (fn [s]
+               (-> s
+                   (update :total-smited + (:total-smited result 0))
+                   (update :total-sparked + (:total-sparked result 0))
+                   (update :total-strikes inc)
+                   (assoc :last-strike (:last-strike result)))))
+      (mcp-json {:success true
+                 :mode :fsm
+                 :spawn-mode (or spawn_mode "vterm")
+                 :model (or model "claude")
+                 :smite (:smite-result result)
+                 :survey {:todo-count (get-in result [:survey-result :count] 0)
+                          :task-titles (mapv :title (get-in result [:survey-result :tasks] []))}
+                 :spark (:spark-result result)
+                 :summary (str "Smited " (:total-smited result 0)
+                               ", surveyed " (get-in result [:survey-result :count] 0) " tasks"
+                               ", sparked " (:total-sparked result 0) " lings"
+                               " (mode: " (or spawn_mode "vterm")
+                               ", model: " (or model "claude") ")")}))
+    (catch Exception e
+      (log/error "FORGE STRIKE failed" {:error (ex-message e)})
+      (mcp-error (str "Forge strike failed: " (ex-message e))))))
+
+(defn handle-forge-strike
+  "Execute ONE forge cycle. FSM-driven by default since 0.12.0.
+
+   Config flag {:services {:forge {:legacy true}}} enables the deprecated
+   imperative path for emergency rollback. Otherwise routes to FSM engine.
+
+   Parameters:
+     directory   - Working directory for project scoping (optional)
+     max_slots   - Max concurrent lings (default: 10)
+     presets     - Ling presets (default: [ling mcp-first saa])
+     spawn_mode  - Spawn mode: 'vterm' (default) or 'headless'
+                   'headless' maps to :agent-sdk (default headless since 0.12.0).
+     model       - Model override for spawned lings: 'claude' (default) or
+                   OpenRouter model ID (e.g. 'deepseek/deepseek-chat').
+                   Non-claude models auto-force headless/openrouter spawn mode.
+
+   Returns combined result of all three phases.
+
+   CLARITY: C - Composes FSM runner with resource adapter + config-gated legacy fallback."
+  [params]
+  (if (:quenched? @forge-state)
+    (mcp-json {:success false
+               :message "Forge is quenched. Use forge-status to check or restart."
+               :quenched? true})
+    (if (config/get-service-value :forge :legacy :default false)
+      (do
+        (log/warn "FORGE STRIKE: legacy mode enabled via config. Using imperative path.")
+        (handle-forge-strike-legacy params))
+      (fsm-forge-strike params))))
+
+;; Backward-compat aliases for callers that reference old names
+(def handle-forge-strike-fsm
+  "DEPRECATED alias: FSM is now the default path via handle-forge-strike.
+   Retained for backward compatibility with tests and callers."
+  handle-forge-strike)
+
+(def handle-forge-strike-imperative
+  "DEPRECATED alias: renamed to handle-forge-strike-legacy.
+   Retained for backward compatibility with callers using the old name."
+  handle-forge-strike-legacy)
 
 ;; =============================================================================
 ;; Forge Status — Belt dashboard
@@ -415,7 +561,8 @@
           kanban-result (try
                           (c-kanban/handle-kanban {:command "status" :directory directory})
                           (catch Exception _ nil))]
-      (mcp-json {:forge state
+      (mcp-json {:forge (assoc state :modes {:fsm true
+                                             :legacy (boolean (config/get-service-value :forge :legacy :default false))})
                  :lings {:total (count lings)
                          :active (count active-lings)
                          :terminal (count terminal-lings)
@@ -454,17 +601,22 @@
 
 (def canonical-handlers
   "Core command → handler map. Forge commands are nested under :forge.
-   Supports n-depth dispatch: 'forge strike', 'forge status', 'forge quench'."
+   Supports n-depth dispatch: 'forge strike', 'forge status', 'forge quench'.
+
+   Since 0.12.0: 'forge strike' IS the FSM path (default).
+   Config {:services {:forge {:legacy true}}} enables imperative fallback.
+   'forge strike-imperative' kept as alias → handle-forge-strike-legacy."
   {:catchup  c-session/handle-catchup
    :wrap     c-session/handle-wrap
    :complete (fn [params] (c-session/handle-session (assoc params :command "complete")))
-   :forge    {:strike   handle-forge-strike
-              :status   handle-forge-status
-              :quench   handle-forge-quench
-              :_handler handle-forge-status}})
+   :forge    {:strike             handle-forge-strike           ;; FSM (default) with legacy config gate
+              :strike-imperative  handle-forge-strike-imperative ;; alias → legacy (backward compat)
+              :status             handle-forge-status
+              :quench             handle-forge-quench
+              :_handler           handle-forge-status}})
 
 (def handlers
-  "Canonical handlers (no deprecated aliases — this is a new tool)."
+  "Canonical + deprecated aliases."
   canonical-handlers)
 
 ;; =============================================================================
@@ -483,11 +635,13 @@
   "MCP tool definition for consolidated workflow command."
   {:name "workflow"
    :consolidated true
-   :description "Forja Belt workflow: catchup (restore context), wrap (crystallize), complete (full lifecycle), forge-strike (smite→survey→spark cycle), forge-status (belt dashboard), forge-quench (graceful stop). Use command='help' to list all."
+   :description "Forja Belt workflow: catchup (restore context), wrap (crystallize), complete (full lifecycle), forge-strike (FSM-driven smite→survey→spark cycle), forge-strike-imperative (DEPRECATED legacy path), forge-status (belt dashboard), forge-quench (graceful stop). Use command='help' to list all."
    :inputSchema {:type "object"
                  :properties {"command" {:type "string"
                                          :enum ["catchup" "wrap" "complete"
-                                                "forge strike" "forge status" "forge quench"
+                                                "forge strike"
+                                                "forge strike-imperative"
+                                                "forge status" "forge quench"
                                                 "help"]
                                          :description "Workflow operation to perform"}
                               ;; session params (catchup/wrap/complete)
@@ -506,6 +660,11 @@
                               "presets" {:type "array"
                                          :items {:type "string"}
                                          :description "Ling presets for forge-strike (default: [ling, mcp-first, saa])"}
+                              "spawn_mode" {:type "string"
+                                            :enum ["vterm" "headless"]
+                                            :description "Spawn mode for lings: 'vterm' (default, Emacs buffer) or 'headless' (OS subprocess, no Emacs required). Note: 'headless' maps to :agent-sdk (Claude Agent SDK) since 0.12.0."}
+                              "model" {:type "string"
+                                       :description "Model override for spawned lings: 'claude' (default, Claude Code CLI) or OpenRouter model ID (e.g., 'deepseek/deepseek-chat'). Non-claude models auto-force headless/openrouter spawn mode for cost-efficient bulk work."}
                               ;; quench params
                               "restart" {:type "boolean"
                                          :description "Pass true to unquench/restart the forge belt"}}

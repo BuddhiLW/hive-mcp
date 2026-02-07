@@ -38,21 +38,21 @@
 {:fsm
  {:hive.events.fsm/start
   {:handler    :start
-   :dispatches [[:hive-mcp.workflows.forge-belt/halt
+   :dispatches [[:hive.events.fsm/halt
                  (fn [data] (true? (:quenched? data)))]
                 [:hive-mcp.workflows.forge-belt/smite
                  (fn [_] true)]]}
 
   :hive-mcp.workflows.forge-belt/smite
   {:handler    :smite
-   :dispatches [[:hive-mcp.workflows.forge-belt/halt
+   :dispatches [[:hive.events.fsm/halt
                  (fn [data] (true? (:quenched? data)))]
                 [:hive-mcp.workflows.forge-belt/survey
                  (fn [_] true)]]}
 
   :hive-mcp.workflows.forge-belt/survey
   {:handler    :survey
-   :dispatches [[:hive-mcp.workflows.forge-belt/halt
+   :dispatches [[:hive.events.fsm/halt
                  (fn [data] (true? (:quenched? data)))]
                 [:hive-mcp.workflows.forge-belt/spark
                  (fn [data] (pos? (get-in data [:survey-result :count] 0)))]
@@ -61,7 +61,7 @@
 
   :hive-mcp.workflows.forge-belt/spark
   {:handler    :spark
-   :dispatches [[:hive-mcp.workflows.forge-belt/halt
+   :dispatches [[:hive.events.fsm/halt
                  (fn [data] (true? (:quenched? data)))]
                 [:hive.events.fsm/start
                  (fn [data] (true? (:continuous? data)))]

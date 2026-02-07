@@ -17,11 +17,16 @@
             [hive-mcp.agent.ling.openrouter-strategy :as or-strat]
             [hive-mcp.agent.protocol :as proto]
             [hive-mcp.agent.headless :as headless]
+            [hive-mcp.agent.headless-sdk :as sdk]
+            [hive-mcp.agent.context-envelope :as envelope]
             [hive-mcp.agent.hints :as hints]
+            [hive-mcp.protocols.dispatch :as dispatch-ctx]
+            [hive-mcp.channel.context-store :as context-store]
             [hive-mcp.swarm.datascript :as ds]
             [hive-mcp.swarm.datascript.lings :as ds-lings]
             [hive-mcp.swarm.datascript.queries :as ds-queries]
             [hive-mcp.swarm.datascript.schema :as schema]
+            [clojure.core.async :as async]
             [clojure.string :as str]))
 
 ;; =============================================================================
@@ -29,13 +34,17 @@
 ;; =============================================================================
 
 (defn reset-all-state [f]
-  "Reset DataScript, kill headless processes and OpenRouter sessions between tests."
+  "Reset DataScript, context-store, kill headless processes, SDK sessions, and OpenRouter sessions between tests."
   (ds/reset-conn!)
+  (context-store/reset-all!)
   (headless/kill-all-headless!)
+  (sdk/kill-all-sdk!)
   (or-strat/kill-all-openrouter!)
   (f)
   (headless/kill-all-headless!)
+  (sdk/kill-all-sdk!)
   (or-strat/kill-all-openrouter!)
+  (context-store/reset-all!)
   (ds/reset-conn!))
 
 (use-fixtures :each reset-all-state)
@@ -54,13 +63,14 @@
 ;; =============================================================================
 
 (deftest ling-factory-headless-mode
-  (testing "->ling with :headless spawn-mode preserves mode"
+  (testing "->ling with :headless spawn-mode maps to :agent-sdk (since 0.12.0)"
     (let [ling (ling/->ling "test-hl-001"
                             {:cwd "/tmp"
                              :project-id "test"
                              :spawn-mode :headless})]
-      (is (= :headless (:spawn-mode ling))
-          "spawn-mode should be :headless")
+      ;; Since 0.12.0, :headless maps to :agent-sdk (default headless mechanism)
+      (is (= :agent-sdk (:spawn-mode ling))
+          ":headless should map to :agent-sdk")
       (is (nil? (:model ling))
           "model should be nil when not specified"))))
 
@@ -84,10 +94,10 @@
 (deftest ling-factory-openrouter-for-various-models
   (testing "->ling correctly routes various non-Claude model IDs to :openrouter"
     (doseq [model ["deepseek/deepseek-v3.2"
-                    "meta-llama/llama-3.3-70b"
-                    "mistralai/mistral-large"
-                    "google/gemini-pro"
-                    "openai/gpt-4-turbo"]]
+                   "meta-llama/llama-3.3-70b"
+                   "mistralai/mistral-large"
+                   "google/gemini-pro"
+                   "openai/gpt-4-turbo"]]
       (let [ling (ling/->ling "test-multi"
                               {:cwd "/tmp" :model model})]
         (is (= :openrouter (:spawn-mode ling))
@@ -110,16 +120,33 @@
       (is (= :vterm (:spawn-mode ling)))
       (is (nil? (:model ling))))))
 
+(deftest ling-factory-anthropic-model-stays-vterm
+  (testing "->ling with 'anthropic/claude-*' model stays :vterm (uses Claude Code CLI)"
+    (doseq [model ["anthropic/claude-sonnet-4"
+                   "anthropic/claude-3-5-sonnet"
+                   "anthropic/claude-3-opus"]]
+      (let [ling (ling/->ling (str "test-ant-" (hash model))
+                              {:cwd "/tmp" :project-id "test" :model model})]
+        (is (= :vterm (:spawn-mode ling))
+            (str model " should route to :vterm (it's a claude model)"))
+        (is (= model (:model ling)))))))
+
 (deftest claude-model-predicate
   (testing "schema/claude-model? correctly identifies Claude vs non-Claude"
     (is (true? (schema/claude-model? nil))
         "nil should be claude model")
     (is (true? (schema/claude-model? "claude"))
         "'claude' should be claude model")
+    (is (true? (schema/claude-model? "anthropic/claude-sonnet-4"))
+        "'anthropic/claude-sonnet-4' should be claude model (prefix match)")
+    (is (true? (schema/claude-model? "anthropic/claude-3-5-sonnet"))
+        "'anthropic/claude-3-5-sonnet' should be claude model (prefix match)")
     (is (false? (schema/claude-model? "deepseek/deepseek-v3.2"))
         "deepseek should not be claude model")
     (is (false? (schema/claude-model? "meta-llama/llama-3.3-70b"))
-        "llama should not be claude model")))
+        "llama should not be claude model")
+    (is (false? (schema/claude-model? ""))
+        "empty string should not be claude model")))
 
 ;; =============================================================================
 ;; Section 2: HeadlessStrategy Spawn — Real Subprocess with `echo`
@@ -257,16 +284,21 @@
     (let [strat (headless-strat/->headless-strategy)
           captured-args (atom nil)
           ctx {:id "hs-spawn-001" :cwd "/tmp/proj" :presets ["tdd"] :model nil}]
+      ;; Mock build-spawn-envelope to nil so L2 enrichment doesn't interfere
+      ;; with argument delegation testing (L2 enrichment tested separately in Section 3b)
       (with-redefs [headless/spawn-headless!
                     (fn [ling-id opts]
                       (reset! captured-args {:ling-id ling-id :opts opts})
-                      {:ling-id ling-id :pid 12345})]
+                      {:ling-id ling-id :pid 12345})
+                    envelope/build-spawn-envelope
+                    (fn [_ _] nil)]
         (let [result (strategy/strategy-spawn! strat ctx {:task "Run tests"
-                                                           :buffer-capacity 2000})]
+                                                          :buffer-capacity 2000})]
           (is (= "hs-spawn-001" result) "Should return ling-id")
           (is (= "hs-spawn-001" (:ling-id @captured-args)))
           (is (= "/tmp/proj" (:cwd (:opts @captured-args))))
-          (is (= "Run tests" (:task (:opts @captured-args))))
+          (is (= "Run tests" (:task (:opts @captured-args)))
+              "Task should pass through unchanged when no L2 context available")
           (is (= ["tdd"] (:presets (:opts @captured-args))))
           (is (= 2000 (:buffer-capacity (:opts @captured-args)))))))))
 
@@ -285,6 +317,74 @@
           (is (= "Analyze code" (:message @captured))))))))
 
 ;; =============================================================================
+;; Section 3b: L2 Context Protocol — HeadlessStrategy Enrichment
+;;
+;; Tests that HeadlessStrategy correctly enriches tasks with L2 context
+;; envelopes when dispatch-context is a RefContext. This is the Phase 3
+;; integration: coordinator → RefContext → HeadlessStrategy → L2 envelope → stdin.
+;; =============================================================================
+
+(deftest headless-strategy-dispatch-l2-enrichment
+  (testing "HeadlessStrategy enriches task with L2 envelope when RefContext provided"
+    (let [strat (headless-strat/->headless-strategy)
+          captured (atom nil)
+          ctx {:id "hs-l2-001"}
+          ;; Store test data in context-store
+          ax-id (context-store/context-put!
+                 [{:id "ax-1" :content "Never spawn drones from lings"}]
+                 :tags #{"axioms" "test"})
+          ;; Create RefContext with context-store refs
+          ref-ctx (dispatch-ctx/->ref-context
+                   "Fix the auth bug"
+                   {:ctx-refs {:axioms ax-id}
+                    :kg-node-ids []
+                    :scope "test-project"})]
+      (with-redefs [headless/dispatch-via-stdin!
+                    (fn [ling-id message]
+                      (reset! captured {:ling-id ling-id :message message})
+                      true)]
+        (strategy/strategy-dispatch! strat ctx {:task "Fix the auth bug"
+                                                :dispatch-context ref-ctx})
+        ;; The dispatched message should contain L2 envelope markers
+        (is (some? @captured) "Should have dispatched to stdin")
+        (is (str/includes? (:message @captured) "L2-CONTEXT")
+            "Enriched task should contain L2 context envelope marker")
+        (is (str/includes? (:message @captured) "Fix the auth bug")
+            "Original task should still be present in enriched message")))))
+
+(deftest headless-strategy-dispatch-no-enrichment-for-text-context
+  (testing "HeadlessStrategy does not enrich when TextContext provided"
+    (let [strat (headless-strat/->headless-strategy)
+          captured (atom nil)
+          ctx {:id "hs-text-001"}
+          text-ctx (dispatch-ctx/->text-context "Fix the text bug")]
+      (with-redefs [headless/dispatch-via-stdin!
+                    (fn [ling-id message]
+                      (reset! captured {:ling-id ling-id :message message})
+                      true)]
+        (strategy/strategy-dispatch! strat ctx {:task "Fix the text bug"
+                                                :dispatch-context text-ctx})
+        (is (some? @captured))
+        ;; TextContext should NOT produce L2 envelope
+        (is (not (str/includes? (:message @captured) "L2-CONTEXT"))
+            "TextContext dispatch should not add L2 envelope")
+        (is (= "Fix the text bug" (:message @captured))
+            "Plain task should pass through unchanged")))))
+
+(deftest headless-strategy-dispatch-nil-context-passthrough
+  (testing "HeadlessStrategy passes task through when no dispatch-context"
+    (let [strat (headless-strat/->headless-strategy)
+          captured (atom nil)
+          ctx {:id "hs-nil-001"}]
+      (with-redefs [headless/dispatch-via-stdin!
+                    (fn [ling-id message]
+                      (reset! captured {:ling-id ling-id :message message})
+                      true)]
+        (strategy/strategy-dispatch! strat ctx {:task "Plain task, no context"})
+        (is (= "Plain task, no context" (:message @captured))
+            "Task without dispatch-context should pass through unchanged")))))
+
+;; =============================================================================
 ;; Section 4: Ling Facade — Headless E2E (spawn → dispatch → status → kill)
 ;;
 ;; Tests the full lifecycle through the Ling record, which delegates to
@@ -292,32 +392,38 @@
 ;; =============================================================================
 
 (deftest facade-headless-full-lifecycle
-  (testing "Full lifecycle: spawn → status → dispatch → kill via Ling facade"
+  (testing "Full lifecycle: spawn → status → dispatch → kill via Ling facade (headless→agent-sdk)"
     (let [ling-id "lifecycle-hl-001"
+          ;; Since 0.12.0, :headless maps to :agent-sdk in ->ling
           ling-inst (ling/->ling ling-id {:cwd "/tmp/project"
                                           :project-id "test-project"
                                           :spawn-mode :headless})
           dispatched-tasks (atom [])]
 
-      (with-redefs [headless/spawn-headless!
+      ;; Since :headless maps to :agent-sdk at the facade level, we mock SDK functions
+      (with-redefs [;; SDK mocks (facade routes :headless → :agent-sdk)
+                    sdk/available? (constantly true)
+                    sdk/sdk-status (constantly :available)
+                    sdk/spawn-headless-sdk!
                     (fn [id opts]
                       (is (= ling-id id))
                       (is (= "/tmp/project" (:cwd opts)))
-                      {:ling-id id :pid 42000})
-                    headless/headless-status
+                      {:ling-id id :status :spawned :backend :agent-sdk :phase :idle})
+                    sdk/sdk-status-for
                     (fn [id]
                       (when (= ling-id id)
-                        {:ling-id id :alive? true :pid 42000
-                         :uptime-ms 1000
-                         :stdout {:current-lines 10}
-                         :stderr {:current-lines 0}}))
-                    headless/dispatch-via-stdin!
-                    (fn [id msg]
-                      (swap! dispatched-tasks conj {:id id :msg msg})
-                      true)
-                    headless/kill-headless!
+                        {:ling-id id :phase :act :session-id "sess-mock"
+                         :observations-count 0 :started-at 1000 :uptime-ms 1000
+                         :backend :agent-sdk}))
+                    sdk/get-session
+                    (fn [id] (when (= ling-id id) {:ling-id id :phase :idle}))
+                    sdk/dispatch-headless-sdk!
+                    (fn [id task & _]
+                      (swap! dispatched-tasks conj {:id id :task task})
+                      (clojure.core.async/chan 1))
+                    sdk/kill-headless-sdk!
                     (fn [id]
-                      {:killed? true :ling-id id :pid 42000 :exit-code 0})]
+                      {:killed? true :ling-id id})]
 
         ;; 1. SPAWN
         (let [slave-id (proto/spawn! ling-inst {:depth 1})]
@@ -326,24 +432,24 @@
           ;; Verify DataScript registration
           (let [slave (ds-queries/get-slave ling-id)]
             (is (some? slave) "Should be registered in DataScript")
-            (is (= :headless (:ling/spawn-mode slave)))
-            (is (= "claude" (:ling/model slave)))  ;; nil model → "claude" default
-            (is (= 42000 (:ling/process-pid slave)))))
+            ;; :headless maps to :agent-sdk since 0.12.0
+            (is (= :agent-sdk (:ling/spawn-mode slave)))
+            (is (= "claude" (:ling/model slave)))))
 
         ;; 2. STATUS
         (let [status (proto/status ling-inst)]
           (is (map? status))
-          (is (true? (:headless-alive? status)))
-          (is (= 42000 (:headless-pid status)))
-          (is (= 1000 (:headless-uptime-ms status))))
+          ;; SDK status fields (not headless fields)
+          (is (true? (:sdk-alive? status)))
+          (is (= :act (:sdk-phase status))))
 
         ;; 3. DISPATCH
         (let [ling-for-dispatch (ling/->ling ling-id {:cwd "/tmp/project"
-                                                       :spawn-mode :headless})
+                                                      :spawn-mode :headless})
               task-id (proto/dispatch! ling-for-dispatch {:task "Fix the bug"})]
           (is (string? task-id) "dispatch should return task-id string")
           (is (= 1 (count @dispatched-tasks)))
-          (is (= "Fix the bug" (:msg (first @dispatched-tasks)))))
+          (is (= "Fix the bug" (:task (first @dispatched-tasks)))))
 
         ;; 4. KILL
         (let [result (proto/kill! ling-inst)]
@@ -658,6 +764,225 @@
       (try (headless/kill-headless! ling-id {:force? true})
            (catch Exception _ nil)))))
 
+;; =============================================================================
+;; Section 10: Full E2E — Spawn Headless → Dispatch → Collect → Verify
+;;
+;; This is the true end-to-end integration test for headless lings.
+;; Uses a REAL subprocess (`cat`) which echoes stdin to stdout.
+;; No mocks — tests the actual ProcessBuilder → ring buffer pipeline.
+;;
+;; Flow: spawn-headless!(cat) → dispatch-via-stdin!(msg) → get-stdout → assert
+;; =============================================================================
+
+(deftest ^:e2e headless-full-e2e-spawn-dispatch-collect-verify
+  (testing "Full E2E: spawn headless → dispatch task → collect stdout → verify output"
+    (let [ling-id (gen-id "e2e-full")
+          test-message "E2E-MARKER-hello-from-headless-test"
+          ;; 1. SPAWN: Use `cat` as the subprocess (echoes stdin → stdout)
+          result (headless/spawn-headless! ling-id
+                                           {:cwd "/tmp"
+                                            :claude-cmd "cat"
+                                            :buffer-capacity 500})]
+      ;; Verify spawn succeeded
+      (is (map? result) "spawn-headless! should return a result map")
+      (is (= ling-id (:ling-id result)))
+      (is (pos? (:pid result)) "Should have a positive PID")
+      (is (headless/headless? ling-id) "Should be registered in process registry")
+
+      ;; Verify process is alive
+      (let [status (headless/headless-status ling-id)]
+        (is (true? (:alive? status)) "Process should be alive after spawn"))
+
+      ;; 2. DISPATCH: Send a task via stdin
+      (let [sent? (headless/dispatch-via-stdin! ling-id test-message)]
+        (is (true? sent?) "dispatch-via-stdin! should return true"))
+
+      ;; 3. COLLECT: Poll stdout ring buffer until output appears
+      ;; cat echoes stdin to stdout, so our message should appear
+      (let [max-wait-ms 3000
+            poll-interval 100
+            deadline (+ (System/currentTimeMillis) max-wait-ms)
+            collected (loop []
+                        (let [stdout (headless/get-stdout ling-id)]
+                          (if (some #(str/includes? % test-message) stdout)
+                            stdout
+                            (if (< (System/currentTimeMillis) deadline)
+                              (do (Thread/sleep poll-interval) (recur))
+                              stdout))))]
+
+        ;; 4. VERIFY: stdout contains our dispatched message
+        (is (some #(str/includes? % test-message) collected)
+            (str "stdout should contain dispatched message '" test-message
+                 "', got: " (pr-str (vec (take-last 5 collected))))))
+
+      ;; 5. VERIFY: Ring buffer stats are consistent
+      (let [stats (headless/ring-buffer-stats (headless/get-stdout-buffer ling-id))]
+        (is (pos? (:total-lines-seen stats))
+            "Should have seen at least one line")
+        (is (= 500 (:capacity stats))
+            "Capacity should match what we set"))
+
+      ;; 6. CLEANUP: Kill process
+      (let [kill-result (headless/kill-headless! ling-id {:force? true})]
+        (is (true? (:killed? kill-result)) "Should report killed"))
+      (is (not (headless/headless? ling-id))
+          "Should be removed from registry after kill"))))
+
+(deftest ^:e2e headless-full-e2e-multi-dispatch-collect
+  (testing "Full E2E: spawn → multiple dispatches → collect all → verify ordering"
+    (let [ling-id (gen-id "e2e-multi")
+          messages ["MSG-FIRST-alpha" "MSG-SECOND-beta" "MSG-THIRD-gamma"]
+          result (headless/spawn-headless! ling-id
+                                           {:cwd "/tmp"
+                                            :claude-cmd "cat"
+                                            :buffer-capacity 500})]
+      (is (true? (:alive? (headless/headless-status ling-id))))
+
+      ;; Dispatch multiple messages sequentially
+      (doseq [msg messages]
+        (headless/dispatch-via-stdin! ling-id msg)
+        ;; Small delay so cat processes each line
+        (Thread/sleep 50))
+
+      ;; Collect with polling
+      (let [max-wait-ms 3000
+            deadline (+ (System/currentTimeMillis) max-wait-ms)
+            all-found? (loop []
+                         (let [stdout (headless/get-stdout ling-id)
+                               found (every? (fn [msg]
+                                               (some #(str/includes? % msg) stdout))
+                                             messages)]
+                           (if found
+                             true
+                             (if (< (System/currentTimeMillis) deadline)
+                               (do (Thread/sleep 100) (recur))
+                               false))))]
+        (is (true? all-found?)
+            (str "All messages should appear in stdout. Got: "
+                 (pr-str (headless/get-stdout ling-id)))))
+
+      ;; Verify ordering via timestamps (since-based retrieval)
+      (let [entries (headless/get-stdout-since ling-id 0)]
+        (is (vector? entries))
+        (when (>= (count entries) 3)
+          ;; Find indices of each message in the entries
+          (let [find-idx (fn [msg]
+                           (first (keep-indexed
+                                   (fn [i entry]
+                                     (when (str/includes? (:text entry) msg) i))
+                                   entries)))
+                idx-first (find-idx "MSG-FIRST")
+                idx-second (find-idx "MSG-SECOND")
+                idx-third (find-idx "MSG-THIRD")]
+            (when (and idx-first idx-second idx-third)
+              (is (< idx-first idx-second idx-third)
+                  "Messages should appear in dispatch order")))))
+
+      ;; Cleanup
+      (try (headless/kill-headless! ling-id {:force? true})
+           (catch Exception _ nil)))))
+
+(deftest ^:e2e headless-full-e2e-incremental-collect-since
+  (testing "Full E2E: spawn → dispatch → incremental collect via get-stdout-since"
+    (let [ling-id (gen-id "e2e-since")
+          _ (headless/spawn-headless! ling-id
+                                      {:cwd "/tmp"
+                                       :claude-cmd "cat"
+                                       :buffer-capacity 500})]
+
+      ;; Dispatch first batch
+      (headless/dispatch-via-stdin! ling-id "BATCH-ONE-alpha")
+      (Thread/sleep 300)
+
+      ;; Record cursor timestamp
+      (let [cursor-ts (System/currentTimeMillis)]
+        (Thread/sleep 50)  ;; Ensure next batch gets later timestamps
+
+        ;; Dispatch second batch
+        (headless/dispatch-via-stdin! ling-id "BATCH-TWO-beta")
+        (Thread/sleep 300)
+
+        ;; Collect only entries AFTER cursor (should only get BATCH-TWO)
+        (let [new-entries (headless/get-stdout-since ling-id cursor-ts)]
+          (is (vector? new-entries) "Should return a vector")
+          (when (seq new-entries)
+            (is (some #(str/includes? (:text %) "BATCH-TWO") new-entries)
+                "New entries should contain BATCH-TWO")
+            (is (not (some #(str/includes? (:text %) "BATCH-ONE") new-entries))
+                "New entries should NOT contain BATCH-ONE (it was before cursor)"))))
+
+      ;; Cleanup
+      (try (headless/kill-headless! ling-id {:force? true})
+           (catch Exception _ nil)))))
+
+(deftest ^:e2e headless-full-e2e-facade-lifecycle
+  (testing "Full E2E via HeadlessStrategy directly: spawn → dispatch → status → kill"
+    ;; Since 0.12.0, :headless maps to :agent-sdk in the Ling facade.
+    ;; This test exercises the HeadlessStrategy (ProcessBuilder) path directly
+    ;; to verify the real subprocess pipeline works end-to-end.
+    (let [ling-id (gen-id "e2e-facade")
+          strat (headless-strat/->headless-strategy)
+          test-msg "FACADE-E2E-hello-world"]
+
+      ;; 1. SPAWN: Use cat directly via HeadlessStrategy
+      (let [original-spawn headless/spawn-headless!]
+        (with-redefs [headless/spawn-headless!
+                      (fn [id opts]
+                        (original-spawn id (assoc opts :claude-cmd "cat")))
+                      envelope/build-spawn-envelope (fn [_ _] nil)]
+          (let [result (strategy/strategy-spawn! strat
+                                                 {:id ling-id :cwd "/tmp" :presets []}
+                                                 {:buffer-capacity 500})]
+            (is (= ling-id result) "spawn should return ling-id"))))
+
+      ;; Register in DataScript (manually, as strategy doesn't do this)
+      (ds-lings/add-slave!
+       ling-id {:status :idle
+                :depth 1
+                :cwd "/tmp"
+                :project-id "test-e2e"})
+      (ds-lings/update-slave!
+       ling-id {:ling/spawn-mode :headless
+                :ling/model "claude"
+                :ling/process-pid (:pid (headless/headless-status ling-id))
+                :ling/process-alive? true})
+
+      ;; 2. STATUS via HeadlessStrategy
+      (let [status (strategy/strategy-status strat {:id ling-id} (ds-queries/get-slave ling-id))]
+        (is (map? status))
+        (is (true? (:headless-alive? status))
+            "Headless should be alive"))
+
+      ;; 3. DISPATCH via HeadlessStrategy (stdin dispatch)
+      (let [result (strategy/strategy-dispatch! strat {:id ling-id} {:task test-msg})]
+        (is (true? result) "dispatch should return true"))
+
+      ;; 4. COLLECT stdout
+      (Thread/sleep 500)
+      (let [stdout (headless/get-stdout ling-id)]
+        (is (some #(str/includes? % test-msg) stdout)
+            (str "stdout should contain '" test-msg "', got: "
+                 (pr-str (vec (take-last 5 stdout))))))
+
+      ;; 5. KILL via HeadlessStrategy
+      (let [result (strategy/strategy-kill! strat {:id ling-id})]
+        (is (true? (:killed? result))))
+
+      ;; 6. VERIFY cleanup
+      (is (not (headless/headless? ling-id))
+          "Should be removed from process registry")
+      ;; Note: DataScript cleanup is the facade's responsibility (Ling.kill!),
+      ;; not the strategy's. We manually clean up since we're testing strategy directly.
+      (ds-lings/remove-slave! ling-id)
+      (is (nil? (ds-queries/get-slave ling-id))
+          "Should be removed from DataScript after manual cleanup"))))
+
 (comment
   ;; Run all E2E tests
-  (clojure.test/run-tests 'hive-mcp.agent.ling.headless-e2e-test))
+  (clojure.test/run-tests 'hive-mcp.agent.ling.headless-e2e-test)
+
+  ;; Run only the new E2E tests
+  (clojure.test/test-vars [#'headless-full-e2e-spawn-dispatch-collect-verify
+                           #'headless-full-e2e-multi-dispatch-collect
+                           #'headless-full-e2e-incremental-collect-since
+                           #'headless-full-e2e-facade-lifecycle]))

@@ -83,7 +83,7 @@
   "MCP tool definition for consolidated kanban command."
   {:name "kanban"
    :consolidated true
-   :description "Kanban task management: list (all/filtered tasks), create (new task), update (change status/modify task), status (board overview + milestones), sync (backends), plan-to-kanban (convert plan to tasks, supports plan_id or plan_path), batch-update (bulk status changes). Aliases (deprecated): move→update, roadmap→status, my-tasks→list. Use command='help' to list all."
+   :description "Kanban task management: list (all/filtered tasks), create (new task), update (change status/modify task), status (board overview + milestones), sync (backends), plan-to-kanban (convert plan to tasks, supports plan_id or plan_path), batch-update (bulk status changes). Aliases (deprecated): move→update, roadmap→status, my-tasks→list. Use command='help' to list all. HCR: list and status automatically aggregate descendant project tasks when project has children in the hierarchy tree."
    :inputSchema {:type "object"
                  :properties {"command" {:type "string"
                                          :enum ["list" "create" "move" "status" "update" "roadmap" "my-tasks" "sync" "plan-to-kanban" "batch-update" "help"]

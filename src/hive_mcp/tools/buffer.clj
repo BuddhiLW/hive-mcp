@@ -2,8 +2,7 @@
   "Buffer and Emacs interaction tools.
 
    Handles buffer operations, file operations, and hive-mcp.el integration."
-  (:require [hive-mcp.tools.catchup :as catchup]
-            [hive-mcp.emacsclient :as ec]
+  (:require [hive-mcp.emacsclient :as ec]
             [hive-mcp.telemetry :as telemetry]
             [hive-mcp.validation :as v]
             [hive-mcp.workflows.router :as router]
@@ -199,26 +198,34 @@
                   ")")
     :else (pr-str (str v))))
 
-(defn handle-mcp-run-workflow
-  "Run a user-defined workflow.
-   
-   Uses workflow router for execution decisions and hooks for lifecycle events.
-   This clean architecture replaces the previous hardcoded special cases.
-   
-   SOLID: SRP - This function orchestrates; routing/hooks are separate concerns.
-   CLARITY: C - Composition via hooks, not hardcoded special cases."
+(defn ^:deprecated handle-mcp-run-workflow
+  "DEPRECATED: Use `session {command: \"catchup\"}` or `workflow {command: \"catchup\"}` instead.
+
+   Run a user-defined workflow.
+   Delegates native workflows (catchup, wrap) to consolidated session handler.
+   Non-native workflows still route through elisp for backward compatibility.
+
+   Sunset: 2026-04-01"
   [{:keys [name args]}]
-  (log/info "mcp-run-workflow:" name)
+  (log/warn "DEPRECATED: mcp_run_workflow -> use session/workflow consolidated tool"
+            {:workflow name :sunset "2026-04-01"
+             :migration (case name
+                          "catchup" "session {command: \"catchup\", directory: \"...\"}"
+                          "wrap"    "session {command: \"wrap\", agent_id: \"...\"}"
+                          (str "workflow {command: \"" name "\"}"))})
   ;; Ensure hooks are registered
   (hooks/register-hooks!)
   ;; Dispatch before hook
   (hooks/dispatch-before name args)
-  ;; Route to appropriate executor
+  ;; Route: native workflows delegate to consolidated session handler
   (let [result (case (router/route-workflow name)
-                 :native (case name
-                           "catchup" (catchup/handle-native-catchup args)
-                           "wrap" (catchup/handle-native-wrap args)
-                           (catchup/handle-native-catchup args))
+                 :native (let [session-handler (requiring-resolve
+                                                'hive-mcp.tools.consolidated.session/handle-session)]
+                           (case name
+                             "catchup" (session-handler (assoc (or args {}) :command "catchup"))
+                             "wrap"    (session-handler (assoc (or args {}) :command "wrap"))
+                             ;; Fallback: treat unknown native as catchup (legacy behavior)
+                             (session-handler (assoc (or args {}) :command "catchup"))))
                  :elisp (if (hive-mcp-el-available?)
                           (let [elisp (if args
                                         (format "(json-encode (hive-mcp-api-run-workflow %s %s))"
@@ -371,7 +378,9 @@
     :handler handle-mcp-list-workflows}
 
    {:name "mcp_run_workflow"
-    :description "Run a user-defined workflow by name. Workflows can automate multi-step tasks. Requires hive-mcp.el. For 'catchup' workflow: pass directory in args to get correct project context."
+    :deprecated true
+    :sunset-date "2026-04-01"
+    :description "DEPRECATED: Use session {command: \"catchup\"} or workflow {command: \"catchup\"} instead. Run a user-defined workflow by name. For 'catchup': use session tool. For 'wrap': use session tool."
     :inputSchema {:type "object"
                   :properties {"name" {:type "string"
                                        :description "Name of the workflow to run"}

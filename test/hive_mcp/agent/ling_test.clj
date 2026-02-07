@@ -81,6 +81,40 @@
       (is (= presets (:presets ling))
           "All presets should be preserved"))))
 
+(deftest ling-factory-with-agents
+  (testing "->ling stores subagent definitions"
+    (let [agents {"code-reviewer" {:description "Reviews code"
+                                   :prompt "You review code"
+                                   :tools ["Read" "Grep"]
+                                   :model "sonnet"}}
+          ling (ling/->ling "agents-ling" {:cwd "/tmp"
+                                           :agents agents})]
+      (is (= agents (:agents ling))
+          "Agents map should be stored in Ling record"))))
+
+(deftest ling-factory-without-agents
+  (testing "->ling without agents has nil agents field"
+    (let [ling (ling/->ling "no-agents-ling" {:cwd "/tmp"})]
+      (is (nil? (:agents ling))
+          "Agents should be nil when not provided"))))
+
+(deftest ling-factory-agents-multiple-definitions
+  (testing "->ling stores multiple subagent definitions"
+    (let [agents {"analyzer" {:description "Analyzes code"
+                              :prompt "You analyze code"
+                              :tools ["Read" "Grep" "Glob"]}
+                  "tester" {:description "Writes tests"
+                            :prompt "You write tests"
+                            :tools ["Read" "Write" "Bash"]
+                            :model "sonnet"}
+                  "documenter" {:description "Writes docs"
+                                :prompt "You write documentation"}}
+          ling (ling/->ling "multi-agents-ling" {:cwd "/tmp"
+                                                 :agents agents})]
+      (is (= 3 (count (:agents ling))))
+      (is (= #{"analyzer" "tester" "documenter"}
+             (set (keys (:agents ling))))))))
+
 ;; =============================================================================
 ;; Section 2: spawn! Tests (with mocked elisp)
 ;; =============================================================================

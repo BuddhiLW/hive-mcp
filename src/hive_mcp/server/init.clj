@@ -397,3 +397,29 @@
     (when-let [stop-fn (resolve 'hive-mcp.scheduler.decay/stop!)]
       (stop-fn))
     (catch Exception _)))
+
+;; =============================================================================
+;; Workflow Engine Initialization
+;; =============================================================================
+
+(defn init-workflow-engine!
+  "Initialize FSM workflow registry and wire FSMWorkflowEngine as active engine.
+
+   1. Calls registry/init! to scan EDN specs and register all built-in handlers
+   2. Creates FSMWorkflowEngine and sets it as the active IWorkflowEngine
+
+   Must run AFTER embedding/memory services (handlers may need them at runtime).
+   Non-fatal: if initialization fails, NoopWorkflowEngine remains as fallback."
+  []
+  (try
+    (require 'hive-mcp.workflows.registry)
+    (require 'hive-mcp.workflows.fsm-engine)
+    (require 'hive-mcp.protocols.workflow)
+    (let [registry-init! (resolve 'hive-mcp.workflows.registry/init!)
+          create-engine  (resolve 'hive-mcp.workflows.fsm-engine/create-engine)
+          set-engine!    (resolve 'hive-mcp.protocols.workflow/set-workflow-engine!)]
+      (registry-init!)
+      (set-engine! (create-engine))
+      (log/info "FSM workflow engine initialized and wired as active IWorkflowEngine"))
+    (catch Exception e
+      (log/warn "Workflow engine initialization failed (non-fatal):" (.getMessage e)))))
