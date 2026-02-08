@@ -1,14 +1,9 @@
 (ns hive-mcp.agent.config
-  "DEPRECATED: OpenRouter configuration for agent delegation.
-
-   Prefer hive-agent configuration when hive-agent is on classpath.
-   This namespace is retained as fallback configuration for the legacy
-   drone execution path. See hive-mcp.agent.hive-agent-bridge.
+  "OpenRouter configuration for agent delegation.
 
    Manages task-type to model mappings and preset configurations.
    All state is held in atoms for runtime configurability via MCP."
-  (:require [hive-mcp.config :as global-config]
-            [taoensso.timbre :as log]))
+  (:require [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -169,24 +164,3 @@
      :task-type task-type
      :resolved-task-type resolved-task-type}))
 
-(defn ^:deprecated openrouter-backend
-  "DEPRECATED: Prefer hive-agent via hive-mcp.agent.hive-agent-bridge.
-
-   Create an OpenRouter backend for agent delegation.
-
-   Options:
-     :model     - Explicit model name (highest priority)
-     :preset    - Swarm preset name for auto task-type selection
-     :task-type - Task type for model selection (:coding :arch :docs)
-     :api-key   - OpenRouter API key (or set OPENROUTER_API_KEY env)
-
-   Priority: model > preset > task-type > :coding (default)"
-  [{:keys [model preset task-type api-key]
-    :or {task-type :coding}}]
-  (let [resolved-model (resolve-model {:model model :preset preset :task-type task-type})
-        key (or api-key (global-config/get-secret :openrouter-api-key))]
-    (when-not key
-      (throw (ex-info "OpenRouter API key required" {:env "OPENROUTER_API_KEY"})))
-    (log/debug "OpenRouter backend" {:preset preset :task-type task-type :model resolved-model})
-    (require 'hive-mcp.agent.openrouter)
-    ((resolve 'hive-mcp.agent.openrouter/->OpenRouterBackend) key resolved-model)))

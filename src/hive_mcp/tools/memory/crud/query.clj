@@ -110,6 +110,82 @@
              entries))))
 
 ;; ============================================================
+;; Scope Resolution for DB-level Filtering
+;; ============================================================
+
+(defn- resolve-project-ids-for-db
+  "Compute visible project-ids for DB-level $in filtering.
+   Pushes scope filtering to Chroma, replacing over-fetch-all strategy.
+   Returns vector of project-ids or nil for 'all' mode."
+  [scope project-id in-project? include-descendants?]
+  (cond
+    (nil? scope)
+    (let [visible (kg-scope/visible-scopes project-id)
+          filtered (if in-project?
+                     (vec (remove #(= "global" %) visible))
+                     visible)
+          descendants (when include-descendants?
+                        (kg-scope/descendant-scopes project-id))]
+      (vec (distinct (concat filtered descendants))))
+
+    (= scope "all") nil
+    (= scope "global") ["global"]
+
+    :else
+    (let [visible (kg-scope/visible-scopes scope)
+          descendants (when include-descendants?
+                        (kg-scope/descendant-scopes scope))]
+      (vec (distinct (concat visible descendants))))))
+
+(defn- fetch-entries
+  "Fetch entries from Chroma or plans collection with over-fetch factor."
+  [type project-ids-for-db tags limit-val include-descendants?]
+  (let [plan? (= type "plan")
+        over-fetch-factor (if include-descendants? 4 3)]
+    (if plan?
+      (plans/query-plans :project-id (first project-ids-for-db)
+                         :limit (* limit-val over-fetch-factor)
+                         :tags tags)
+      (chroma/query-entries :type type
+                            :project-ids project-ids-for-db
+                            :limit (* limit-val over-fetch-factor)))))
+
+(defn- apply-scope-filter
+  "Apply in-memory scope filter as belt-and-suspenders safety net.
+   HCR Wave 4: respects include-descendants? flag."
+  [entries scope project-id include-descendants?]
+  (cond
+    (nil? scope)
+    (apply-auto-scope-filter entries project-id include-descendants?)
+
+    (= scope "all")
+    entries
+
+    :else
+    (let [scope-filter (if include-descendants?
+                         (kg-scope/full-hierarchy-scope-tags scope)
+                         (scope/derive-hierarchy-scope-filter scope))]
+      (if scope-filter
+        (filter #(scope/matches-hierarchy-scopes? % scope-filter) entries)
+        entries))))
+
+(defn- apply-post-filters
+  "Chain tag, duration, and limit filters on scope-filtered entries."
+  [entries tags duration limit-val]
+  (->> entries
+       (apply-tag-filter tags)
+       (apply-duration-filter duration)
+       (take limit-val)))
+
+(defn- format-query-results
+  "Format results and record co-access pattern asynchronously."
+  [results project-id metadata-only?]
+  (record-batch-co-access! (mapv :id results) project-id)
+  (if metadata-only?
+    (mcp-json (mapv fmt/entry->metadata results))
+    (mcp-json (mapv fmt/entry->json-alist results))))
+
+;; ============================================================
 ;; Query Handler
 ;; ============================================================
 
@@ -149,81 +225,13 @@
     (try
       (let [limit-val (coerce-int! limit :limit 20)]
         (with-chroma
-          (let [project-id (scope/get-current-project-id directory)
+          (let [project-id  (scope/get-current-project-id directory)
                 in-project? (and project-id (not= project-id "global"))
-                ;; Compute visible project-ids for DB-level $in filtering
-                ;; Pushes scope filtering to Chroma, replacing over-fetch-all strategy
-                project-ids-for-db
-                (cond
-                  ;; Auto mode: visible scopes for current project
-                  (nil? scope)
-                  (let [visible (kg-scope/visible-scopes project-id)
-                        ;; Exclude "global" when in project context (scope leak fix)
-                        filtered (if in-project?
-                                   (vec (remove #(= "global" %) visible))
-                                   visible)
-                        ;; Include descendants if requested (HCR Wave 4)
-                        descendants (when include-descendants?
-                                      (kg-scope/descendant-scopes project-id))]
-                    (vec (distinct (concat filtered descendants))))
-
-                  ;; "all" mode: no DB-level filter
-                  (= scope "all")
-                  nil
-
-                  ;; "global" mode: only global entries
-                  (= scope "global")
-                  ["global"]
-
-                  ;; Specific scope: visible scopes from that scope
-                  :else
-                  (let [visible (kg-scope/visible-scopes scope)
-                        descendants (when include-descendants?
-                                      (kg-scope/descendant-scopes scope))]
-                    (vec (distinct (concat visible descendants)))))
-                ;; Route type=plan to plans collection
-                plan? (= type "plan")
-                ;; Reduced over-fetch: DB-level $in filtering means less waste
-                over-fetch-factor (if include-descendants? 4 3)
-                entries (if plan?
-                          (plans/query-plans :project-id (first project-ids-for-db)
-                                             :limit (* limit-val over-fetch-factor)
-                                             :tags tags)
-                          (chroma/query-entries :type type
-                                                :project-ids project-ids-for-db
-                                                :limit (* limit-val over-fetch-factor)))
-                ;; Safety net: apply in-memory scope filter (belt-and-suspenders)
-                scope-filtered (cond
-                                 ;; Auto mode (nil scope): include project + ancestors
-                                 ;; HCR Wave 4: pass include-descendants? flag
-                                 (nil? scope)
-                                 (apply-auto-scope-filter entries project-id include-descendants?)
-
-                                 ;; "all" mode: no filtering
-                                 (= scope "all")
-                                 entries
-
-                                 ;; Specific scope: use hierarchical filter
-                                 ;; HCR Wave 4: when include_descendants, use full hierarchy
-                                 :else
-                                 (let [scope-filter (if include-descendants?
-                                                      (kg-scope/full-hierarchy-scope-tags scope)
-                                                      (scope/derive-hierarchy-scope-filter scope))]
-                                   (if scope-filter
-                                     (filter #(scope/matches-hierarchy-scopes? % scope-filter) entries)
-                                     entries)))
-                ;; Apply tag filter
-                tag-filtered (apply-tag-filter scope-filtered tags)
-                ;; Apply duration filter
-                dur-filtered (apply-duration-filter tag-filtered duration)
-                ;; Apply limit
-                results (take limit-val dur-filtered)]
-            ;; Record co-access pattern asynchronously (CLARITY-Y: non-blocking)
-            (record-batch-co-access! (mapv :id results) project-id)
-            ;; Format based on verbosity
-            (if metadata-only?
-              (mcp-json (mapv fmt/entry->metadata results))
-              (mcp-json (mapv fmt/entry->json-alist results))))))
+                project-ids (resolve-project-ids-for-db scope project-id in-project? include-descendants?)
+                entries     (fetch-entries type project-ids tags limit-val include-descendants?)
+                filtered    (apply-scope-filter entries scope project-id include-descendants?)
+                results     (apply-post-filters filtered tags duration limit-val)]
+            (format-query-results results project-id metadata-only?))))
       (catch clojure.lang.ExceptionInfo e
         (if (= :coercion-error (:type (ex-data e)))
           (mcp-error (.getMessage e))

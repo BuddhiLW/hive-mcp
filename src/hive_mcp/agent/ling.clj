@@ -33,7 +33,6 @@
             [hive-mcp.agent.hints :as hints]
             [hive-mcp.swarm.datascript.lings :as ds-lings]
             [hive-mcp.swarm.datascript.queries :as ds-queries]
-            [hive-mcp.swarm.datascript.claims :as ds-claims]
             [hive-mcp.swarm.datascript.schema :as schema]
             [hive-mcp.protocols.dispatch :as dispatch-ctx]
             [taoensso.timbre :as log]))
@@ -334,7 +333,7 @@
             (do
               (log/warn "File already claimed by another agent"
                         {:file f :held-by held-by :requesting id})
-              (ds-claims/add-to-wait-queue! id f))
+              (ds-lings/add-to-wait-queue! id f))
             (ds-lings/claim-file! f id task-id))))
       (log/info "Files claimed" {:ling-id id :count (count files)})))
 

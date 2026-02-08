@@ -7,29 +7,7 @@
             [hive-mcp.tools.cider :as cider]
             [hive-mcp.tools.kanban :as kanban]
             [hive-mcp.tools.swarm :as swarm]
-            [hive-mcp.tools.org :as org]
-            [hive-mcp.org-clj.parser :as parser]
-            [hive-mcp.org-clj.render :as render]
             [hive-mcp.prompt-capture :as pc]))
-
-;; =============================================================================
-;; BUG #1: parser/parse-file does not exist (HIGH)
-;; Expected: A convenience function to parse a file directly
-;; Actual: Only parse-document exists, requiring manual slurp
-;; =============================================================================
-
-(deftest test-parse-file-exists
-  (testing "BUG #1: parser namespace should have parse-file function"
-    (is (ifn? parser/parse-file)
-        "parse-file function should exist in parser namespace")))
-
-(deftest test-parse-file-works
-  (testing "BUG #1: parse-file should parse org file directly from path"
-    (let [test-file (str (System/getProperty "user.dir") "/kanban.org")
-          result (parser/parse-file test-file)]
-      (is (map? result) "parse-file should return a map")
-      (is (contains? result :headlines) "Result should contain :headlines")
-      (is (pos? (count (:headlines result))) "Should have parsed headlines"))))
 
 ;; =============================================================================
 ;; BUG #2: CIDER eval returns feature name instead of result (HIGH)
@@ -71,26 +49,6 @@
             (str "Entry should have :created, got nil for: " (pr-str (select-keys entry [:prompt]))))
         (is (some? (:source entry))
             (str "Entry should have :source, got nil for: " (pr-str (select-keys entry [:prompt]))))))))
-
-;; =============================================================================
-;; BUG #4: Render stats vs column count mismatch (LOW)
-;; Expected: Stats line and column headers should show same counts
-;; Actual: Stats shows "4 todo" but column header shows "(54)"
-;; =============================================================================
-
-(deftest test-render-stats-match-columns
-  (testing "BUG #4: Kanban render stats should match column counts"
-    (let [test-file (str (System/getProperty "user.dir") "/kanban.org")
-          output (render/render-to-terminal test-file)]
-      ;; Extract stats line
-      (let [stats-match (re-find #"(\d+) todo" output)
-            column-match (re-find #"TODO \((\d+)\)" output)]
-        (when (and stats-match column-match)
-          (let [stats-count (parse-long (second stats-match))
-                column-count (parse-long (second column-match))]
-            (is (= stats-count column-count)
-                (format "Stats todo count (%d) should match column header count (%d)"
-                        stats-count column-count))))))))
 
 ;; =============================================================================
 ;; BUG #5: handle-mcp-kanban-status times out (HIGH)
@@ -186,31 +144,6 @@
       ;; Should either succeed or fail fast, never hang
       (is (not (:timeout result))
           "cider_eval_silent should complete within 10 seconds, not hang"))))
-
-;; =============================================================================
-;; BUG #10: org_kanban_native_status stats mismatch (MEDIUM) - OPEN
-;; Expected: stats.todo should match (count by_status.todo)
-;; Actual: stats.todo shows 4, by_status.todo has 54 items
-;; =============================================================================
-
-(deftest test-org-kanban-native-stats-match-array
-  (testing "BUG #10: org_kanban_native_status stats should match by_status arrays"
-    (let [test-file (str (System/getProperty "user.dir") "/kanban.org")
-          result (org/handle-org-kanban-native-status {:file_path test-file})]
-      (when-not (:isError result)
-        (let [parsed (clojure.data.json/read-str (:text result) :key-fn keyword)
-              stats (:stats parsed)
-              by-status (:by_status parsed)]
-          ;; Each stat count should match the corresponding array length
-          (is (= (:todo stats) (count (:todo by-status)))
-              (format "stats.todo (%d) should equal by_status.todo count (%d)"
-                      (:todo stats) (count (:todo by-status))))
-          (is (= (:in-progress stats) (count (:in_progress by-status)))
-              (format "stats.in-progress (%d) should equal by_status.in_progress count (%d)"
-                      (:in-progress stats) (count (:in_progress by-status))))
-          (is (= (:done stats) (count (:done by-status)))
-              (format "stats.done (%d) should equal by_status.done count (%d)"
-                      (:done stats) (count (:done by-status)))))))))
 
 ;; =============================================================================
 ;; BUG #9: claude-context search hangs (HIGH) - OPEN

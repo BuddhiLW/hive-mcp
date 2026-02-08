@@ -25,10 +25,10 @@
 ;; =============================================================================
 
 (defn- get-delegate-fn
-  "Lazily resolve hive-mcp.agent/delegate! to avoid circular dep."
+  "Lazily resolve hive-mcp.agent/delegate-agentic-drone! to avoid circular dep."
   []
   (require 'hive-mcp.agent)
-  (resolve 'hive-mcp.agent/delegate!))
+  (resolve 'hive-mcp.agent/delegate-agentic-drone!))
 
 ;; =============================================================================
 ;; Dispatch Context Builder

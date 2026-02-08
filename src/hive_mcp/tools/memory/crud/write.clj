@@ -83,6 +83,87 @@
           (create-edges kg_refines :refines)))))
 
 ;; ============================================================
+;; Tag Building
+;; ============================================================
+
+(defn- build-entry-tags
+  "Build complete tags vector: base → agent → KG markers → scope."
+  [tags-vec agent-id kg-vecs project-id]
+  (let [agent-tag (when agent-id (str "agent:" agent-id))
+        tags-with-agent (if agent-tag (conj tags-vec agent-tag) tags-vec)
+        {:keys [kg-implements-vec kg-supersedes-vec kg-depends-on-vec kg-refines-vec]} kg-vecs
+        kg-tags (cond-> []
+                  (seq kg-implements-vec) (conj "kg:has-implements")
+                  (seq kg-supersedes-vec) (conj "kg:has-supersedes")
+                  (seq kg-depends-on-vec) (conj "kg:has-depends-on")
+                  (seq kg-refines-vec) (conj "kg:has-refines"))
+        tags-with-kg (into tags-with-agent kg-tags)]
+    (scope/inject-project-scope tags-with-kg project-id)))
+
+;; ============================================================
+;; Plan Gate Validation
+;; ============================================================
+
+(defn- validate-plan-gate!
+  "FSM Gate: validate plan content before storage.
+   Ensures plan-to-kanban compatibility at write time.
+   Throws ex-info on gate rejection."
+  [content]
+  (when (plan-gate/plan-content? content)
+    (let [gate-result (plan-gate/validate-for-storage content)]
+      (when-not (:valid? gate-result)
+        (throw (ex-info (plan-gate/format-gate-error gate-result)
+                        {:type :plan-gate-rejected
+                         :phase (:phase gate-result)
+                         :errors (:errors gate-result)}))))))
+
+;; ============================================================
+;; Entry Indexing
+;; ============================================================
+
+(defn- index-entry!
+  "Index entry in appropriate collection (plans or memory).
+   Plans route to OpenRouter 4096-dim collection, memory to Ollama 768-dim."
+  [plan? {:keys [type content tags-with-scope content-hash duration-str
+                 expires project-id abstraction-level knowledge-gaps agent-id]}]
+  (if plan?
+    (plans/index-plan!
+     {:type type :content content :tags tags-with-scope
+      :content-hash content-hash :duration duration-str
+      :expires (or expires "") :project-id project-id
+      :abstraction-level abstraction-level
+      :knowledge-gaps knowledge-gaps :agent-id agent-id})
+    (chroma/index-memory-entry!
+     {:type type :content content :tags tags-with-scope
+      :content-hash content-hash :duration duration-str
+      :expires (or expires "") :project-id project-id
+      :abstraction-level abstraction-level
+      :knowledge-gaps knowledge-gaps})))
+
+;; ============================================================
+;; Post-Index Finalization
+;; ============================================================
+
+(defn- finalize-entry!
+  "Wire KG edges, fetch created entry, notify Olympus, format response."
+  [entry-id plan? kg-params project-id agent-id
+   {:keys [tags-with-scope type knowledge-gaps]}]
+  (let [edge-ids (create-kg-edges! entry-id kg-params project-id agent-id)
+        _ (when (and (seq edge-ids) (not plan?))
+            (chroma/update-entry! entry-id {:kg-outgoing edge-ids}))
+        created (if plan? (plans/get-plan entry-id) (chroma/get-entry-by-id entry-id))]
+    (log/info "Created memory entry:" entry-id
+              (when (seq edge-ids) (str " with " (count edge-ids) " KG edges"))
+              (when (seq knowledge-gaps) (str " gaps:" (count knowledge-gaps))))
+    (try
+      (when-let [publish-fn (requiring-resolve 'hive-mcp.channel/publish!)]
+        (publish-fn {:type :memory-added :id entry-id :memory-type type
+                     :tags tags-with-scope :project-id project-id}))
+      (catch Exception _ nil))
+    (mcp-json (cond-> (fmt/entry->json-alist created)
+                (seq edge-ids) (assoc :kg_edges_created edge-ids)))))
+
+;; ============================================================
 ;; Add Handler
 ;; ============================================================
 
@@ -111,34 +192,21 @@
   (try
     (if (and abstraction_level (not (kg-schema/valid-abstraction-level? abstraction_level)))
       (mcp-error (str "Invalid abstraction_level: " abstraction_level))
-      (let [;; ELM Principle: Coerce array parameters with helpful error messages
-            tags-vec (coerce-vec! tags :tags [])
-            kg-implements-vec (coerce-vec! kg_implements :kg_implements [])
-            kg-supersedes-vec (coerce-vec! kg_supersedes :kg_supersedes [])
-            kg-depends-on-vec (coerce-vec! kg_depends_on :kg_depends_on [])
-            kg-refines-vec (coerce-vec! kg_refines :kg_refines [])
+      (let [tags-vec (coerce-vec! tags :tags [])
+            kg-vecs {:kg-implements-vec (coerce-vec! kg_implements :kg_implements [])
+                     :kg-supersedes-vec (coerce-vec! kg_supersedes :kg_supersedes [])
+                     :kg-depends-on-vec (coerce-vec! kg_depends_on :kg_depends_on [])
+                     :kg-refines-vec    (coerce-vec! kg_refines :kg_refines [])}
             directory (or directory (ctx/current-directory))
-            ;; P1.5: Auto-classify abstraction level from type + content + tags
             abstraction-level (or abstraction_level
                                   (classify/classify-abstraction-level type content tags-vec))
-            ;; P2.8: Auto-detect knowledge gaps from content
             knowledge-gaps (gaps/extract-knowledge-gaps content)]
         (log/info "mcp-memory-add:" type "directory:" directory "agent_id:" agent_id)
         (with-chroma
           (let [project-id (scope/get-current-project-id directory)
-                agent-id (or agent_id
-                             (ctx/current-agent-id)
+                agent-id (or agent_id (ctx/current-agent-id)
                              (System/getenv "CLAUDE_SWARM_SLAVE_ID"))
-                agent-tag (when agent-id (str "agent:" agent-id))
-                base-tags tags-vec
-                tags-with-agent (if agent-tag (conj base-tags agent-tag) base-tags)
-                kg-tags (cond-> []
-                          (seq kg-implements-vec) (conj "kg:has-implements")
-                          (seq kg-supersedes-vec) (conj "kg:has-supersedes")
-                          (seq kg-depends-on-vec) (conj "kg:has-depends-on")
-                          (seq kg-refines-vec) (conj "kg:has-refines"))
-                tags-with-kg (into tags-with-agent kg-tags)
-                tags-with-scope (scope/inject-project-scope tags-with-kg project-id)
+                tags-with-scope (build-entry-tags tags-vec agent-id kg-vecs project-id)
                 content-hash (chroma/content-hash content)
                 duration-str (or duration "long")
                 expires (dur/calculate-expires duration-str)
@@ -148,68 +216,19 @@
                     updated (chroma/update-entry! (:id existing) {:tags merged-tags})]
                 (log/info "Duplicate found, merged tags:" (:id existing))
                 (mcp-json (fmt/entry->json-alist updated)))
-              (let [;; Route type=plan to plans collection (OpenRouter, 4096 dims)
-                    ;; Regular types go to hive-mcp-memory (Ollama, 768 dims)
-                    plan? (= type "plan")
-
-                    ;; FSM Gate: validate plan content before storage
-                    ;; Ensures plan-to-kanban compatibility at write time
-                    ;; Only applies when content looks like a structured plan
-                    _ (when (and plan? (plan-gate/plan-content? content))
-                        (let [gate-result (plan-gate/validate-for-storage content)]
-                          (when-not (:valid? gate-result)
-                            (throw (ex-info (plan-gate/format-gate-error gate-result)
-                                            {:type :plan-gate-rejected
-                                             :phase (:phase gate-result)
-                                             :errors (:errors gate-result)})))))
-
-                    entry-id (if plan?
-                               (plans/index-plan!
-                                {:type type
-                                 :content content
-                                 :tags tags-with-scope
-                                 :content-hash content-hash
-                                 :duration duration-str
-                                 :expires (or expires "")
-                                 :project-id project-id
-                                 :abstraction-level abstraction-level
-                                 :knowledge-gaps knowledge-gaps
-                                 :agent-id agent-id})
-                               (chroma/index-memory-entry!
-                                {:type type
-                                 :content content
-                                 :tags tags-with-scope
-                                 :content-hash content-hash
-                                 :duration duration-str
-                                 :expires (or expires "")
-                                 :project-id project-id
-                                 :abstraction-level abstraction-level
-                                 :knowledge-gaps knowledge-gaps}))
-                    kg-params {:kg_implements kg-implements-vec
-                               :kg_supersedes kg-supersedes-vec
-                               :kg_depends_on kg-depends-on-vec
-                               :kg_refines kg-refines-vec}
-                    edge-ids (create-kg-edges! entry-id kg-params project-id agent-id)
-                    _ (when (and (seq edge-ids) (not plan?))
-                        (chroma/update-entry! entry-id {:kg-outgoing edge-ids}))
-                    created (if plan?
-                              (plans/get-plan entry-id)
-                              (chroma/get-entry-by-id entry-id))]
-                (log/info "Created memory entry:" entry-id
-                          (when (seq edge-ids) (str " with " (count edge-ids) " KG edges"))
-                          (when (seq knowledge-gaps) (str " gaps:" (count knowledge-gaps))))
-                ;; Notify Olympus Web UI of new memory entry
-                ;; Uses channel/publish! so olympus.clj subscription picks it up
-                (try
-                  (when-let [publish-fn (requiring-resolve 'hive-mcp.channel/publish!)]
-                    (publish-fn {:type :memory-added
-                                 :id entry-id
-                                 :memory-type type
-                                 :tags tags-with-scope
-                                 :project-id project-id}))
-                  (catch Exception _ nil))
-                (mcp-json (cond-> (fmt/entry->json-alist created)
-                            (seq edge-ids) (assoc :kg_edges_created edge-ids)))))))))
+              (let [plan? (= type "plan")
+                    _ (when plan? (validate-plan-gate! content))
+                    entry-ctx {:type type :content content :tags-with-scope tags-with-scope
+                               :content-hash content-hash :duration-str duration-str
+                               :expires expires :project-id project-id
+                               :abstraction-level abstraction-level
+                               :knowledge-gaps knowledge-gaps :agent-id agent-id}
+                    entry-id (index-entry! plan? entry-ctx)
+                    kg-params {:kg_implements (:kg-implements-vec kg-vecs)
+                               :kg_supersedes (:kg-supersedes-vec kg-vecs)
+                               :kg_depends_on (:kg-depends-on-vec kg-vecs)
+                               :kg_refines    (:kg-refines-vec kg-vecs)}]
+                (finalize-entry! entry-id plan? kg-params project-id agent-id entry-ctx)))))))
     (catch clojure.lang.ExceptionInfo e
       (if (#{:coercion-error :embedding-too-long :plan-gate-rejected} (:type (ex-data e)))
         (mcp-error (.getMessage e))

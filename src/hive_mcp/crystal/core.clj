@@ -22,17 +22,14 @@
 
 (def recall-weights
   "Weights for different recall contexts.
-   Higher = more meaningful signal for promotion.
-
-   Includes behavioral signals from signature.clj that track
-   actual task outcomes after memory recall."
+   Higher = more meaningful signal for promotion."
   {:catchup-structural 0.1 ; Always loaded at catchup - noise
    :wrap-structural 0.1 ; Always checked at wrap - noise
    :explicit-reference 1.0 ; LLM explicitly cited in reasoning
    :cross-session 2.0 ; Referenced from different session
    :cross-project 3.0 ; Referenced from different project
    :user-feedback 5.0 ; Human marked as helpful
-   ;; Behavioral signals (from signature.clj outcome tracking)
+   ;; Behavioral signals (outcome tracking)
    :behavioral-success 2.0 ; Task completed successfully after recall
    :behavioral-failure 0.0 ; Task failed after recall (no penalty, just no boost)
    :behavioral-correction -2.0}) ; User had to correct agent work (demote signal)
@@ -104,7 +101,7 @@
   "Determine if a memory entry should be promoted.
 
    entry: {:id :duration :recalls [...] :tags [...]}
-   opts: {:behavioral-adjustment float  - Optional adjustment from signature tracking
+   opts: {:behavioral-adjustment float  - Optional adjustment from behavioral tracking
           :cross-pollination-boost float - Optional boost from cross-project access (W5)}
 
    Returns: {:promote? bool :current-score float :threshold float :next-duration keyword}"
@@ -137,7 +134,7 @@
    - Entry has been recalled but consistently led to failures
 
    entry: {:id :duration :recalls [...]}
-   behavioral-adjustment: float from signature.clj compute-promotion-adjustment
+   behavioral-adjustment: float from behavioral outcome tracking
 
    Returns: {:demote? bool :reason keyword :prev-duration keyword}"
   [{:keys [duration] :as _entry} behavioral-adjustment]

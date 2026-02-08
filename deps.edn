@@ -46,7 +46,7 @@
         ;; It will log to its own backend, not SLF4J
         com.taoensso/timbre {:mvn/version "6.8.0"}
 
-        ;; Schema validation for org-clj
+        ;; Schema validation (malli)
         metosin/malli {:mvn/version "0.16.4"}
 
         ;; Chroma vector database client - BuddhiLW fork with v2 API support
@@ -156,7 +156,8 @@
   {:extra-deps {clj-python/libpython-clj {:mvn/version "2.026"}}}
 
   ;; Local dev overrides for sibling :local/root projects.
-  ;; Usage: clj -A:dev -Sdeps "$(cat deps.local.edn)"
-  ;; Create deps.local.edn (gitignored) with override-deps, e.g.:
-  ;;   {:override-deps {io.github.hive-agi/hive-events {:local/root "../hive-events"}}}
+  ;; start-mcp.sh auto-merges deps.local.edn via -Sdeps when present.
+  ;; Create deps.local.edn (gitignored) with :deps key, e.g.:
+  ;;   {:deps {io.github.hive-agi/hive-events {:local/root "../hive-events"}}}
+  ;; NOTE: Use :deps (top-level key), NOT :override-deps (alias-level only).
   }}

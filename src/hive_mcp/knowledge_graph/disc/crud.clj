@@ -67,14 +67,6 @@
                            path)]
     (ffirst result)))
 
-(defn get-disc-by-id
-  "Get disc entity by entity ID.
-   Returns entity map or nil if not found."
-  [eid]
-  (when-let [e (conn/entity eid)]
-    (when (:disc/path e)
-      (into {} e))))
-
 (defn disc-exists?
   "Check if a disc entity exists for the given path."
   [path]
@@ -121,49 +113,6 @@
                                 :where [?e :disc/path _]]))]
     (map first results)))
 
-(defn get-stale-discs
-  "Get disc entities with content hash mismatch.
-   Computes current file hash and compares with stored hash.
-   Returns seq of {:disc ... :current-hash ... :stale? true/false}."
-  [& {:keys [project-id]}]
-  (let [discs (get-all-discs :project-id project-id)]
-    (->> discs
-         (map (fn [disc]
-                (let [path (:disc/path disc)
-                      stored-hash (:disc/content-hash disc)
-                      {:keys [hash exists?]} (hash/file-content-hash path)
-                      stale? (or (not exists?)
-                                 (and hash stored-hash (not= hash stored-hash)))]
-                  {:disc disc
-                   :current-hash hash
-                   :exists? exists?
-                   :stale? stale?})))
-         (filter :stale?)
-         vec)))
-
-(defn refresh-disc!
-  "Refresh a disc entity by re-reading the file.
-   Updates content-hash and analyzed-at.
-   Returns {:status :refreshed|:not-found|:file-missing :disc ...}."
-  [path & {:keys [git-commit]}]
-  {:pre [(string? path)]}
-  (let [{:keys [hash exists?]} (hash/file-content-hash path)]
-    (cond
-      (not exists?)
-      {:status :file-missing :path path}
-
-      :else
-      (let [updates {:disc/content-hash hash
-                     :disc/analyzed-at (java.util.Date.)}
-            updates (if git-commit
-                      (assoc updates :disc/git-commit git-commit)
-                      updates)]
-        (if (disc-exists? path)
-          (do (update-disc! path updates)
-              {:status :refreshed :disc (get-disc path)})
-          (do (add-disc! (merge {:path path :content-hash hash} updates))
-              {:status :created :disc (get-disc path)}))))))
-
 ;; =============================================================================
 ;; Read Tracking
 ;; =============================================================================
@@ -194,17 +143,3 @@
         (update-disc! path {:disc/last-read-at now
                             :disc/read-count 1})
         (get-disc path)))))
-
-;; =============================================================================
-;; Disc Statistics
-;; =============================================================================
-
-(defn disc-stats
-  "Get statistics about disc entities.
-   Returns {:total int :by-project {...} :stale-count int}."
-  []
-  (let [all-discs (get-all-discs)
-        stale (get-stale-discs)]
-    {:total (count all-discs)
-     :by-project (frequencies (map :disc/project-id all-discs))
-     :stale-count (count stale)}))

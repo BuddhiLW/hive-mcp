@@ -15,7 +15,6 @@
    SOLID: SRP - Single responsibility for team composition
    CLARITY: R - Represented intent via typed task selection"
   (:require [hive-mcp.tools.swarm.core :as core]
-            [hive-mcp.specs.agent :as specs]
             [clojure.string :as str]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -160,7 +159,7 @@
                     task_type)]
       (cond
         ;; Validate task type
-        (not (specs/valid-team-task-type? task-kw))
+        (not (#{:implementation :refactoring :greenfield :simplification :quality-review :documentation} task-kw))
         (core/mcp-error
          (format "Invalid task_type '%s'. Valid types: implementation, refactoring, greenfield, simplification, quality-review, documentation"
                  task_type))

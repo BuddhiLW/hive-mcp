@@ -2,27 +2,16 @@
   "Domain-driven hooks system for event-driven workflow automation.
 
    Implements a registry-based hook system where handlers can be registered
-   for specific events and triggered with context. All hook events can be
-   emitted through the hivemind shout channel for Emacs integration.
+   for specific events and triggered with context.
 
    Architecture:
    - HookRegistry: Atom containing map of event-type -> [handlers]
    - Handlers: Functions (fn [context]) that receive event context
-   - Events: Keywords from the hook-events set
-
-   SOLID Principles Applied:
-   - SRP: Each function has single responsibility
-   - OCP: New events/handlers via registration, not modification
-   - DIP: Depends on abstractions (fn interface), not concretions
-
-   CLARITY Framework:
-   - Inputs guarded: All public functions validate inputs
-   - Yield safe failure: Handler errors don't stop other handlers"
+   - Events: Keywords from the hook-events set"
   (:require [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
-
 
 ;; =============================================================================
 ;; Hook Events Definition
@@ -102,39 +91,6 @@
   (log/debug "Registered hook for" event)
   nil)
 
-(defn unregister-hook
-  "Remove a specific handler from an event.
-
-   Arguments:
-   - registry: Atom from create-registry
-   - event: Keyword from hook-events set
-   - handler: The exact function reference to remove
-
-   Example:
-     (unregister-hook registry :task-complete my-handler)"
-  [registry event handler]
-  (validate-event-type! event)
-  (swap! registry update event (fn [handlers]
-                                 (vec (remove #(= % handler) handlers))))
-  (log/debug "Unregistered hook for" event)
-  nil)
-
-;; =============================================================================
-;; Hook Listing
-;; =============================================================================
-
-(defn list-hooks
-  "List all handlers registered for an event.
-
-   Arguments:
-   - registry: Atom from create-registry
-   - event: Keyword from hook-events set
-
-   Returns: Vector of handler functions"
-  [registry event]
-  (validate-event-type! event)
-  (get @registry event []))
-
 ;; =============================================================================
 ;; Hook Triggering (CLARITY: Yield safe failure)
 ;; =============================================================================
@@ -173,92 +129,3 @@
     (log/debug "Triggered" (count handlers) "hooks for" event)
     (mapv #(if (:error %) % (:result %)) results)))
 
-;; =============================================================================
-;; Hook Clearing
-;; =============================================================================
-
-(defn clear-hooks
-  "Remove all handlers for a specific event.
-
-   Arguments:
-   - registry: Atom from create-registry
-   - event: Keyword from hook-events set"
-  [registry event]
-  (validate-event-type! event)
-  (swap! registry assoc event [])
-  (log/debug "Cleared all hooks for" event)
-  nil)
-
-(defn clear-all-hooks
-  "Remove all handlers from all events in the registry.
-
-   Arguments:
-   - registry: Atom from create-registry"
-  [registry]
-  (reset! registry (into {} (map (fn [event] [event []]) hook-events)))
-  (log/debug "Cleared all hooks")
-  nil)
-
-;; =============================================================================
-;; Default Hooks
-;; =============================================================================
-
-(def default-hooks
-  "Map of event -> [default handler fns].
-   These are registered automatically by create-registry-with-defaults."
-  {:task-complete [(fn [ctx]
-                     (log/info "Task completed:" (:task-id ctx "unknown")))]
-   :error-occurred [(fn [ctx]
-                      (log/error "Error in task:" (:task-id ctx "unknown")
-                                 "-" (:error ctx "no message")))]})
-
-(defn create-registry-with-defaults
-  "Creates a registry with default handlers pre-registered.
-
-   Returns: Atom containing registry with default-hooks applied"
-  []
-  (let [registry (create-registry)]
-    (doseq [[event handlers] default-hooks
-            handler handlers]
-      (register-hook registry event handler))
-    registry))
-
-;; =============================================================================
-;; Hook Event Emission (Integration with Hivemind)
-;; =============================================================================
-
-(defn create-hook-event-payload
-  "Create a properly structured payload for hook event emission.
-
-   Arguments:
-   - event: Keyword from hook-events set
-   - context: Map of event context data
-
-   Returns: Map with :event and :context keys
-
-   Throws: ExceptionInfo if event is invalid"
-  [event context]
-  (validate-event-type! event)
-  {:event event
-   :context context
-   :timestamp (System/currentTimeMillis)})
-
-(defn emit-hook-event!
-  "Emit a hook event through the hivemind shout channel.
-
-   This allows Emacs to receive hook notifications for UI updates
-   or further processing.
-
-   Arguments:
-   - hivemind-shout-fn: The hivemind/shout! function (dependency injection)
-   - agent-id: Identifier for the emitting agent
-   - event: Keyword from hook-events set
-   - context: Map of event context data
-
-   Example:
-     (emit-hook-event! hivemind/shout! \"agent-1\" :task-complete
-       {:task-id \"123\" :result :success})"
-  [hivemind-shout-fn agent-id event context]
-  (let [payload (create-hook-event-payload event context)]
-    (hivemind-shout-fn agent-id :hook-event payload)
-    payload))

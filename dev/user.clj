@@ -22,8 +22,6 @@
   "Enable spec checking on all fdef'd functions.
    Validates args on every call - useful for catching contract violations."
   []
-  (require '[hive-mcp.specs.memory :as mem-spec] :reload)
-  (require '[hive-mcp.specs.agent :as agent-spec] :reload)
   (let [instrumented (stest/instrument)]
     (reset! instrumented? true)
     (println "Instrumented" (count instrumented) "functions")
@@ -37,10 +35,8 @@
   (println "Specs unstrumented"))
 
 (defn check-specs
-  "Run generative tests on specified namespace or all specs.
+  "Run generative tests on specified namespace.
    Uses test.check for property-based testing."
-  ([]
-   (check-specs 'hive-mcp.specs.memory))
   ([ns-sym]
    (require ns-sym :reload)
    (stest/check (stest/enumerate-namespace ns-sym))))

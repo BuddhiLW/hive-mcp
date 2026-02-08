@@ -1,8 +1,7 @@
 (ns hive-mcp.server
-  "MCP server for Emacs interaction via emacsclient.
+  "MCP server entry point.
 
-   Thin facade delegating to sub-modules:
-   - registration: specs, tool discovery filtering
+   Thin orchestrator delegating to sub-modules:
    - lifecycle: hooks, shutdown, configuration
    - transport: nREPL, WebSocket, channel servers
    - init: service initialization (embedding, events, hot-reload)
@@ -11,7 +10,6 @@
             [io.modelcontext.clojure-sdk.server :as sdk-server]
             [jsonrpc4clj.server :as jsonrpc-server]
             [hive-mcp.server.routes :as routes]
-            [hive-mcp.server.registration :as registration]
             [hive-mcp.server.lifecycle :as lifecycle]
             [hive-mcp.server.transport :as transport]
             [hive-mcp.server.init :as init]
@@ -58,44 +56,6 @@
                    (let [{:keys [output_]} data]
                      (binding [*out* *err*]
                        (println (force output_)))))}}})
-
-;; =============================================================================
-;; Re-exports for backward compatibility (tests, external consumers)
-;; =============================================================================
-
-(def make-tool
-  "Convert tool definition to SDK format. Delegates to routes module."
-  routes/make-tool)
-
-(def extract-agent-id
-  "Extract agent-id from args. Delegates to routes module."
-  routes/extract-agent-id)
-
-(def emacs-server-spec
-  "DEPRECATED: Use routes/build-server-spec instead."
-  routes/emacs-server-spec)
-
-(defn get-server-context
-  "Get the current MCP server context (for debugging/hot-reload)."
-  []
-  @server-context-atom)
-
-(defn refresh-tools!
-  "Hot-reload all tools in the running server.
-   Delegates to routes/refresh-tools! with server context atom."
-  []
-  (routes/refresh-tools! server-context-atom))
-
-(defn debug-tool-handler
-  "Get info about a registered tool handler (for debugging).
-   Delegates to routes/debug-tool-handler with server context atom."
-  [tool-name]
-  (routes/debug-tool-handler server-context-atom tool-name))
-
-(defn get-hooks-registry
-  "Get the global hooks registry for external registration."
-  []
-  (lifecycle/get-hooks-registry hooks-registry-atom))
 
 ;; =============================================================================
 ;; Server Lifecycle - Thin orchestrator

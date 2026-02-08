@@ -530,6 +530,34 @@
                        :claim/heartbeat-at (conn/now)}]))))
 
 ;;; =============================================================================
+;;; Wait-Queue Functions (inlined from claims.clj)
+;;; =============================================================================
+
+(defn add-to-wait-queue!
+  "Add a ling to the wait queue for a specific file.
+
+   If the ling is already waiting for this file, this is a no-op
+   (upsert behavior via composite unique key).
+
+   Arguments:
+     ling-id   - ID of the ling waiting for access
+     file-path - Path to the file being waited on
+
+   Returns:
+     Transaction report"
+  [ling-id file-path]
+  {:pre [(string? ling-id)
+         (string? file-path)]}
+  (let [c (conn/ensure-conn)
+        wait-id (str "wait:" ling-id ":" file-path)
+        tx-data {:wait-queue/id wait-id
+                 :wait-queue/ling-id ling-id
+                 :wait-queue/file file-path
+                 :wait-queue/queued-at (conn/now)}]
+    (log/debug "Adding to wait-queue: ling" ling-id "waiting for" file-path)
+    (d/transact! c [tx-data])))
+
+;;; =============================================================================
 ;;; Claim History Functions (CC.6)
 ;;; =============================================================================
 

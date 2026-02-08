@@ -97,10 +97,10 @@
                                      :batch_interval_s 2.0})
           hook-fn (py/py-call-kw create-hook-fn [] {:config config-obj})
           sdk-mod (py/py-import "claude_code_sdk")
-          matcher-class (py/py-attr sdk-mod "HookMatcher")]
-      (let [matcher-obj (py/py-call-kw matcher-class []
-                                       {:hooks [hook-fn]})]
-        {"PostToolUse" [matcher-obj]}))
+          matcher-class (py/py-attr sdk-mod "HookMatcher")
+          matcher-obj (py/py-call-kw matcher-class []
+                                     {:hooks [hook-fn]})]
+      {"PostToolUse" [matcher-obj]})
     (catch Exception e
       (log/warn "[sdk.options] Failed to build auto-observation hooks, proceeding without"
                 {:error (ex-message e)})

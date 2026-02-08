@@ -10,8 +10,7 @@
    - Silence: Observe quietly via read-only tools, collect context
    - Abstract: Synthesize observations into a plan
    - Act: Execute the plan with full tool access"
-  (:require [hive-mcp.agent.sdk.session :as session]
-            [taoensso.timbre :as log]))
+  (:require [hive-mcp.agent.sdk.session :as session]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later

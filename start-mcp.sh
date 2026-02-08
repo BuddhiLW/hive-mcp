@@ -34,6 +34,15 @@ fi
 
 cd "$SCRIPT_DIR"
 
+# Local dependency overrides (gitignored)
+# If deps.local.edn exists, merge it via -Sdeps so sibling projects
+# like hive-agent get on the classpath automatically.
+EXTRA_ARGS=()
+if [ -f "deps.local.edn" ]; then
+    EXTRA_ARGS=(-Sdeps "$(cat deps.local.edn)")
+    echo "Merging deps.local.edn overrides" >&2
+fi
+
 # Chroma configuration - override via environment or Emacs config
 # These can be set in your shell profile, Emacs config, or systemd unit
 export CHROMA_HOST="${CHROMA_HOST:-localhost}"
@@ -63,10 +72,10 @@ fuser -k "${HIVE_MCP_NREPL_PORT}/tcp" 2>/dev/null || true
 
 # Ensure dependencies are fetched (fast if cached, fetches new deps if added)
 # Use -X:mcp to ensure alias-specific deps are also fetched
-clojure -P -X:mcp 2>> "$LOG_FILE"
+clojure "${EXTRA_ARGS[@]}" -P -X:mcp 2>> "$LOG_FILE"
 
 # Log startup
 echo "=== Starting hive-mcp at $(date) ===" >> "$LOG_FILE"
 
 # Run the MCP server
-exec clojure -X:mcp
+exec clojure "${EXTRA_ARGS[@]}" -X:mcp

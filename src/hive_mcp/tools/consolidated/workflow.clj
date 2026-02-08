@@ -107,8 +107,11 @@
 ;; =============================================================================
 
 (defn- survey
-  "Query kanban for todo tasks, check readiness, rank by priority.
+  "Query kanban for todo tasks, ranked by priority DESC then creation-date ASC.
    Returns {:tasks [...] :count N}.
+
+   Sort order: high > medium > low priority. Within same priority,
+   older tasks first (by :id which encodes creation timestamp).
 
    CLARITY: R - Read-only survey of available work."
   [{:keys [directory]}]
@@ -124,14 +127,17 @@
                   (sequential? parsed) parsed        ;; kanban list returns flat array
                   (map? parsed)        (or (:tasks parsed) [])
                   :else                [])
-          ;; Sort by priority: high > medium > low
+          ;; Sort by priority DESC, then creation-date ASC within same priority
           priority-order {"high" 0 "priority-high" 0
                           "medium" 1 "priority-medium" 1
                           "low" 2 "priority-low" 2}
-          sorted-tasks (->> tasks
-                            (sort-by #(get priority-order
-                                           (or (:priority %) "medium")
-                                           1)))]
+          sorted-tasks (sort (fn [a b]
+                               (let [pa (get priority-order (or (:priority a) "medium") 1)
+                                     pb (get priority-order (or (:priority b) "medium") 1)]
+                                 (if (= pa pb)
+                                   (compare (str (:id a)) (str (:id b)))
+                                   (compare pa pb))))
+                             tasks)]
       {:tasks (vec sorted-tasks)
        :count (count sorted-tasks)})
     (catch Exception e
@@ -278,20 +284,34 @@
   (let [max-slots (or max_slots 10)
         ;; Resolve spawn mode (FSM uses :spawn-mode, MCP uses :spawn_mode)
         effective-spawn-mode (or spawn_mode spawn-mode)
-        ;; Count currently active lings
+        ;; Resolve directory early for project scoping
+        effective-dir (or directory
+                          (ctx/current-directory)
+                          (System/getProperty "user.dir"))
+        ;; Count currently active lings — scoped to current project
+        ;; BUG FIX: Previously counted ALL depth=1 agents including test-slave-*
+        ;; leftovers and agents from other projects, causing available-slots=0
+        ;; when DataScript had stale entries. Now filters by project-id.
+        project-id (when effective-dir (scope/get-current-project-id effective-dir))
         active-agents (queries/get-all-slaves)
         active-lings (->> active-agents
                           (filter #(= 1 (:slave/depth %)))
-                          (filter #(#{:active :running :working :idle :spawning} (:slave/status %))))
+                          (filter #(#{:active :running :working :idle :spawning} (:slave/status %)))
+                          ;; Scope to current project — only count lings in THIS project.
+                          ;; BUG FIX: test-slave-* and cross-project agents have nil or
+                          ;; different project-id. Without this filter, stale DataScript
+                          ;; entries (80+ test-slaves) consume all slots → 0 available.
+                          (filter (fn [agent]
+                                    (if project-id
+                                      (= project-id (:slave/project-id agent))
+                                      ;; No project-id = can't scope, count all (safe fallback)
+                                      true))))
         active-count (count active-lings)
         available-slots (max 0 (- max-slots active-count))
         ;; Take only as many tasks as we have slots for
         tasks-to-spawn (take available-slots tasks)
         ;; Default presets for forja belt lings
-        default-presets (or presets ["ling" "mcp-first" "saa"])
-        effective-dir (or directory
-                          (ctx/current-directory)
-                          (System/getProperty "user.dir"))]
+        default-presets (or presets ["ling" "mcp-first" "saa"])]
     (if (empty? tasks-to-spawn)
       {:spawned [] :failed [] :count 0
        :slots-used 0 :active-before active-count :max-slots max-slots}

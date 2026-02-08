@@ -6,7 +6,7 @@
    
    Updated for per-agent cursor tracking (no global coordinator-last-seen-ts)."
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
-            [hive-mcp.server :as server]
+            [hive-mcp.server.routes :as routes]
             [hive-mcp.tools.core :as tools-core]
             [hive-mcp.channel.piggyback :as piggyback]
             [hive-mcp.hivemind :as hivemind]))
@@ -93,7 +93,7 @@
                      :description "test"
                      :inputSchema {}
                      :handler (fn [_] {:type "text" :text "result"})}
-          wrapped (server/make-tool test-tool)
+          wrapped (routes/make-tool test-tool)
           handler (:handler wrapped)]
 
       ;; Add message before calling tool
@@ -115,7 +115,7 @@
                      :description "test"
                      :inputSchema {}
                      :handler (fn [_] {:type "text" :text "result"})}
-          wrapped (server/make-tool test-tool)
+          wrapped (routes/make-tool test-tool)
           handler (:handler wrapped)]
 
       ;; First call consumes any existing messages (from other tests)
@@ -161,7 +161,7 @@
                      :description "get status"
                      :inputSchema {}
                      :handler (fn [_] {:type "text" :text "OK"})}
-          wrapped (server/make-tool mock-tool)
+          wrapped (routes/make-tool mock-tool)
           result ((:handler wrapped) {})]
 
       ;; 3. Response should include piggyback (keyword :_meta from handler)
@@ -174,7 +174,7 @@
                      :description "get status"
                      :inputSchema {}
                      :handler (fn [_] {:type "text" :text "OK2"})}
-          wrapped (server/make-tool mock-tool)
+          wrapped (routes/make-tool mock-tool)
           result ((:handler wrapped) {})]
       (is (not (contains? result :_meta)) "Second call should have no :_meta"))))
 
