@@ -12,6 +12,7 @@
    CLARITY: L — Pure adapter between ILingStrategy and headless-sdk module."
   (:require [hive-mcp.agent.ling.strategy :refer [ILingStrategy]]
             [hive-mcp.agent.headless-sdk :as sdk]
+            [hive-mcp.agent.context-envelope :as ctx-envelope]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -40,13 +41,25 @@
                                  :no-sdk "Run: pip install claude-code-sdk"
                                  :not-initialized "Python initialization failed"
                                  "Unknown SDK issue")})))
-      (let [result (sdk/spawn-headless-sdk! id (cond-> {:cwd cwd
-                                                        :system-prompt (str "Agent " id " in project")
+      (let [;; Build L2 context envelope for spawn-time context injection
+            ;; CLARITY-Y: Falls back to bare prompt if envelope fails
+            spawn-envelope (try
+                             (ctx-envelope/build-spawn-envelope cwd {:mode :inline})
+                             (catch Exception e
+                               (log/debug "SDK spawn L2 envelope failed (non-fatal):" (.getMessage e))
+                               nil))
+            base-prompt (str "Agent " id " in project")
+            system-prompt (if spawn-envelope
+                            (str spawn-envelope "\n\n" base-prompt)
+                            base-prompt)
+            result (sdk/spawn-headless-sdk! id (cond-> {:cwd cwd
+                                                        :system-prompt system-prompt
                                                         :presets presets}
                                                  effective-agents (assoc :agents effective-agents)))]
         (log/info "Ling spawned via Agent SDK" {:id id :cwd cwd :model (or model "claude")
                                                 :backend :agent-sdk :phase (:phase result)
-                                                :agents-count (count effective-agents)})
+                                                :agents-count (count effective-agents)
+                                                :l2-context? (some? spawn-envelope)})
         ;; If initial task provided, dispatch immediately
         (when task
           (sdk/dispatch-headless-sdk! id task))
@@ -57,7 +70,10 @@
     (let [{:keys [id]} ling-ctx
           {:keys [task]} task-opts
           ;; P3-T2: Thread :raw? through to SDK layer for multi-turn without SAA wrapping
-          dispatch-opts (select-keys task-opts [:skip-silence? :skip-abstract? :phase :raw?])]
+          ;; Also thread dispatch-context for KG-compressed context in SAA silence phase
+          dispatch-opts (cond-> (select-keys task-opts [:skip-silence? :skip-abstract? :phase :raw?])
+                          (:dispatch-context task-opts)
+                          (assoc :dispatch-context (:dispatch-context task-opts)))]
       (when-not (sdk/get-session id)
         (throw (ex-info "Agent SDK session not found for dispatch"
                         {:ling-id id})))

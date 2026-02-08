@@ -16,6 +16,8 @@
             [hive-mcp.agent.sdk.execution :as exec]
             [hive-mcp.agent.sdk.options :as opts]
             [hive-mcp.agent.sdk.session :as session]
+            [hive-mcp.agent.context-envelope :as ctx-envelope]
+            [hive-mcp.protocols.dispatch :as dispatch-ctx]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -114,10 +116,31 @@
       (>!! out-ch (assoc msg :saa-phase phase-key))
       (recur))))
 
+(defn- build-kg-context-prefix
+  "Build KG-compressed context prefix for SAA silence phase.
+   Extracts ctx-refs and kg-node-ids from dispatch-context and builds
+   an L2 envelope to prepend to the silence prompt.
+   Returns string prefix or nil (CLARITY-Y graceful degradation)."
+  [dispatch-context]
+  (when dispatch-context
+    (try
+      (when (= :ref (dispatch-ctx/context-type dispatch-context))
+        (let [{:keys [ctx-refs kg-node-ids scope]} dispatch-context]
+          (ctx-envelope/build-l2-envelope ctx-refs kg-node-ids scope
+                                          {:mode :inline})))
+      (catch Exception e
+        (log/debug "[sdk.lifecycle] KG context prefix failed (non-fatal):" (ex-message e))
+        nil))))
+
 (defn- run-saa-silence!
-  "Run SAA silence phase: explore codebase and collect observations."
+  "Run SAA silence phase: explore codebase and collect observations.
+   When dispatch-context is available in session, prepends KG-compressed
+   context to the silence prompt for richer exploration grounding."
   [ling-id task out-ch]
-  (let [prompt (str "TASK: " task
+  (let [sess (session/get-session ling-id)
+        kg-prefix (build-kg-context-prefix (:dispatch-context sess))
+        prompt (str (when kg-prefix (str kg-prefix "\n\n---\n\n"))
+                    "TASK: " task
                     "\n\nExplore the codebase and collect context. "
                     "List all relevant files, patterns, and observations.")
         phase-ch (exec/execute-phase! ling-id prompt :silence)]
@@ -182,7 +205,7 @@
 
    Returns:
      core.async channel that will receive all messages from all phases."
-  [ling-id task & [{:keys [skip-silence? skip-abstract? phase raw?] :as _opts}]]
+  [ling-id task & [{:keys [skip-silence? skip-abstract? phase raw? dispatch-context] :as _opts}]]
   {:pre [(string? ling-id)
          (string? task)]}
   (let [sess (session/get-session ling-id)]
@@ -191,6 +214,9 @@
     (when-not (:client-ref sess)
       (throw (ex-info "No persistent client (was spawn successful?)"
                       {:ling-id ling-id})))
+    ;; Store dispatch-context in session for SAA silence phase KG enrichment
+    (when dispatch-context
+      (session/update-session! ling-id {:dispatch-context dispatch-context}))
     (let [out-ch (chan 4096)]
       (async/thread
         (try

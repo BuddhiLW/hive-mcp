@@ -30,7 +30,7 @@
             [hive-mcp.agent.ling.openrouter-strategy :as openrouter-strat]
             [hive-mcp.agent.ling.agent-sdk-strategy :as sdk-strat]
             [hive-mcp.agent.headless :as headless]
-            [hive-mcp.agent.hints :as hints]
+            [hive-mcp.workflows.catchup-ling :as catchup-ling]
             [hive-mcp.swarm.datascript.lings :as ds-lings]
             [hive-mcp.swarm.datascript.queries :as ds-queries]
             [hive-mcp.swarm.datascript.schema :as schema]
@@ -99,12 +99,12 @@
      The budget guardrail then checks cumulative cost on every tool call
      via the permission system, denying+interrupting when exceeded.
 
-     Hint injection flow (Tier 1 activation):
-     When kanban-task-id is provided, generates KG-driven memory hints
-     and prepends them to the task BEFORE passing to strategy-spawn!.
-     This ensures hints are embedded in the initial CLI arg (headless)
-     or elisp dispatch (vterm) — not sent as a separate stdin dispatch
-     which would fail for claude -p mode."
+     KG-compressed context injection:
+     When a task is provided, runs ling-catchup to generate a compact
+     context blob (~1-3K tokens) using KG + memory reconstruction.
+     This pre-resolves axioms, conventions, and KG subgraph into the
+     task prompt BEFORE passing to strategy-spawn!, so lings don't
+     need to run /catchup themselves."
     (let [;; Non-claude models spawn via OpenRouter API (no CLI needed)
           effective-model (or (:model opts) model)
           non-claude? (and effective-model
@@ -119,30 +119,24 @@
           {:keys [depth parent kanban-task-id]
            :or {depth 1}} opts
 
-          ;; Generate KG-driven hints BEFORE spawn when kanban-task-id is provided
-          ;; This must happen before strategy-spawn! so hints are embedded in the
-          ;; initial task (CLI arg for headless, elisp dispatch for vterm).
-          task-hints-str (when (and kanban-task-id (:task opts))
-                           (try
-                             (let [task-hints (hints/generate-task-hints {:task-id kanban-task-id :depth 2})
-                                   hint-data (hints/generate-hints (or project-id "global")
-                                                                   {:task (:task opts)
-                                                                    :extra-ids (:l1-ids task-hints)
-                                                                    :extra-queries (:l2-queries task-hints)})
-                                   kg-seeds (mapv :id (or (:l3-seeds task-hints) []))]
-                               (hints/serialize-hints
-                                (cond-> hint-data
-                                  (seq kg-seeds) (assoc-in [:memory-hints :kg-seeds] kg-seeds)
-                                  (seq kg-seeds) (assoc-in [:memory-hints :kg-depth] 2))
-                                :project-name (or project-id "global")))
-                             (catch Exception e
-                               (log/debug "Task hint generation in spawn failed (non-fatal):" (.getMessage e))
-                               nil)))
+          ;; Generate KG-compressed ling context BEFORE spawn.
+          ;; Replaces pointer-based hints with pre-resolved context blob.
+          ;; Works with or without kanban-task-id (project-level fallback).
+          ;; Lings get context at spawn — no need to run /catchup themselves.
+          ling-context-str (when (:task opts)
+                             (try
+                               (catchup-ling/ling-catchup
+                                {:directory cwd
+                                 :task (:task opts)
+                                 :kanban-task-id kanban-task-id})
+                               (catch Exception e
+                                 (log/debug "Ling catchup in spawn failed (non-fatal):" (.getMessage e))
+                                 nil)))
 
-          ;; Enrich task with hints (prepend hint block before task prompt)
+          ;; Enrich task with KG-compressed context (prepend before task prompt)
           enriched-task (when (:task opts)
-                          (if task-hints-str
-                            (str task-hints-str "\n\n---\n\n" (:task opts))
+                          (if ling-context-str
+                            (str ling-context-str "\n\n---\n\n" (:task opts))
                             (:task opts)))
 
           ;; Pass enriched task to strategy-spawn! so hints are baked into
