@@ -12,7 +12,19 @@
 
    SOLID-O: Open for extension (new bridge fns), closed for modification.
    CLARITY-Y: Graceful degradation when hive-agent absent."
-  (:require [taoensso.timbre :as log]))
+  (:require [hive-mcp.config :as config]
+            [taoensso.timbre :as log]))
+
+;; =============================================================================
+;; Config-Driven Defaults
+;; =============================================================================
+
+(defn- default-model
+  "Resolve the default model from config.edn :models.default-model.
+   CLARITY-Y: Falls back to hardcoded default when config unavailable."
+  []
+  (or (config/get-config-value "models.default-model")
+      "x-ai/grok-code-fast-1"))
 
 ;; =============================================================================
 ;; requiring-resolve Stubs (IP Boundary Pattern)
@@ -87,8 +99,8 @@
      :tokens {:input 0 :output 0 :total 0}  ;; hive-agent V1 doesn't track tokens
      :model (or model "unknown")
      :hive-agent-metadata {:turns (or (:turns ha-result) 0)
-                            :kg-path (:kg-path ha-result)
-                            :source :hive-agent}}))
+                           :kg-path (:kg-path ha-result)
+                           :source :hive-agent}}))
 
 ;; =============================================================================
 ;; High-Level Bridge Function
@@ -104,6 +116,9 @@
        :max-turns      - Maximum loop iterations
        :preset-content - System prompt preset string
        :project-id     - Project ID for memory scoping
+       :files          - Vector of file paths relevant to task (optional)
+       :cwd            - Working directory (optional)
+       :compress?      - Enable context compression (default: true in run-agent)
 
    Returns:
      Adapted result map in hive-mcp format, or nil if hive-agent unavailable.
@@ -112,7 +127,7 @@
      (if-let [result (run-agent-via-bridge {...})]
        result  ;; hive-agent handled it
        (fallback-to-old-path ...))  ;; hive-agent not available"
-  [{:keys [task model max-turns preset-content project-id] :as opts}]
+  [{:keys [task model max-turns preset-content project-id files cwd compress?] :as opts}]
   (if-let [run-agent-fn (resolve-run-agent)]
     (do
       (log/info {:event :hive-agent-bridge/dispatching
@@ -120,11 +135,14 @@
                  :max-turns max-turns
                  :task-preview (subs task 0 (min 100 (count task)))})
       (try
-        (let [result (run-agent-fn {:task task
-                                    :model (or model "deepseek/deepseek-chat")
-                                    :max-turns (or max-turns 20)
-                                    :preset-content preset-content
-                                    :project-id project-id})]
+        (let [result (run-agent-fn (cond-> {:task task
+                                            :model (or model (default-model))
+                                            :max-turns (or max-turns 250)
+                                            :preset-content preset-content
+                                            :project-id project-id}
+                                     files        (assoc :files files)
+                                     cwd          (assoc :cwd cwd)
+                                     (some? compress?) (assoc :kg-compress? compress?)))]
           (log/info {:event :hive-agent-bridge/completed
                      :turns (:turns result)
                      :tool-calls (:tool-calls-made result)

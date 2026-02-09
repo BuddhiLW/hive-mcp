@@ -268,7 +268,7 @@
          _last-error nil]
     (let [result (try
                    {:status :success :value (f)}
-                   (catch Exception e
+                   (catch Throwable e
                      {:status :error :exception e :message (ex-message e)}))]
 
       (if (= :success (:status result))
@@ -351,7 +351,7 @@
           (assoc :retry-info {:retries @retry-count
                               :errors @errors-seen})))
 
-      (catch Exception e
+      (catch Throwable e
         (domain/failure-result
          id
          (ex-message e)

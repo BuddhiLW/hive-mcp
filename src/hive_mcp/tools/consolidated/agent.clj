@@ -138,7 +138,7 @@
                                          :items {:type "string"}
                                          :description "Preset names for ling (ling only)"}
                               "model" {:type "string"
-                                       :description "Model override for drone or ling. For drones: OpenRouter model ID. For lings: 'claude' (default, Claude Code CLI) or OpenRouter model ID (auto-forces headless spawn mode, e.g., 'deepseek/deepseek-v3.2')"}
+                                       :description "Model override for drone or ling. For drones: OpenRouter model ID. For lings: 'claude' (default, Claude Code CLI) or OpenRouter model ID (auto-forces headless spawn mode, e.g., 'moonshotai/kimi-k2.5')"}
                               "task" {:type "string"
                                       :description "Initial task to dispatch on spawn"}
                               "spawn_mode" {:type "string"

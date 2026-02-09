@@ -534,7 +534,7 @@
      spawn_mode  - Spawn mode: 'vterm' (default) or 'headless'
                    'headless' maps to :agent-sdk (default headless since 0.12.0).
      model       - Model override for spawned lings: 'claude' (default) or
-                   OpenRouter model ID (e.g. 'deepseek/deepseek-chat').
+                   OpenRouter model ID (e.g. 'moonshotai/kimi-k2.5').
                    Non-claude models auto-force headless/openrouter spawn mode.
 
    Returns combined result of all three phases.
@@ -686,7 +686,7 @@
                                             :enum ["vterm" "headless"]
                                             :description "Spawn mode for lings: 'vterm' (default, Emacs buffer) or 'headless' (OS subprocess, no Emacs required). Note: 'headless' maps to :agent-sdk (Claude Agent SDK) since 0.12.0."}
                               "model" {:type "string"
-                                       :description "Model override for spawned lings: 'claude' (default, Claude Code CLI) or OpenRouter model ID (e.g., 'deepseek/deepseek-chat'). Non-claude models auto-force headless/openrouter spawn mode for cost-efficient bulk work."}
+                                       :description "Model override for spawned lings: 'claude' (default, Claude Code CLI) or OpenRouter model ID (e.g., 'moonshotai/kimi-k2.5'). Non-claude models auto-force headless/openrouter spawn mode for cost-efficient bulk work."}
                               ;; quench params
                               "restart" {:type "boolean"
                                          :description "Pass true to unquench/restart the forge belt"}}

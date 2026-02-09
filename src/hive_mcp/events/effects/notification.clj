@@ -184,6 +184,20 @@
       (log/debug "[EVENT] Olympus broadcast failed (non-fatal):" (.getMessage e)))))
 
 ;; =============================================================================
+;; Effect: :nats-publish (Push-based drone notifications)
+;; =============================================================================
+
+(defn- handle-nats-publish
+  "Execute a :nats-publish effect — publish to NATS for push-based collection.
+   Uses requiring-resolve to avoid hard dependency on NATS client."
+  [payload]
+  (try
+    (when-let [publish-fn (requiring-resolve 'hive-mcp.nats.bridge/publish-drone-event!)]
+      (publish-fn payload))
+    (catch Exception e
+      (log/debug "[EVENT] NATS publish failed (non-fatal):" (.getMessage e)))))
+
+;; =============================================================================
 ;; Registration
 ;; =============================================================================
 
@@ -206,4 +220,5 @@
   (ev/reg-fx :channel-publish handle-channel-publish)
   (ev/reg-fx :emit-system-error handle-emit-system-error)
   (ev/reg-fx :olympus-broadcast handle-olympus-broadcast)
-  (log/info "[hive-events.notification] Notification effects registered: :shout :targeted-shout :log :channel-publish :emit-system-error :olympus-broadcast"))
+  (ev/reg-fx :nats-publish handle-nats-publish)
+  (log/info "[hive-events.notification] Notification effects registered: :shout :targeted-shout :log :channel-publish :emit-system-error :olympus-broadcast :nats-publish"))

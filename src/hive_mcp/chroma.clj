@@ -202,6 +202,21 @@
   [tags]
   (when (seq tags) (str/join "," tags)))
 
+(def ^:private duration-aliases
+  "Map of invalid/legacy duration strings to canonical values.
+   Handles historical entries with non-standard duration categories."
+  {"long-term"  "long"
+   "short-term" "short"
+   "session"    "ephemeral"
+   "project"    "medium"})
+
+(defn- normalize-duration
+  "Normalize duration string to canonical value.
+   Maps legacy aliases (long-term, short-term, session, project) to valid durations.
+   Returns input unchanged if already valid or nil."
+  [duration]
+  (or (get duration-aliases duration) duration))
+
 (defn- metadata->entry
   "Convert Chroma metadata format to domain entry map.
    DRY: Single conversion point for all entry retrieval.
@@ -222,7 +237,7 @@
    :content-hash (:content-hash metadata)
    :created (:created metadata)
    :updated (:updated metadata)
-   :duration (:duration metadata)
+   :duration (normalize-duration (:duration metadata))
    :expires (:expires metadata)
    :access-count (:access-count metadata)
    :helpful-count (:helpful-count metadata)
@@ -319,9 +334,23 @@
   (when-let [expires-instant (parse-zoned-datetime (:expires metadata))]
     (.isBefore expires-instant (java.time.ZonedDateTime/now))))
 
+(defn- evict-expired-async!
+  "Fire-and-forget deletion of expired entry IDs from Chroma.
+   Opportunistic lazy eviction: clean up expired entries discovered during reads.
+   Non-blocking — errors are logged but never propagate to callers."
+  [expired-ids]
+  (when (seq expired-ids)
+    (future
+      (try
+        (let [coll (get-or-create-collection)]
+          @(chroma/delete coll :ids (vec expired-ids))
+          (log/info "Lazy eviction: deleted" (count expired-ids) "expired entries"))
+        (catch Exception e
+          (log/warn "Lazy eviction failed (non-blocking):" (.getMessage e)))))))
+
 (def ^:private metadata-defaults
   "Default values for entry metadata fields."
-  {:type "note" :tags "" :content-hash "" :duration "long-term"
+  {:type "note" :tags "" :content-hash "" :duration "long"
    :expires "" :access-count 0 :helpful-count 0 :unhelpful-count 0
    :project-id "global"
    ;; Knowledge Graph edge references (empty = no edges)
@@ -426,13 +455,18 @@
                        project-ids (assoc :project-id {:$in (vec project-ids)})
                        (and project-id (not project-ids)) (assoc :project-id project-id))
         where (when (seq where-clause) where-clause)
+        ;; Over-fetch to compensate for expired entries that will be filtered out
+        fetch-limit (if include-expired? limit (+ limit 50))
         results @(chroma/get coll
                              :where where
                              :include #{:documents :metadatas}
-                             :limit limit)]
-    (->> results
-         (map metadata->entry)
-         (filter #(or include-expired? (not (expired? %))))
+                             :limit fetch-limit)
+        entries (map metadata->entry results)
+        {expired true live false} (group-by #(boolean (expired? %)) entries)]
+    ;; Lazy eviction: async-delete expired entries discovered during read
+    (when-not include-expired?
+      (evict-expired-async! (mapv :id expired)))
+    (->> (if include-expired? entries live)
          (sort-by :created #(compare %2 %1))
          (take limit)
          vec)))
@@ -495,23 +529,81 @@
         hash-bytes (.digest md (.getBytes normalized "UTF-8"))]
     (apply str (map #(format "%02x" %) hash-bytes))))
 
+(defn- repair-missing-expires!
+  "Repair entries that have a non-permanent duration but no expires timestamp.
+   Also normalizes legacy duration strings (long-term → long, etc.).
+   Returns count of entries repaired."
+  [all-entries]
+  (let [needs-repair (->> all-entries
+                          (filter (fn [e]
+                                    (let [dur (get-in e [:metadata :duration])
+                                          exp (get-in e [:metadata :expires])
+                                          canonical (normalize-duration dur)]
+                                      (or
+                                       ;; Invalid duration string
+                                       (not= dur canonical)
+                                       ;; Valid non-permanent duration with no expires
+                                       (and (contains? #{"ephemeral" "short" "medium" "long"} canonical)
+                                            (empty? (str exp))))))))]
+    (doseq [entry needs-repair]
+      (try
+        (let [id (:id entry)
+              raw-dur (get-in entry [:metadata :duration])
+              canonical (normalize-duration raw-dur)
+              days (case canonical
+                     "ephemeral" 1 "short" 7 "medium" 30 "long" 90
+                     nil)
+              expires (when days
+                        (str (.plusDays (java.time.ZonedDateTime/now) days)))]
+          (when (or (not= raw-dur canonical) expires)
+            (let [coll (get-or-create-collection)
+                  updates (cond-> {}
+                            (not= raw-dur canonical) (assoc :duration canonical)
+                            expires (assoc :expires expires))]
+              ;; Direct metadata update via get+upsert to avoid full re-embedding
+              (when-let [existing (first @(chroma/get coll :ids [id]
+                                                      :include #{:documents :metadatas :embeddings}))]
+                @(chroma/add coll [{:id id
+                                    :embedding (:embedding existing)
+                                    :document (:document existing)
+                                    :metadata (merge (:metadata existing) updates)}]
+                             :upsert? true)
+                (log/debug "Repaired entry" id ":" raw-dur "->" canonical
+                           (when expires "(set expires)"))))))
+        (catch Exception e
+          (log/warn "Failed to repair entry" (:id entry) ":" (.getMessage e)))))
+    (count needs-repair)))
+
 (defn cleanup-expired!
-  "Delete all expired entries from Chroma.
-   Returns map with :count and :deleted-ids for KG edge cleanup."
+  "Delete all expired entries from Chroma, and repair entries with missing expires.
+   Returns map with :count, :deleted-ids, and :repaired for KG edge cleanup."
   []
   (require-embedding!)
   (let [coll (get-or-create-collection)
         ;; Get all entries including expired
         all-entries @(chroma/get coll :include #{:metadatas} :limit 10000)
-        expired-ids (->> all-entries
+        ;; Phase 1: repair entries with invalid/missing duration+expires
+        repaired (try (repair-missing-expires! all-entries)
+                      (catch Exception e
+                        (log/warn "Repair phase failed (non-blocking):" (.getMessage e))
+                        0))
+        ;; Phase 2: delete expired entries (re-fetch if we repaired any,
+        ;; since repaired entries now have proper expires and may be newly expired)
+        entries-to-check (if (pos? repaired)
+                           @(chroma/get coll :include #{:metadatas} :limit 10000)
+                           all-entries)
+        expired-ids (->> entries-to-check
                          (filter #(expired? (:metadata %)))
                          (map :id)
                          vec)]
     (when (seq expired-ids)
       @(chroma/delete coll :ids expired-ids)
       (log/info "Cleaned up" (count expired-ids) "expired entries"))
+    (when (pos? repaired)
+      (log/info "Repaired" repaired "entries with missing/invalid duration or expires"))
     {:count (count expired-ids)
-     :deleted-ids expired-ids}))
+     :deleted-ids expired-ids
+     :repaired repaired}))
 
 (defn- time-between?
   "Check if time is between start (exclusive) and end (exclusive)."

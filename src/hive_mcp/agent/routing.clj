@@ -15,6 +15,7 @@
    CLARITY-T: Full telemetry for success rate tracking"
   (:require [hive-mcp.agent.drone.preset :as preset]
             [hive-mcp.agent.drone.feedback :as feedback]
+            [hive-mcp.config :as config]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -43,37 +44,60 @@
 ;;; Model Routing Table
 ;;; ============================================================
 
+(def ^:private hardcoded-routes
+  "Fallback routing table when config.edn has no :models.routing key.
+   Grok primary for coding/testing/bugfix/general, DeepSeek for docs/arch."
+  {:testing        {:primary "x-ai/grok-code-fast-1"
+                    :secondary "deepseek/deepseek-v3.2"
+                    :reason "Grok completes file-writing tasks reliably"}
+   :refactoring    {:primary "x-ai/grok-code-fast-1"
+                    :secondary "deepseek/deepseek-v3.2"
+                    :reason "Grok handles code structure changes"}
+   :implementation {:primary "x-ai/grok-code-fast-1"
+                    :secondary "deepseek/deepseek-v3.2"
+                    :reason "Grok completes file-writing tasks reliably"}
+   :bugfix         {:primary "x-ai/grok-code-fast-1"
+                    :secondary "deepseek/deepseek-v3.2"
+                    :reason "Grok strong at root cause analysis and file writes"}
+   :documentation  {:primary "deepseek/deepseek-v3.2"
+                    :secondary "x-ai/grok-code-fast-1"
+                    :reason "DeepSeek good at natural language"}
+   :general        {:primary "x-ai/grok-code-fast-1"
+                    :secondary "deepseek/deepseek-v3.2"
+                    :reason "Grok as robust default"}})
+
+(def ^:private reason-strings
+  "Reason strings per task type — code-level concern, not config-level."
+  {:testing        "Grok completes file-writing tasks reliably"
+   :refactoring    "Grok handles code structure changes"
+   :implementation "Grok completes file-writing tasks reliably"
+   :bugfix         "Grok strong at root cause analysis and file writes"
+   :documentation  "DeepSeek good at natural language"
+   :general        "Grok as robust default"})
+
+(defn- load-model-routes
+  "Load model routes from config.edn :models.routing, merging :reason strings.
+   Config provides :primary/:secondary models; :reason is code-level metadata.
+   CLARITY-Y: Safe fallback when config not loaded or key missing."
+  []
+  (if-let [config-routes (config/get-config-value "models.routing")]
+    (reduce-kv (fn [m task-type route]
+                 (assoc m task-type
+                        (assoc route :reason
+                               (get reason-strings task-type
+                                    (get hardcoded-routes task-type :reason)))))
+               {} config-routes)
+    hardcoded-routes))
+
 (def model-routes
   "Task type to primary/secondary model mapping.
+   Initialized from config.edn :models.routing, with hardcoded fallback.
 
-   Strategy (paid tier):
-   - grok-code-fast-1: Best for code generation, tests, implementations
+   Strategy:
+   - kimi-k2.5: Best for code generation, tests, implementations
    - deepseek-v3.2: Best at code understanding, refactoring, bugfix
    - Fallback chains use deepseek as secondary"
-  (atom
-   {:testing        {:primary "x-ai/grok-code-fast-1"
-                     :secondary "deepseek/deepseek-v3.2"
-                     :reason "Grok excels at test patterns and assertions"}
-
-    :refactoring    {:primary "deepseek/deepseek-v3.2"
-                     :secondary "x-ai/grok-code-fast-1"
-                     :reason "DeepSeek strong at understanding code structure"}
-
-    :implementation {:primary "x-ai/grok-code-fast-1"
-                     :secondary "deepseek/deepseek-v3.2"
-                     :reason "Grok optimized for code generation"}
-
-    :bugfix         {:primary "deepseek/deepseek-v3.2"
-                     :secondary "x-ai/grok-code-fast-1"
-                     :reason "DeepSeek good at root cause analysis"}
-
-    :documentation  {:primary "deepseek/deepseek-v3.2"
-                     :secondary "x-ai/grok-code-fast-1"
-                     :reason "DeepSeek good at natural language"}
-
-    :general        {:primary "x-ai/grok-code-fast-1"
-                     :secondary "deepseek/deepseek-v3.2"
-                     :reason "Grok as robust default"}}))
+  (atom (load-model-routes)))
 
 (defn get-route
   "Get the model route for a task type."

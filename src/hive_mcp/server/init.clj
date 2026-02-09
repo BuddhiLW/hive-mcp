@@ -399,6 +399,25 @@
     (catch Exception _)))
 
 ;; =============================================================================
+;; NATS Initialization
+;; =============================================================================
+
+(defn init-nats!
+  "Initialize NATS client + bridge for push-based drone notifications.
+   Opt-in via config: services.nats.enabled = true.
+   Non-fatal: system degrades to polling if NATS unavailable."
+  []
+  (try
+    (let [nats-config (global-config/get-service-config :nats)]
+      (when (:enabled nats-config)
+        (let [start! (requiring-resolve 'hive-mcp.nats.client/start!)
+              bridge! (requiring-resolve 'hive-mcp.nats.bridge/start-subscriptions!)]
+          (start! nats-config)
+          (bridge!))))
+    (catch Exception e
+      (log/warn "NATS init failed (non-fatal):" (.getMessage e)))))
+
+;; =============================================================================
 ;; Workflow Engine Initialization
 ;; =============================================================================
 

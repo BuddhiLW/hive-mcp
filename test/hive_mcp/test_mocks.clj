@@ -201,7 +201,7 @@
                                         (merge (or ~entry (make-test-entry :id id#)) updates#))
                  chroma/query-entries (fn [& _#] (or ~entries []))
                  chroma/delete-entry! (fn [_#] true)
-                 chroma/cleanup-expired! (fn [] {:deleted 0})
+                 chroma/cleanup-expired! (fn [] {:count 0 :deleted-ids [] :repaired 0})
                  chroma/entries-expiring-soon (fn [_# & _opts#] (or ~entries []))]
      ~@body))
 

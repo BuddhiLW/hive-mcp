@@ -29,7 +29,10 @@
                        :scheduler {:mode :local :enabled true :interval-minutes 60
                                    :memory-limit 50 :edge-limit 100 :disc-enabled true}}
       ;; :mode values: :local (localhost defaults) or :remote (use :host/:port as-is)
-      :secrets        {:openrouter-api-key nil :openai-api-key nil}}
+      :secrets        {:openrouter-api-key nil :openai-api-key nil}
+      :models         {:task-models {:coding \"model\" :coding-alt \"model\" :arch \"model\" :docs \"model\"}
+                       :routing {:testing {:primary \"model\" :secondary \"model\"} ...}
+                       :default-model \"moonshotai/kimi-k2.5\"}}
 
    Usage:
      (load-global-config!)       ;; Load from disk, cache in atom
@@ -80,10 +83,36 @@
               :kg {:mode :local :backend :datalevin}
               :project {:mode :local :id nil :dir nil :src-dirs ["src"]}
               :drone {:mode :local :default-model "devstral-small:24b" :default-backend :openrouter}
+              :nats {:mode :local
+                     :enabled false
+                     :url "nats://localhost:4222"
+                     :connection-timeout 5000
+                     :max-reconnects 5
+                     :reconnect-wait 1000}
               :scheduler {:mode :local :enabled true :interval-minutes 60
                           :memory-limit 50 :edge-limit 100 :disc-enabled true}}
    :secrets {:openrouter-api-key nil
-             :openai-api-key nil}})
+             :openai-api-key nil}
+   :models {:task-models {:coding "x-ai/grok-code-fast-1"
+                          :coding-alt "deepseek/deepseek-v3.2"
+                          :testing "x-ai/grok-code-fast-1"
+                          :bugfix "x-ai/grok-code-fast-1"
+                          :general "x-ai/grok-code-fast-1"
+                          :arch "deepseek/deepseek-v3.2"
+                          :docs "deepseek/deepseek-v3.2"}
+            :routing {:testing {:primary "x-ai/grok-code-fast-1"
+                                :secondary "deepseek/deepseek-v3.2"}
+                      :refactoring {:primary "x-ai/grok-code-fast-1"
+                                    :secondary "deepseek/deepseek-v3.2"}
+                      :implementation {:primary "x-ai/grok-code-fast-1"
+                                       :secondary "deepseek/deepseek-v3.2"}
+                      :bugfix {:primary "x-ai/grok-code-fast-1"
+                               :secondary "deepseek/deepseek-v3.2"}
+                      :documentation {:primary "deepseek/deepseek-v3.2"
+                                      :secondary "x-ai/grok-code-fast-1"}
+                      :general {:primary "x-ai/grok-code-fast-1"
+                                :secondary "deepseek/deepseek-v3.2"}}
+            :default-model "x-ai/grok-code-fast-1"}})
 
 (def ^:private legacy-config-path
   "Legacy path for backward compatibility migration."

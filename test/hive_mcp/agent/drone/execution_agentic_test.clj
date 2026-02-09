@@ -2,16 +2,17 @@
   "Integration tests for in-process agentic drone execution pipeline.
 
    Validates the full pipeline:
-   - delegate-agentic! → run-agentic-execution! → phase:execute-agentic! → ha-bridge
+   - delegate-agentic! → run-agentic-execution! → phase:execute-agentic! → backend
    - Session KG (Datalevin) creation, recording, cleanup
    - Fallback to DataScript in-memory KG when Datalevin unavailable
-   - phase:execute-agentic! binds *drone-kg-store* and routes through hive-agent bridge
-   - Tool registry initialization
+   - phase:execute-agentic! resolves IDroneExecutionBackend and dispatches
+   - Backend fallback from :hive-agent to :legacy-loop
 
-   E2E tests mock ha-bridge/run-agent-via-bridge (primary path) to avoid external API calls."
+   Tests mock backend/resolve-backend to avoid external API calls."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [hive-mcp.agent.drone.domain :as domain]
             [hive-mcp.agent.drone.execution :as execution]
+            [hive-mcp.agent.drone.backend :as backend]
             [hive-mcp.agent.drone.augment :as augment]
             [hive-mcp.agent.drone.sandbox :as sandbox]
             [hive-mcp.agent.drone.session-kg :as session-kg]
@@ -22,6 +23,31 @@
             [hive-mcp.tools.diff :as diff]
             [hive-mcp.events.core :as ev]
             [hive-mcp.hivemind :as hivemind]))
+
+;;; ============================================================
+;;; Test Backend (implements IDroneExecutionBackend)
+;;; ============================================================
+
+(defrecord MockBackend [result-fn captured-ctx]
+  backend/IDroneExecutionBackend
+
+  (execute-drone [_this task-context]
+    (when captured-ctx
+      (reset! captured-ctx task-context))
+    (result-fn task-context))
+
+  (supports-validation? [_this] false)
+
+  (backend-type [_this] :mock))
+
+(defn- make-mock-backend
+  "Create a MockBackend that returns the given result.
+   Optionally captures task-context into an atom."
+  ([result]
+   (make-mock-backend result nil))
+  ([result captured-ctx-atom]
+   (->MockBackend (if (fn? result) result (constantly result))
+                  captured-ctx-atom)))
 
 ;;; ============================================================
 ;;; Fixtures
@@ -37,9 +63,9 @@
 ;;; phase:execute-agentic! Tests
 ;;; ============================================================
 
-(deftest phase-execute-agentic-routes-through-bridge
-  (testing "phase:execute-agentic! routes through hive-agent bridge (primary path)"
-    (let [bridge-opts (atom nil)
+(deftest phase-execute-agentic-routes-through-backend
+  (testing "phase:execute-agentic! resolves and dispatches to IDroneExecutionBackend"
+    (let [backend-called (atom false)
           ctx (domain/->execution-context
                {:drone-id "drone-agentic-bind-test"
                 :task-id "task-agentic-bind"
@@ -47,7 +73,10 @@
                 :project-root "/tmp"})
           task-spec (domain/->task-spec {:task "test agentic binding"
                                          :files []})
-          config {:tools [] :preset nil :model "test-model" :step-budget 1}]
+          config {:tools [] :preset nil :model "test-model" :step-budget 1}
+          mock-result {:status :completed :result "mocked"
+                       :tokens {:input-tokens 0 :output-tokens 0}
+                       :model "test-model" :steps 0}]
       ;; Stub dependencies
       (with-redefs [augment/augment-task (fn [task _files _opts] task)
                     sandbox/create-sandbox (fn [files root]
@@ -58,27 +87,25 @@
                                               :rejected-files []})
                     ev/dispatch (fn [_] nil)
                     hivemind/shout! (fn [& _] nil)
-                    registry/ensure-registered! (fn [] nil)
-                    ;; Mock the primary bridge path and capture opts
-                    ha-bridge/run-agent-via-bridge
-                    (fn [opts]
-                      (reset! bridge-opts opts)
-                      {:status :completed :result "mocked"
-                       :steps [] :tool_calls_made 0
-                       :tokens {} :turns 1 :model "test-model"
-                       :kg-stats {}})]
+                    ;; Mock backend resolution — return our MockBackend
+                    backend/resolve-backend
+                    (fn [_context]
+                      (make-mock-backend
+                       (fn [_tc]
+                         (reset! backend-called true)
+                         mock-result)))]
         (let [result (execution/phase:execute-agentic! ctx task-spec config)]
-          ;; Verify bridge was called
-          (is (some? @bridge-opts)
-              "Should route through hive-agent bridge")
+          ;; Verify backend was called
+          (is @backend-called
+              "Should dispatch through IDroneExecutionBackend")
           ;; Verify result passes through
           (is (= :completed (:status result)))
-          ;; After execution, dynamic var should remain unbound (primary path doesn't bind it)
+          ;; After execution, dynamic var should remain unbound
           (is (nil? domain/*drone-kg-store*)))))))
 
-(deftest phase-execute-agentic-passes-config-to-bridge
-  (testing "phase:execute-agentic! passes correct params to hive-agent bridge"
-    (let [captured-opts (atom nil)
+(deftest phase-execute-agentic-passes-config-to-backend
+  (testing "phase:execute-agentic! passes correct params via task-context"
+    (let [captured-ctx (atom nil)
           ctx (domain/->execution-context
                {:drone-id "drone-cfg-test"
                 :task-id "task-cfg"
@@ -97,23 +124,31 @@
                                               :rejected-files []})
                     ev/dispatch (fn [_] nil)
                     hivemind/shout! (fn [& _] nil)
-                    registry/ensure-registered! (fn [] nil)
-                    ha-bridge/run-agent-via-bridge
-                    (fn [opts]
-                      (reset! captured-opts opts)
-                      {:status :completed :result "ok"
-                       :steps [] :tool_calls_made 0
-                       :tokens {} :turns 1 :model "test-model"
-                       :kg-stats {}})]
+                    backend/resolve-backend
+                    (fn [_context]
+                      (make-mock-backend
+                       {:status :completed :result "ok"
+                        :tokens {:input-tokens 0 :output-tokens 0}
+                        :model "test-model" :steps 0}
+                       captured-ctx))]
         (execution/phase:execute-agentic! ctx task-spec config))
-      ;; Verify bridge received correct opts
-      (let [opts @captured-opts]
+      ;; Verify task-context received correct values
+      (let [tc @captured-ctx]
         ;; Task should be augmented
-        (is (string? (:task opts)))
+        (is (string? (:task tc)))
+        (is (clojure.string/includes? (:task tc) "augmented"))
         ;; Model from config
-        (is (= "test-model" (:model opts)))
-        ;; Max turns from step-budget
-        (is (= 5 (:max-turns opts)))))))
+        (is (= "test-model" (:model tc)))
+        ;; Max steps from step-budget
+        (is (= 5 (:max-steps tc)))
+        ;; Preset from config
+        (is (= "tdd" (:preset tc)))
+        ;; Tools from config
+        (is (= ["read_file" "grep"] (:tools tc)))
+        ;; Drone-id from ctx
+        (is (= "drone-cfg-test" (:drone-id tc)))
+        ;; Sandbox should be populated
+        (is (map? (:sandbox tc)))))))
 
 (deftest phase-execute-agentic-rejects-path-escape
   (testing "phase:execute-agentic! rejects sandbox path escape attempts"
@@ -133,8 +168,7 @@
                                               :blocked-tools #{}
                                               :rejected-files ["../../etc/passwd"]})
                     ev/dispatch (fn [_] nil)
-                    hivemind/shout! (fn [& _] nil)
-                    registry/ensure-registered! (fn [] nil)]
+                    hivemind/shout! (fn [& _] nil)]
         (is (thrown-with-msg? clojure.lang.ExceptionInfo #"File paths escape"
                               (execution/phase:execute-agentic! ctx task-spec config)))))))
 
@@ -226,12 +260,13 @@
       (is @fallback-used "Should attempt DataScript fallback when Datalevin fails"))))
 
 ;;; ============================================================
-;;; E2E: Agentic Loop + Session KG (Real Datalevin)
+;;; E2E: Backend Dispatch (Mock IDroneExecutionBackend)
 ;;; ============================================================
 
 (deftest e2e-agentic-execution-with-mock-backend
-  (testing "E2E: phase:execute-agentic! routes through hive-agent bridge (primary path)"
+  (testing "E2E: phase:execute-agentic! dispatches to resolved backend"
     (let [drone-id (str "e2e-test-" (System/currentTimeMillis))
+          backend-type-used (atom nil)
           ctx (domain/->execution-context
                {:drone-id drone-id
                 :task-id (str "task-" drone-id)
@@ -240,7 +275,6 @@
           task-spec (domain/->task-spec {:task "Fix the nil check"
                                          :files []})
           config {:tools [] :preset nil :model "mock-model" :step-budget 3}]
-      ;; Mock the primary path (ha-bridge) to return a structured result
       (with-redefs [augment/augment-task (fn [task _files _opts] task)
                     sandbox/create-sandbox (fn [files root]
                                              {:allowed-files (set files)
@@ -250,37 +284,31 @@
                                               :rejected-files []})
                     ev/dispatch (fn [_] nil)
                     hivemind/shout! (fn [& _] nil)
-                    registry/ensure-registered! (fn [] nil)
-                    ;; Mock the primary hive-agent bridge path
-                    ha-bridge/run-agent-via-bridge
-                    (fn [_opts]
-                      {:status :completed
-                       :result "I've fixed the nil check."
-                       :turns 2
-                       :tool_calls_made 1
-                       :model "mock-model"
-                       :tokens {:input 100 :output 50}
-                       :steps [{:type :tool_call :tool "read_file"}
-                               {:type :text :content "Fixed."}]
-                       :kg-stats {:reasoning 1}
-                       :hive-agent-metadata {:turns 2}})]
+                    backend/resolve-backend
+                    (fn [context]
+                      (reset! backend-type-used (:backend context))
+                      (make-mock-backend
+                       {:status    :completed
+                        :result    "I've fixed the nil check."
+                        :tokens    {:input-tokens 100 :output-tokens 50}
+                        :model     "mock-model"
+                        :steps     2
+                        :tool-calls 1
+                        :metadata  {:backend :mock}}))]
         (let [result (execution/phase:execute-agentic! ctx task-spec config)]
-          ;; Verify loop completed via primary path
+          ;; Verify backend dispatch
+          (is (= :hive-agent @backend-type-used)
+              "Should resolve :hive-agent backend first")
+          ;; Verify result from backend
           (is (= :completed (:status result))
-              "Agentic execution should complete successfully via bridge")
-          ;; Should have run 2 turns (tool call + text)
-          (is (= 2 (:turns result))
-              "Should report 2 turns from bridge result")
-          ;; Verify KG stats passed through
-          (is (map? (:kg-stats result)))
-          (when (:kg-stats result)
-            (is (pos? (:reasoning (:kg-stats result)))
-                "Should have reasoning entries from bridge result")))))))
+              "Agentic execution should complete successfully via backend")
+          (is (= "I've fixed the nil check." (:result result)))
+          (is (= 2 (:steps result))))))))
 
-(deftest e2e-agentic-bridge-multi-turn
-  (testing "E2E: phase:execute-agentic! bridge handles multi-turn execution"
-    (let [drone-id (str "e2e-bridge-multi-" (System/currentTimeMillis))
-          bridge-called (atom false)
+(deftest e2e-agentic-backend-multi-turn
+  (testing "E2E: phase:execute-agentic! backend handles multi-turn execution"
+    (let [drone-id (str "e2e-backend-multi-" (System/currentTimeMillis))
+          captured-ctx (atom nil)
           ctx (domain/->execution-context
                {:drone-id drone-id
                 :task-id (str "task-" drone-id)
@@ -298,32 +326,26 @@
                                               :rejected-files []})
                     ev/dispatch (fn [_] nil)
                     hivemind/shout! (fn [& _] nil)
-                    registry/ensure-registered! (fn [] nil)
-                    ;; Mock the primary hive-agent bridge path
-                    ha-bridge/run-agent-via-bridge
-                    (fn [opts]
-                      (reset! bridge-called true)
-                      ;; Verify opts received from phase:execute-agentic!
-                      {:status :completed
-                       :result "Refactoring complete."
-                       :turns 3
-                       :tool_calls_made 2
-                       :model (:model opts)
-                       :tokens {:input 200 :output 100}
-                       :steps [{:type :tool_call :tool "read_file"}
-                               {:type :tool_call :tool "grep"}
-                               {:type :text :content "Done."}]
-                       :kg-stats {:reasoning 2 :observations 2}
-                       :hive-agent-metadata {:turns 3}})]
+                    backend/resolve-backend
+                    (fn [_context]
+                      (make-mock-backend
+                       {:status     :completed
+                        :result     "Refactoring complete."
+                        :tokens     {:input-tokens 200 :output-tokens 100}
+                        :model      "mock-model"
+                        :steps      3
+                        :tool-calls 2
+                        :metadata   {:backend :mock}}
+                       captured-ctx))]
         (let [result (execution/phase:execute-agentic! ctx task-spec config)]
-          ;; Bridge should have been called
-          (is @bridge-called "Should route through hive-agent bridge")
-          ;; Loop should complete in 3 turns
+          ;; Verify task-context was passed to backend
+          (is (some? @captured-ctx) "Backend should receive task-context")
+          (is (= "mock-model" (:model @captured-ctx)))
+          (is (= 5 (:max-steps @captured-ctx)))
+          ;; Verify result
           (is (= :completed (:status result)))
-          (is (= 3 (:turns result)))
-          ;; Verify KG stats from bridge
-          (is (= 2 (:observations (:kg-stats result))))
-          (is (= 2 (:reasoning (:kg-stats result)))))))))
+          (is (= 3 (:steps result)))
+          (is (= "Refactoring complete." (:result result))))))))
 
 ;;; ============================================================
 ;;; delegate-agentic! API Tests

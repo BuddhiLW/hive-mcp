@@ -23,38 +23,10 @@
 ;;; ============================================================
 
 (def default-allowlist
-  "Default set of tools that drones are allowed to call.
-   This is the safety net — even if tool selection is broader,
-   the executor will reject anything not on this list.
-
-   Includes:
-   - File read/write (core operations)
-   - Search (grep, glob)
-   - Shell (bash — further restricted by sandbox)
-   - Clojure eval (read-only, silent mode)
-   - Diff proposal (safe mutation path)
-   - Static analysis (lint, analyze)
-   - Status reporting (hivemind shout)"
-  #{"read_file"
-    "file_write"
-    "grep"
-    "glob_files"
-    "bash"
-    "clojure_eval"
-    "cider_eval_silent"
-    "cider_doc"
-    "cider_info"
-    ;; Drone-specific core tools
-    "propose_diff"
-    "hivemind_shout"
-    ;; Static analysis
-    "kondo_lint"
-    "kondo_analyze"
-    ;; Git inspection (read-only)
-    "magit_status"
-    "magit_diff"
-    "magit_log"
-    "magit_branches"})
+  "Default allowlist — matches full drone toolset.
+   Drones are headless agents with full hive capabilities.
+   Security is enforced by sandbox (path restrictions), not tool restriction."
+  drone-tools/full-toolset)
 
 ;;; ============================================================
 ;;; Allowlist Resolution
@@ -87,7 +59,7 @@
     task-type
     (let [profile-tools (set (drone-tools/filter-tools-for-task task-type))]
       (log/debug "Using task-type allowlist" {:task-type task-type
-                                               :count (count profile-tools)})
+                                              :count (count profile-tools)})
       profile-tools)
 
     ;; 3. Default

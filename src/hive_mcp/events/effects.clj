@@ -4,14 +4,13 @@
    This namespace re-exports key public vars from the effects sub-modules
    for backward compatibility. New code should require specific sub-modules:
 
+   - hive-mcp.events.effects.coeffect         — coeffects (now, agent-context, db-snapshot, etc.)
    - hive-mcp.events.effects.notification     — shout, log, channel, olympus
    - hive-mcp.events.effects.memory           — memory-write, wrap-notify, wrap-crystallize
    - hive-mcp.events.effects.agent            — dispatch-task, swarm-send-prompt, agora, saa
    - hive-mcp.events.effects.dispatch         — event chaining (dispatch, dispatch-n)
    - hive-mcp.events.effects.infrastructure   — ds-transact, git, kanban, metrics
    - hive-mcp.events.effects.kg               — knowledge graph edges
-
-   Coeffects are registered directly in this facade (lightweight, no domain grouping needed).
 
    Usage:
    ```clojure
@@ -21,16 +20,13 @@
 
    SOLID: Single Responsibility - facade for effect registration
    CLARITY: Y - Yield safe failure (effects catch and log errors)"
-  (:require [hive-mcp.events.core :as ev]
+  (:require [hive-mcp.events.effects.coeffect :as cofx-effects]
             [hive-mcp.events.effects.notification :as notif-effects]
             [hive-mcp.events.effects.memory :as mem-effects]
             [hive-mcp.events.effects.agent :as agent-effects]
             [hive-mcp.events.effects.dispatch :as dispatch-effects]
             [hive-mcp.events.effects.infrastructure :as infra-effects]
             [hive-mcp.events.effects.kg :as kg-effects]
-            [hive-mcp.swarm.datascript :as ds]
-            [hive-mcp.agent.context :as ctx]
-            [datascript.core :as d]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -80,50 +76,10 @@
   []
   (when-not @*registered
     ;; ==========================================================================
-    ;; Coeffects (POC-08/09/10/11)
+    ;; Coeffects (delegated to coeffect submodule)
     ;; ==========================================================================
 
-    ;; POC-08: :now coeffect - Current timestamp in milliseconds
-    (ev/reg-cofx :now
-                 (fn [coeffects]
-                   (assoc coeffects :now (System/currentTimeMillis))))
-
-    ;; POC-09: :agent-context coeffect - Agent environment info
-    (ev/reg-cofx :agent-context
-                 (fn [coeffects]
-                   (assoc coeffects :agent-context
-                          {:agent-id (System/getenv "CLAUDE_SWARM_SLAVE_ID")
-                           :cwd (System/getProperty "user.dir")})))
-
-    ;; POC-10: :db-snapshot coeffect - DataScript database snapshot
-    (ev/reg-cofx :db-snapshot
-                 (fn [coeffects]
-                   (assoc coeffects :db-snapshot @(ds/get-conn))))
-
-    ;; POC-11: :waiting-lings coeffect - Query lings waiting on a file
-    (ev/reg-cofx :waiting-lings
-                 (fn [coeffects file-path]
-                   (let [db @(ds/get-conn)
-                         waiting (when (and db file-path)
-                                   (d/q '[:find ?slave-id ?task-id
-                                          :in $ ?file
-                                          :where
-                                          [?t :task/files ?file]
-                                          [?t :task/status :queued]
-                                          [?t :task/id ?task-id]
-                                          [?t :task/slave ?s]
-                                          [?s :slave/id ?slave-id]]
-                                        db file-path))]
-                     (assoc coeffects :waiting-lings
-                            (mapv (fn [[slave-id task-id]]
-                                    {:slave-id slave-id
-                                     :task-id task-id})
-                                  (or waiting []))))))
-
-    ;; :request-ctx coeffect - Current request context from tool execution
-    (ev/reg-cofx :request-ctx
-                 (fn [coeffects]
-                   (assoc coeffects :request-ctx (ctx/request-ctx))))
+    (cofx-effects/register-coeffects!)
 
     ;; ==========================================================================
     ;; Effects (delegated to domain-specific submodules)
@@ -141,8 +97,7 @@
     ;; defensive stats handling. Do NOT duplicate here.
 
     (reset! *registered true)
-    (log/info "[hive-events] Coeffects registered: :now :agent-context :db-snapshot :waiting-lings :request-ctx")
-    (log/info "[hive-events] All effect submodules registered (notification, memory, agent, dispatch, infrastructure, kg)")
+    (log/info "[hive-events] All effect/coeffect submodules registered (coeffect, notification, memory, agent, dispatch, infrastructure, kg)")
     true))
 
 (defn reset-registration!

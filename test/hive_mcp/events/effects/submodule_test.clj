@@ -5,6 +5,7 @@
    and that the facade delegates properly."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [hive-mcp.events.effects :as effects]
+            [hive-mcp.events.effects.coeffect :as cofx]
             [hive-mcp.events.effects.notification :as notif]
             [hive-mcp.events.effects.memory :as mem]
             [hive-mcp.events.effects.agent :as agent-fx]
@@ -25,6 +26,15 @@
 ;; =============================================================================
 ;; Submodule registration tests
 ;; =============================================================================
+
+(deftest coeffect-register-test
+  (testing "Coeffect submodule registers all expected coeffects"
+    (cofx/register-coeffects!)
+    (is (fn? (ev/get-cofx-handler :now)) ":now registered")
+    (is (fn? (ev/get-cofx-handler :agent-context)) ":agent-context registered")
+    (is (fn? (ev/get-cofx-handler :db-snapshot)) ":db-snapshot registered")
+    (is (fn? (ev/get-cofx-handler :waiting-lings)) ":waiting-lings registered")
+    (is (fn? (ev/get-cofx-handler :request-ctx)) ":request-ctx registered")))
 
 (deftest notification-effects-register-test
   (testing "Notification submodule registers all expected effects"
@@ -75,6 +85,8 @@
 (deftest facade-registers-all-submodules-test
   (testing "Facade register-effects! delegates to all submodules"
     (effects/register-effects!)
+    ;; Spot-check one coeffect
+    (is (fn? (ev/get-cofx-handler :now)) "coeffect registered via facade")
     ;; Spot-check one effect from each submodule
     (is (fn? (ev/get-fx-handler :shout)) "notification registered via facade")
     (is (fn? (ev/get-fx-handler :memory-write)) "memory registered via facade")

@@ -103,7 +103,7 @@
      - Blocked patterns: .env, credentials, secrets, keys
 
    Throws ex-info if file conflicts detected (files locked by another drone)."
-  [{:keys [task files task-type preset trace parent-id cwd skip-auto-apply wave-id]
+  [{:keys [task files task-type preset trace parent-id cwd skip-auto-apply wave-id backend]
     :or {trace true
          skip-auto-apply false}}
    delegate-fn]
@@ -117,7 +117,8 @@
                     :parent-id parent-id
                     :wave-id wave-id
                     :trace trace
-                    :skip-auto-apply skip-auto-apply})]
+                    :skip-auto-apply skip-auto-apply
+                    :backend backend})]
     ;; Delegate to phase-based execution orchestrator
     ;; All complexity is now in execution.clj phases
     (execution/run-execution! task-spec delegate-fn)))
@@ -161,7 +162,7 @@
      (delegate-agentic! {:task \"Fix the nil check in parse-config\"
                           :files [\"src/config.clj\"]
                           :cwd \"/home/user/project\"})"
-  [{:keys [task files task-type preset trace parent-id cwd skip-auto-apply wave-id]
+  [{:keys [task files task-type preset trace parent-id cwd skip-auto-apply wave-id backend model]
     :or {trace true
          skip-auto-apply false}}]
   ;; Create TaskSpec from options (CLARITY-R: Represented Intent)
@@ -174,7 +175,9 @@
                     :parent-id parent-id
                     :wave-id wave-id
                     :trace trace
-                    :skip-auto-apply skip-auto-apply})]
+                    :skip-auto-apply skip-auto-apply
+                    :backend backend
+                    :model model})]
     ;; Delegate to agentic execution orchestrator
     ;; Uses in-process agentic loop with session KG (Datalevin)
     (execution/run-agentic-execution! task-spec)))
@@ -355,7 +358,7 @@
 
      Returns:
        Result map with :status, :result, :agent-id, :files-modified, etc."
-    (let [{:keys [task files delegate-fn skip-auto-apply wave-id trace]
+    (let [{:keys [task files delegate-fn skip-auto-apply wave-id trace backend]
            :or {trace true}} task-opts
           {:keys [claimed-files current-task-id]} @state-atom
           effective-files (vec (distinct (concat (or claimed-files []) (or files []))))
@@ -385,7 +388,7 @@
                                (throw (ex-info "No delegate-fn provided - use delegate! for standalone execution"
                                                {:drone-id id}))))
             start-time (System/currentTimeMillis)
-            result (execution-fn {:backend :openrouter
+            result (execution-fn {:backend (or backend :openrouter)
                                   :preset effective-preset
                                   :model selected-model
                                   :task augmented-task

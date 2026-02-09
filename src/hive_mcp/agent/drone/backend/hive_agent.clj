@@ -10,6 +10,7 @@
    CLARITY-Y: Graceful degradation when hive-agent unavailable."
   (:require [hive-mcp.agent.drone.backend :as backend]
             [hive-mcp.agent.hive-agent-bridge :as bridge]
+            [hive-mcp.config :as config]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -52,12 +53,16 @@
   backend/IDroneExecutionBackend
 
   (execute-drone [_this task-context]
-    (let [{:keys [task model max-steps preset cwd]} task-context
+    (let [{:keys [task model max-steps preset cwd files]} task-context
           bridge-opts {:task           task
-                       :model          (or model "deepseek/deepseek-chat")
+                       :model          (or model
+                                           (config/get-config-value "models.default-model")
+                                           "moonshotai/kimi-k2.5")
                        :max-turns      (or max-steps 20)
                        :preset-content preset
-                       :project-id     nil}]
+                       :project-id     nil
+                       :files          files
+                       :cwd            cwd}]
       (log/info {:event  :hive-agent-backend/executing
                  :model  (:model bridge-opts)
                  :cwd    cwd})

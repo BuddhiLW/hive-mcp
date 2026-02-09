@@ -4,13 +4,14 @@
    Registers effect handlers that execute side-effects during SAA
    (Silence-Abstract-Act) workflow phase transitions:
 
-   - :saa/tool-gate      - Restrict available tools per SAA phase
+   - :saa/run-workflow    - Run SAA workflow via FSM (async)
+   - :saa/tool-gate       - Restrict available tools per SAA phase
    - :saa/context-inject  - Inject context at phase transitions
    - :saa/shout           - Hivemind progress reporting for SAA phases
 
    These effects are produced by the SAA event handlers (events/handlers/saa.clj)
    and the SAA FSM workflow (workflows/saa_workflow.clj). They bridge the
-   event system with external systems (agent context, hivemind).
+   event system with external systems (agent context, hivemind, FSM engine).
 
    Usage:
    ```clojure
@@ -18,7 +19,7 @@
    (saa-fx/register-saa-fx!)
    ```
 
-   SOLID: SRP - SAA side-effects only
+   SOLID: SRP - All SAA side-effects in one module
    CLARITY: Y - Safe failure via requiring-resolve (graceful degradation)
    CLARITY: T - Telemetry/logging in each handler"
   (:require [hive-mcp.events.core :as ev]
@@ -54,7 +55,7 @@
               "tools=" (count (or allowed-tools [])))
     (try
       (when-let [set-allowlist! (requiring-resolve
-                                  'hive-mcp.agent.context/set-tool-allowlist!)]
+                                 'hive-mcp.agent.context/set-tool-allowlist!)]
         (set-allowlist! agent-id (set (or allowed-tools [])))
         (log/debug "[saa-fx] Tool allowlist set for" agent-id
                    "phase=" (name phase)))
@@ -95,7 +96,7 @@
                 "size=" ctx-size)
       (try
         (when-let [inject-ctx! (requiring-resolve
-                                 'hive-mcp.agent.context/inject-context!)]
+                                'hive-mcp.agent.context/inject-context!)]
           (inject-ctx! agent-id phase context)
           (log/debug "[saa-fx] Context injected for" agent-id
                      "phase=" (name phase)))
@@ -144,6 +145,74 @@
         (log/warn "[saa-fx] Shout failed (non-fatal):" (.getMessage e))))))
 
 ;; =============================================================================
+;; Effect: :saa/run-workflow
+;; =============================================================================
+
+(defn- handle-saa-run-workflow
+  "Execute a :saa/run-workflow effect - run SAA workflow via FSM.
+
+   Triggers the SAA (Silence-Abstract-Act) workflow asynchronously.
+   Uses the compiled FSM from the workflow registry, falling back to
+   the inline spec if the registry isn't available.
+
+   Expected data shape:
+   {:task       \"Fix auth bug in login flow\"  ; required
+    :agent-id   \"swarm-ling-123\"              ; required
+    :directory  \"/path/to/project\"            ; required
+    :plan-only? false                           ; optional, default false
+    :resources  {...}}                          ; optional, override resources map
+
+   Note: Runs in a future to avoid blocking the event loop.
+   Dispatches :saa/completed or :saa/failed events on completion."
+  [{:keys [task agent-id directory plan-only? resources] :as _data}]
+  (when (and task agent-id)
+    (future
+      (try
+        (require 'hive-mcp.workflows.saa-workflow)
+        (let [run-fn (if plan-only?
+                       (resolve 'hive-mcp.workflows.saa-workflow/run-plan-only)
+                       (resolve 'hive-mcp.workflows.saa-workflow/run-full-saa))
+              ;; Build minimal resources if not provided
+              default-resources {:scope-fn (fn [dir]
+                                             (try
+                                               (let [scope-fn (requiring-resolve
+                                                               'hive-mcp.swarm.scope/get-current-project-id)]
+                                                 (scope-fn dir))
+                                               (catch Exception _ "unknown")))
+                                 :shout-fn (fn [aid phase msg]
+                                             (try
+                                               (when-let [shout! (requiring-resolve
+                                                                  'hive-mcp.hivemind/shout!)]
+                                                 (shout! aid :progress
+                                                         {:workflow :saa
+                                                          :phase phase
+                                                          :message msg}))
+                                               (catch Exception _ nil)))
+                                 :clock-fn #(java.time.Instant/now)}
+              effective-resources (merge default-resources resources)
+              opts {:task task
+                    :agent-id agent-id
+                    :directory directory}
+              result (run-fn effective-resources opts)]
+          ;; Dispatch completion event
+          (when-let [dispatch-fn (requiring-resolve 'hive-mcp.events.core/dispatch)]
+            (dispatch-fn [:saa/completed (merge (select-keys result
+                                                             [:agent-id :task :plan-memory-id
+                                                              :kanban-task-ids :plan-only?
+                                                              :tests-passed? :grounding-score])
+                                                {:agent-id agent-id})])))
+        (catch Exception e
+          (log/error "[saa-fx] SAA workflow failed:" (.getMessage e))
+          ;; Dispatch failure event
+          (try
+            (when-let [dispatch-fn (requiring-resolve 'hive-mcp.events.core/dispatch)]
+              (dispatch-fn [:saa/failed {:agent-id agent-id
+                                         :task task
+                                         :phase :unknown
+                                         :error (.getMessage e)}]))
+            (catch Exception _ nil)))))))
+
+;; =============================================================================
 ;; Registration
 ;; =============================================================================
 
@@ -151,13 +220,15 @@
   "Register SAA workflow side-effect handlers.
 
    Effects registered:
-   - :saa/tool-gate      - Restrict tools per SAA phase
+   - :saa/run-workflow    - Run SAA workflow via FSM (async)
+   - :saa/tool-gate       - Restrict tools per SAA phase
    - :saa/context-inject  - Inject context at phase transitions
    - :saa/shout           - Hivemind progress reporting
 
-   Called from hive-mcp.events.effects/register-effects!"
+   Called from hive-mcp.events.effects.agent/register-agent-effects!"
   []
+  (ev/reg-fx :saa/run-workflow handle-saa-run-workflow)
   (ev/reg-fx :saa/tool-gate handle-saa-tool-gate)
   (ev/reg-fx :saa/context-inject handle-saa-context-inject)
   (ev/reg-fx :saa/shout handle-saa-shout)
-  (log/info "[hive-events.saa-fx] SAA FX registered: :saa/tool-gate :saa/context-inject :saa/shout"))
+  (log/info "[hive-events.saa-fx] SAA FX registered: :saa/run-workflow :saa/tool-gate :saa/context-inject :saa/shout"))

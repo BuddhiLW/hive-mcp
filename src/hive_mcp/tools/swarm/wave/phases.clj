@@ -351,8 +351,8 @@
     (try
       (ds/complete-wave! wave-id :failed)
       (ds/update-plan-status! plan-id :failed)
-      (catch Exception e
-        (log/error "Failed to mark wave as failed:" (ex-message e))))
+      (catch Throwable t
+        (log/error "Failed to mark wave as failed:" (ex-message t))))
 
     ;; Complete cost tracking (even on failure)
     (try

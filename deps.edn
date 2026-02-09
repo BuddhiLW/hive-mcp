@@ -71,9 +71,9 @@
                              :exclusions [org.apache.logging.log4j/log4j-slf4j2-impl]}
 
         ;; hive-events - re-frame inspired event system for JVM
-        ;; v0.2.0 adds hive.events.fsm (deterministic workflow engine)
+        ;; v0.4.0 adds sub-FSM composition + multi-dispatch
         io.github.hive-agi/hive-events
-        {:git/tag "v0.2.0" :git/sha "fa1358f"}
+        {:git/tag "v0.4.0" :git/sha "e3d9f7c"}
 
         ;; hive-hot - unified hot-reload with events integration
         io.github.hive-agi/hive-hot
@@ -84,6 +84,9 @@
         ;; hotspot collector provides JVM metrics (memory, GC, threads)
         clj-commons/iapetos {:mvn/version "0.1.13"}
         io.prometheus/simpleclient_hotspot {:mvn/version "0.16.0"}
+
+        ;; NATS client for push-based drone notifications
+        io.nats/jnats {:mvn/version "2.20.4"}
 
         ;; java-diff-utils for proper unified diff computation (hunks, context)
         ;; Used by drone diff protocol for token-efficient diff storage

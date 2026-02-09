@@ -3,7 +3,8 @@
 
    Manages task-type to model mappings and preset configurations.
    All state is held in atoms for runtime configurability via MCP."
-  (:require [taoensso.timbre :as log]))
+  (:require [hive-mcp.config :as config]
+            [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -12,19 +13,31 @@
 ;;; Task-Type Model Configuration
 ;;; ============================================================
 
+(def ^:private hardcoded-task-models
+  "Fallback task-models when config.edn has no :models.task-models key."
+  {:coding "moonshotai/kimi-k2.5"
+   :coding-alt "deepseek/deepseek-v3.2"
+   :arch "deepseek/deepseek-v3.2"
+   :docs "deepseek/deepseek-v3.2"})
+
+(defn- load-task-models
+  "Load task-models from config.edn :models.task-models, falling back to hardcoded defaults.
+   CLARITY-Y: Safe fallback when config not loaded or key missing."
+  []
+  (or (config/get-config-value "models.task-models")
+      hardcoded-task-models))
+
 (defonce task-models
   ;; Task-type to model mapping for OpenRouter paid tier.
-  ;; Configurable via MCP tools from Elisp.
+  ;; Initialized from config.edn :models.task-models, with hardcoded fallback.
+  ;; Configurable at runtime via MCP tools from Elisp.
   ;;
   ;; Default task types:
   ;;   :coding      - Code generation, implementation, bug fixes
   ;;   :coding-alt  - Fallback for coding tasks
   ;;   :arch        - Architecture, design decisions, planning
   ;;   :docs        - Documentation, explanations, comments
-  (atom {:coding "x-ai/grok-code-fast-1"
-         :coding-alt "deepseek/deepseek-v3.2"
-         :arch "deepseek/deepseek-v3.2"
-         :docs "deepseek/deepseek-v3.2"}))
+  (atom (load-task-models)))
 
 (defn list-models
   "List all configured OpenRouter task models."

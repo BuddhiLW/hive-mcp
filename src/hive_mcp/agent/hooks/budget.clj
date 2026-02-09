@@ -65,6 +65,9 @@
    ;; DeepSeek models
    :deepseek        {:input 0.14  :output 0.28}
 
+   ;; Moonshot Kimi models
+   :kimi            {:input 0.20  :output 0.60}
+
    ;; Default fallback (conservative estimate)
    :default         {:input 3.0   :output 15.0}})
 
@@ -97,6 +100,10 @@
       ;; DeepSeek
       (re-find #"(?i)deepseek" m)
       (:deepseek model-pricing)
+
+      ;; Kimi / Moonshot
+      (re-find #"(?i)kimi|moonshot" m)
+      (:kimi model-pricing)
 
       ;; Default
       :else
@@ -368,8 +375,8 @@
        :spent-usd      spent-usd
        :remaining-usd  (max 0.0 (- max-budget-usd spent-usd))
        :pct-used       (if (pos? max-budget-usd)
-                          (* 100.0 (/ spent-usd max-budget-usd))
-                          0.0)
+                         (* 100.0 (/ spent-usd max-budget-usd))
+                         0.0)
        :tool-calls     tool-calls
        :denied-calls   denied-calls
        :model          model

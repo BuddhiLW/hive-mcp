@@ -50,7 +50,7 @@
 
 (def plan-statuses
   "Valid change plan status values."
-  #{:pending :in-progress :completed :failed})
+  #{:pending :in-progress :completed :failed :cancelled})
 
 (def item-statuses
   "Valid change item status values."
@@ -58,7 +58,7 @@
 
 (def wave-statuses
   "Valid wave status values."
-  #{:running :completed :partial-failure})
+  #{:running :completed :partial-failure :failed :cancelled})
 
 (def critical-op-types
   "Valid critical operation types that block kill.
@@ -475,7 +475,7 @@
    {:db/doc "Number of failed items"}
 
    :wave/status
-   {:db/doc "Wave status: :running :completed :partial-failure"}
+   {:db/doc "Wave status: :running :completed :partial-failure :failed :cancelled"}
 
    :wave/started-at
    {:db/doc "Timestamp when wave started"}

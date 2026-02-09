@@ -89,6 +89,7 @@
     ;; Phase 3: Transport (network servers)
     (transport/start-embedded-nrepl! nrepl-server-atom)
     (transport/start-websocket-server!)
+    (init/init-nats!)
 
     ;; Phase 4: Services (embedding, memory store, tool delegation)
     (init/init-embedding-provider!)
@@ -98,6 +99,7 @@
     ;; Phase 5: Channels + Sync
     (transport/start-ws-channel-with-healing! ws-channel-monitor)
     (transport/start-olympus-ws!)
+    (transport/start-a2a-gateway!)
     (transport/start-legacy-channel!)
     (init/init-channel-bridge!)
     (init/start-swarm-sync!)

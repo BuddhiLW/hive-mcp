@@ -237,13 +237,15 @@
 (deftest handle-mcp-memory-cleanup-expired-test
   (testing "Returns proper MCP response on successful cleanup"
     (with-redefs [chroma/embedding-configured? (constantly true)
-                  chroma/cleanup-expired! (fn [] 5)] ; Returns count, not map
+                  chroma/cleanup-expired! (fn [] {:count 5 :deleted-ids ["a" "b" "c" "d" "e"] :repaired 0})
+                  hive-mcp.knowledge-graph.edges/remove-edges-for-node! (constantly 0)]
       (let [result (memory/handle-mcp-memory-cleanup-expired {})]
         (is (= "text" (:type result)))
         (is (string? (:text result)))
         (is (nil? (:isError result)))
         (let [parsed (json/read-str (:text result) :key-fn keyword)]
-          (is (= 5 (:deleted parsed)))))))
+          (is (= 5 (:deleted parsed)))
+          (is (= 0 (:repaired parsed)))))))
 
   (testing "Returns error when Chroma not configured"
     (with-chroma-not-configured
@@ -254,11 +256,12 @@
 
   (testing "Returns zero deleted when nothing expired"
     (with-redefs [chroma/embedding-configured? (constantly true)
-                  chroma/cleanup-expired! (fn [] 0)] ; Returns count, not map
+                  chroma/cleanup-expired! (fn [] {:count 0 :deleted-ids [] :repaired 0})]
       (let [result (memory/handle-mcp-memory-cleanup-expired {})]
         (is (nil? (:isError result)))
         (let [parsed (json/read-str (:text result) :key-fn keyword)]
-          (is (= 0 (:deleted parsed))))))))
+          (is (= 0 (:deleted parsed)))
+          (is (= 0 (:repaired parsed))))))))
 
 ;; =============================================================================
 ;; handle-mcp-memory-expiring-soon Tests

@@ -14,7 +14,6 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-
 ;; ============================================================
 ;; Event Journal (Push-based task tracking)
 ;; ============================================================
@@ -147,3 +146,10 @@
   "Clear all entries from the event journal."
   []
   (reset! event-journal {}))
+
+(defn record-nats-event!
+  "Record event from NATS into the event journal.
+   Same atom that check-event-journal reads from.
+   Called by hive-mcp.nats.bridge to populate journal for headless drones."
+  [task-id event-data]
+  (swap! event-journal assoc (str task-id) event-data))

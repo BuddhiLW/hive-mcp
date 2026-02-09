@@ -2,14 +2,16 @@
   "Agent/swarm effect handlers for the hive-mcp event system.
 
    Effects implemented:
-   - :dispatch-task      - Dispatch task to swarm slave (POC-07)
-   - :swarm-send-prompt  - Send prompt to ling terminal (Agora Turn Relay)
-   - :agora/continue     - Continue debate asynchronously (P0)
+   - :dispatch-task       - Dispatch task to swarm slave (POC-07)
+   - :swarm-send-prompt   - Send prompt to ling terminal (Agora Turn Relay)
+   - :agora/continue      - Continue debate asynchronously (P0)
    - :agora/execute-drone - Execute drone turn (alias for :agora/continue)
-   - :saa/run-workflow   - Run SAA workflow via FSM (async)
-   - :saa/tool-gate      - Restrict tools per SAA phase (via saa-fx)
-   - :saa/context-inject  - Inject context at phase transitions (via saa-fx)
-   - :saa/shout           - Hivemind progress for SAA phases (via saa-fx)
+
+   SAA effects delegated to saa-fx for SRP compliance:
+   - :saa/run-workflow    - Run SAA workflow via FSM (async)
+   - :saa/tool-gate       - Restrict tools per SAA phase
+   - :saa/context-inject  - Inject context at phase transitions
+   - :saa/shout           - Hivemind progress for SAA phases
 
    Usage:
    ```clojure
@@ -22,7 +24,6 @@
   (:require [hive-mcp.events.core :as ev]
             [hive-mcp.events.handlers.saa-fx :as saa-fx]
             [hive-mcp.swarm.coordinator :as coordinator]
-            [hive-mcp.hivemind :as hivemind]
             [hive-mcp.validation :as v]
             [hive-mcp.emacsclient :as ec]
             [taoensso.timbre :as log]))
@@ -118,70 +119,6 @@
                      (.getMessage e)))))))
 
 ;; =============================================================================
-;; Effect: :saa/run-workflow (SAA FSM Integration)
-;; =============================================================================
-
-(defn- handle-saa-run-workflow
-  "Execute a :saa/run-workflow effect - run SAA workflow via FSM.
-
-   Triggers the SAA (Silence-Abstract-Act) workflow asynchronously.
-   Uses the compiled FSM from the workflow registry, falling back to
-   the inline spec if the registry isn't available.
-
-   Expected data shape:
-   {:task       \"Fix auth bug in login flow\"  ; required
-    :agent-id   \"swarm-ling-123\"              ; required
-    :directory  \"/path/to/project\"            ; required
-    :plan-only? false                           ; optional, default false
-    :resources  {...}}                          ; optional, override resources map
-
-   Note: Runs in a future to avoid blocking the event loop.
-   Dispatches :saa/completed or :saa/failed events on completion."
-  [{:keys [task agent-id directory plan-only? resources] :as _data}]
-  (when (and task agent-id)
-    (future
-      (try
-        (require 'hive-mcp.workflows.saa-workflow)
-        (let [run-fn (if plan-only?
-                       (resolve 'hive-mcp.workflows.saa-workflow/run-plan-only)
-                       (resolve 'hive-mcp.workflows.saa-workflow/run-full-saa))
-              ;; Build minimal resources if not provided
-              default-resources {:scope-fn (fn [dir]
-                                             (try
-                                               (let [scope-fn (requiring-resolve
-                                                               'hive-mcp.swarm.scope/get-current-project-id)]
-                                                 (scope-fn dir))
-                                               (catch Exception _ "unknown")))
-                                 :shout-fn (fn [aid phase msg]
-                                             (hivemind/shout! aid :progress
-                                                              {:workflow :saa
-                                                               :phase phase
-                                                               :message msg}))
-                                 :clock-fn #(java.time.Instant/now)}
-              effective-resources (merge default-resources resources)
-              opts {:task task
-                    :agent-id agent-id
-                    :directory directory}
-              result (run-fn effective-resources opts)]
-          ;; Dispatch completion event
-          (when-let [dispatch-fn (requiring-resolve 'hive-mcp.events.core/dispatch)]
-            (dispatch-fn [:saa/completed (merge (select-keys result
-                                                             [:agent-id :task :plan-memory-id
-                                                              :kanban-task-ids :plan-only?
-                                                              :tests-passed? :grounding-score])
-                                                {:agent-id agent-id})])))
-        (catch Exception e
-          (log/error "[EVENT] SAA workflow failed:" (.getMessage e))
-          ;; Dispatch failure event
-          (try
-            (when-let [dispatch-fn (requiring-resolve 'hive-mcp.events.core/dispatch)]
-              (dispatch-fn [:saa/failed {:agent-id agent-id
-                                         :task task
-                                         :phase :unknown
-                                         :error (.getMessage e)}]))
-            (catch Exception _ nil)))))))
-
-;; =============================================================================
 ;; Registration
 ;; =============================================================================
 
@@ -193,10 +130,12 @@
    - :swarm-send-prompt   - Send prompt to ling terminal (Agora Turn Relay)
    - :agora/continue      - Async debate continuation (P0)
    - :agora/execute-drone - Execute drone turn (alias for :agora/continue)
+
+   SAA effects delegated to saa-fx.clj for SRP compliance:
    - :saa/run-workflow    - Run SAA workflow via FSM (async)
    - :saa/tool-gate       - Restrict tools per SAA phase
-   - :saa/context-inject   - Inject context at phase transitions
-   - :saa/shout            - Hivemind progress for SAA phases
+   - :saa/context-inject  - Inject context at phase transitions
+   - :saa/shout           - Hivemind progress for SAA phases
 
    Called from hive-mcp.events.effects/register-effects!"
   []
@@ -204,7 +143,6 @@
   (ev/reg-fx :swarm-send-prompt handle-swarm-send-prompt)
   (ev/reg-fx :agora/continue handle-agora-continue)
   (ev/reg-fx :agora/execute-drone handle-agora-continue)
-  (ev/reg-fx :saa/run-workflow handle-saa-run-workflow)
-  ;; SAA FX (delegated to saa_fx.clj for SRP compliance)
+  ;; SAA FX (all SAA effects delegated to saa_fx.clj for SRP compliance)
   (saa-fx/register-saa-fx!)
-  (log/info "[hive-events.agent] Agent effects registered: :dispatch-task :swarm-send-prompt :agora/continue :agora/execute-drone :saa/run-workflow :saa/tool-gate :saa/context-inject :saa/shout"))
+  (log/info "[hive-events.agent] Agent effects registered: :dispatch-task :swarm-send-prompt :agora/continue :agora/execute-drone + SAA FX (4)"))

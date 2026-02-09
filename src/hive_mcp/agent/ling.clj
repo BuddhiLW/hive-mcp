@@ -109,11 +109,13 @@
           effective-model (or (:model opts) model)
           non-claude? (and effective-model
                            (not (schema/claude-model? effective-model)))
-          ;; :headless maps to :agent-sdk (default headless mechanism since 0.12.0)
+          ;; :headless maps to :agent-sdk when SDK available, otherwise ProcessBuilder
           raw-mode (if non-claude?
                      :openrouter
                      (or (:spawn-mode opts) spawn-mode :vterm))
-          mode (if (= raw-mode :headless) :agent-sdk raw-mode)
+          mode (if (= raw-mode :headless)
+                 (if (sdk-strat/sdk-available?) :agent-sdk :headless)
+                 raw-mode)
           strat (resolve-strategy mode)
           ctx (assoc (ling-ctx this) :model effective-model)
           {:keys [depth parent kanban-task-id]
@@ -372,12 +374,12 @@
   [id opts]
   (let [model-val (:model opts)
         ;; Non-claude models use OpenRouter API directly
-        ;; :headless maps to :agent-sdk (default headless mechanism since 0.12.0)
+        ;; :headless maps to :agent-sdk when SDK available, otherwise ProcessBuilder
         raw-spawn-mode (:spawn-mode opts :vterm)
         effective-spawn-mode (if (and model-val (not (schema/claude-model? model-val)))
                                :openrouter
                                (if (= raw-spawn-mode :headless)
-                                 :agent-sdk
+                                 (if (sdk-strat/sdk-available?) :agent-sdk :headless)
                                  raw-spawn-mode))]
     (map->Ling (cond-> {:id id
                         :cwd (:cwd opts)
@@ -525,10 +527,10 @@
                                          :spawn-mode :headless}))
 
   ;; === Multi-model mode (OpenRouter API direct) ===
-  (def deepseek-ling (->ling "ling-003" {:cwd "/home/user/project"
-                                         :presets ["worker"]
-                                         :project-id "hive-mcp"
-                                         :model "deepseek/deepseek-chat"}))
+  (def kimi-ling (->ling "ling-003" {:cwd "/home/user/project"
+                                     :presets ["worker"]
+                                     :project-id "hive-mcp"
+                                     :model "moonshotai/kimi-k2.5"}))
   ;; spawn-mode will be :openrouter automatically
 
   ;; === Agent SDK mode (in-process via libpython-clj) ===

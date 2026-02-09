@@ -1,8 +1,8 @@
 (ns hive-mcp.events.handlers.saa-fx-test
   "Tests for SAA workflow side-effect handlers.
 
-   Validates that :saa/tool-gate, :saa/context-inject, and :saa/shout
-   effect handlers register correctly and execute without errors.
+   Validates that :saa/run-workflow, :saa/tool-gate, :saa/context-inject,
+   and :saa/shout effect handlers register correctly and execute without errors.
 
    Uses ev/with-clean-registry for test isolation."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
@@ -28,8 +28,10 @@
 ;; =============================================================================
 
 (deftest test-register-saa-fx!
-  (testing "register-saa-fx! registers all 3 effect handlers"
+  (testing "register-saa-fx! registers all 4 effect handlers"
     (saa-fx/register-saa-fx!)
+    (is (fn? (ev/get-fx-handler :saa/run-workflow))
+        ":saa/run-workflow should be registered")
     (is (fn? (ev/get-fx-handler :saa/tool-gate))
         ":saa/tool-gate should be registered")
     (is (fn? (ev/get-fx-handler :saa/context-inject))
@@ -43,6 +45,28 @@
     (saa-fx/register-saa-fx!)
     (is (fn? (ev/get-fx-handler :saa/tool-gate))
         "Handler still registered after double call")))
+
+;; =============================================================================
+;; :saa/run-workflow Tests
+;; =============================================================================
+
+(deftest test-saa-run-workflow-nil-graceful
+  (testing ":saa/run-workflow handles nil task/agent-id gracefully (no-op)"
+    (saa-fx/register-saa-fx!)
+    (let [handler (ev/get-fx-handler :saa/run-workflow)]
+      (is (nil? (handler {:task nil :agent-id nil}))
+          "Handler should return nil when task or agent-id missing"))))
+
+(deftest test-saa-run-workflow-requires-task-and-agent
+  (testing ":saa/run-workflow requires both task and agent-id"
+    (saa-fx/register-saa-fx!)
+    (let [handler (ev/get-fx-handler :saa/run-workflow)]
+      ;; Missing agent-id
+      (is (nil? (handler {:task "some task" :agent-id nil}))
+          "Should no-op without agent-id")
+      ;; Missing task
+      (is (nil? (handler {:task nil :agent-id "test-agent"}))
+          "Should no-op without task"))))
 
 ;; =============================================================================
 ;; :saa/tool-gate Tests
