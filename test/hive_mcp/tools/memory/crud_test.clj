@@ -262,7 +262,7 @@
     (is (= 4 (classify-abstraction-level "note" "Must always do X" nil)))))
 
 (deftest classify-l3-stub-graceful-fallback
-  (testing "L3+ requiring-resolve stub falls back gracefully"
+  (testing "Extension requiring-resolve stub falls back gracefully"
     ;; The similarity namespace doesn't exist, so requiring-resolve
     ;; should fail silently and fall back to heuristic level
     (is (= 2 (classify-abstraction-level "note" "Some note" [])))
@@ -448,7 +448,7 @@
         (is (every? #(<= (count %) 80) gaps))))))
 
 (deftest extract-knowledge-gaps-l3-stub-fallback
-  (testing "L3+ requiring-resolve stub falls back to L1/L2 result"
+  (testing "Extension requiring-resolve stub falls back to L1/L2 result"
     ;; The similarity namespace doesn't exist, so requiring-resolve
     ;; should fail silently and fall back to regex-based detection
     (let [gaps (extract-knowledge-gaps "TODO: implement feature X")]

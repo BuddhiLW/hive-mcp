@@ -8,7 +8,7 @@
    - swarm-addon-available? - Check if hive-mcp-swarm addon is loaded
    - with-swarm macro - Execute body only if swarm addon available
    - Response builders for consistent MCP response format"
-  (:require [hive-mcp.emacsclient :as ec]
+  (:require [hive-mcp.emacs.client :as ec]
             [hive-mcp.validation :as v]
             [clojure.data.json :as json]
             [clojure.string :as str]))

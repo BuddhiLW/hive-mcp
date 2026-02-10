@@ -31,7 +31,7 @@
    SOLID: Single Responsibility - channel→event bridging only
    SOLID: DRY - Uses bridge.clj multimethod for transformations
    CLARITY: Y - Yield safe failure (errors logged, not thrown)"
-  (:require [hive-mcp.channel :as channel]
+  (:require [hive-mcp.channel.core :as channel]
             [hive-mcp.events.core :as ev]
             [hive-mcp.events.bridge :as bridge]
             [clojure.core.async :as async :refer [go-loop <!]]
@@ -39,7 +39,6 @@
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
-
 
 ;; =============================================================================
 ;; State

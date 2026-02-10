@@ -2,7 +2,7 @@
   "Tests for bidirectional channel infrastructure."
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [clojure.core.async :as async :refer [<!! >!! timeout alts!! go]]
-            [hive-mcp.channel :as ch]))
+            [hive-mcp.channel.core :as ch]))
 
 ;; =============================================================================
 ;; Test Fixtures

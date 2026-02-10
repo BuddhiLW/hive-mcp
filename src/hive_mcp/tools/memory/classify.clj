@@ -1,14 +1,15 @@
 (ns hive-mcp.tools.memory.classify
   "Abstraction Level Auto-Classification (P1.5).
 
-   Three-tier classification pipeline:
+   Multi-tier classification pipeline:
      Tier 1: Type-based default from kg-schema (16 types mapped)
      Tier 2: Content-keyword bumping (heuristic signals)
-     Tier 3: L3+ similarity-based (requiring-resolve stub)
+     Tier 3: Enhanced similarity-based (extension, noop fallback)
 
    SOLID-S: Single responsibility - abstraction level classification only.
-   IP Boundary: L3+ classification via requiring-resolve (noop fallback)."
-  (:require [hive-mcp.knowledge-graph.schema :as kg-schema]
+   CLARITY-Y: Enhanced classification via extension (noop fallback)."
+  (:require [hive-mcp.extensions.registry :as ext]
+            [hive-mcp.knowledge-graph.schema :as kg-schema]
             [clojure.string :as str]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -92,17 +93,17 @@
 (defn classify-abstraction-level
   "Auto-classify abstraction level for a memory entry.
 
-   Three-tier classification (highest specificity wins):
+   Multi-tier classification (highest specificity wins):
      1. Type-based default from kg-schema/derive-abstraction-level
      2. Content-keyword analysis (can bump up or down)
      3. Tag-based signal (secondary content signal)
-     4. L3+ similarity stub (requiring-resolve, IP boundary)
+     4. Enhanced similarity-based classification (extension)
 
    Bumping rules:
      - Content keywords can bump UP (e.g., note with 'must always' -> L4)
      - Content keywords can bump DOWN (e.g., note with 'at line 42' -> L1)
      - Tags provide secondary signal, used when content has no signal
-     - L3+ stub can override all heuristics if available
+     - Enhanced extension can override all heuristics if available
 
    Arguments:
      entry-type - String type (e.g., 'decision', 'note')
@@ -125,14 +126,11 @@
         ;; Content bumps are always respected since they're most specific
         heuristic-level (or content-level tag-level type-level)
 
-        ;; Tier 4: L3+ similarity-based classification (requiring-resolve stub)
-        ;; Uses requiring-resolve so L3+ functionality is optional (IP boundary)
-        l3-level (try
-                   (when-let [classify-fn
-                              (requiring-resolve
-                               'hive-mcp.knowledge-graph.similarity/classify-abstraction-level)]
-                     (classify-fn entry-type content tags heuristic-level))
-                   (catch Exception _ nil))]
+        ;; Tier 4: Enhanced similarity-based classification (extension)
+        enhanced-level (when-let [classify-fn (ext/get-extension :gs/classify)]
+                         (try
+                           (classify-fn entry-type content tags heuristic-level)
+                           (catch Exception _ nil)))]
 
-    ;; L3+ result overrides heuristics if available, otherwise use heuristic
-    (or l3-level heuristic-level type-level)))
+    ;; Enhanced result overrides heuristics if available, otherwise use heuristic
+    (or enhanced-level heuristic-level type-level)))

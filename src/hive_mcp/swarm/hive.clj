@@ -13,7 +13,7 @@
    Usage:
    (build-hive-context {:conventions 10 :decisions 5})
    => \"== CONVENTIONS ==\\n- Use specs for validation...\\n\\n== DECISIONS ==\\n...\""
-  (:require [hive-mcp.emacsclient :as ec]
+  (:require [hive-mcp.emacs.client :as ec]
             [clojure.data.json :as json]
             [clojure.string :as str]
             [taoensso.timbre :as log]))

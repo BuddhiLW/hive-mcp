@@ -24,7 +24,7 @@
 
    SOLID: ISP - Single tool with polymorphic dispatch based on params.
    CLARITY: L - Thin wrapper delegating to focused modules."
-  (:require [hive-mcp.agent :as agent]
+  (:require [hive-mcp.agent.core :as agent]
             [hive-mcp.knowledge-graph.disc :as kg-disc]
             [hive-mcp.tools.swarm.wave :as wave]
             [hive-mcp.tools.swarm.validated-wave :as validated-wave]

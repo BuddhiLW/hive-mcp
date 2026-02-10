@@ -24,7 +24,7 @@
 ;; Volatility Classification
 ;; =============================================================================
 
-(def volatility-patterns
+(def ^:private volatility-patterns
   "File patterns for volatility classification.
    Used to determine appropriate decay rates for certainty."
   {:stable   #{#"deps\.edn$" #"project\.clj$" #"pom\.xml$" #"\.gitignore$"}
@@ -49,10 +49,6 @@
 ;; =============================================================================
 ;; L1-P2 Transitive Staleness Propagation Constants
 ;; =============================================================================
-
-(def propagation-relations
-  "KG edge types that should propagate staleness transitively."
-  #{:depends-on :implements :derived-from :refines})
 
 (def staleness-decay-factor
   "Decay factor per hop in staleness propagation.

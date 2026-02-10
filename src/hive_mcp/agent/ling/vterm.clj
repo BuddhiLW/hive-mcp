@@ -8,7 +8,7 @@
    CLARITY: L — Pure adapter between ILingStrategy and emacsclient."
   (:require [hive-mcp.agent.ling.strategy :refer [ILingStrategy]]
             [hive-mcp.tools.swarm.core :as swarm-core]
-            [hive-mcp.emacsclient :as ec]
+            [hive-mcp.emacs.client :as ec]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>

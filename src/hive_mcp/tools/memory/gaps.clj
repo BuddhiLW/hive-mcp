@@ -12,8 +12,9 @@
    5. Assumption markers (assuming, assumption)
 
    SOLID-S: Single responsibility - knowledge gap extraction only.
-   IP Boundary: L3+ NLP-based gap analysis via requiring-resolve stub."
-  (:require [clojure.string :as str]))
+   CLARITY-Y: Enhanced NLP-based analysis via extension (noop fallback)."
+  (:require [hive-mcp.extensions.registry :as ext]
+            [clojure.string :as str]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -141,7 +142,7 @@
 (defn extract-knowledge-gaps
   "Analyze content to detect knowledge gaps.
 
-   Lightweight regex/keyword analysis (L1/L2 level) that identifies:
+   Lightweight regex/keyword analysis that identifies:
    1. Questions (sentences ending with ?)
    2. TODO/TBD/FIXME/HACK/XXX markers
    3. Uncertainty language (unclear, unknown, uncertain, etc.)
@@ -151,8 +152,8 @@
    Returns vector of gap descriptor strings (max 10), each <=80 chars.
    Returns empty vector if no gaps detected or content is nil/blank.
 
-   L3+ stub: delegates to hive-knowledge for deeper NLP-based analysis
-   when available (requiring-resolve, IP boundary)."
+   Delegates to enhanced extension for deeper NLP-based analysis
+   when available, falls back to heuristic extraction."
   [content]
   (if (or (nil? content) (str/blank? (str content)))
     []
@@ -168,12 +169,10 @@
                         (distinct)
                         (take max-gaps)
                         (vec))
-          ;; L3+ stub: deeper gap analysis via requiring-resolve (IP boundary)
-          l3-gaps (try
-                    (when-let [analyze-fn
-                               (requiring-resolve
-                                'hive-mcp.knowledge-graph.similarity/extract-knowledge-gaps)]
-                      (analyze-fn content-str all-gaps))
-                    (catch Exception _ nil))]
-      ;; L3+ result overrides L1/L2 if available
-      (or l3-gaps all-gaps))))
+          ;; Enhanced gap analysis via extension
+          enhanced-gaps (when-let [analyze-fn (ext/get-extension :gs/detect-gaps)]
+                          (try
+                            (analyze-fn content-str all-gaps)
+                            (catch Exception _ nil)))]
+      ;; Enhanced result overrides heuristic if available
+      (or enhanced-gaps all-gaps))))

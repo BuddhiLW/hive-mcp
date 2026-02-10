@@ -41,7 +41,7 @@
 ;; =============================================================================
 
 (deftest test-ref-mode-with-cached-entries
-  (testing ":ref mode returns KG-compressed reconstruction when refs are cached"
+  (testing ":ref mode returns compressed reconstruction when refs are cached"
     (let [ax-id (ctx-store/context-put! [{:id "ax-1" :content "Test axiom"}]
                                         :tags #{"catchup" "axioms" "test-proj"}
                                         :ttl-ms 60000)
@@ -54,8 +54,8 @@
       (with-base-mocks "test-proj"
         (let [result (spawn/spawn-context "/tmp" {:mode :ref})]
           (is (string? result) "Returns a string")
-          ;; KG-compressed reconstruction produces compact markdown, not ref table
-          (is (str/includes? result "Reconstructed Context") "Contains KG-Compressed header")
+          ;; compressed reconstruction produces compact markdown, not ref table
+          (is (str/includes? result "Reconstructed Context") "Contains Compressed header")
           (is (str/includes? result "Axioms") "Contains axioms section")
           (is (str/includes? result "Decisions") "Contains decisions summary")
           (is (str/includes? result "Priority Conventions") "Contains priority conventions summary")
@@ -174,6 +174,6 @@
     (with-base-mocks "partial-proj"
       (let [result (spawn/spawn-context "/tmp" {:mode :ref})]
         (is (string? result))
-        ;; KG-compressed reconstruction produces "Reconstructed Context" header
-        (is (str/includes? result "Reconstructed Context") "Uses KG-compressed reconstruction")
+        ;; compressed reconstruction produces "Reconstructed Context" header
+        (is (str/includes? result "Reconstructed Context") "Uses compressed reconstruction")
         (is (str/includes? result "Axioms") "Contains Axioms category")))))

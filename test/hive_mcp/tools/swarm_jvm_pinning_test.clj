@@ -14,8 +14,8 @@
             [clojure.string :as str]
             [clojure.data.json :as json]
             [clojure.java.shell :as shell]
-            [hive-mcp.tools.swarm :as swarm]
             [hive-mcp.tools.swarm.jvm :as jvm]
+            [hive-mcp.tools.swarm.jvm.parser :as parser]
             [hive-mcp.tools.swarm.jvm.classifier :as classifier]))
 
 ;; =============================================================================
@@ -52,7 +52,7 @@
 (deftest parse-jvm-process-line-valid-input-test
   (testing "Parses valid ps output line correctly"
     (let [line "  12345   1.5   2.3   05:32 /usr/bin/java -jar app.jar"
-          result (swarm/parse-jvm-process-line line)]
+          result (parser/parse-process-line line)]
       (is (= "12345" (:pid result))
           "Should extract PID")
       (is (= "1.5" (:cpu result))
@@ -67,7 +67,7 @@
 (deftest parse-jvm-process-line-multiword-cmd-test
   (testing "Handles command with multiple words and arguments"
     (let [line "99999   0.1   5.2   1-02:30:15 java -Xmx2g -jar server.jar --port 8080"
-          result (swarm/parse-jvm-process-line line)]
+          result (parser/parse-process-line line)]
       (is (= "99999" (:pid result)))
       (is (= "1-02:30:15" (:etime result)))
       (is (str/includes? (:cmd result) "-Xmx2g")
@@ -75,17 +75,17 @@
 
 (deftest parse-jvm-process-line-insufficient-parts-test
   (testing "Returns nil for lines with insufficient parts"
-    (is (nil? (swarm/parse-jvm-process-line "12345 1.5"))
+    (is (nil? (parser/parse-process-line "12345 1.5"))
         "Should return nil when fewer than 5 parts")
-    (is (nil? (swarm/parse-jvm-process-line ""))
+    (is (nil? (parser/parse-process-line ""))
         "Should return nil for empty string")
-    (is (nil? (swarm/parse-jvm-process-line "   "))
+    (is (nil? (parser/parse-process-line "   "))
         "Should return nil for whitespace only")))
 
 (deftest parse-jvm-process-line-trims-whitespace-test
   (testing "Handles varying whitespace correctly"
     (let [line "    123    0.5    1.0    00:01    java -jar test.jar   "
-          result (swarm/parse-jvm-process-line line)]
+          result (parser/parse-process-line line)]
       (is (= "123" (:pid result))
           "Should trim leading/trailing whitespace from PID")
       (is (= "0.5" (:cpu result))
@@ -97,40 +97,40 @@
 
 (deftest parse-etime-to-minutes-mm-ss-test
   (testing "Parses MM:SS format correctly"
-    (is (= 5 (swarm/parse-etime-to-minutes "05:30"))
+    (is (= 5 (parser/parse-etime-to-minutes "05:30"))
         "5:30 should be 5 minutes")
-    (is (= 0 (swarm/parse-etime-to-minutes "00:45"))
+    (is (= 0 (parser/parse-etime-to-minutes "00:45"))
         "0:45 should be 0 minutes")
-    (is (= 59 (swarm/parse-etime-to-minutes "59:59"))
+    (is (= 59 (parser/parse-etime-to-minutes "59:59"))
         "59:59 should be 59 minutes")))
 
 (deftest parse-etime-to-minutes-hh-mm-ss-test
   (testing "Parses HH:MM:SS format correctly"
-    (is (= 60 (swarm/parse-etime-to-minutes "01:00:00"))
+    (is (= 60 (parser/parse-etime-to-minutes "01:00:00"))
         "1 hour should be 60 minutes")
-    (is (= 90 (swarm/parse-etime-to-minutes "01:30:00"))
+    (is (= 90 (parser/parse-etime-to-minutes "01:30:00"))
         "1:30 should be 90 minutes")
-    (is (= 125 (swarm/parse-etime-to-minutes "02:05:30"))
+    (is (= 125 (parser/parse-etime-to-minutes "02:05:30"))
         "2:05:30 should be 125 minutes")))
 
 (deftest parse-etime-to-minutes-dd-hh-mm-ss-test
   (testing "Parses DD-HH:MM:SS format correctly"
-    (is (= 1440 (swarm/parse-etime-to-minutes "1-00:00:00"))
+    (is (= 1440 (parser/parse-etime-to-minutes "1-00:00:00"))
         "1 day should be 1440 minutes")
-    (is (= 1500 (swarm/parse-etime-to-minutes "1-01:00:00"))
+    (is (= 1500 (parser/parse-etime-to-minutes "1-01:00:00"))
         "1 day 1 hour should be 1500 minutes")
-    (is (= 2880 (swarm/parse-etime-to-minutes "2-00:00:00"))
+    (is (= 2880 (parser/parse-etime-to-minutes "2-00:00:00"))
         "2 days should be 2880 minutes")
-    (is (= 2945 (swarm/parse-etime-to-minutes "2-01:05:30"))
+    (is (= 2945 (parser/parse-etime-to-minutes "2-01:05:30"))
         "2d 1h 5m should be 2945 minutes")))
 
 (deftest parse-etime-to-minutes-invalid-input-test
   (testing "Returns 0 for invalid input"
-    (is (= 0 (swarm/parse-etime-to-minutes "invalid"))
+    (is (= 0 (parser/parse-etime-to-minutes "invalid"))
         "Should return 0 for non-numeric input")
-    (is (= 0 (swarm/parse-etime-to-minutes ""))
+    (is (= 0 (parser/parse-etime-to-minutes ""))
         "Should return 0 for empty string")
-    (is (= 0 (swarm/parse-etime-to-minutes nil))
+    (is (= 0 (parser/parse-etime-to-minutes nil))
         "Should handle nil gracefully")))
 
 ;; =============================================================================

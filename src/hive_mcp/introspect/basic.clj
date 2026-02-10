@@ -2,7 +2,7 @@
   "BasicIntrospect - No-op fallback implementation of IIntrospect.
 
    Provides stub responses when no real introspection engine is available.
-   Used as the default in hive-mcp (open source) without hive-logic.
+   Used as the default in hive-mcp (open source) without enhanced extension.
 
    CLARITY-Y: Yield safe failure - graceful degradation when
    introspection capabilities are not available.
@@ -24,7 +24,7 @@
      :confidence 0.0
      :grounded false
      :status :not-available
-     :message "Introspection not available. Install hive-logic for full provenance tracking."})
+     :message "Introspection not available. Install enhanced extension for full provenance tracking."})
 
   (trace [_this query]
     {:query query
@@ -32,7 +32,7 @@
      :result nil
      :stats {}
      :status :not-available
-     :message "Query tracing not available. Install hive-logic for execution tracing."})
+     :message "Query tracing not available. Install enhanced extension for execution tracing."})
 
   (diff [_this v1 v2]
     {:v1 v1
@@ -42,7 +42,7 @@
      :changed []
      :stats {:added-count 0 :removed-count 0 :changed-count 0}
      :status :not-available
-     :message "Knowledge diff not available. Install hive-logic for version comparison."}))
+     :message "Knowledge diff not available. Install enhanced extension for version comparison."}))
 
 ;; =============================================================================
 ;; Constructor
@@ -52,7 +52,7 @@
   "Create a BasicIntrospect instance (no-op fallback).
 
    Use this when:
-   - hive-logic is not installed
+   - enhanced extension is not installed
    - Testing without introspection dependencies
    - Graceful degradation in production
 

@@ -7,7 +7,7 @@
    These tests capture current behavior as executable specification."
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [clojure.string :as str]
-            [hive-mcp.server :as server]
+            [hive-mcp.server.routes :as routes]
             [hive-mcp.hivemind :as hivemind]
             [hive-mcp.channel.piggyback :as piggyback]))
 
@@ -32,7 +32,7 @@
                      :description "Returns a map"
                      :inputSchema {}
                      :handler (fn [_] {:type "text" :text "single-map"})}
-          wrapped (server/make-tool test-tool)
+          wrapped (routes/make-tool test-tool)
           result ((:handler wrapped) {})]
       (is (vector? (:content result)) "Content should be a vector")
       (is (= 1 (count (:content result))) "Vector should have one item")
@@ -47,7 +47,7 @@
                      ;; Return a list (sequential but not vector)
                      :handler (fn [_] '({:type "text" :text "item1"}
                                         {:type "text" :text "item2"}))}
-          wrapped (server/make-tool test-tool)
+          wrapped (routes/make-tool test-tool)
           result ((:handler wrapped) {})]
       (is (vector? (:content result)) "Content should be a vector, not list")
       (is (= 2 (count (:content result))) "Should have 2 items")
@@ -61,7 +61,7 @@
                      :inputSchema {}
                      :handler (fn [_] [{:type "text" :text "a"}
                                        {:type "text" :text "b"}])}
-          wrapped (server/make-tool test-tool)
+          wrapped (routes/make-tool test-tool)
           result ((:handler wrapped) {})]
       (is (vector? (:content result)) "Content should be a vector")
       (is (= 2 (count (:content result))) "Should have 2 items"))))
@@ -72,7 +72,7 @@
                      :description "Returns a plain string"
                      :inputSchema {}
                      :handler (fn [_] "plain-string")}
-          wrapped (server/make-tool test-tool)
+          wrapped (routes/make-tool test-tool)
           result ((:handler wrapped) {})]
       (is (vector? (:content result)) "Content should be a vector")
       (is (= 1 (count (:content result))) "Should have one item")
@@ -92,7 +92,7 @@
                      :description "Get status"
                      :inputSchema {}
                      :handler (fn [_] {:type "text" :text "OK"})}
-          wrapped (server/make-tool test-tool)
+          wrapped (routes/make-tool test-tool)
           result ((:handler wrapped) {})]
       ;; Content should have the piggyback appended
       (is (vector? (:content result)) "Content should be vector")
@@ -115,7 +115,7 @@
                      :description "No piggyback"
                      :inputSchema {}
                      :handler (fn [_] {:type "text" :text "result"})}
-          wrapped (server/make-tool test-tool)
+          wrapped (routes/make-tool test-tool)
           ;; First call might consume any existing piggyback
           _ ((:handler wrapped) {})
           ;; Second call should definitely have no piggyback
@@ -133,7 +133,7 @@
                      :description "test"
                      :inputSchema {}
                      :handler (fn [_] {:type "text" :text "done"})}
-          wrapped (server/make-tool test-tool)]
+          wrapped (routes/make-tool test-tool)]
       ;; First call gets the piggyback
       (let [result1 ((:handler wrapped) {})]
         (is (str/includes? (get-in (:content result1) [0 :text])
@@ -158,7 +158,7 @@
                      :description "test"
                      :inputSchema {}
                      :handler (fn [_] {:type "text" :text "x"})}
-          wrapped (server/make-tool test-tool)
+          wrapped (routes/make-tool test-tool)
           ;; Call with keyword :agent-id
           result ((:handler wrapped) {:agent-id "agent-a"})]
       ;; Should have gotten the piggyback (agent-a hadn't read yet)
@@ -174,7 +174,7 @@
                      :description "test"
                      :inputSchema {}
                      :handler (fn [_] {:type "text" :text "x"})}
-          wrapped (server/make-tool test-tool)
+          wrapped (routes/make-tool test-tool)
           ;; Call with string key "agent-id"
           result ((:handler wrapped) {"agent-id" "agent-b"})]
       (is (str/includes? (get-in (:content result) [0 :text])
@@ -189,7 +189,7 @@
                      :description "test"
                      :inputSchema {}
                      :handler (fn [_] {:type "text" :text "x"})}
-          wrapped (server/make-tool test-tool)
+          wrapped (routes/make-tool test-tool)
           ;; Call without agent-id - should default to "coordinator"
           _ ((:handler wrapped) {})
           ;; Now call as "coordinator" - should have no new messages
@@ -214,7 +214,7 @@
                      :handler (fn [_] [{:type "text" :text "first"}
                                        {:type "image" :data "base64..."}
                                        {:type "text" :text "last"}])}
-          wrapped (server/make-tool test-tool)
+          wrapped (routes/make-tool test-tool)
           result ((:handler wrapped) {})]
       (is (= 3 (count (:content result))) "Should have 3 items")
       ;; First text item should be unchanged
@@ -240,7 +240,7 @@
                      ;; Return only non-text items
                      :handler (fn [_] [{:type "image" :data "img1"}
                                        {:type "image" :data "img2"}])}
-          wrapped (server/make-tool test-tool)
+          wrapped (routes/make-tool test-tool)
           result ((:handler wrapped) {})]
       ;; Should have 3 items now (2 images + 1 text for piggyback)
       (is (= 3 (count (:content result))) "Should have 3 items (2 images + 1 text)")
@@ -266,7 +266,7 @@
                      :description "test"
                      :inputSchema {}
                      :handler (fn [_] {:type "text" :text "result"})}
-          wrapped (server/make-tool test-tool)
+          wrapped (routes/make-tool test-tool)
           result ((:handler wrapped) {})]
       (let [text (get-in (:content result) [0 :text])]
         (is (str/includes? text "agent-1") "Contains agent-1")
@@ -286,7 +286,7 @@
                      :description "Returns nil"
                      :inputSchema {}
                      :handler (fn [_] nil)}
-          wrapped (server/make-tool test-tool)]
+          wrapped (routes/make-tool test-tool)]
       ;; Should not throw
       (let [result ((:handler wrapped) {})]
         (is (vector? (:content result)) "Content should be vector")
@@ -299,7 +299,7 @@
                      :description "Returns empty vector"
                      :inputSchema {}
                      :handler (fn [_] [])}
-          wrapped (server/make-tool test-tool)]
+          wrapped (routes/make-tool test-tool)]
       (let [result ((:handler wrapped) {})]
         (is (vector? (:content result)) "Content should be vector")
         (is (empty? (:content result)) "Content should be empty")))))

@@ -20,7 +20,7 @@
             [hive-mcp.swarm.datascript.lings :as ds-lings]
             [hive-mcp.swarm.datascript.queries :as ds-queries]
             [hive-mcp.swarm.datascript.connection :as conn]
-            [hive-mcp.emacsclient :as ec]))
+            [hive-mcp.emacs.client :as ec]))
 
 ;; =============================================================================
 ;; Test Fixtures

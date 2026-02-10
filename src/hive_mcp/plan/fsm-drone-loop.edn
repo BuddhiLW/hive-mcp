@@ -1,0 +1,138 @@
+{:id "plan-20260208-fsm-drone-loop"
+ :title "FSM Agentic Drone Loop with Composable Sub-FSMs"
+ :description "3rd hive-events FSM. Composable sub-FSMs + internal loop edge + KG context reconstruction."
+ :decision-id "20260208215414-4d94cfd5"
+ :tags ["fsm-drone-loop" "sub-fsm" "kg-compression" "agentic-loop"]
+
+ :steps
+ [{:id "step-1"
+   :title "Sub-FSM composition support in hive-events"
+   :description "Verify fsm/run can be called from within a handler (sub-FSM pattern). Add helper: run-sub-fsm that calls fsm/run on child compiled spec, merges result into parent data. If hive-events core needs changes, implement them."
+   :depends-on []
+   :priority :high
+   :files ["src/hive_mcp/workflows/fsm_engine.clj"]
+   :wave 1}
+
+  {:id "step-2"
+   :title "Context-gather sub-FSM"
+   :description "New file workflows/sub_fsms/context_gather.clj. States: fetch-refs→traverse-kg→compress→render→end. Wraps context.reconstruction pipeline. Uses batch MCP for parallel data fetches."
+   :depends-on ["step-1"]
+   :priority :high
+   :files ["src/hive_mcp/workflows/sub_fsms/context_gather.clj"]
+   :wave 2}
+
+  {:id "step-3"
+   :title "Context-gather sub-FSM tests"
+   :description "Unit tests for each handler with mock resources. Test batch fetch, compression, rendering. Verify 3000 char cap."
+   :depends-on ["step-2"]
+   :priority :high
+   :files ["test/hive_mcp/workflows/sub_fsms/context_gather_test.clj"]
+   :wave 2}
+
+  {:id "step-4"
+   :title "LLM-call sub-FSM"
+   :description "New file workflows/sub_fsms/llm_call.clj. States: build-messages→api-call→parse-response→end. Extracts tool calls, detects completion language."
+   :depends-on ["step-1"]
+   :priority :high
+   :files ["src/hive_mcp/workflows/sub_fsms/llm_call.clj"]
+   :wave 3}
+
+  {:id "step-5"
+   :title "LLM-call sub-FSM tests"
+   :description "Unit tests: message building, response parsing, completion detection. Mock LLM returns various response shapes."
+   :depends-on ["step-4"]
+   :priority :high
+   :files ["test/hive_mcp/workflows/sub_fsms/llm_call_test.clj"]
+   :wave 3}
+
+  {:id "step-6"
+   :title "Tool-execution sub-FSM"
+   :description "New file workflows/sub_fsms/tool_execution.clj. States: validate-permissions→execute→capture-result→end. Checks allowlist, runs tool, records observation."
+   :depends-on ["step-1"]
+   :priority :high
+   :files ["src/hive_mcp/workflows/sub_fsms/tool_execution.clj"]
+   :wave 4}
+
+  {:id "step-7"
+   :title "Tool-execution sub-FSM tests"
+   :description "Unit tests: permission validation, execution with timeout, KG observation recording. Test denied tool path."
+   :depends-on ["step-6"]
+   :priority :medium
+   :files ["test/hive_mcp/workflows/sub_fsms/tool_execution_test.clj"]
+   :wave 4}
+
+  {:id "step-8"
+   :title "Parent drone-loop FSM spec + handlers"
+   :description "New file workflows/drone_loop.clj. States: init→reconstruct-context→llm-call→execute-tools→compress-to-kg→check-done→(loop or finalize→end). Handlers delegate to sub-FSMs via resources :sub-fsms map. check-done has loop edge back to reconstruct-context."
+   :depends-on ["step-2" "step-4" "step-6"]
+   :priority :high
+   :files ["src/hive_mcp/workflows/drone_loop.clj"]
+   :wave 5}
+
+  {:id "step-9"
+   :title "FSMAgenticBackend"
+   :description "New file agent/drone/fsm_backend.clj. Implements IDroneExecutionBackend. execute-drone compiles drone-loop FSM, wires resources from execution context, runs FSM. defmethod resolve-backend :fsm-agentic."
+   :depends-on ["step-8"]
+   :priority :high
+   :files ["src/hive_mcp/agent/drone/fsm_backend.clj"]
+   :wave 6}
+
+  {:id "step-10"
+   :title "Drone-loop FX handlers"
+   :description "New file events/handlers/drone_loop_fx.clj. Register :drone-loop/run, :drone-loop/shout FX. Pattern follows saa_fx.clj. Called from effects/agent.clj register fn."
+   :depends-on ["step-8"]
+   :priority :medium
+   :files ["src/hive_mcp/events/handlers/drone_loop_fx.clj"]
+   :wave 7}
+
+  {:id "step-11"
+   :title "Registry + router integration"
+   :description "Add drone-loop-workflow to registry init!. Add 3 sub-FSM registrations. Add drone-loop to router native-workflows set."
+   :depends-on ["step-8" "step-9"]
+   :priority :medium
+   :files ["src/hive_mcp/workflows/registry.clj" "src/hive_mcp/workflows/router.clj"]
+   :wave 8}
+
+  {:id "step-12"
+   :title "Wave execution :fsm-agentic routing"
+   :description "Update wave/execution.clj to route :mode :fsm-agentic to FSMAgenticBackend instead of legacy loop. Add execute-drone-task-once-fsm-agentic fn."
+   :depends-on ["step-9"]
+   :priority :medium
+   :files ["src/hive_mcp/tools/swarm/wave/execution.clj"]
+   :wave 9}
+
+  {:id "step-13"
+   :title "Parent FSM unit tests"
+   :description "Test dispatch predicates (done?, has-tools?, budget-exceeded?). Test handler data flow with mock sub-FSMs. Test loop edge triggers correctly."
+   :depends-on ["step-8"]
+   :priority :high
+   :files ["test/hive_mcp/workflows/drone_loop_test.clj"]
+   :wave 5}
+
+  {:id "step-14"
+   :title "Integration tests"
+   :description "Full FSM run with mock LLM: 3-turn scenario (tool call→tool call→completion). Verify KG operations called correctly. Verify termination heuristics."
+   :depends-on ["step-9" "step-11" "step-12"]
+   :priority :high
+   :files ["test/hive_mcp/agent/drone/fsm_backend_test.clj"]
+   :wave 10}
+
+  {:id "step-15"
+   :title "Property tests for loop termination"
+   :description "Generative test: random LLM response sequences always terminate within max-turns. Verify no infinite loops possible regardless of response shape."
+   :depends-on ["step-14"]
+   :priority :low
+   :files ["test/hive_mcp/workflows/drone_loop_property_test.clj"]
+   :wave 10}]
+
+ :waves
+ {:wave-1 {:steps ["step-1"] :parallel false}
+  :wave-2 {:steps ["step-2" "step-3"] :parallel false}
+  :wave-3 {:steps ["step-4" "step-5"] :parallel false}
+  :wave-4 {:steps ["step-6" "step-7"] :parallel false}
+  :wave-5 {:steps ["step-8" "step-13"] :parallel true}
+  :wave-6 {:steps ["step-9"] :parallel false}
+  :wave-7 {:steps ["step-10"] :parallel false}
+  :wave-8 {:steps ["step-11"] :parallel false}
+  :wave-9 {:steps ["step-12"] :parallel false}
+  :wave-10 {:steps ["step-14" "step-15"] :parallel true}}}

@@ -9,10 +9,10 @@
    CLARITY Principle: Telemetry first - observable system behavior."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [datascript.core]
-            [hive-mcp.channel]
+            [hive-mcp.channel.core]
             [hive-mcp.crystal.hooks :as hooks]
             [hive-mcp.crystal.recall]
-            [hive-mcp.emacsclient]
+            [hive-mcp.emacs.client]
             [hive-mcp.events.schemas :as schemas]
             [hive-mcp.events.effects :as effects]
             [hive-mcp.events.core :as ev]
@@ -37,7 +37,7 @@
 
 (deftest harvest-session-progress-returns-gracefully-on-error
   (testing "harvest-session-progress returns error map instead of throwing"
-    (with-redefs [hive-mcp.emacsclient/eval-elisp
+    (with-redefs [hive-mcp.emacs.client/eval-elisp
                   (fn [_] (throw (Exception. "Emacs unreachable")))]
       (let [result (hooks/harvest-session-progress)]
         (is (map? result) "Should return a map, not throw")
@@ -47,7 +47,7 @@
 
 (deftest harvest-completed-tasks-returns-gracefully-on-error
   (testing "harvest-completed-tasks returns error map instead of throwing"
-    (with-redefs [hive-mcp.emacsclient/eval-elisp
+    (with-redefs [hive-mcp.emacs.client/eval-elisp
                   (fn [_] (throw (Exception. "Emacs unreachable")))
                   hive-mcp.swarm.datascript/get-completed-tasks-this-session
                   (fn [] (throw (Exception. "DataScript error")))]
@@ -59,7 +59,7 @@
 
 (deftest harvest-git-commits-returns-gracefully-on-error
   (testing "harvest-git-commits returns error map instead of throwing"
-    (with-redefs [hive-mcp.emacsclient/eval-elisp
+    (with-redefs [hive-mcp.emacs.client/eval-elisp
                   (fn [_] (throw (Exception. "Shell execution failed")))]
       (let [result (hooks/harvest-git-commits)]
         (is (map? result) "Should return a map, not throw")
@@ -69,7 +69,7 @@
 
 (deftest harvest-all-returns-gracefully-on-error
   (testing "harvest-all returns partial results when sub-harvests fail"
-    (with-redefs [hive-mcp.emacsclient/eval-elisp
+    (with-redefs [hive-mcp.emacs.client/eval-elisp
                   (fn [_] (throw (Exception. "Complete failure")))
                   hive-mcp.swarm.datascript/get-completed-tasks-this-session
                   (fn [] (throw (Exception. "DataScript down")))
@@ -84,7 +84,7 @@
 
 (deftest harvest-functions-include-error-metadata
   (testing "Harvest error maps include structured metadata for telemetry"
-    (with-redefs [hive-mcp.emacsclient/eval-elisp
+    (with-redefs [hive-mcp.emacs.client/eval-elisp
                   (fn [_] (throw (Exception. "Connection refused")))]
       (let [result (hooks/harvest-session-progress)
             error (:error result)]
@@ -195,7 +195,7 @@
   (testing "When harvest fails, it should emit :system/error event"
     (effects/register-effects!)
     (let [events-dispatched (atom [])]
-      (with-redefs [hive-mcp.emacsclient/eval-elisp
+      (with-redefs [hive-mcp.emacs.client/eval-elisp
                     (fn [_] (throw (Exception. "Emacs down")))
                     hive-mcp.events.core/dispatch
                     (fn [event]

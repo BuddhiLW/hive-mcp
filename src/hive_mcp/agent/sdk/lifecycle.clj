@@ -15,9 +15,10 @@
             [hive-mcp.agent.sdk.event-loop :as event-loop]
             [hive-mcp.agent.sdk.execution :as exec]
             [hive-mcp.agent.sdk.options :as opts]
-            [hive-mcp.agent.sdk.python :as py]
+            [hive-mcp.agent.sdk.phase-compress :as phase-compress]
             [hive-mcp.agent.sdk.session :as session]
-            [hive-mcp.agent.sdk.saa :as saa]
+            [hive-mcp.agent.context-envelope :as ctx-envelope]
+            [hive-mcp.protocols.dispatch :as dispatch-ctx]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -105,6 +106,119 @@
      :phase :idle}))
 
 ;;; =============================================================================
+;;; Dispatch Helpers (SLAP: one abstraction level per function)
+;;; =============================================================================
+
+(defn- forward-phase-messages!
+  "Forward all messages from phase-ch to out-ch, tagging with phase-key."
+  [phase-ch out-ch phase-key]
+  (loop []
+    (when-let [msg (<!! phase-ch)]
+      (>!! out-ch (assoc msg :saa-phase phase-key))
+      (recur))))
+
+(defn- build-kg-context-prefix
+  "Build compressed context prefix for SAA silence phase.
+   Extracts ctx-refs and kg-node-ids from dispatch-context and builds
+   an L2 envelope to prepend to the silence prompt.
+   Returns string prefix or nil (CLARITY-Y graceful degradation)."
+  [dispatch-context]
+  (when dispatch-context
+    (try
+      (when (= :ref (dispatch-ctx/context-type dispatch-context))
+        (let [{:keys [ctx-refs kg-node-ids scope]} dispatch-context]
+          (ctx-envelope/build-l2-envelope ctx-refs kg-node-ids scope
+                                          {:mode :inline})))
+      (catch Exception e
+        (log/debug "[sdk.lifecycle] Context prefix failed (non-fatal):" (ex-message e))
+        nil))))
+
+(defn- compress-and-transition!
+  "Compress observations from the completed phase and prepare session for the next.
+
+   Uses the resolved IPhaseCompressor (NoOp or custom) to compress the
+   observations collected during from-phase into a compact context string.
+   Updates session state with the compressed context and resets observations.
+
+   Arguments:
+     ling-id    - Ling identifier
+     from-phase - Phase that just completed (keyword)
+     to-phase   - Phase about to start (keyword)
+
+   Returns:
+     Compression result map with :compressed-context, :entries-created, :compressor"
+  [ling-id from-phase to-phase]
+  (let [sess (session/get-session ling-id)
+        compressor (phase-compress/resolve-compressor)
+        result (phase-compress/compress-phase compressor
+                                              (name from-phase)
+                                              (or (:observations sess) [])
+                                              {:project-id (:project-id sess)
+                                               :cwd (:cwd sess)})]
+    (session/update-session! ling-id
+                             {:phase to-phase
+                              :compressed-context (:compressed-context result)
+                              :observations []})
+    (log/info "[sdk.lifecycle] Phase transition compressed"
+              {:ling-id ling-id
+               :from from-phase
+               :to to-phase
+               :compressor (:compressor result)
+               :entries-created (:entries-created result)})
+    result))
+
+(defn- run-saa-silence!
+  "Run SAA silence phase: explore codebase and collect observations.
+   When dispatch-context is available in session, prepends compressed
+   context to the silence prompt for richer exploration grounding."
+  [ling-id task out-ch]
+  (let [sess (session/get-session ling-id)
+        kg-prefix (build-kg-context-prefix (:dispatch-context sess))
+        prompt (str (when kg-prefix (str kg-prefix "\n\n---\n\n"))
+                    "TASK: " task
+                    "\n\nExplore the codebase and collect context. "
+                    "List all relevant files, patterns, and observations.")
+        phase-ch (exec/execute-phase! ling-id prompt :silence)]
+    (loop []
+      (when-let [msg (<!! phase-ch)]
+        (>!! out-ch (assoc msg :saa-phase :silence))
+        (when (= :message (:type msg))
+          (session/update-session!
+           ling-id
+           {:observations (conj (or (:observations (session/get-session ling-id)) [])
+                                (:data msg))}))
+        (recur)))))
+
+(defn- run-saa-abstract!
+  "Run SAA abstract phase: synthesize observations into a plan."
+  [ling-id task out-ch]
+  (let [observations (:observations (session/get-session ling-id))
+        prompt (str "Based on these observations from the Silence phase:\n"
+                    (pr-str observations)
+                    "\n\nSynthesize these into a concrete action plan for: " task)
+        phase-ch (exec/execute-phase! ling-id prompt :abstract)]
+    (forward-phase-messages! phase-ch out-ch :abstract)))
+
+(defn- run-saa-act!
+  "Run SAA act phase: execute the plan with full tool access."
+  [ling-id task out-ch]
+  (let [prompt (str "Execute the plan for: " task
+                    "\n\nFollow the plan precisely. Make changes file by file.")
+        phase-ch (exec/execute-phase! ling-id prompt :act)]
+    (forward-phase-messages! phase-ch out-ch :act)))
+
+(defn- emit-dispatch-complete!
+  "Emit SAA completion message and log."
+  [ling-id out-ch]
+  (let [sess (session/get-session ling-id)]
+    (>!! out-ch {:type :saa-complete
+                 :ling-id ling-id
+                 :turn-count (:turn-count sess)
+                 :observations-count (count (:observations sess))})
+    (log/info "[sdk.lifecycle] Dispatch complete"
+              {:ling-id ling-id :turn-count (:turn-count sess)})))
+
+;;; =============================================================================
 ;;; Dispatch
 ;;; =============================================================================
 
@@ -126,7 +240,7 @@
 
    Returns:
      core.async channel that will receive all messages from all phases."
-  [ling-id task & [{:keys [skip-silence? skip-abstract? phase raw?] :as _opts}]]
+  [ling-id task & [{:keys [skip-silence? skip-abstract? phase raw? dispatch-context] :as _opts}]]
   {:pre [(string? ling-id)
          (string? task)]}
   (let [sess (session/get-session ling-id)]
@@ -135,66 +249,31 @@
     (when-not (:client-ref sess)
       (throw (ex-info "No persistent client (was spawn successful?)"
                       {:ling-id ling-id})))
+    ;; Store dispatch-context in session for SAA silence phase KG enrichment
+    (when dispatch-context
+      (session/update-session! ling-id {:dispatch-context dispatch-context}))
     (let [out-ch (chan 4096)]
-      ;; Run in a background thread
       (async/thread
         (try
           (if raw?
-            ;; === RAW DISPATCH (single query, no SAA) ===
-            (let [phase-ch (exec/execute-phase! ling-id task :dispatch)]
-              (loop []
-                (when-let [msg (<!! phase-ch)]
-                  (>!! out-ch (assoc msg :saa-phase :dispatch))
-                  (recur))))
-
-            ;; === SAA CYCLE (multi-phase) ===
+            (forward-phase-messages!
+             (exec/execute-phase! ling-id task :dispatch) out-ch :dispatch)
             (do
-              ;; === SILENCE PHASE ===
               (when-not (or skip-silence? (and phase (not= phase :silence)))
-                (let [silence-prompt (str "TASK: " task
-                                          "\n\nExplore the codebase and collect context. "
-                                          "List all relevant files, patterns, and observations.")
-                      phase-ch (exec/execute-phase! ling-id silence-prompt :silence)]
-                  (loop []
-                    (when-let [msg (<!! phase-ch)]
-                      (>!! out-ch (assoc msg :saa-phase :silence))
-                      (when (= :message (:type msg))
-                        (session/update-session! ling-id
-                                                 {:observations (conj (or (:observations (session/get-session ling-id)) [])
-                                                                      (:data msg))}))
-                      (recur)))))
-
-              ;; === ABSTRACT PHASE ===
+                (run-saa-silence! ling-id task out-ch))
+              ;; Compress silence observations before abstract phase
+              (when (and (not (or skip-silence? (and phase (not= phase :silence))))
+                         (not (or skip-abstract? (and phase (not= phase :abstract)))))
+                (compress-and-transition! ling-id :silence :abstract))
               (when-not (or skip-abstract? (and phase (not= phase :abstract)))
-                (let [observations (:observations (session/get-session ling-id))
-                      abstract-prompt (str "Based on these observations from the Silence phase:\n"
-                                           (pr-str observations)
-                                           "\n\nSynthesize these into a concrete action plan for: " task)
-                      phase-ch (exec/execute-phase! ling-id abstract-prompt :abstract)]
-                  (loop []
-                    (when-let [msg (<!! phase-ch)]
-                      (>!! out-ch (assoc msg :saa-phase :abstract))
-                      (recur)))))
-
-              ;; === ACT PHASE ===
+                (run-saa-abstract! ling-id task out-ch))
+              ;; Compress abstract output before act phase
+              (when (and (not (or skip-abstract? (and phase (not= phase :abstract))))
+                         (not (and phase (not= phase :act))))
+                (compress-and-transition! ling-id :abstract :act))
               (when-not (and phase (not= phase :act))
-                (let [act-prompt (str "Execute the plan for: " task
-                                      "\n\nFollow the plan precisely. Make changes file by file.")
-                      phase-ch (exec/execute-phase! ling-id act-prompt :act)]
-                  (loop []
-                    (when-let [msg (<!! phase-ch)]
-                      (>!! out-ch (assoc msg :saa-phase :act))
-                      (recur)))))))
-
-          ;; Dispatch complete
-          (>!! out-ch {:type :saa-complete
-                       :ling-id ling-id
-                       :turn-count (:turn-count (session/get-session ling-id))
-                       :observations-count (count (:observations (session/get-session ling-id)))})
-          (log/info "[sdk.lifecycle] Dispatch complete"
-                    {:ling-id ling-id
-                     :turn-count (:turn-count (session/get-session ling-id))})
-
+                (run-saa-act! ling-id task out-ch))))
+          (emit-dispatch-complete! ling-id out-ch)
           (catch Exception e
             (log/error "[sdk.lifecycle] Dispatch failed"
                        {:ling-id ling-id :error (ex-message e)})
@@ -242,60 +321,26 @@
 (defn interrupt-headless-sdk!
   "Interrupt the current query of an SDK ling session.
 
-   Sends client.interrupt() to the ClaudeSDKClient via the session's
-   asyncio event loop using asyncio.run_coroutine_threadsafe().
-
+   Delegates to event-loop/interrupt-session-client! for the Python bridge.
    Safe to call from any thread.
-
-   Arguments:
-     ling-id - ID of the SDK ling to interrupt
-
-   Returns:
-     {:success? true/false :ling-id ling-id ...}
-
    Does NOT throw -- returns error map on failure (CLARITY-Y)."
   [ling-id]
   (if-let [sess (session/get-session ling-id)]
     (let [{:keys [client-ref py-loop-var phase]} sess]
       (if (and client-ref py-loop-var)
-        (try
-          (py/py-run (str "import asyncio\n"
-                          "_hive_interrupt_client = globals().get('" client-ref "')\n"
-                          "_hive_interrupt_loop = globals().get('" py-loop-var "')\n"
-                          "if _hive_interrupt_client is not None and _hive_interrupt_loop is not None and _hive_interrupt_loop.is_running():\n"
-                          "    _hive_interrupt_future = asyncio.run_coroutine_threadsafe(\n"
-                          "        _hive_interrupt_client.interrupt(),\n"
-                          "        _hive_interrupt_loop\n"
-                          "    )\n"
-                          "    _hive_interrupt_future.result(timeout=10)\n"
-                          "    _hive_interrupt_success = True\n"
-                          "else:\n"
-                          "    _hive_interrupt_success = False\n"))
-          (let [success? (py/py->clj (py/py-get-global "_hive_interrupt_success"))]
-            ;; Clean up temp globals
-            (try (py/py-run "globals().pop('_hive_interrupt_client', None)\nglobals().pop('_hive_interrupt_loop', None)\nglobals().pop('_hive_interrupt_future', None)\nglobals().pop('_hive_interrupt_success', None)\n")
-                 (catch Exception _ nil))
-            (if success?
-              (do
-                (log/info "[sdk.lifecycle] Interrupt sent" {:ling-id ling-id :phase phase})
+        (let [{:keys [success? error]} (event-loop/interrupt-session-client! client-ref py-loop-var)]
+          (if success?
+            (do (log/info "[sdk.lifecycle] Interrupt sent" {:ling-id ling-id :phase phase})
                 {:success? true :ling-id ling-id :phase phase})
-              (do
-                (log/warn "[sdk.lifecycle] Interrupt failed: client or loop not available"
-                          {:ling-id ling-id :phase phase})
+            (do (log/warn "[sdk.lifecycle] Interrupt failed"
+                          {:ling-id ling-id :phase phase :error error})
                 {:success? false
                  :ling-id ling-id
-                 :errors ["Client or event loop not available (phase may have completed)"]})))
-          (catch Exception e
-            (log/error "[sdk.lifecycle] Interrupt exception"
-                       {:ling-id ling-id :error (ex-message e)})
-            {:success? false
-             :ling-id ling-id
-             :errors [(str "Interrupt failed: " (ex-message e))]}))
-        ;; No active phase
+                 :errors [(or error "Client or event loop not available")]})))
         {:success? false
          :ling-id ling-id
-         :errors [(str "No active phase to interrupt (current phase: " (name (or phase :idle)) ")")]}))
-    ;; Session not found
+         :errors [(str "No active phase to interrupt (current phase: "
+                       (name (or phase :idle)) ")")]}))
     {:success? false
      :ling-id ling-id
      :errors ["SDK session not found"]}))

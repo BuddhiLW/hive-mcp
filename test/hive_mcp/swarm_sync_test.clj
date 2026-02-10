@@ -6,7 +6,7 @@
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [hive-mcp.tools.swarm :as swarm]
             [hive-mcp.swarm.datascript :as ds]
-            [hive-mcp.channel :as ch]))
+            [hive-mcp.channel.core :as ch]))
 
 ;;; Conflict test - Drone B
 

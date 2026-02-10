@@ -9,8 +9,8 @@
    CLARITY: L - Thin adapter delegating to domain handlers."
   (:require [hive-mcp.tools.cli :refer [make-cli-handler]]
             [hive-mcp.tools.core :refer [mcp-success mcp-error mcp-json]]
-            [hive-mcp.emacsclient :as ec]
-            [hive-mcp.elisp :as el]
+            [hive-mcp.emacs.client :as ec]
+            [hive-mcp.emacs.elisp :as el]
             [taoensso.timbre :as log]))
 
 ;; =============================================================================

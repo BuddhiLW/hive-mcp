@@ -1,12 +1,12 @@
 (ns hive-mcp.enhancer.protocol
-  "IKnowledgeEnhancer - Bridge to proprietary knowledge enhancement.
+  "IKnowledgeEnhancer - Bridge to optional knowledge enhancement.
 
    CLARITY-L: Layers stay pure - this is the port (interface).
-   Implementation lives in proprietary hive-knowledge repo.
+   Enhanced implementations available via extension point.
 
-   This is the primary integration point between open hive-mcp
-   and closed hive-knowledge. The protocol defines AI-powered
-   knowledge enhancement capabilities that require ML/GNN models.")
+   This is the primary integration point between core hive-mcp
+   and optional extensions. The protocol defines AI-powered
+   knowledge enhancement capabilities.")
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -20,12 +20,12 @@
 
    Implementations:
    - BasicEnhancer: No-op fallback (open source, in this repo)
-   - ProprietaryEnhancer: Full ML/GNN implementation (hive-knowledge repo)
+   - EnhancedImplementation: Full implementation (via extension)
 
    Usage:
    1. Call (load-enhancer) at system startup
    2. Use (get-enhancer) to access the active implementation
-   3. If hive-knowledge is on classpath, ProprietaryEnhancer loads
+   3. If enhanced extension is available, it loads
    4. Otherwise, BasicEnhancer provides safe no-op defaults"
 
   (enhance-query [this query opts]
@@ -66,7 +66,7 @@
      BasicEnhancer returns 0.5 (neutral) for all entries.")
 
   (detect-emergence [this scope]
-    "Detect emergent patterns using GNN analysis.
+    "Detect emergent patterns using graph analysis.
 
      Analyzes the knowledge graph structure to find:
      - Clusters of related concepts forming new abstractions

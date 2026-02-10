@@ -133,7 +133,7 @@
 
 (deftest graph-context-dispatch-path-test
   (testing "Graph context fallback flows through dispatch path"
-    (let [;; ->graph-context falls back to TextContext when hive-knowledge unavailable
+    (let [;; ->graph-context falls back to TextContext when enhanced extension unavailable
           ctx (dispatch/->graph-context "task-node-42" nil)
           resolved (dispatch/resolve-context ctx)]
       (is (satisfies? dispatch/IDispatchContext ctx)

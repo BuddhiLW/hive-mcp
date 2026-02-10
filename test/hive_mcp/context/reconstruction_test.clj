@@ -1,5 +1,5 @@
 (ns hive-mcp.context.reconstruction-test
-  "Tests for KG-compressed context reconstruction.
+  "Tests for compressed context reconstruction.
 
    Uses with-redefs to mock context-store and KG queries.
    Tests all 5 pipeline stages + bridge function + graceful degradation."
@@ -193,7 +193,7 @@
                   :edges [{:from "A" :to "B" :relation :implements :confidence 0.9}]}
           result (recon/render-compressed-context ref-data kg-ctx)]
       (is (string? result))
-      (is (str/includes? result "## Reconstructed Context (KG-Compressed)"))
+      (is (str/includes? result "## Reconstructed Context (Compressed)"))
       (is (str/includes? result "Axioms"))
       (is (str/includes? result "Decisions"))
       (is (str/includes? result "KG Subgraph")))))
@@ -218,7 +218,7 @@
   (testing "output is bounded to max-output-chars"
     (let [;; Create large ref data that exceeds budget
           big-axioms (mapv (fn [i] {:id (str "ax-" i)
-                                     :content (apply str (repeat 500 "x"))})
+                                    :content (apply str (repeat 500 "x"))})
                            (range 50))
           ref-data {:axioms big-axioms}
           result (recon/render-compressed-context ref-data nil)]
@@ -252,7 +252,7 @@
                       ["node-A"]
                       "hive-mcp")]
           (is (string? result))
-          (is (str/includes? result "## Reconstructed Context (KG-Compressed)"))
+          (is (str/includes? result "## Reconstructed Context (Compressed)"))
           (is (str/includes? result "Axioms"))
           (is (str/includes? result "KG Subgraph"))
           (is (<= (count result) recon/max-output-chars)))))))

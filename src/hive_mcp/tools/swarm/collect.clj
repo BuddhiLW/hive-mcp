@@ -8,7 +8,7 @@
    CLARITY: A - Architectural performance (push-first strategy)."
   (:require [hive-mcp.tools.swarm.core :as core]
             [hive-mcp.tools.swarm.channel :as channel]
-            [hive-mcp.emacsclient :as ec]
+            [hive-mcp.emacs.client :as ec]
             [hive-mcp.validation :as v]
             [clojure.data.json :as json]
             [taoensso.timbre :as log]))

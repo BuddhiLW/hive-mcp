@@ -65,6 +65,13 @@
       {:type "text"
        :text (json/write-str {:error (.getMessage e)})})))
 
+(defn- normalize-backend
+  "Normalize backend string/keyword from MCP into a keyword.
+   Returns nil if not provided (let downstream default)."
+  [backend]
+  (when backend
+    (keyword (some-> backend name))))
+
 (defn handle-dispatch-drone-wave
   "Handle dispatch_drone_wave MCP tool call.
 
@@ -76,12 +83,19 @@
      ensure_dirs    - Create parent directories before dispatch (default: true)
      validate_paths - Fail fast if paths are invalid (default: true)
      mode           - Execution mode: \"delegate\" (default) or \"agentic\"
-                      When \"agentic\", uses in-process agentic loop with session KG
+                      When \"agentic\", uses in-process agentic loop with session store
+     backend        - Drone execution backend (optional)
+                      One of: \"openrouter\", \"hive-agent\", \"legacy-loop\", \"sdk-drone\"
+                      Defaults to :openrouter for delegate mode, :hive-agent for agentic mode
+     model          - Override model for all drones in this wave (optional)
+                      Bypasses smart routing when provided
+     seeds          - Domain topic seeds for context priming (optional)
+                      e.g. [\"fp\" \"ddd\"]. Injects relevant domain knowledge.
 
    Returns:
      JSON with wave-id for immediate response.
      Actual execution happens asynchronously."
-  [{:keys [tasks preset trace cwd ensure_dirs validate_paths mode]}]
+  [{:keys [tasks preset trace cwd ensure_dirs validate_paths mode backend model seeds]}]
   ;; DEPRECATION WARNING: Prefer unified 'delegate' tool
   (log/warn {:event :deprecation-warning
              :tool "dispatch_drone_wave"
@@ -97,6 +111,8 @@
           effective-mode (if (= "agentic" (some-> mode name))
                            :agentic
                            :delegate)
+          ;; Normalize backend: string from MCP → keyword (nil = let downstream default)
+          effective-backend (normalize-backend backend)
           ;; Normalize task keys (MCP sends string keys)
           normalized-tasks (mapv (fn [t]
                                    {:file (or (get t "file") (:file t))
@@ -116,19 +132,25 @@
       (let [plan-id (create-plan! normalized-tasks preset)
             {:keys [wave-id item-count]} (execution/execute-wave-async!
                                           plan-id
-                                          {:trace (if (nil? trace) true trace)
-                                           :cwd effective-cwd
-                                           :mode effective-mode})]
+                                          (cond-> {:trace (if (nil? trace) true trace)
+                                                   :cwd effective-cwd
+                                                   :mode effective-mode}
+                                            effective-backend (assoc :backend effective-backend)
+                                            model (assoc :model model)
+                                            (seq seeds) (assoc :seeds (vec seeds))))]
         {:type "text"
-         :text (json/write-str {:status "dispatched"
-                                :plan_id plan-id
-                                :wave_id wave-id
-                                :item_count item-count
-                                :mode (name effective-mode)
-                                :message (str "Wave dispatched to background"
-                                              (when (= :agentic effective-mode)
-                                                " (agentic mode with session KG)")
-                                              ". Poll get_wave_status(wave_id) for progress.")})}))
+         :text (json/write-str (cond-> {:status "dispatched"
+                                        :plan_id plan-id
+                                        :wave_id wave-id
+                                        :item_count item-count
+                                        :mode (name effective-mode)
+                                        :message (str "Wave dispatched to background"
+                                                      (when (= :agentic effective-mode)
+                                                        " (agentic mode with session store)")
+                                                      (when effective-backend
+                                                        (str " (backend: " (name effective-backend) ")"))
+                                                      ". Poll get_wave_status(wave_id) for progress.")}
+                                 effective-backend (assoc :backend (name effective-backend))))}))
 
     (catch clojure.lang.ExceptionInfo e
       (let [data (ex-data e)]

@@ -16,10 +16,10 @@
    SOLID-D: Depends on IWorkflowEngine abstraction, not concretions.
    SOLID-O: Open for extension via registry workflow addition.
    CLARITY-L: Pure bridge layer between protocol and FSM engine."
-  (:require [hive-mcp.protocols.workflow :as proto]
+  (:require [clojure.string]
+            [hive-mcp.protocols.workflow :as proto]
             [hive-mcp.workflows.registry :as registry]
-            [hive.events.fsm :as fsm]
-            [taoensso.timbre :as log]))
+            [hive.events.fsm :as fsm]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;

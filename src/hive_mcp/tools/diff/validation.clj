@@ -6,7 +6,7 @@
 
    SOLID: SRP - All validation logic in one place.
    CLARITY-Y: Yield safe failure with descriptive error messages."
-  (:require [hive-mcp.emacsclient :as ec]
+  (:require [hive-mcp.emacs.client :as ec]
             [clojure.string :as str]
             [clojure.java.io :as io]
             [taoensso.timbre :as log]))

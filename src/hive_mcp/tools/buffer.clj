@@ -2,13 +2,10 @@
   "Buffer and Emacs interaction tools.
 
    Handles buffer operations, file operations, and hive-mcp.el integration."
-  (:require [hive-mcp.emacsclient :as ec]
-            [hive-mcp.telemetry :as telemetry]
+  (:require [hive-mcp.emacs.client :as ec]
+            [hive-mcp.telemetry.core :as telemetry]
             [hive-mcp.validation :as v]
-            [hive-mcp.workflows.router :as router]
-            [hive-mcp.workflows.hooks :as hooks]
             [clojure.data.json :as json]
-            [clojure.string :as str]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -155,8 +152,8 @@
   (log/info "mcp-notify:" message)
   (let [type-str (or type "info")]
     ;; Send desktop notification (primary - catches attention)
-    (require 'hive-mcp.notify)
-    ((resolve 'hive-mcp.notify/notify!) {:summary "Hive-MCP"
+    (require 'hive-mcp.emacs.notify)
+    ((resolve 'hive-mcp.emacs.notify/notify!) {:summary "Hive-MCP"
                                          :body message
                                          :type type-str})
     ;; Also send to Emacs echo-area (secondary - visible if Emacs focused)
@@ -178,69 +175,6 @@
         {:type "text" :text result}
         {:type "text" :text (str "Error: " error) :isError true}))
     {:type "text" :text "Error: hive-mcp.el is not loaded." :isError true}))
-
-(defn- clj->elisp
-  "Convert Clojure value to elisp syntax string.
-   Maps become plists, vectors become lists, keywords become :keyword."
-  [v]
-  (cond
-    (nil? v) "nil"
-    (keyword? v) (str ":" (name v))
-    (string? v) (pr-str v)
-    (number? v) (str v)
-    (boolean? v) (if v "t" "nil")
-    (vector? v) (str "'(" (str/join " " (map clj->elisp v)) ")")
-    (sequential? v) (str "'(" (str/join " " (map clj->elisp v)) ")")
-    (map? v) (str "(list "
-                  (str/join " " (mapcat (fn [[k val]]
-                                          [(clj->elisp k) (clj->elisp val)])
-                                        v))
-                  ")")
-    :else (pr-str (str v))))
-
-(defn ^:deprecated handle-mcp-run-workflow
-  "DEPRECATED: Use `session {command: \"catchup\"}` or `workflow {command: \"catchup\"}` instead.
-
-   Run a user-defined workflow.
-   Delegates native workflows (catchup, wrap) to consolidated session handler.
-   Non-native workflows still route through elisp for backward compatibility.
-
-   Sunset: 2026-04-01"
-  [{:keys [name args]}]
-  (log/warn "DEPRECATED: mcp_run_workflow -> use session/workflow consolidated tool"
-            {:workflow name :sunset "2026-04-01"
-             :migration (case name
-                          "catchup" "session {command: \"catchup\", directory: \"...\"}"
-                          "wrap"    "session {command: \"wrap\", agent_id: \"...\"}"
-                          (str "workflow {command: \"" name "\"}"))})
-  ;; Ensure hooks are registered
-  (hooks/register-hooks!)
-  ;; Dispatch before hook
-  (hooks/dispatch-before name args)
-  ;; Route: native workflows delegate to consolidated session handler
-  (let [result (case (router/route-workflow name)
-                 :native (let [session-handler (requiring-resolve
-                                                'hive-mcp.tools.consolidated.session/handle-session)]
-                           (case name
-                             "catchup" (session-handler (assoc (or args {}) :command "catchup"))
-                             "wrap"    (session-handler (assoc (or args {}) :command "wrap"))
-                             ;; Fallback: treat unknown native as catchup (legacy behavior)
-                             (session-handler (assoc (or args {}) :command "catchup"))))
-                 :elisp (if (hive-mcp-el-available?)
-                          (let [elisp (if args
-                                        (format "(json-encode (hive-mcp-api-run-workflow %s %s))"
-                                                (pr-str name)
-                                                (clj->elisp args))
-                                        (format "(json-encode (hive-mcp-api-run-workflow %s))"
-                                                (pr-str name)))
-                                {:keys [success result error]} (ec/eval-elisp elisp)]
-                            (if success
-                              {:type "text" :text result}
-                              {:type "text" :text (str "Error: " error) :isError true}))
-                          {:type "text" :text "Error: hive-mcp.el is not loaded." :isError true}))]
-    ;; Dispatch after hook (handles wrap_notify for wrap workflow)
-    (hooks/dispatch-after name args (:text result))
-    result))
 
 (defn handle-mcp-list-special-buffers
   "List special buffers useful for monitoring (*Messages*, *Warnings*, etc.)."
@@ -376,18 +310,6 @@
     :description "List available user-defined workflows. Requires hive-mcp.el."
     :inputSchema {:type "object" :properties {}}
     :handler handle-mcp-list-workflows}
-
-   {:name "mcp_run_workflow"
-    :deprecated true
-    :sunset-date "2026-04-01"
-    :description "DEPRECATED: Use session {command: \"catchup\"} or workflow {command: \"catchup\"} instead. Run a user-defined workflow by name. For 'catchup': use session tool. For 'wrap': use session tool."
-    :inputSchema {:type "object"
-                  :properties {"name" {:type "string"
-                                       :description "Name of the workflow to run"}
-                               "args" {:type "object"
-                                       :description "Optional arguments. For catchup: {\"directory\": \"/path/to/project\"} to specify project context."}}
-                  :required ["name"]}
-    :handler handle-mcp-run-workflow}
 
    {:name "mcp_list_special_buffers"
     :description "List all special buffers (those starting with *) useful for monitoring. Returns buffer names like *Messages*, *scratch*, *Warnings*, etc."

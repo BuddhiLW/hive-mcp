@@ -365,12 +365,12 @@
 
    Arguments:
      wave-id - Wave to complete
-     status  - Final status (:completed or :partial-failure)
+     status  - Final status (:completed :partial-failure :failed :cancelled)
 
    Returns:
      Transaction report"
   [wave-id status]
-  {:pre [(contains? #{:completed :partial-failure} status)]}
+  {:pre [(contains? #{:completed :partial-failure :failed :cancelled} status)]}
   (let [c (conn/ensure-conn)
         db @c]
     (when-let [eid (:db/id (d/entity db [:wave/id wave-id]))]

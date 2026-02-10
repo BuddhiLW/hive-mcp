@@ -10,7 +10,7 @@
             [hive-mcp.tools.swarm :as swarm]
             [hive-mcp.tools.swarm.core :as swarm-core]
             [hive-mcp.swarm.datascript :as ds]
-            [hive-mcp.emacsclient :as ec]
+            [hive-mcp.emacs.client :as ec]
             [hive-mcp.hivemind :as hivemind]))
 
 ;; =============================================================================

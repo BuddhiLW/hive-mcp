@@ -3,7 +3,7 @@
 
    Handles dispatching tasks to agents with:
    - IDispatchContext abstraction (TextContext / RefContext)
-   - KG-compressed context via pass-by-reference (~25x compression)
+   - Compressed context via pass-by-reference
    - Agent type detection for correct dispatch strategy
 
    SOLID-D: Depends on IDispatchContext abstraction, not string concretion.
@@ -25,10 +25,10 @@
 ;; =============================================================================
 
 (defn- get-delegate-fn
-  "Lazily resolve hive-mcp.agent/delegate! to avoid circular dep."
+  "Lazily resolve hive-mcp.agent.core/delegate-agentic-drone! to avoid circular dep."
   []
-  (require 'hive-mcp.agent)
-  (resolve 'hive-mcp.agent/delegate!))
+  (require 'hive-mcp.agent.core)
+  (resolve 'hive-mcp.agent.core/delegate-agentic-drone!))
 
 ;; =============================================================================
 ;; Dispatch Context Builder
@@ -38,13 +38,13 @@
   "Build an IDispatchContext from dispatch parameters.
 
    When ctx_refs are provided (pass-by-reference mode), creates a RefContext
-   that carries lightweight context-store IDs + KG node IDs instead of full
-   text blobs (~25x compression). Otherwise wraps prompt as TextContext.
+   that carries lightweight context-store IDs + node IDs instead of full
+   text blobs (token-efficient compression). Otherwise wraps prompt as TextContext.
 
    Arguments:
      prompt      - Base task prompt string (always present as fallback)
      ctx_refs    - Map of category->ctx-id for context-store lookups (optional)
-     kg_node_ids - Vector of KG node IDs for graph traversal (optional)
+     kg_node_ids - Vector of Node IDs for context resolution (optional)
      scope       - Project scope string for KG traversal (optional)
 
    Returns:
@@ -75,10 +75,10 @@
      prompt      - Task prompt/description, or IDispatchContext (required)
      files       - Files to include (optional)
      priority    - Task priority: normal, high, low (optional)
-     ctx_refs    - Map of category->ctx-id for KG-compressed context (optional)
+     ctx_refs    - Map of category->ctx-id for compressed context (optional)
                    e.g. {\"axioms\": \"ctx-123\", \"decisions\": \"ctx-456\"}
-                   When provided, creates RefContext (~25x compression vs text)
-     kg_node_ids - Vector of KG node IDs for graph traversal seeds (optional)
+                   When provided, creates RefContext (token-efficient compression vs text)
+     kg_node_ids - Vector of Node IDs for context resolution seeds (optional)
      scope       - Project scope for KG traversal (optional, auto-derived)
 
    Accepts plain string prompts (backward compat) or IDispatchContext instances.

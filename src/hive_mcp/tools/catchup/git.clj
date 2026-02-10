@@ -6,7 +6,7 @@
 
    Contains:
    - gather-git-info (Emacs/shell integration for branch, uncommitted, last commit)"
-  (:require [hive-mcp.emacsclient :as ec]
+  (:require [hive-mcp.emacs.client :as ec]
             [clojure.data.json :as json]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;

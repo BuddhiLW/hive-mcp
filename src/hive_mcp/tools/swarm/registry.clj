@@ -9,7 +9,7 @@
 
    SOLID: SRP - Single responsibility for ling registration/lookup.
    CLARITY: Y - Yield safe failure with graceful channel fallback."
-  (:require [hive-mcp.channel :as ch]
+  (:require [hive-mcp.channel.core :as ch]
             [hive-mcp.hivemind :as hivemind]
             [hive-mcp.swarm.datascript :as ds]
             [hive-mcp.tools.memory.scope :as scope]

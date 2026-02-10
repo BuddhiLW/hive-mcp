@@ -1,5 +1,5 @@
 (ns hive-mcp.swarm.logic-test
-  "Unit tests for swarm logic predicates."
+  "Unit tests for swarm logic - claims, conflicts, and batch computation."
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [hive-mcp.swarm.logic :as logic]))
 
@@ -16,41 +16,8 @@
 (use-fixtures :each reset-db-fixture)
 
 ;; =============================================================================
-;; Database Mutation Tests
+;; Claim Tests
 ;; =============================================================================
-
-(deftest add-slave-test
-  (testing "Adding a slave registers it in the database"
-    (logic/add-slave! "slave-1" :idle)
-    (is (logic/slave-exists? "slave-1"))
-    (let [slaves (logic/get-all-slaves)]
-      (is (= 1 (count slaves)))
-      (is (= "slave-1" (:slave-id (first slaves))))
-      (is (= :idle (:status (first slaves)))))))
-
-(deftest update-slave-status-test
-  (testing "Updating slave status changes the database"
-    (logic/add-slave! "slave-1" :idle)
-    (logic/update-slave-status! "slave-1" :working)
-    (let [slaves (logic/get-all-slaves)]
-      (is (= 1 (count slaves)))
-      (is (= :working (:status (first slaves)))))))
-
-(deftest remove-slave-test
-  (testing "Removing a slave removes it from the database"
-    (logic/add-slave! "slave-1" :idle)
-    (is (logic/slave-exists? "slave-1"))
-    (logic/remove-slave! "slave-1")
-    (is (not (logic/slave-exists? "slave-1")))))
-
-(deftest add-task-test
-  (testing "Adding a task registers it in the database"
-    (logic/add-task! "task-1" "slave-1" :dispatched)
-    (let [tasks (logic/get-all-tasks)]
-      (is (= 1 (count tasks)))
-      (is (= "task-1" (:task-id (first tasks))))
-      (is (= "slave-1" (:slave-id (first tasks))))
-      (is (= :dispatched (:status (first tasks)))))))
 
 (deftest add-claim-test
   (testing "Adding a file claim registers it"
@@ -59,6 +26,32 @@
       (is (= 1 (count claims)))
       (is (= "/src/core.clj" (:file (first claims))))
       (is (= "slave-1" (:slave-id (first claims)))))))
+
+(deftest get-claim-for-file-test
+  (testing "Returns claim info for a specific file"
+    (logic/add-claim! "/src/core.clj" "slave-1")
+    (let [claim (logic/get-claim-for-file "/src/core.clj")]
+      (is (= "/src/core.clj" (:file claim)))
+      (is (= "slave-1" (:slave-id claim)))))
+  (testing "Returns nil for unclaimed file"
+    (is (nil? (logic/get-claim-for-file "/src/unclaimed.clj")))))
+
+(deftest release-claim-for-file-test
+  (testing "Releases claim regardless of owner"
+    (logic/add-claim! "/src/core.clj" "slave-1")
+    (is (true? (logic/release-claim-for-file! "/src/core.clj")))
+    (is (empty? (logic/get-all-claims))))
+  (testing "Returns false for unclaimed file"
+    (is (false? (logic/release-claim-for-file! "/src/unclaimed.clj")))))
+
+;; =============================================================================
+;; Slave Tests
+;; =============================================================================
+
+(deftest add-slave-test
+  (testing "Adding a slave registers it in the database"
+    (logic/add-slave! "slave-1" :idle)
+    (is (logic/slave-exists? "slave-1"))))
 
 ;; =============================================================================
 ;; File Conflict Detection Tests
@@ -102,77 +95,6 @@
       (is (every? #(= "slave-1" (:held-by %)) conflicts)))))
 
 ;; =============================================================================
-;; Circular Dependency Detection Tests
-;; =============================================================================
-
-(deftest no-circular-dependency-test
-  (testing "No cycle when dependencies are linear"
-    (logic/add-task! "task-a" "slave-1" :dispatched)
-    (logic/add-task! "task-b" "slave-2" :dispatched)
-    (logic/add-task! "task-c" "slave-3" :dispatched)
-    (logic/add-dependency! "task-a" "task-b")
-    (logic/add-dependency! "task-b" "task-c")
-
-    ;; Adding task-a -> task-c would not create cycle
-    (is (not (logic/check-would-deadlock "task-a" "task-c")))))
-
-(deftest direct-circular-dependency-test
-  (testing "Detects direct circular dependency"
-    (logic/add-task! "task-a" "slave-1" :dispatched)
-    (logic/add-task! "task-b" "slave-2" :dispatched)
-    (logic/add-dependency! "task-a" "task-b")
-
-    ;; Adding task-b -> task-a would create cycle
-    (is (logic/check-would-deadlock "task-b" "task-a"))))
-
-(deftest transitive-circular-dependency-test
-  (testing "Detects transitive circular dependency"
-    (logic/add-task! "task-a" "slave-1" :dispatched)
-    (logic/add-task! "task-b" "slave-2" :dispatched)
-    (logic/add-task! "task-c" "slave-3" :dispatched)
-    (logic/add-dependency! "task-a" "task-b")
-    (logic/add-dependency! "task-b" "task-c")
-
-    ;; Adding task-c -> task-a would create cycle: a->b->c->a
-    (is (logic/check-would-deadlock "task-c" "task-a"))))
-
-;; =============================================================================
-;; Dependency Readiness Tests
-;; =============================================================================
-
-(deftest dependency-ready-when-complete-test
-  (testing "Dependency is ready when all deps are completed"
-    (logic/add-task! "task-a" "slave-1" :completed)
-    (logic/add-task! "task-b" "slave-2" :dispatched)
-    (logic/add-dependency! "task-b" "task-a")
-
-    (let [result (logic/check-dependencies-ready "task-b")]
-      (is (:ready? result))
-      (is (empty? (:pending result))))))
-
-(deftest dependency-not-ready-when-pending-test
-  (testing "Dependency is not ready when deps are pending"
-    (logic/add-task! "task-a" "slave-1" :dispatched)
-    (logic/add-task! "task-b" "slave-2" :dispatched)
-    (logic/add-dependency! "task-b" "task-a")
-
-    (let [result (logic/check-dependencies-ready "task-b")]
-      (is (not (:ready? result)))
-      (is (= ["task-a"] (:pending result))))))
-
-(deftest partial-dependency-readiness-test
-  (testing "Reports pending dependencies correctly"
-    (logic/add-task! "task-a" "slave-1" :completed)
-    (logic/add-task! "task-b" "slave-2" :dispatched)
-    (logic/add-task! "task-c" "slave-3" :dispatched)
-    (logic/add-dependency! "task-c" "task-a")
-    (logic/add-dependency! "task-c" "task-b")
-
-    (let [result (logic/check-dependencies-ready "task-c")]
-      (is (not (:ready? result)))
-      (is (= ["task-b"] (:pending result))))))
-
-;; =============================================================================
 ;; Claim Release Tests
 ;; =============================================================================
 
@@ -190,7 +112,6 @@
 
 (deftest release-claims-for-task-test
   (testing "Releases claims associated with a task"
-    (logic/add-task! "task-1" "slave-1" :dispatched)
     (logic/add-claim! "/src/a.clj" "slave-1")
     (logic/add-task-file! "task-1" "/src/a.clj")
 
@@ -201,14 +122,10 @@
 
 (deftest release-claims-for-task-without-task-relation-test
   (testing "Releases claims when task relation is NOT populated (atomic-claim-files! case)"
-    ;; This tests the bug fix: atomic-claim-files! only populates claims and
-    ;; task-files, NOT the task relation. release-claims-for-task! must still
-    ;; work by getting slave-id from claims directly.
     (logic/add-claim! "/src/a.clj" "slave-1")
     (logic/add-claim! "/src/b.clj" "slave-1")
     (logic/add-task-file! "task-1" "/src/a.clj")
     (logic/add-task-file! "task-1" "/src/b.clj")
-    ;; Note: NO add-task! call - mimics atomic-claim-files! behavior
 
     (logic/release-claims-for-task! "task-1")
 
@@ -217,10 +134,8 @@
 
 (deftest release-claims-for-task-leaves-other-claims-test
   (testing "Only releases claims for the specified task, not other tasks"
-    ;; Task 1 claims
     (logic/add-claim! "/src/a.clj" "slave-1")
     (logic/add-task-file! "task-1" "/src/a.clj")
-    ;; Task 2 claims (different slave)
     (logic/add-claim! "/src/b.clj" "slave-2")
     (logic/add-task-file! "task-2" "/src/b.clj")
 
@@ -238,64 +153,8 @@
   (testing "Returns correct database statistics"
     (logic/add-slave! "slave-1" :idle)
     (logic/add-slave! "slave-2" :working)
-    (logic/add-task! "task-1" "slave-1" :dispatched)
     (logic/add-claim! "/src/a.clj" "slave-1")
 
     (let [stats (logic/db-stats)]
       (is (= 2 (:slaves stats)))
-      (is (= 1 (:tasks stats)))
       (is (= 1 (:claims stats))))))
-
-;; =============================================================================
-;; Dispatch Race Condition Tests (TDD)
-;; =============================================================================
-;; These tests verify that dispatch waits for preset completion.
-;; A slave is only ready for dispatch when status is :idle (preset loaded).
-
-(deftest slave-ready-for-dispatch-test
-  (testing "Slave with :idle status is ready for dispatch"
-    (logic/add-slave! "slave-1" :idle)
-    (is (logic/slave-ready-for-dispatch? "slave-1"))))
-
-(deftest slave-spawning-not-ready-test
-  (testing "Slave with :spawning status is NOT ready for dispatch"
-    (logic/add-slave! "slave-1" :spawning)
-    (is (not (logic/slave-ready-for-dispatch? "slave-1")))))
-
-(deftest slave-starting-not-ready-test
-  (testing "Slave with :starting status is NOT ready for dispatch"
-    (logic/add-slave! "slave-1" :starting)
-    (is (not (logic/slave-ready-for-dispatch? "slave-1")))))
-
-(deftest slave-working-is-busy-not-ready-test
-  (testing "Slave with :working status is busy, not ready for new dispatch"
-    (logic/add-slave! "slave-1" :working)
-    (is (not (logic/slave-ready-for-dispatch? "slave-1")))))
-
-(deftest nonexistent-slave-not-ready-test
-  (testing "Non-existent slave is not ready for dispatch"
-    (is (not (logic/slave-ready-for-dispatch? "ghost-slave")))))
-
-(deftest check-dispatch-readiness-test
-  (testing "check-dispatch-readiness returns status for pre-flight check"
-    (logic/add-slave! "slave-1" :idle)
-    (logic/add-slave! "slave-2" :spawning)
-
-    (let [result-ready (logic/check-dispatch-readiness "slave-1")
-          result-spawning (logic/check-dispatch-readiness "slave-2")
-          result-missing (logic/check-dispatch-readiness "missing")]
-
-      ;; Ready slave
-      (is (:ready? result-ready))
-      (is (= :idle (:status result-ready)))
-      (is (nil? (:reason result-ready)))
-
-      ;; Spawning slave
-      (is (not (:ready? result-spawning)))
-      (is (= :spawning (:status result-spawning)))
-      (is (= :preset-loading (:reason result-spawning)))
-
-      ;; Missing slave
-      (is (not (:ready? result-missing)))
-      (is (nil? (:status result-missing)))
-      (is (= :slave-not-found (:reason result-missing))))))

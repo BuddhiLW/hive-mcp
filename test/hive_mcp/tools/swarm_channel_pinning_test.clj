@@ -333,7 +333,7 @@
       (with-redefs [hive-mcp.tools.swarm.channel/try-require-channel (constantly true)]
         ;; Mock the resolve to return a function that returns our mock channel
         (with-redefs [resolve (fn [sym]
-                                (when (= sym 'hive-mcp.channel/subscribe!)
+                                (when (= sym 'hive-mcp.channel.core/subscribe!)
                                   (fn [_] mock-chan)))]
           (let [result (#'channel/channel-subscribe! :task-completed)]
             (is (some? result))

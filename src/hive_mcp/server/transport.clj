@@ -13,7 +13,7 @@
             [hive-mcp.config :as config]
             [hive-mcp.transport.websocket :as ws]
             [hive-mcp.transport.olympus :as olympus-ws]
-            [hive-mcp.channel :as channel]
+            [hive-mcp.channel.core :as channel]
             [hive-mcp.channel.websocket :as ws-channel]
             [clojure.core.async :as async]
             [taoensso.timbre :as log]))
@@ -34,34 +34,50 @@
    Without this, bb-mcp connects to a separate nREPL JVM that has no
    channel server running, so hivemind broadcasts go nowhere.
 
+   Retries up to 5 times with 2s backoff to handle TIME_WAIT from kill -9.
+
    Parameters:
      nrepl-server-atom - atom to store nREPL server reference for shutdown"
   [nrepl-server-atom]
   (let [nrepl-port (config/get-service-value :nrepl :port
                                              :env "HIVE_MCP_NREPL_PORT"
                                              :parse parse-long
-                                             :default 7910)]
-    (try
-      ;; Try to load cider middleware if available
-      (let [middleware (try
-                         (require 'cider.nrepl)
-                         (let [mw-var (resolve 'cider.nrepl/cider-middleware)]
-                           (when mw-var @mw-var))
-                         (catch Exception _
-                           nil))
-            ;; default-handler takes middleware as varargs, use apply
-            handler (if (seq middleware)
-                      (apply nrepl-server/default-handler middleware)
-                      (nrepl-server/default-handler))
-            server-opts {:port nrepl-port :bind "127.0.0.1" :handler handler}
-            server (nrepl-server/start-server server-opts)]
-        (reset! nrepl-server-atom server)
-        (log/info "Embedded nREPL started on port" nrepl-port
-                  (if middleware "(with CIDER middleware)" "(basic)"))
-        server)
-      (catch Exception e
-        (log/warn "Embedded nREPL failed to start (non-fatal):" (.getMessage e))
-        nil))))
+                                             :default 7910)
+        middleware (try
+                     (require 'cider.nrepl)
+                     (let [mw-var (resolve 'cider.nrepl/cider-middleware)]
+                       (when mw-var @mw-var))
+                     (catch Exception _ nil))
+        handler (if (seq middleware)
+                  (apply nrepl-server/default-handler middleware)
+                  (nrepl-server/default-handler))
+        server-opts {:port nrepl-port :bind "127.0.0.1" :handler handler}
+        max-retries 5
+        retry-delay-ms 2000]
+    (loop [attempt 1]
+      (let [result (try
+                     (let [server (nrepl-server/start-server server-opts)]
+                       (reset! nrepl-server-atom server)
+                       (log/info "Embedded nREPL started on port" nrepl-port
+                                 (if middleware "(with CIDER middleware)" "(basic)")
+                                 (when (> attempt 1) (str "(attempt " attempt ")")))
+                       server)
+                     (catch java.net.BindException e
+                       (if (< attempt max-retries)
+                         (do
+                           (log/warn "nREPL port" nrepl-port "busy (attempt" (str attempt "/" max-retries "),")
+                                     "retrying in" (str retry-delay-ms "ms..."))
+                           ::retry)
+                         (do
+                           (log/error "nREPL failed to bind port" nrepl-port "after" max-retries "attempts:" (.getMessage e))
+                           nil)))
+                     (catch Exception e
+                       (log/warn "Embedded nREPL failed to start (non-fatal):" (.getMessage e))
+                       nil))]
+        (if (= result ::retry)
+          (do (Thread/sleep retry-delay-ms)
+              (recur (inc attempt)))
+          result)))))
 
 ;; =============================================================================
 ;; WebSocket MCP Server
@@ -140,6 +156,31 @@
     (log/info "Olympus WebSocket server started on port 7911")
     (catch Exception e
       (log/warn "Olympus WebSocket server failed to start (non-fatal):" (.getMessage e)))))
+
+;; =============================================================================
+;; A2A Protocol Gateway
+;; =============================================================================
+
+(defn start-a2a-gateway!
+  "Start A2A JSON-RPC gateway for external agent interoperability.
+   Opt-in via config :a2a :enabled or HIVE_MCP_A2A_ENABLED=true."
+  []
+  (when (config/get-service-value :a2a :enabled
+                                  :env "HIVE_MCP_A2A_ENABLED"
+                                  :parse #(= "true" %)
+                                  :default false)
+    (try
+      (require 'hive-mcp.transport.a2a)
+      ((resolve 'hive-mcp.transport.a2a/start!)
+       {:port (config/get-service-value :a2a :port
+                                        :env "HIVE_MCP_A2A_PORT"
+                                        :parse parse-long
+                                        :default 7912)
+        :api-key (config/get-service-value :a2a :api-key
+                                           :env "HIVE_MCP_A2A_API_KEY")})
+      (log/info "A2A gateway started")
+      (catch Exception e
+        (log/warn "A2A gateway failed to start (non-fatal):" (.getMessage e))))))
 
 ;; =============================================================================
 ;; Legacy Channel (deprecated)

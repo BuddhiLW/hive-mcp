@@ -20,7 +20,7 @@
             [hive-mcp.swarm.datascript.lings :as ds-lings]
             [hive-mcp.swarm.datascript.queries :as queries]
             [hive-mcp.swarm.logic :as logic]
-            [hive-mcp.emacsclient :as ec]
+            [hive-mcp.emacs.client :as ec]
             [hive-mcp.tools.swarm.core :as swarm-core]
             [hive-mcp.events.core :as events]
             [hive-mcp.scheduler.dag-waves :as dag-waves]
@@ -934,7 +934,7 @@
         "tool description should mention dag")))
 
 ;; =============================================================================
-;; KG-Compressed Context Dispatch Tests (RefContext wiring)
+;; Compressed Context Dispatch Tests (RefContext wiring)
 ;; =============================================================================
 
 (deftest test-handle-dispatch-with-ctx-refs-creates-ref-context

@@ -53,13 +53,6 @@
     (is (contains? vol/decay-rates :volatile))
     (is (< (:stable vol/decay-rates) (:moderate vol/decay-rates) (:volatile vol/decay-rates)))))
 
-(deftest propagation-relations-contains-expected-test
-  (testing "propagation-relations contains dependency edge types"
-    (is (contains? vol/propagation-relations :depends-on))
-    (is (contains? vol/propagation-relations :implements))
-    (is (contains? vol/propagation-relations :derived-from))
-    (is (contains? vol/propagation-relations :refines))))
-
 (deftest staleness-decay-factor-test
   (testing "staleness-decay-factor is 0.5 (halves per hop)"
     (is (= 0.5 vol/staleness-decay-factor))))
@@ -99,13 +92,13 @@
   (testing "current-certainty with explicit alpha/beta values"
     ;; alpha=10, beta=5 → 10/(10+5) = 0.666...
     (is (< 0.66 (vol/current-certainty {:disc/certainty-alpha 10.0
-                                         :disc/certainty-beta 5.0}) 0.67))
+                                        :disc/certainty-beta 5.0}) 0.67))
     ;; alpha=1, beta=1 → 0.5 (maximum uncertainty)
     (is (= 0.5 (vol/current-certainty {:disc/certainty-alpha 1.0
-                                        :disc/certainty-beta 1.0})))
+                                       :disc/certainty-beta 1.0})))
     ;; alpha=99, beta=1 → ~0.99 (very high certainty)
     (is (< 0.98 (vol/current-certainty {:disc/certainty-alpha 99.0
-                                         :disc/certainty-beta 1.0}) 1.0))))
+                                        :disc/certainty-beta 1.0}) 1.0))))
 
 (deftest beta-lower-bound-test
   (testing "beta-lower-bound returns conservative credible interval"

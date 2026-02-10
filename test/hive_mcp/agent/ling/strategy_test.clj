@@ -22,7 +22,7 @@
             [hive-mcp.swarm.datascript :as ds]
             [hive-mcp.swarm.datascript.lings :as ds-lings]
             [hive-mcp.swarm.datascript.queries :as ds-queries]
-            [hive-mcp.emacsclient :as ec]
+            [hive-mcp.emacs.client :as ec]
             [clojure.string :as str]))
 
 ;; =============================================================================

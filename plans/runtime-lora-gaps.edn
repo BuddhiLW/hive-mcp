@@ -1,0 +1,68 @@
+{:id "plan-runtime-lora-gaps"
+ :title "Unified Token-Budgeted Context Injection (Runtime-LoRA Pipeline)"
+ :decision-id "20260210003446-10740f09"
+ :description "Close remaining gaps between current KG-priming implementation and the full unified traversal + budget allocator + bibliography vision."
+ :tags ["runtime-lora" "kg-priming" "saa" "token-budget" "context-injection"]
+ :steps
+ [{:id "g3-store-init"
+   :title "KG store auto-initialization in priming stub"
+   :description "Call kg-store/ensure-store! lazily on first prime-context call. Currently requires manual initialization. Add once/delay guard."
+   :depends-on []
+   :priority :high
+   :files ["src/hive_mcp/agent/drone/kg_priming.clj"]
+   :estimate :small
+   :tags ["hive-mcp" "bug-fix"]}
+
+  {:id "g6-auto-seeds"
+   :title "Seed auto-detection from task description"
+   :description "When no explicit seeds provided, extract candidate seeds from task description. Keyword extraction to tag matching against known KG tag vocabulary. Makes priming work without explicit seeds parameter."
+   :depends-on ["g3-store-init"]
+   :priority :medium
+   :files ["src/hive_agent/kg/seed_resolver.clj"]
+   :estimate :small
+   :tags ["hive-agent" "enhancement"]}
+
+  {:id "g1-budget-allocator"
+   :title "Token budget allocator for layered context injection"
+   :description "Priority-based allocation: preset (fixed), KG traversal (proportional), loop compression (remainder). Input: total budget T, preset size, available KG content, loop history. Output: per-layer budgets where sum <= T. Wire into build-context replacing hardcoded budgets."
+   :depends-on []
+   :priority :high
+   :files ["src/hive_agent/context/budget.clj" "src/hive_agent/context/core.clj"]
+   :estimate :medium
+   :tags ["hive-agent" "new-file" "architecture"]}
+
+  {:id "g2-unified-traversal"
+   :title "Unify convention + domain knowledge into single KG traversal"
+   :description "Remove separate get-relevant-conventions / format-context-str path. Let KG traversal handle both conventions and domain knowledge in one pass. augment-task uses only: preset + primed-context (unified) + loop compression. Backwards compat: if no seeds, fall back to current convention fetch."
+   :depends-on ["g3-store-init" "g6-auto-seeds" "g1-budget-allocator"]
+   :priority :high
+   :files ["src/hive_mcp/agent/drone/augment.clj"]
+   :estimate :medium
+   :tags ["hive-mcp" "refactor"]}
+
+  {:id "g4-bibliography"
+   :title "Bibliography/citation compressor for agentic mode"
+   :description "Mode-aware compressor stage between scoring and formatting. Delegate mode: current algorithmic truncation (full entries). Agentic mode: cheap LLM summarizes + adds ref:entry-id citations. Drone pulls full entries on-demand via memory get. Plugs into format-primed-context seam."
+   :depends-on []
+   :priority :medium
+   :files ["src/hive_agent/kg/compressor.clj"]
+   :estimate :large
+   :tags ["hive-agent" "new-file" "llm-call"]}
+
+  {:id "g5-saa-budget"
+   :title "Budget-aware SAA phase compression integration"
+   :description "SAA compress-and-transition! reports compressed size back. Budget allocator uses this to calculate remaining budget for next cycle. inject-context-hook uses budget-allocated compressed context, not unbounded."
+   :depends-on ["g1-budget-allocator"]
+   :priority :medium
+   :files ["src/hive_mcp/agent/sdk/phase_hooks.clj" "src/hive_mcp/agent/sdk/lifecycle.clj"]
+   :estimate :medium
+   :tags ["hive-mcp" "saa" "integration"]}
+
+  {:id "g7-tests"
+   :title "Test suite for budget allocator + unified traversal"
+   :description "Unit tests for budget allocation logic, integration tests for unified traversal path, regression tests ensuring backwards compat when no seeds provided."
+   :depends-on ["g1-budget-allocator" "g2-unified-traversal"]
+   :priority :high
+   :files ["test/hive_agent/context/budget_test.clj" "test/hive_mcp/agent/drone/augment_test.clj"]
+   :estimate :medium
+   :tags ["testing"]}]}

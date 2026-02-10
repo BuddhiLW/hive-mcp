@@ -20,29 +20,6 @@
    - Need transitive/recursive queries? → core.logic (this module)
    - Need conflict/constraint checking? → core.logic (this module)
 
-   RELATIONS (pldb/db-rel)
-   =======================
-   Re-exported from logic.predicates:
-   - slave:       (slave-id, status) - Worker agent state
-   - task:        (task-id, slave-id, status) - Task ownership
-   - claims:      (file-path, slave-id) - File ownership for conflict detection
-   - depends-on:  (task-id, dep-task-id) - Task dependencies
-   - task-files:  (task-id, file-path) - Files associated with task
-   - edit:        (edit-id, file-path, type) - Drone wave batch planning
-   - edit-depends: (edit-a, edit-b) - Edit ordering constraints
-
-   KEY PREDICATES
-   ==============
-   Re-exported from logic.predicates:
-   - file-conflicto:    Does another slave own this file?
-   - would-deadlocko:   Would adding this dependency create a cycle?
-   - reachable-fromo:   Transitive closure of dependency graph
-
-   BATCH COMPUTATION
-   =================
-   compute-batches: Modified Kahn's algorithm that groups edits into
-   parallel-safe batches respecting both dependencies AND file conflicts.
-
    THREAD SAFETY
    =============
    All mutations go through atom swap! operations. For atomic check+claim,
@@ -63,29 +40,18 @@
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 ;; =============================================================================
-;; Re-exports from logic.predicates (Relations)
+;; Internal Relations & Predicates (from logic.predicates)
 ;; =============================================================================
 
-(def slave pred/slave)
-(def task pred/task)
-(def claims pred/claims)
-(def depends-on pred/depends-on)
-(def task-files pred/task-files)
-(def edit pred/edit)
-(def edit-depends pred/edit-depends)
+(def ^:private slave pred/slave)
+(def ^:private task pred/task)
+(def ^:private claims pred/claims)
+(def ^:private task-files pred/task-files)
+(def ^:private edit pred/edit)
+(def ^:private edit-depends pred/edit-depends)
 
-;; =============================================================================
-;; Re-exports from logic.predicates (Predicates)
-;; =============================================================================
-
-(def file-conflicto pred/file-conflicto)
-(def task-completedo pred/task-completedo)
-(def task-pendingo pred/task-pendingo)
-(def reachable-fromo pred/reachable-fromo)
-(def would-deadlocko pred/would-deadlocko)
-(def edit-conflicto pred/edit-conflicto)
-(def edit-depends-on-o pred/edit-depends-on-o)
-(def edit-reachable-fromo pred/edit-reachable-fromo)
+(def ^:private file-conflicto pred/file-conflicto)
+(def ^:private would-deadlocko pred/would-deadlocko)
 
 ;; =============================================================================
 ;; Database State (Thread-Safe Atom)
@@ -108,12 +74,7 @@
   (reset! logic-db (pldb/db))
   (log/debug "Logic database reset"))
 
-(defn get-db
-  "Get current database (for debugging/testing)."
-  []
-  @logic-db)
-
-(defmacro with-db
+(defmacro ^:private with-db
   "Execute a logic query against the current database."
   [& body]
   `(pldb/with-db @logic-db ~@body))
@@ -128,53 +89,12 @@
   (swap! logic-db pldb/db-fact slave slave-id status)
   (log/debug "Added slave to logic db:" slave-id status))
 
-(defn update-slave-status!
-  "Update a slave's status. Removes old fact, adds new."
-  [slave-id new-status]
-  ;; Find current status
-  (let [current-status (first (with-db
-                                (l/run 1 [s]
-                                       (slave slave-id s))))]
-    (when current-status
-      (swap! logic-db pldb/db-retraction slave slave-id current-status))
-    (swap! logic-db pldb/db-fact slave slave-id new-status)
-    (log/debug "Updated slave status:" slave-id new-status)))
-
-(defn remove-slave!
-  "Remove a slave from the logic database."
-  [slave-id]
-  (let [current-status (first (with-db
-                                (l/run 1 [s]
-                                       (slave slave-id s))))]
-    (when current-status
-      (swap! logic-db pldb/db-retraction slave slave-id current-status)))
-  (log/debug "Removed slave from logic db:" slave-id))
-
 (defn slave-exists?
   "Check if a slave exists in the database."
   [slave-id]
   (not (empty? (with-db
                  (l/run 1 [s]
                         (slave slave-id s))))))
-
-(defn add-task!
-  "Add a task to the logic database."
-  [task-id slave-id status]
-  (swap! logic-db pldb/db-fact task task-id slave-id status)
-  (log/debug "Added task to logic db:" task-id slave-id status))
-
-(defn update-task-status!
-  "Update a task's status."
-  [task-id new-status]
-  (let [current (first (with-db
-                         (l/run 1 [q]
-                                (l/fresh [slave status]
-                                         (task task-id slave status)
-                                         (l/== q {:slave slave :status status})))))]
-    (when current
-      (swap! logic-db pldb/db-retraction task task-id (:slave current) (:status current))
-      (swap! logic-db pldb/db-fact task task-id (:slave current) new-status)
-      (log/debug "Updated task status:" task-id new-status))))
 
 (defn add-claim!
   "Add a file claim for a slave."
@@ -207,22 +127,6 @@
                  (l/fresh [f s]
                           (claims f s)
                           (l/== q {:file f :slave-id s}))))))
-
-(defn reset-claims!
-  "Clear ALL file claims from logic-db.
-
-   GHOST CLAIMS FIX: Use this to clear orphaned claims that weren't
-   properly released due to drone failures or server restarts.
-
-   WARNING: This removes ALL claims - only use when cleaning up after
-   wave failures or during maintenance."
-  []
-  (let [all-claims (get-all-claims)
-        count-before (count all-claims)]
-    (doseq [{:keys [file slave-id]} all-claims]
-      (swap! logic-db pldb/db-retraction claims file slave-id))
-    (log/info "Reset all claims:" count-before "claims cleared from logic-db")
-    {:cleared count-before}))
 
 (defn add-task-file!
   "Associate a file with a task (for claim tracking)."
@@ -258,12 +162,6 @@
           (swap! released-count inc))))
     (log/debug "Released" @released-count "claims for task:" task-id)))
 
-(defn add-dependency!
-  "Add a task dependency: task-id depends on dep-task-id."
-  [task-id dep-task-id]
-  (swap! logic-db pldb/db-fact depends-on task-id dep-task-id)
-  (log/debug "Added dependency:" task-id "depends on" dep-task-id))
-
 ;; =============================================================================
 ;; Edit Mutation Functions (for drone wave batching)
 ;; =============================================================================
@@ -274,18 +172,6 @@
   [edit-id file-path edit-type]
   (swap! logic-db pldb/db-fact edit edit-id file-path edit-type)
   (log/debug "Added edit:" edit-id file-path edit-type))
-
-(defn remove-edit!
-  "Remove an edit from the database."
-  [edit-id]
-  (let [edit-info (first (with-db
-                           (l/run 1 [q]
-                                  (l/fresh [file type]
-                                           (edit edit-id file type)
-                                           (l/== q {:file file :type type})))))]
-    (when edit-info
-      (swap! logic-db pldb/db-retraction edit edit-id (:file edit-info) (:type edit-info))))
-  (log/debug "Removed edit:" edit-id))
 
 (defn add-edit-dependency!
   "Add a dependency: edit-a must complete before edit-b."
@@ -312,7 +198,7 @@
       (swap! logic-db pldb/db-retraction edit-depends a b))
     (log/debug "Reset edits:" (count all-edits) "edits," (count all-deps) "dependencies")))
 
-(defn reset-task-files!
+(defn- reset-task-files!
   "Clear all task-file associations.
 
    CRITICAL: This must be called after wave/task completion to prevent memory leak.
@@ -348,14 +234,6 @@
            (l/run 1 [file]
                   (l/fresh [type]
                            (edit edit-id file type))))))
-
-#_{:clj-kondo/ignore [:unused-private-var]}
-(defn- get-edit-dependencies
-  "Get all edits that edit-id depends on."
-  [edit-id]
-  (with-db
-    (l/run* [dep]
-            (edit-depends dep edit-id))))
 
 (defn- get-all-edit-dependencies
   "Get all edit dependency pairs."
@@ -452,15 +330,6 @@
                                      current-batch)]
                 (recur final-in-degree (conj batches current-batch))))))))))
 
-(defn get-all-edits
-  "Get all registered edits. Returns [{:edit-id :file :type} ...]"
-  []
-  (with-db
-    (l/run* [q]
-            (l/fresh [id file type]
-                     (edit id file type)
-                     (l/== q {:edit-id id :file file :type type})))))
-
 ;; =============================================================================
 ;; Query Functions (Public API)
 ;; =============================================================================
@@ -487,17 +356,6 @@
                  (would-deadlocko task-id dep-task-id)
                  (l/== q :cycle))))))
 
-(defn check-dependencies-ready
-  "Check if all dependencies of a task are completed.
-   Returns {:ready? bool :pending [task-ids]}."
-  [task-id]
-  (let [pending (with-db
-                  (l/run* [dep]
-                          (depends-on task-id dep)
-                          (task-pendingo dep)))]
-    {:ready? (empty? pending)
-     :pending (vec pending)}))
-
 (defn get-claim-for-file
   "Get claim info for a specific file path.
    Returns {:file path :slave-id id} or nil if not claimed."
@@ -519,8 +377,12 @@
       true)
     false))
 
-(defn get-all-slaves
-  "Get all registered slaves. Returns [{:slave-id id :status status} ...]"
+;; =============================================================================
+;; Debugging Helpers
+;; =============================================================================
+
+(defn- get-all-slaves
+  "Get all registered slaves."
   []
   (with-db
     (l/run* [q]
@@ -528,8 +390,8 @@
                      (slave id status)
                      (l/== q {:slave-id id :status status})))))
 
-(defn get-all-tasks
-  "Get all registered tasks. Returns [{:task-id id :slave-id sid :status s} ...]"
+(defn- get-all-tasks
+  "Get all registered tasks."
   []
   (with-db
     (l/run* [q]
@@ -537,108 +399,9 @@
                      (task tid sid status)
                      (l/== q {:task-id tid :slave-id sid :status status})))))
 
-;; =============================================================================
-;; Dispatch Readiness (Race Condition Fix)
-;; =============================================================================
-;; These functions ensure dispatch waits for preset completion.
-;; A slave is only ready for dispatch when status is :idle (preset loaded).
-;; Statuses :spawning and :starting indicate preset is still loading.
-
-(def ^:private dispatch-ready-statuses
-  "Slave statuses that indicate readiness for dispatch.
-   :idle means the slave has completed initialization and preset loading."
-  #{:idle})
-
-(def ^:private dispatch-not-ready-statuses
-  "Slave statuses that indicate the slave is NOT ready for dispatch.
-   :spawning - slave terminal is being created
-   :starting - slave process is starting, preset loading in progress"
-  #{:spawning :starting})
-
-(defn get-slave-status
-  "Get the current status of a slave.
-   Returns status keyword or nil if slave doesn't exist."
-  [slave-id]
-  (first (with-db
-           (l/run 1 [s]
-                  (slave slave-id s)))))
-
-(defn slave-ready-for-dispatch?
-  "Check if a slave is ready to receive dispatch.
-
-   Returns true only if:
-   - Slave exists in logic-db
-   - Slave status is :idle (preset fully loaded)
-
-   DISPATCH RACE CONDITION FIX:
-   This predicate prevents dispatch from proceeding while preset is loading.
-   When a slave is spawned, it starts in :spawning status. The Elisp layer
-   updates status to :idle when the terminal is ready and preset is loaded.
-   Dispatching to a :spawning or :starting slave may result in prompts
-   being lost or executed without the proper system prompt context."
-  [slave-id]
-  (let [status (get-slave-status slave-id)]
-    (contains? dispatch-ready-statuses status)))
-
-(defn check-dispatch-readiness
-  "Check if a slave is ready for dispatch with detailed status.
-
-   Returns map with:
-     :ready?  - true if slave can receive dispatch
-     :status  - current slave status (or nil if not found)
-     :reason  - nil if ready, keyword reason if not:
-                :slave-not-found - slave doesn't exist
-                :preset-loading  - slave is :spawning or :starting
-                :slave-busy      - slave is :working on another task
-
-   USAGE IN PRE-FLIGHT:
-   Call this before dispatch-or-queue! to add readiness check:
-
-   (let [readiness (logic/check-dispatch-readiness slave-id)]
-     (if (:ready? readiness)
-       (dispatch! ...)
-       (handle-not-ready readiness)))"
-  [slave-id]
-  (let [status (get-slave-status slave-id)]
-    (cond
-      ;; Slave doesn't exist
-      (nil? status)
-      {:ready? false
-       :status nil
-       :reason :slave-not-found}
-
-      ;; Slave is ready (idle)
-      (contains? dispatch-ready-statuses status)
-      {:ready? true
-       :status status
-       :reason nil}
-
-      ;; Slave is spawning or starting (preset loading)
-      (contains? dispatch-not-ready-statuses status)
-      {:ready? false
-       :status status
-       :reason :preset-loading}
-
-      ;; Slave is busy (working, blocked, etc.)
-      :else
-      {:ready? false
-       :status status
-       :reason :slave-busy})))
-
-;; =============================================================================
-;; Debugging Helpers
-;; =============================================================================
-
 (defn db-stats
   "Get statistics about the current database state."
   []
   {:slaves (count (get-all-slaves))
    :tasks (count (get-all-tasks))
    :claims (count (get-all-claims))})
-
-(defn dump-db
-  "Dump the current database state for debugging."
-  []
-  {:slaves (get-all-slaves)
-   :tasks (get-all-tasks)
-   :claims (get-all-claims)})

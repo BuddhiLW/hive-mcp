@@ -128,3 +128,23 @@
     (catch Exception e
       (log/warn "[sdk.event-loop] Event loop stop failed"
                 {:safe-id safe-id :error (ex-message e)}))))
+
+(defn interrupt-session-client!
+  "Send client.interrupt() via asyncio.run_coroutine_threadsafe().
+   Uses libpython-clj direct interop (no string-eval).
+   Thread-safe. Returns {:success? bool} or {:success? false :error msg}."
+  [client-var loop-var]
+  (try
+    (let [asyncio-mod (py/py-import "asyncio")
+          client     (py/py-get-global client-var)
+          loop-obj   (py/py-get-global loop-var)]
+      (if (and client loop-obj (py/py-call loop-obj "is_running"))
+        (let [coro       (py/py-call client "interrupt")
+              future-obj (py/py-call asyncio-mod "run_coroutine_threadsafe"
+                                     coro loop-obj)]
+          (py/py-call future-obj "result" 10)
+          {:success? true})
+        {:success? false}))
+    (catch Exception e
+      (log/error "[sdk.event-loop] Interrupt exception" {:error (ex-message e)})
+      {:success? false :error (ex-message e)})))

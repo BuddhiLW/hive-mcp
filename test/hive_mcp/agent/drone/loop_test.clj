@@ -1,16 +1,16 @@
 (ns hive-mcp.agent.drone.loop-test
-  "Tests for the in-process agentic drone loop (AGPL implementation).
+  "Tests for the in-process agentic drone loop (built-in implementation).
 
    Tests verify:
    - Termination heuristics (max turns, text-only, failures, completion language)
    - Result evaluation (good/bad/retryable/fatal)
    - Tool selection (nil = LLM decides)
    - Full agentic loop with mock LLMBackend
-   - Session KG integration (observation recording, context reconstruction)
-   - Two-tier KG: kg-session (hive-knowledge stub) overlay on session-kg (AGPL)
+   - Session store integration (observation recording, context reconstruction)
+   - Two-tier: kg-session (extension) overlay on session-kg (built-in)
    - Noop behavior when no backend provided
    - Graceful degradation (no exceptions, sensible defaults)
-   - End-to-end loop + Datalevin session KG (observations, reasoning, context)"
+   - End-to-end loop + Datalevin session store (observations, reasoning, context)"
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [hive-mcp.agent.drone.loop :as loop]
             [hive-mcp.agent.drone.session-kg :as session-kg]
@@ -141,7 +141,7 @@
 ;; =============================================================================
 
 (deftest test-select-next-tool-returns-nil
-  (testing "AGPL implementation returns nil (let LLM decide)"
+  (testing "built-in implementation returns nil (let LLM decide)"
     (let [result (loop/select-next-tool [] #{"read_file" "grep"}
                                         {:task "fix bug" :files ["a.clj"]})]
       (is (nil? result)))))
@@ -262,16 +262,16 @@
       (is (re-find #"Boom" (:result result))))))
 
 ;; =============================================================================
-;; Session KG Integration Tests — Datalevin-backed
+;; Session store Integration Tests — Datalevin-backed
 ;; =============================================================================
 
 (deftest test-loop-with-session-kg-text-completion
-  (testing "loop with Datalevin session KG records observations on text-only response"
+  (testing "loop with Datalevin session store records observations on text-only response"
     (let [drone-id (str "test-kg-text-" (System/currentTimeMillis))
           session-store (session-kg/create-session-kg! drone-id)]
       (if (nil? session-store)
         ;; Skip if Datalevin not available
-        (println "SKIP: Datalevin not available for session KG test")
+        (println "SKIP: Datalevin not available for session store test")
         (try
           (let [backend (mock-backend "test-kg-model"
                                       [{:type :text :content "Task completed successfully."}])
@@ -295,16 +295,16 @@
                                       [?e :reason/id ?id]
                                       [?e :reason/intent ?intent]])]
               (is (pos? (count reasons))
-                  "At least one reasoning node should be in the session KG")))
+                  "At least one reasoning node should be in the session store")))
           (finally
             (session-kg/close-session-kg! session-store drone-id)))))))
 
 (deftest test-loop-with-session-kg-tool-calls
-  (testing "loop with session KG records observations for tool call results"
+  (testing "loop with session store records observations for tool call results"
     (let [drone-id (str "test-kg-tools-" (System/currentTimeMillis))
           session-store (session-kg/create-session-kg! drone-id)]
       (if (nil? session-store)
-        (println "SKIP: Datalevin not available for session KG test")
+        (println "SKIP: Datalevin not available for session store test")
         (try
           (let [;; Multi-turn: tool call then text completion
                 backend (mock-backend "test-kg-model"
@@ -335,7 +335,7 @@
                                   [?e :obs/tool ?tool]
                                   [?e :obs/success ?success]])]
               (is (pos? (count obs))
-                  "Should have observations in session KG")
+                  "Should have observations in session store")
               ;; Check that tool name was recorded
               (is (some #(= "read_file" (second %)) obs)
                   "Should have an observation for read_file tool")))
@@ -349,7 +349,7 @@
           ;; Track what context prompts the LLM receives
           received-messages (atom [])]
       (if (nil? session-store)
-        (println "SKIP: Datalevin not available for session KG test")
+        (println "SKIP: Datalevin not available for session store test")
         (try
           (let [backend (let [counter (atom 0)]
                           (reify proto/LLMBackend
@@ -400,7 +400,7 @@
     (let [drone-id (str "test-kg-multi-" (System/currentTimeMillis))
           session-store (session-kg/create-session-kg! drone-id)]
       (if (nil? session-store)
-        (println "SKIP: Datalevin not available for session KG test")
+        (println "SKIP: Datalevin not available for session store test")
         (try
           (let [backend (mock-backend "multi-model"
                                       [{:type :tool_calls
@@ -440,7 +440,7 @@
     (let [drone-id (str "test-kg-facts-" (System/currentTimeMillis))
           session-store (session-kg/create-session-kg! drone-id)]
       (if (nil? session-store)
-        (println "SKIP: Datalevin not available for session KG test")
+        (println "SKIP: Datalevin not available for session store test")
         (try
           (let [backend (mock-backend "facts-model"
                                       [{:type :tool_calls
@@ -466,7 +466,7 @@
             (session-kg/close-session-kg! session-store drone-id)))))))
 
 (deftest test-loop-without-session-kg-graceful-degradation
-  (testing "loop works fine without session KG (nil kg-store)"
+  (testing "loop works fine without session store (nil kg-store)"
     (let [backend (mock-backend "no-kg-model"
                                 [{:type :tool_calls
                                   :calls [{:id "c1" :name "read_file"
@@ -484,76 +484,76 @@
         (is (= 0 (:facts stats)))))))
 
 ;; =============================================================================
-;; Two-Tier KG Integration Tests — kg-session wiring
+;; KG Session Compression Integration Tests — kg-session wiring
 ;; =============================================================================
 
-(deftest test-hk-session-not-created-when-unavailable
-  (testing "hk-session is nil when compression-available? returns false (default)"
-    ;; By default, hive-knowledge is NOT on classpath, so compression-available?
-    ;; returns false and hk-session is nil. We verify the loop still completes.
+(deftest test-kg-session-not-created-when-unavailable
+  (testing "kg-session is nil when compression-available? returns false (default)"
+    ;; By default, enhanced extension is NOT on classpath, so compression-available?
+    ;; returns false and kg-session is nil. We verify the loop still completes.
     (is (not (kg-session/compression-available?))
-        "hive-knowledge should not be on classpath in test env")
-    (let [backend (mock-backend "no-hk-model"
+        "enhanced extension should not be on classpath in test env")
+    (let [backend (mock-backend "no-compress-model"
                                 [{:type :text :content "Done."}])
           result (loop/run-agentic-loop
-                  {:task "No hk-session test" :files []}
-                  {:drone-id "test-no-hk"}
+                  {:task "No kg-session test" :files []}
+                  {:drone-id "test-no-compress"}
                   {:max-turns 5 :backend backend})]
       (is (= :completed (:status result)))
       (is (= 1 (:turns result))))))
 
-(deftest test-hk-session-created-when-available
-  (testing "hk-session is created when compression-available? returns true"
-    (let [hk-created? (atom false)
-          hk-compressed-turns (atom [])
-          hk-closed? (atom false)
-          ;; Mock hive-knowledge being available
-          mock-session {:type :hk-session :id "mock-session-123"}]
+(deftest test-kg-session-created-when-available
+  (testing "kg-session is created when compression-available? returns true"
+    (let [session-created? (atom false)
+          compressed-turns (atom [])
+          session-closed? (atom false)
+          ;; Mock enhanced extension being available
+          mock-session {:type :kg-session :id "mock-session-123"}]
       (with-redefs [kg-session/compression-available? (constantly true)
                     kg-session/create-session-kg! (fn [drone-id task]
-                                                    (reset! hk-created? true)
+                                                    (reset! session-created? true)
                                                     mock-session)
                     kg-session/compress-turn! (fn [session messages]
-                                                (swap! hk-compressed-turns conj
+                                                (swap! compressed-turns conj
                                                        {:session session
                                                         :msg-count (count messages)})
                                                 1)
                     kg-session/build-compressed-messages (fn [session sys-prompt all-msgs recent-msgs]
                                                           ;; Return a custom compressed message set
                                                            [{:role "system" :content sys-prompt}
-                                                            {:role "user" :content "HK-COMPRESSED: context"}])
+                                                            {:role "user" :content "KG-COMPRESSED: context"}])
                     kg-session/close-session! (fn [session]
-                                                (reset! hk-closed? true)
+                                                (reset! session-closed? true)
                                                 {:turns-compressed 2})
                     kg-session/promote-to-global! (fn [session global-store]
                                                     {:promoted 0})]
-        (let [backend (mock-backend "hk-model"
+        (let [backend (mock-backend "compress-model"
                                     [{:type :tool_calls
                                       :calls [{:id "c1" :name "read_file"
                                                :arguments {:path "a.clj"}}]}
                                      {:type :text :content "Done."}])
               result (loop/run-agentic-loop
-                      {:task "HK session test" :files ["a.clj"]}
-                      {:drone-id "test-hk-session"}
+                      {:task "KG session test" :files ["a.clj"]}
+                      {:drone-id "test-kg-session"}
                       {:max-turns 5 :backend backend})]
           ;; Loop should complete
           (is (= :completed (:status result)))
           (is (= 2 (:turns result)))
 
-          ;; hk-session should have been created
-          (is @hk-created? "create-session-kg! should have been called")
+          ;; kg-session should have been created
+          (is @session-created? "create-session-kg! should have been called")
 
           ;; compress-turn! should have been called for the recurring turn
-          (is (pos? (count @hk-compressed-turns))
+          (is (pos? (count @compressed-turns))
               "compress-turn! should be called after each turn that recurs")
 
           ;; close-session! should have been called at termination
-          (is @hk-closed? "close-session! should have been called at termination"))))))
+          (is @session-closed? "close-session! should have been called at termination"))))))
 
-(deftest test-hk-session-build-compressed-messages-used-on-turn-gt-0
-  (testing "build-compressed-messages is called for turns > 0 when hk-session available"
+(deftest test-kg-session-build-compressed-messages-used-on-turn-gt-0
+  (testing "build-compressed-messages is called for turns > 0 when kg-session available"
     (let [compressed-calls (atom [])
-          mock-session {:type :hk-session}]
+          mock-session {:type :kg-session}]
       (with-redefs [kg-session/compression-available? (constantly true)
                     kg-session/create-session-kg! (fn [_ _] mock-session)
                     kg-session/compress-turn! (fn [_ _] 0)
@@ -562,7 +562,7 @@
                       (swap! compressed-calls conj {:turn (count @compressed-calls)})
                       ;; Return compressed messages
                       [{:role "system" :content sys-prompt}
-                       {:role "user" :content "COMPRESSED-BY-HK"}])
+                       {:role "user" :content "COMPRESSED-BY-KG"}])
                     kg-session/close-session! (fn [_] {})
                     kg-session/promote-to-global! (fn [_ _] {:promoted 0})]
         (let [received-messages (atom [])
@@ -583,7 +583,7 @@
                           (model-name [_] "compress-model")))
               result (loop/run-agentic-loop
                       {:task "Compress test" :files ["a.clj"]}
-                      {:drone-id "test-hk-compress"}
+                      {:drone-id "test-kg-compress"}
                       {:max-turns 5 :backend backend})]
           (is (= :completed (:status result)))
           (is (= 3 (:turns result)))
@@ -599,21 +599,21 @@
 
           ;; Turns 1+ should use compressed messages
           (let [turn-1-user-msg (:content (second (second @received-messages)))]
-            (is (= "COMPRESSED-BY-HK" turn-1-user-msg)
-                "Turn 1+ should use HK-compressed context")))))))
+            (is (= "COMPRESSED-BY-KG" turn-1-user-msg)
+                "Turn 1+ should use compressed context")))))))
 
-(deftest test-hk-session-creation-failure-graceful
-  (testing "loop continues normally when hk-session creation throws"
+(deftest test-kg-session-creation-failure-graceful
+  (testing "loop continues normally when kg-session creation throws"
     (with-redefs [kg-session/compression-available? (constantly true)
                   kg-session/create-session-kg! (fn [_ _]
-                                                  (throw (ex-info "HK init failed" {})))]
-      (let [backend (mock-backend "hk-fail-model"
+                                                  (throw (ex-info "KG session init failed" {})))]
+      (let [backend (mock-backend "kg-fail-model"
                                   [{:type :text :content "Done."}])
             result (loop/run-agentic-loop
-                    {:task "HK failure test" :files []}
-                    {:drone-id "test-hk-fail"}
+                    {:task "KG failure test" :files []}
+                    {:drone-id "test-kg-fail"}
                     {:max-turns 5 :backend backend})]
-        ;; Should complete normally despite hk-session creation failure
+        ;; Should complete normally despite kg-session creation failure
         (is (= :completed (:status result)))
         (is (= 1 (:turns result)))))))
 

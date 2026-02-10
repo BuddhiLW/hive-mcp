@@ -387,8 +387,8 @@
 ;;; =============================================================================
 
 (deftest test-score-observations-fallback
-  (testing "score-observations uses headless-sdk heuristic (L3+ unavailable)"
-    ;; hive-knowledge.scoring/score-observations won't be on classpath
+  (testing "score-observations uses headless-sdk heuristic (enhanced extension unavailable)"
+    ;; Enhanced scoring extension won't be on classpath
     ;; so it falls back to sdk/score-observations
     (let [observations [{:data "found a bug in auth.clj"}
                         {:data "read the README"}

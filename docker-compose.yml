@@ -99,6 +99,24 @@ services:
   #   restart: unless-stopped
 
   # =============================================================================
+  # Optional: NATS Server (push-based drone notifications)
+  # Enable: config set services.nats.enabled true
+  # =============================================================================
+  nats:
+    image: nats:latest
+    container_name: hive-mcp-nats
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    command: ["--jetstream", "--http_port", "8222"]
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  # =============================================================================
   # Optional: Observability Stack (profile: observability)
   # CLARITY-T: Telemetry first
   # =============================================================================

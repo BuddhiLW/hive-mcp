@@ -7,9 +7,9 @@
    - Multi-session support for parallel agent work
    - Auto-connect fallback when CIDER is not connected"
   (:require [hive-mcp.tools.core :refer [mcp-success mcp-error]]
-            [hive-mcp.emacsclient :as ec]
-            [hive-mcp.elisp :as el]
-            [hive-mcp.telemetry :as telemetry]
+            [hive-mcp.emacs.client :as ec]
+            [hive-mcp.emacs.elisp :as el]
+            [hive-mcp.telemetry.core :as telemetry]
             [hive-mcp.validation :as v]
             [clojure.data.json :as json]
             [clojure.string :as str]

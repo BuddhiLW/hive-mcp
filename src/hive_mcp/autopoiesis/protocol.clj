@@ -5,7 +5,7 @@
    detects emergent patterns, learns from feedback, and decays stale knowledge.
 
    CLARITY-L: Layers stay pure - this is the port (interface).
-   Implementation lives in proprietary hive-knowledge repo.
+   Enhanced implementations available via extension point.
    
    CLARITY-I: Inputs guarded at protocol boundary.
    
@@ -31,7 +31,7 @@
    
    Implementations:
    - BasicAutopoiesis: No-op fallback (hive-mcp, open source)
-   - AdvancedAutopoiesis: GNN-powered emergence (hive-knowledge, proprietary)"
+   - AdvancedAutopoiesis: Enhanced emergence detection (via extension)"
 
   (observe [this event]
     "Record an observation event from agent interactions.
@@ -71,7 +71,7 @@
      Emergence detection uses multiple levels:
      - L0: Hash-based exact matching
      - L1: Weisfeiler-Leman graph kernel similarity
-     - L2: GNN structural embeddings
+     - L2: Structural embeddings
      - L3: Cross-project pattern synthesis
      
      scope - String identifying the scope to analyze:
@@ -145,7 +145,7 @@
   []
   (or @active-autopoiesis
       (throw (ex-info "No autopoiesis engine configured. Call set-autopoiesis! first."
-                      {:hint "Initialize with basic-autopoiesis or load hive-knowledge"}))))
+                      {:hint "Initialize with basic-autopoiesis or load enhanced extension"}))))
 
 (defn autopoiesis-set?
   "Check if an autopoiesis implementation has been configured."

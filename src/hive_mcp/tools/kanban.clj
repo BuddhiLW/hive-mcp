@@ -7,7 +7,7 @@
    - Roadmap and personal task views
    - Backend synchronization"
   (:require [hive-mcp.tools.core :refer [mcp-success mcp-error]]
-            [hive-mcp.emacsclient :as ec]
+            [hive-mcp.emacs.client :as ec]
             [hive-mcp.validation :as v]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;

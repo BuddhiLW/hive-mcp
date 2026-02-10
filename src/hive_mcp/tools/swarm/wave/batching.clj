@@ -191,7 +191,11 @@
 ;;; ============================================================
 
 (defn spawn-workers!
-  "Spawn worker goroutines for bounded concurrency.
+  "Spawn worker threads for bounded concurrency.
+
+   Uses real threads (not go blocks) because execute-fn does blocking I/O
+   (HTTP calls to OpenRouter/hive-agent). Blocking in go blocks exhausts
+   the core.async fixed thread pool (8 threads) and deadlocks batch transitions.
 
    Arguments:
      work-ch     - Channel providing work units
@@ -201,28 +205,29 @@
      item-count  - Number of items (for worker count calculation)
 
    Returns:
-     nil (side-effectful - spawns goroutines)"
+     nil (side-effectful - spawns threads)"
   [work-ch result-ch execute-fn concurrency item-count]
   (dotimes [_ (min concurrency item-count)]
-    (go-loop []
-      (when-let [work-unit (<! work-ch)]
-        (let [{:keys [item]} work-unit
-              item-id (:change-item/id item)
-              exec-result (try
-                            (execute-fn work-unit)
-                            (catch Exception e
-                              (log/error {:event :wave/worker-exception
-                                          :item-id item-id
-                                          :file (:change-item/file item)
-                                          :wave-id (:wave-id work-unit)
-                                          :error-type :uncaught-exception
-                                          :exception-class (.getName (class e))
-                                          :message (.getMessage e)})
-                              (domain/failure-result
-                               item-id
-                               (str "Worker exception: " (.getMessage e)))))]
-          (>! result-ch exec-result))
-        (recur)))))
+    (async/thread
+      (loop []
+        (when-let [work-unit (async/<!! work-ch)]
+          (let [{:keys [item]} work-unit
+                item-id (:change-item/id item)
+                exec-result (try
+                              (execute-fn work-unit)
+                              (catch Throwable e
+                                (log/error {:event :wave/worker-exception
+                                            :item-id item-id
+                                            :file (:change-item/file item)
+                                            :wave-id (:wave-id work-unit)
+                                            :error-type :uncaught-exception
+                                            :exception-class (.getName (class e))
+                                            :message (.getMessage e)})
+                                (domain/failure-result
+                                 item-id
+                                 (str "Worker exception: " (.getMessage e)))))]
+            (async/>!! result-ch exec-result))
+          (recur))))))
 
 ;;; ============================================================
 ;;; Result Collection
@@ -260,6 +265,9 @@
 (defn execute-batch!
   "Execute a single batch of items with bounded concurrency.
 
+   Uses async/thread for the orchestrator since workers do blocking I/O.
+   The work-ch producer uses a thread too to avoid go-block starvation.
+
    Arguments:
      batch-spec - BatchSpec record
      execute-fn - Function to execute each item (receives work-unit)
@@ -272,22 +280,22 @@
         item-count (count items)
         result-ch (chan)]
 
-    (go
+    (async/thread
       (let [work-ch (chan)
             inner-result-ch (chan)]
 
-        ;; Producer: push all items to work channel
-        (go
+        ;; Producer: push all items to work channel (thread-safe)
+        (async/thread
           (doseq [item items]
-            (>! work-ch (item->work-unit item batch-spec)))
+            (async/>!! work-ch (item->work-unit item batch-spec)))
           (close! work-ch))
 
-        ;; Spawn workers
+        ;; Spawn workers (already uses threads)
         (spawn-workers! work-ch inner-result-ch execute-fn concurrency item-count)
 
-        ;; Collect and forward results
-        (let [batch-result (<! (collect-results inner-result-ch item-count))]
-          (>! result-ch batch-result))))
+        ;; Collect results — use blocking take on the go-based collector
+        (let [batch-result (async/<!! (collect-results inner-result-ch item-count))]
+          (async/>!! result-ch batch-result))))
 
     result-ch))
 

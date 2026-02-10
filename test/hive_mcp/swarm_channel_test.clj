@@ -3,7 +3,7 @@
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [hive-mcp.tools.swarm :as swarm]
             [hive-mcp.tools.swarm.channel :as swarm-channel]
-            [hive-mcp.channel :as ch]))
+            [hive-mcp.channel.core :as ch]))
 
 ;; =============================================================================
 ;; Test Fixtures

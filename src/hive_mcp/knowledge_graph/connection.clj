@@ -1,7 +1,7 @@
 (ns hive-mcp.knowledge-graph.connection
   "Connection management and factory for Knowledge Graph.
 
-   Delegates to the active IGraphStore implementation (DataScript or Datalevin).
+   Delegates to the active IGraphStore implementation (DataScript, Datalevin, Datascript, Neo4J etc).
    Maintains backward-compatible API surface for existing KG modules.
 
    Backend selection (priority):

@@ -43,6 +43,12 @@
        :wave-id   - Wave ID (optional)
        :trace     - Enable tracing (default: true)
        :skip-auto-apply - Don't auto-apply diffs (default: false)
+       :backend   - Drone execution backend keyword (optional)
+                    One of: :openrouter, :hive-agent, :legacy-loop, :sdk-drone
+                    nil = default backend selection
+       :model     - Override model (optional, bypasses smart routing)
+       :seeds     - Domain topic seeds for context priming (optional)
+                    e.g. [\"fp\" \"ddd\" \"concurrency\"]
 
    Returns:
      TaskSpec record
@@ -50,7 +56,7 @@
    Throws:
      ex-info if :task is missing or blank (CLARITY-I)"
   [{:keys [task files task-type preset cwd parent-id wave-id
-           trace skip-auto-apply]
+           trace skip-auto-apply backend model seeds]
     :or {files []
          task-type :general
          trace true
@@ -67,8 +73,11 @@
                   :cwd cwd
                   :parent-id parent-id
                   :wave-id wave-id
-                  :options {:trace trace
-                            :skip-auto-apply skip-auto-apply}}))
+                  :options (cond-> {:trace trace
+                                    :skip-auto-apply skip-auto-apply}
+                             backend     (assoc :backend backend)
+                             model       (assoc :model model)
+                             (seq seeds) (assoc :seeds (vec seeds)))}))
 
 (defn task-spec?
   "Check if value is a TaskSpec."
