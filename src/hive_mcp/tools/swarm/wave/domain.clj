@@ -72,7 +72,7 @@
 ;;; ============================================================
 
 (defrecord WaveSpec
-           [plan-id concurrency trace cwd skip-auto-apply wave-id on-complete]
+           [plan-id concurrency trace cwd skip-auto-apply wave-id on-complete backend model seeds]
   ;; plan-id         - Plan identifier (required)
   ;; concurrency     - Max concurrent drones (default: 3)
   ;; trace           - Emit events (default: true)
@@ -80,6 +80,9 @@
   ;; skip-auto-apply - Review mode (default: false)
   ;; wave-id         - Pre-created wave ID (optional)
   ;; on-complete     - Callback on completion (optional)
+  ;; backend         - Drone execution backend keyword (optional, nil = mode-dependent default)
+  ;; model           - Override model for all drones (optional, bypasses smart routing)
+  ;; seeds           - Domain topic seeds for context priming (optional, e.g. ["fp" "ddd"])
   )
 
 (defn ->wave-spec
@@ -94,13 +97,20 @@
        :skip-auto-apply - Review mode (default: false)
        :wave-id         - Pre-created wave ID
        :on-complete     - Callback fn
+       :backend         - Drone execution backend keyword (optional)
+                          One of: :openrouter, :hive-agent, :legacy-loop, :sdk-drone
+                          nil = mode-dependent default
+       :model           - Override model for all drones (optional)
+                          Bypasses smart routing when provided
+       :seeds           - Domain topic seeds for context priming (optional)
+                          e.g. [\"fp\" \"ddd\" \"concurrency\"]
 
    Returns:
      WaveSpec record
 
    Throws:
      ex-info if :plan-id is missing (CLARITY-I)"
-  [{:keys [plan-id concurrency trace cwd skip-auto-apply wave-id on-complete]
+  [{:keys [plan-id concurrency trace cwd skip-auto-apply wave-id on-complete backend model seeds]
     :or {concurrency default-concurrency
          trace true
          skip-auto-apply false}}]
@@ -114,7 +124,10 @@
                   :cwd cwd
                   :skip-auto-apply skip-auto-apply
                   :wave-id wave-id
-                  :on-complete on-complete}))
+                  :on-complete on-complete
+                  :backend backend
+                  :model model
+                  :seeds (when (seq seeds) (vec seeds))}))
 
 (defn wave-spec?
   "Check if value is a WaveSpec."

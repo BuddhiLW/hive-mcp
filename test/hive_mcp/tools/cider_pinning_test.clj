@@ -13,7 +13,7 @@
             [clojure.string :as str]
             [clojure.data.json :as json]
             [hive-mcp.tools.cider :as tools]
-            [hive-mcp.emacsclient :as ec]))
+            [hive-mcp.emacs.client :as ec]))
 
 ;; =============================================================================
 ;; Test Helpers

@@ -42,13 +42,13 @@
      hive (root)
      ├── hive-mcp
      │   └── hive-agent-bridge
-     └── hive-knowledge (leaf)"
+     └── hive-ext (leaf)"
   {:roots ["hive"]
    :by-id {"hive"               {:project/id "hive" :project/type :workspace}
            "hive-mcp"           {:project/id "hive-mcp" :project/parent-id "hive" :project/type :clojure}
            "hive-agent-bridge"  {:project/id "hive-agent-bridge" :project/parent-id "hive-mcp" :project/type :clojure}
-           "hive-knowledge"     {:project/id "hive-knowledge" :project/parent-id "hive" :project/type :clojure}}
-   :children {"hive"     ["hive-mcp" "hive-knowledge"]
+           "hive-ext"     {:project/id "hive-ext" :project/parent-id "hive" :project/type :clojure}}
+   :children {"hive"     ["hive-mcp" "hive-ext"]
               "hive-mcp" ["hive-agent-bridge"]}})
 
 (defn inject-tree-fixture
@@ -89,8 +89,8 @@
 (def ^:private entry-knowledge-1
   {:id "kb-knowledge-1"
    :content {:task-type "kanban" :title "Knowledge task" :status "review" :priority "medium"}
-   :tags ["kanban" "review" "priority-medium" "scope:project:hive-knowledge"]
-   :project-id "hive-knowledge"})
+   :tags ["kanban" "review" "priority-medium" "scope:project:hive-ext"]
+   :project-id "hive-ext"})
 
 (def ^:private non-kanban-entry
   {:id "note-1"
@@ -115,8 +115,8 @@
     (let [result (resolve-project-ids "hive")]
       (is (vector? result))
       (is (= "hive" (first result)))
-      (is (= 4 (count result)) "hive has 3 descendants: hive-mcp, hive-agent-bridge, hive-knowledge")
-      (is (= #{"hive" "hive-mcp" "hive-agent-bridge" "hive-knowledge"}
+      (is (= 4 (count result)) "hive has 3 descendants: hive-mcp, hive-agent-bridge, hive-ext")
+      (is (= #{"hive" "hive-mcp" "hive-agent-bridge" "hive-ext"}
              (set result))))))
 
 (deftest test-resolve-leaf-returns-nil
@@ -241,17 +241,17 @@
 (deftest test-has-children-root
   (testing "Root project reports having children"
     (is (true? (tree/has-children? "hive"))
-        "hive has hive-mcp and hive-knowledge as children")))
+        "hive has hive-mcp and hive-ext as children")))
 
 (deftest test-descendant-ids-set
   (testing "get-descendant-ids returns set of all nested descendants"
     (let [ids (tree/get-descendant-ids "hive")]
       (is (set? ids))
-      (is (= #{"hive-mcp" "hive-agent-bridge" "hive-knowledge"} ids)))))
+      (is (= #{"hive-mcp" "hive-agent-bridge" "hive-ext"} ids)))))
 
 (deftest test-descendant-ids-leaf-empty
   (testing "Leaf project returns empty set"
-    (is (= #{} (tree/get-descendant-ids "hive-knowledge")))))
+    (is (= #{} (tree/get-descendant-ids "hive-ext")))))
 
 ;; =============================================================================
 ;; Scope tag generation from tree
@@ -268,7 +268,7 @@
     (let [tags (tree/get-descendant-scope-tags "hive")]
       (is (= #{"scope:project:hive-mcp"
                "scope:project:hive-agent-bridge"
-               "scope:project:hive-knowledge"} tags)))))
+               "scope:project:hive-ext"} tags)))))
 
 (deftest test-descendant-scope-tags-global-returns-nil
   (testing "Global project-id returns nil scope tags"

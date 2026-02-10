@@ -8,7 +8,7 @@
   (:require [clojure.test :refer [deftest is testing]]
             [hive-mcp.tools.swarm.status :as status]
             [hive-mcp.tools.swarm.core :as core]
-            [hive-mcp.emacsclient :as ec]
+            [hive-mcp.emacs.client :as ec]
             [clojure.data.json :as json]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;

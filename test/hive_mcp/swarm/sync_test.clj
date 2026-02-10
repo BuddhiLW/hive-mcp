@@ -8,7 +8,7 @@
   (:require [clojure.test :refer [deftest testing is use-fixtures run-tests]]
             [hive-mcp.swarm.sync :as sync]
             [hive-mcp.swarm.datascript :as ds]
-            [hive-mcp.hooks :as hooks]
+            [hive-mcp.hooks.core :as hooks]
             [hive-mcp.hivemind :as hivemind]))
 
 ;; =============================================================================

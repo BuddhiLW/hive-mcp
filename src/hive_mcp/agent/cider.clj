@@ -11,18 +11,17 @@
    Architecture:
    - SessionPool: manages pool of pre-spawned CIDER sessions
    - CiderBackend: implements LLMBackend protocol via nREPL eval
-   - Integrates with existing agent.delegate! flow"
+   - Integrates with existing agent delegation flow"
   (:require [hive-mcp.agent.protocol :as proto]
             [hive-mcp.agent.ollama :as ollama]
             [hive-mcp.agent.openrouter :as openrouter]
-            [hive-mcp.emacsclient :as ec]
+            [hive-mcp.emacs.client :as ec]
             [clojure.data.json :as json]
             [taoensso.timbre :as log])
   (:import [java.util.concurrent ArrayBlockingQueue TimeUnit]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
-
 
 ;;; ============================================================
 ;;; Session Pool
@@ -173,7 +172,7 @@
   [{:keys [ollama-model cider-session timeout-ms]
     :or {ollama-model "devstral-small-2:latest"
          timeout-ms 60000}}]
-  {:ollama (ollama/ollama-backend {:model ollama-model})
+  {:ollama (ollama/->OllamaBackend "http://localhost:11434" ollama-model)
    :cider (cider-backend {:timeout-ms timeout-ms :session cider-session})})
 
 ;;; ============================================================
@@ -195,7 +194,9 @@
   ([type] (make-backend type {}))
   ([type opts]
    (case type
-     :ollama (ollama/ollama-backend opts)
+     :ollama (ollama/->OllamaBackend
+              (or (:host opts) "http://localhost:11434")
+              (or (:model opts) "devstral-small:24b"))
      :cider (cider-backend opts)
      :openrouter (openrouter/openrouter-backend opts)
      (throw (ex-info "Unknown backend type" {:type type :available [:ollama :cider :openrouter]})))))

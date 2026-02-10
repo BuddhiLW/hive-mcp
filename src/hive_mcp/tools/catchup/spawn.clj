@@ -154,7 +154,7 @@
            :ref
            (let [refs (lookup-context-refs project-id)]
              (if refs
-               ;; Found cached refs from W2 dual-write — try KG-compressed reconstruction first
+               ;; Found cached refs from W2 dual-write — try compressed reconstruction first
                (let [git-info (catchup-git/gather-git-info directory)
                      ;; Extract decision IDs from refs for KG traversal seeds
                      kg-node-ids (when-let [dec-ref (:decisions refs)]
@@ -165,20 +165,20 @@
                                             (keep :id)
                                             vec))
                                      (catch Exception _ [])))
-                     ;; Try KG-compressed reconstruction
+                     ;; Try compressed reconstruction
                      reconstructed (try
                                      (reconstruction/reconstruct-context
                                       refs
                                       (or kg-node-ids [])
                                       project-id)
                                      (catch Exception e
-                                       (log/debug "spawn-context :ref KG reconstruction failed (non-fatal):"
+                                       (log/debug "spawn-context :ref reconstruction failed (non-fatal):"
                                                   (.getMessage e))
                                        nil))]
                  (log/info "spawn-context :ref mode, found" (count refs) "refs"
-                           {:categories (keys refs) :kg-reconstructed (some? reconstructed)})
+                           {:categories (keys refs) :reconstructed? (some? reconstructed)})
                  (if reconstructed
-                   ;; KG-compressed reconstruction succeeded — append git info
+                   ;; compressed reconstruction succeeded — append git info
                    (str reconstructed
                         (when git-info
                           (str "\n\n### Git Status\n"

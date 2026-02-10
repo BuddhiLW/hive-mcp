@@ -5,7 +5,7 @@
    dangerous operations like file writes, bash execution, and git commits."
   (:require [clojure.test :refer :all]
             [clojure.set :as set]
-            [hive-mcp.agent]
+            [hive-mcp.agent.core]
             [hive-mcp.agent.drone :as drone]
             [hive-mcp.permissions :as permissions]))
 
@@ -140,51 +140,34 @@
           "Drones need git read access for context"))))
 
 ;; =============================================================================
-;; Integration Test - delegate-drone! Uses Tool Filtering
+;; Integration Test - delegate-drone! Uses Agentic Path
 ;; =============================================================================
 
-(deftest delegate-drone-passes-tools-to-delegate
-  (testing "delegate-drone! passes :tools parameter with drone-allowed-tools"
-    ;; We verify this by checking the function source includes :tools drone-allowed-tools
-    ;; This is a static analysis test since actually calling delegate! would require
-    ;; external services (OpenRouter)
-    (let [fn-source (-> #'hive-mcp.agent/delegate-drone! meta :arglists str)]
-      ;; The function exists and is callable
-      (is (fn? @#'hive-mcp.agent/delegate-drone!)
-          "delegate-drone! must be a function")
-      ;; Check that the function body references drone-allowed-tools
-      ;; by examining that delegate! is called with :tools
-      (is (some? @#'hive-mcp.agent/delegate-drone!)
-          "delegate-drone! should be defined"))))
+(deftest delegate-drone-exists-and-callable
+  (testing "delegate-drone! is defined and callable"
+    (is (fn? @#'hive-mcp.agent.core/delegate-drone!)
+        "delegate-drone! must be a function")
+    (is (some? @#'hive-mcp.agent.core/delegate-drone!)
+        "delegate-drone! should be defined")))
 
-;; =============================================================================
-;; Integration Test - delegate-drone! Calls drone/delegate!
-;; =============================================================================
-
-(deftest delegate-drone-invokes-drone-delegate
-  (testing "delegate-drone! correctly invokes hive-mcp.agent.drone/delegate!"
-    ;; This test verifies the call chain works without needing external services.
-    ;; We mock drone/delegate! to capture the call arguments.
+(deftest delegate-drone-routes-to-agentic
+  (testing "delegate-drone! correctly routes through drone/delegate-agentic!"
+    ;; delegate-drone! now routes through the agentic path (no external delegate-fn)
     (let [captured-args (atom nil)
-          captured-delegate-fn (atom nil)
-          mock-drone-delegate! (fn [opts delegate-fn]
-                                 (reset! captured-args opts)
-                                 (reset! captured-delegate-fn delegate-fn)
-                                 {:status :completed :result "mocked"})]
-      (with-redefs [hive-mcp.agent.drone/delegate! mock-drone-delegate!]
-        (let [result (hive-mcp.agent/delegate-drone! {:task "test task"
-                                                      :files ["foo.clj"]})]
+          mock-delegate-agentic! (fn [opts]
+                                   (reset! captured-args opts)
+                                   {:status :completed :result "mocked"})]
+      (with-redefs [hive-mcp.agent.drone/delegate-agentic! mock-delegate-agentic!]
+        (let [result (hive-mcp.agent.core/delegate-drone! {:task "test task"
+                                                           :files ["foo.clj"]})]
           ;; Verify the call went through
           (is (= :completed (:status result))
               "Should return the mocked result")
           ;; Verify opts were passed
           (is (= "test task" (:task @captured-args))
-              "Task should be passed to drone/delegate!")
+              "Task should be passed to drone/delegate-agentic!")
           (is (= ["foo.clj"] (:files @captured-args))
-              "Files should be passed to drone/delegate!")
-          ;; Verify delegate-fn was passed (should be hive-mcp.agent/delegate!)
-          (is (fn? @captured-delegate-fn)
-              "delegate! function should be passed to drone/delegate!"))))))
+              "Files should be passed to drone/delegate-agentic!"))))))
 
 (comment
   ;; Run tests in REPL

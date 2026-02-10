@@ -11,7 +11,7 @@
   - SRP: Each evaluator handles only one type of communication
   - OCP: Extend via new protocol implementations, not modification"
   (:require [bencode.core :as bencode]
-            [hive-mcp.emacsclient :as ec]
+            [hive-mcp.emacs.client :as ec]
             [hive-mcp.config :as config]
             [clojure.data.json :as json]
             [taoensso.timbre :as log])

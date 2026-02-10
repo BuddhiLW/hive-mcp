@@ -45,7 +45,7 @@
    - tools/hot_test.clj (5 hot reload redefs)
    - hot_reload_e2e_test.clj (6 hot reload redefs)"
   (:require [clojure.string :as str]
-            [hive-mcp.emacsclient :as ec]
+            [hive-mcp.emacs.client :as ec]
             [hive-mcp.evaluator :as evaluator]
             [hive-mcp.chroma :as chroma]))
 
@@ -201,7 +201,7 @@
                                         (merge (or ~entry (make-test-entry :id id#)) updates#))
                  chroma/query-entries (fn [& _#] (or ~entries []))
                  chroma/delete-entry! (fn [_#] true)
-                 chroma/cleanup-expired! (fn [] {:deleted 0})
+                 chroma/cleanup-expired! (fn [] {:count 0 :deleted-ids [] :repaired 0})
                  chroma/entries-expiring-soon (fn [_# & _opts#] (or ~entries []))]
      ~@body))
 

@@ -30,10 +30,9 @@
             [hive-mcp.agent.ling.openrouter-strategy :as openrouter-strat]
             [hive-mcp.agent.ling.agent-sdk-strategy :as sdk-strat]
             [hive-mcp.agent.headless :as headless]
-            [hive-mcp.agent.hints :as hints]
+            [hive-mcp.workflows.catchup-ling :as catchup-ling]
             [hive-mcp.swarm.datascript.lings :as ds-lings]
             [hive-mcp.swarm.datascript.queries :as ds-queries]
-            [hive-mcp.swarm.datascript.claims :as ds-claims]
             [hive-mcp.swarm.datascript.schema :as schema]
             [hive-mcp.protocols.dispatch :as dispatch-ctx]
             [taoensso.timbre :as log]))
@@ -100,50 +99,46 @@
      The budget guardrail then checks cumulative cost on every tool call
      via the permission system, denying+interrupting when exceeded.
 
-     Hint injection flow (Tier 1 activation):
-     When kanban-task-id is provided, generates KG-driven memory hints
-     and prepends them to the task BEFORE passing to strategy-spawn!.
-     This ensures hints are embedded in the initial CLI arg (headless)
-     or elisp dispatch (vterm) — not sent as a separate stdin dispatch
-     which would fail for claude -p mode."
+     compressed context injection:
+     When a task is provided, runs ling-catchup to generate a compact
+     context blob (~1-3K tokens) using memory reconstruction.
+     This pre-resolves axioms, conventions, and relevant context into the
+     task prompt BEFORE passing to strategy-spawn!, so lings don't
+     need to run /catchup themselves."
     (let [;; Non-claude models spawn via OpenRouter API (no CLI needed)
           effective-model (or (:model opts) model)
           non-claude? (and effective-model
                            (not (schema/claude-model? effective-model)))
-          ;; :headless maps to :agent-sdk (default headless mechanism since 0.12.0)
+          ;; :headless maps to :agent-sdk when SDK available, otherwise ProcessBuilder
           raw-mode (if non-claude?
                      :openrouter
                      (or (:spawn-mode opts) spawn-mode :vterm))
-          mode (if (= raw-mode :headless) :agent-sdk raw-mode)
+          mode (if (= raw-mode :headless)
+                 (if (sdk-strat/sdk-available?) :agent-sdk :headless)
+                 raw-mode)
           strat (resolve-strategy mode)
           ctx (assoc (ling-ctx this) :model effective-model)
           {:keys [depth parent kanban-task-id]
            :or {depth 1}} opts
 
-          ;; Generate KG-driven hints BEFORE spawn when kanban-task-id is provided
-          ;; This must happen before strategy-spawn! so hints are embedded in the
-          ;; initial task (CLI arg for headless, elisp dispatch for vterm).
-          task-hints-str (when (and kanban-task-id (:task opts))
-                           (try
-                             (let [task-hints (hints/generate-task-hints {:task-id kanban-task-id :depth 2})
-                                   hint-data (hints/generate-hints (or project-id "global")
-                                                                   {:task (:task opts)
-                                                                    :extra-ids (:l1-ids task-hints)
-                                                                    :extra-queries (:l2-queries task-hints)})
-                                   kg-seeds (mapv :id (or (:l3-seeds task-hints) []))]
-                               (hints/serialize-hints
-                                (cond-> hint-data
-                                  (seq kg-seeds) (assoc-in [:memory-hints :kg-seeds] kg-seeds)
-                                  (seq kg-seeds) (assoc-in [:memory-hints :kg-depth] 2))
-                                :project-name (or project-id "global")))
-                             (catch Exception e
-                               (log/debug "Task hint generation in spawn failed (non-fatal):" (.getMessage e))
-                               nil)))
+          ;; Generate compressed ling context BEFORE spawn.
+          ;; Replaces pointer-based hints with pre-resolved context blob.
+          ;; Works with or without kanban-task-id (project-level fallback).
+          ;; Lings get context at spawn — no need to run /catchup themselves.
+          ling-context-str (when (:task opts)
+                             (try
+                               (catchup-ling/ling-catchup
+                                {:directory cwd
+                                 :task (:task opts)
+                                 :kanban-task-id kanban-task-id})
+                               (catch Exception e
+                                 (log/debug "Ling catchup in spawn failed (non-fatal):" (.getMessage e))
+                                 nil)))
 
-          ;; Enrich task with hints (prepend hint block before task prompt)
+          ;; Enrich task with compressed context (prepend before task prompt)
           enriched-task (when (:task opts)
-                          (if task-hints-str
-                            (str task-hints-str "\n\n---\n\n" (:task opts))
+                          (if ling-context-str
+                            (str ling-context-str "\n\n---\n\n" (:task opts))
                             (:task opts)))
 
           ;; Pass enriched task to strategy-spawn! so hints are baked into
@@ -334,7 +329,7 @@
             (do
               (log/warn "File already claimed by another agent"
                         {:file f :held-by held-by :requesting id})
-              (ds-claims/add-to-wait-queue! id f))
+              (ds-lings/add-to-wait-queue! id f))
             (ds-lings/claim-file! f id task-id))))
       (log/info "Files claimed" {:ling-id id :count (count files)})))
 
@@ -379,12 +374,12 @@
   [id opts]
   (let [model-val (:model opts)
         ;; Non-claude models use OpenRouter API directly
-        ;; :headless maps to :agent-sdk (default headless mechanism since 0.12.0)
+        ;; :headless maps to :agent-sdk when SDK available, otherwise ProcessBuilder
         raw-spawn-mode (:spawn-mode opts :vterm)
         effective-spawn-mode (if (and model-val (not (schema/claude-model? model-val)))
                                :openrouter
                                (if (= raw-spawn-mode :headless)
-                                 :agent-sdk
+                                 (if (sdk-strat/sdk-available?) :agent-sdk :headless)
                                  raw-spawn-mode))]
     (map->Ling (cond-> {:id id
                         :cwd (:cwd opts)
@@ -532,10 +527,10 @@
                                          :spawn-mode :headless}))
 
   ;; === Multi-model mode (OpenRouter API direct) ===
-  (def deepseek-ling (->ling "ling-003" {:cwd "/home/user/project"
-                                         :presets ["worker"]
-                                         :project-id "hive-mcp"
-                                         :model "deepseek/deepseek-chat"}))
+  (def kimi-ling (->ling "ling-003" {:cwd "/home/user/project"
+                                     :presets ["worker"]
+                                     :project-id "hive-mcp"
+                                     :model "moonshotai/kimi-k2.5"}))
   ;; spawn-mode will be :openrouter automatically
 
   ;; === Agent SDK mode (in-process via libpython-clj) ===

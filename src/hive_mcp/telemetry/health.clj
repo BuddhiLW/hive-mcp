@@ -10,7 +10,7 @@
    This module is the SINGLE place for all catastrophic event handling.
    No more scattered try/catches that swallow errors silently."
   (:require [taoensso.timbre :as log]
-            [hive-mcp.channel :as channel]
+            [hive-mcp.channel.core :as channel]
             [datascript.core :as d]
             [hive-mcp.swarm.datascript.connection :as conn]
             [hive-mcp.telemetry.prometheus :as prom]))

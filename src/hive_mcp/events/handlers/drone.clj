@@ -129,7 +129,13 @@
                   :labels {:parent (or parent-id "none")}
                   :histogram {:name :drone_duration_seconds
                               :value (when duration-ms (/ duration-ms 1000.0))
-                              :status :success}}}))
+                              :status :success}}
+     :nats-publish {:event-type :completed
+                    :task-id task-id
+                    :parent-id parent-id
+                    :result {:files-modified files-modified
+                             :files-failed files-failed
+                             :duration-ms duration-ms}}}))
 
 ;; =============================================================================
 ;; Handler: :drone/failed
@@ -196,7 +202,11 @@
                 :histogram (when duration-ms
                              {:name :drone_duration_seconds
                               :value (/ duration-ms 1000.0)
-                              :status :failed})}})
+                              :status :failed})}
+   :nats-publish {:event-type :failed
+                  :task-id task-id
+                  :parent-id parent-id
+                  :error error}})
 
 ;; =============================================================================
 ;; Registration

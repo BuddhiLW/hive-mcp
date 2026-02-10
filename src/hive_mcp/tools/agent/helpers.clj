@@ -7,7 +7,7 @@
    SOLID-S: Single responsibility - shared utilities only.
    CLARITY-Y: Safe failure on elisp queries."
   (:require [hive-mcp.tools.swarm.core :as swarm-core]
-            [hive-mcp.emacsclient :as ec]
+            [hive-mcp.emacs.client :as ec]
             [taoensso.timbre :as log]
             [clojure.data.json :as json]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>

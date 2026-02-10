@@ -16,7 +16,7 @@
             [hive-mcp.crystal.hooks :as crystal-hooks]
             [hive-mcp.tools.crystal :as crystal]
             [hive-mcp.test-fixtures :as fixtures]
-            [hive-mcp.emacsclient :as ec]))
+            [hive-mcp.emacs.client :as ec]))
 
 ;; =============================================================================
 ;; Test Fixtures

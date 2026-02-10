@@ -42,17 +42,22 @@
 ;; =============================================================================
 
 (def ^:private deprecated-aliases
-  "Map of deprecated command keywords to their canonical replacements."
-  {:list_slim :list
-   :core      :get})
+  "Map of deprecated command keywords to their canonical replacements.
+   Each value is {:canonical kw, :params {implied-overrides}}.
+   The :params are merged into the call so the canonical handler
+   receives the right verbosity/mode without the caller specifying it."
+  {:list_slim {:canonical :list :params {:verbosity "slim"}}
+   :core      {:canonical :get  :params {:verbosity "core"}}})
 
 (defn- wrap-deprecated
-  "Wrap a handler fn to emit a deprecation warning before delegating."
-  [alias-kw canonical-kw handler-fn]
+  "Wrap a handler fn to emit a deprecation warning before delegating.
+   Merges param-overrides into the call so canonical handler gets
+   the implied verbosity (e.g. list_slim → list + verbosity=slim)."
+  [alias-kw canonical-kw handler-fn param-overrides]
   (fn [params]
     (log/warn (str "DEPRECATED: command '" (name alias-kw)
                    "' is deprecated, use '" (name canonical-kw) "' instead."))
-    (handler-fn params)))
+    (handler-fn (merge params param-overrides))))
 
 ;; =============================================================================
 ;; Handlers Map
@@ -72,10 +77,11 @@
 (def handlers
   "Canonical handlers merged with deprecated aliases (with log warnings)."
   (merge canonical-handlers
-         (reduce-kv (fn [m alias-kw canonical-kw]
+         (reduce-kv (fn [m alias-kw {:keys [canonical params]}]
                       (assoc m alias-kw
-                             (wrap-deprecated alias-kw canonical-kw
-                                              (get canonical-handlers canonical-kw))))
+                             (wrap-deprecated alias-kw canonical
+                                              (get canonical-handlers canonical)
+                                              params)))
                     {} deprecated-aliases)))
 
 ;; =============================================================================

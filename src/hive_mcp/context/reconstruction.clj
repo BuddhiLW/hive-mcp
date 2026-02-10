@@ -1,5 +1,5 @@
 (ns hive-mcp.context.reconstruction
-  "KG-compressed context reconstruction for agent communication.
+  "Compressed context reconstruction for agent communication.
 
    Transforms context-store references + KG node IDs + scope into
    bounded compressed context markdown. Bridges:
@@ -129,9 +129,9 @@
                              (.getMessage e)))))
           ;; Deduplicate edges by [from, to, relation]
           unique-edges (->> @all-edges
-                           (group-by (juxt :from :to :relation))
-                           vals
-                           (map first))]
+                            (group-by (juxt :from :to :relation))
+                            vals
+                            (map first))]
       {:nodes @all-nodes
        :edges (vec unique-edges)})))
 
@@ -267,11 +267,11 @@
      String, bounded to max-output-chars.
 
    Structure:
-     ## Reconstructed Context (KG-Compressed)
+     ## Reconstructed Context (Compressed)
      [ref summaries with key content]
      [KG subgraph edge-list]"
   [ref-data kg-context]
-  (let [parts (atom ["## Reconstructed Context (KG-Compressed)" ""])
+  (let [parts (atom ["## Reconstructed Context (Compressed)" ""])
         kg-str (compress-kg-subgraph kg-context)
         ;; Reserve space for KG subgraph
         kg-budget (if kg-str (+ (count kg-str) 10) 0)

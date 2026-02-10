@@ -11,7 +11,7 @@
 
    Uses MockEmbedder for deterministic testing without external dependencies."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
-            [hive-mcp.plans :as plans]
+            [hive-mcp.plan.plans :as plans]
             [hive-mcp.chroma :as chroma]
             [hive-mcp.test-fixtures :as fixtures]
             [clojure-chroma-client.api :as chroma-api]

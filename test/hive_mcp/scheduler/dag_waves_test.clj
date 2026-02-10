@@ -21,7 +21,7 @@
             [hive-mcp.chroma :as chroma]
             [hive-mcp.agent.ling :as ling]
             [hive-mcp.hivemind :as hivemind]
-            [hive-mcp.channel :as channel]
+            [hive-mcp.channel.core :as channel]
             [hive-mcp.swarm.datascript.queries :as ds-queries]
             [hive-mcp.tools.memory.scope :as scope]
             [clojure.data.json :as json]

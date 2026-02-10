@@ -10,7 +10,7 @@
    - Server spec building with capability-based filtering
    - Hot-reload support for tools"
   (:require [hive-mcp.tools :as tools]
-            [hive-mcp.docs :as docs]
+            [hive-mcp.tools.docs :as docs]
             [hive-mcp.agent.context :as ctx]
             [hive-mcp.channel.async-result :as async-buf]
             [taoensso.timbre :as log]
@@ -576,13 +576,13 @@
    PHASE 2 STRANGLE: Includes deprecated tools for backward compatibility.
    Agents can still delegate to deprecated tools during grace period.
 
-   Delegates to hive-mcp.agent/register-tools! with all tools.
+   Delegates to hive-mcp.agent.core/register-tools! with all tools.
 
    Returns:
      count of tools registered"
   []
-  (require 'hive-mcp.agent)
-  (let [register-tools! (resolve 'hive-mcp.agent/register-tools!)
+  (require 'hive-mcp.agent.core)
+  (let [register-tools! (resolve 'hive-mcp.agent.core/register-tools!)
         ;; Include deprecated tools for delegation (backward compat)
         all-tools (tools/get-all-tools :include-deprecated? true)
         deprecated-count (count (filter :deprecated all-tools))]

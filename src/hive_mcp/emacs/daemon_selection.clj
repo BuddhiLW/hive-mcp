@@ -408,7 +408,7 @@
                             (if ping-fn
                               (ping-fn daemon-id)
                               ;; Default: use emacsclient with 3s timeout
-                              (let [ec-fn (requiring-resolve 'hive-mcp.emacsclient/eval-elisp-with-timeout)]
+                              (let [ec-fn (requiring-resolve 'hive-mcp.emacs.client/eval-elisp-with-timeout)]
                                 (ec-fn "t" 3000)))
                             (catch Exception e
                               {:success false :error (.getMessage e)}))

@@ -8,7 +8,8 @@
    
    SOLID: Single responsibility - promotion scoring only.
    DDD: Pure domain functions, no side effects."
-  (:require [clojure.string :as str]))
+  (:require [clojure.string :as str]
+            [hive-mcp.extensions.registry :as ext]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -22,17 +23,14 @@
 
 (def recall-weights
   "Weights for different recall contexts.
-   Higher = more meaningful signal for promotion.
-
-   Includes behavioral signals from signature.clj that track
-   actual task outcomes after memory recall."
+   Higher = more meaningful signal for promotion."
   {:catchup-structural 0.1 ; Always loaded at catchup - noise
    :wrap-structural 0.1 ; Always checked at wrap - noise
    :explicit-reference 1.0 ; LLM explicitly cited in reasoning
    :cross-session 2.0 ; Referenced from different session
    :cross-project 3.0 ; Referenced from different project
    :user-feedback 5.0 ; Human marked as helpful
-   ;; Behavioral signals (from signature.clj outcome tracking)
+   ;; Behavioral signals (outcome tracking)
    :behavioral-success 2.0 ; Task completed successfully after recall
    :behavioral-failure 0.0 ; Task failed after recall (no penalty, just no boost)
    :behavioral-correction -2.0}) ; User had to correct agent work (demote signal)
@@ -104,7 +102,7 @@
   "Determine if a memory entry should be promoted.
 
    entry: {:id :duration :recalls [...] :tags [...]}
-   opts: {:behavioral-adjustment float  - Optional adjustment from signature tracking
+   opts: {:behavioral-adjustment float  - Optional adjustment from behavioral tracking
           :cross-pollination-boost float - Optional boost from cross-project access (W5)}
 
    Returns: {:promote? bool :current-score float :threshold float :next-duration keyword}"
@@ -137,7 +135,7 @@
    - Entry has been recalled but consistently led to failures
 
    entry: {:id :duration :recalls [...]}
-   behavioral-adjustment: float from signature.clj compute-promotion-adjustment
+   behavioral-adjustment: float from behavioral outcome tracking
 
    Returns: {:demote? bool :reason keyword :prev-duration keyword}"
   [{:keys [duration] :as _entry} behavioral-adjustment]
@@ -316,30 +314,27 @@
   (count (extract-xpoll-projects entry)))
 
 (defn cross-pollination-score
-  "Delegates to hive-knowledge (proprietary). Returns 0.0 when not available.
-   Calculates promotion score contribution from cross-pollination."
+  "Calculates promotion score contribution from cross-pollination.
+   Delegates to extension if available. Returns 0.0 otherwise."
   [entry]
-  (if-let [f (try (requiring-resolve 'hive-knowledge.cross-pollination/cross-pollination-score)
-                  (catch Exception _ nil))]
+  (if-let [f (ext/get-extension :gx/score)]
     (f entry)
     0.0))
 
 (defn cross-pollination-candidate?
-  "Delegates to hive-knowledge (proprietary). Returns false when not available.
-   Predicate: is this entry eligible for cross-pollination auto-promotion?"
+  "Predicate: is this entry eligible for cross-pollination auto-promotion?
+   Delegates to extension if available. Returns false otherwise."
   ([entry] (cross-pollination-candidate? entry {}))
   ([entry opts]
-   (if-let [f (try (requiring-resolve 'hive-knowledge.cross-pollination/cross-pollination-candidate?)
-                   (catch Exception _ nil))]
+   (if-let [f (ext/get-extension :gx/eligible?)]
      (f entry opts)
      false)))
 
 (defn cross-pollination-promotion-tiers
-  "Delegates to hive-knowledge (proprietary). Returns 0 when not available.
-   Calculates how many tiers to promote based on cross-pollination breadth."
+  "Calculates how many tiers to promote based on cross-pollination breadth.
+   Delegates to extension if available. Returns 0 otherwise."
   [entry]
-  (if-let [f (try (requiring-resolve 'hive-knowledge.cross-pollination/cross-pollination-promotion-tiers)
-                  (catch Exception _ nil))]
+  (if-let [f (ext/get-extension :gx/tiers)]
     (f entry)
     0))
 

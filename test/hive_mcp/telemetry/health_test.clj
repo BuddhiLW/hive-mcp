@@ -11,7 +11,7 @@
             [hive-mcp.telemetry.health :as health]
             [hive-mcp.telemetry.prometheus :as prom]
             [hive-mcp.swarm.datascript :as ds]
-            [hive-mcp.channel :as channel]
+            [hive-mcp.channel.core :as channel]
             [taoensso.timbre :as log]))
 
 ;;; =============================================================================

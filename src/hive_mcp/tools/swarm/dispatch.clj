@@ -13,7 +13,7 @@
    CLARITY: I - Inputs validated, conflicts checked before dispatch.
    CLARITY: A - Architectural context via recent changes injection."
   (:require [hive-mcp.tools.swarm.core :as core]
-            [hive-mcp.emacsclient :as ec]
+            [hive-mcp.emacs.client :as ec]
             [hive-mcp.validation :as v]
             [hive-mcp.swarm.coordinator :as coord]
             [hive-mcp.swarm.datascript.queries :as queries]

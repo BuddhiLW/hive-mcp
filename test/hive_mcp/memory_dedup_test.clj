@@ -11,7 +11,7 @@
    following the TDD approach used throughout this project."
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.string :as str]
-            [hive-mcp.elisp :as el]))
+            [hive-mcp.emacs.elisp :as el]))
 
 ;; =============================================================================
 ;; Test Helpers

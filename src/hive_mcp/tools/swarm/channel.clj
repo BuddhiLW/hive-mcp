@@ -14,7 +14,6 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-
 ;; ============================================================
 ;; Event Journal (Push-based task tracking)
 ;; ============================================================
@@ -34,7 +33,7 @@
   "Attempt to require the channel namespace. Returns true if available."
   []
   (try
-    (require 'hive-mcp.channel)
+    (require 'hive-mcp.channel.core)
     true
     (catch Exception _
       false)))
@@ -44,7 +43,7 @@
    Returns the subscription channel or nil."
   [event-type]
   (when (try-require-channel)
-    (when-let [subscribe-fn (resolve 'hive-mcp.channel/subscribe!)]
+    (when-let [subscribe-fn (resolve 'hive-mcp.channel.core/subscribe!)]
       (subscribe-fn event-type))))
 
 ;; ============================================================
@@ -147,3 +146,10 @@
   "Clear all entries from the event journal."
   []
   (reset! event-journal {}))
+
+(defn record-nats-event!
+  "Record event from NATS into the event journal.
+   Same atom that check-event-journal reads from.
+   Called by hive-mcp.nats.bridge to populate journal for headless drones."
+  [task-id event-data]
+  (swap! event-journal assoc (str task-id) event-data))

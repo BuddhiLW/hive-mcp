@@ -137,9 +137,28 @@
    "todo"       "todo"
    "done"       "done"})
 
+(def ^:private priority-order
+  "Priority ranking for sort: lower number = higher priority."
+  {"high" 0 "priority-high" 0
+   "medium" 1 "priority-medium" 1
+   "low" 2 "priority-low" 2})
+
+(defn- sort-by-priority-then-created
+  "Sort tasks by priority DESC (high > medium > low), then creation-date ASC.
+   Uses :id for creation ordering (IDs encode timestamp, e.g. '20260207...')."
+  [tasks]
+  (sort (fn [a b]
+          (let [pa (get priority-order (or (:priority a) "medium") 1)
+                pb (get priority-order (or (:priority b) "medium") 1)]
+            (if (= pa pb)
+              (compare (str (:id a)) (str (:id b)))
+              (compare pa pb))))
+        tasks))
+
 (defn handle-mem-kanban-list-slim
   "List kanban tasks with minimal data for token optimization.
    Returns only id, title, status, priority per entry (~10x fewer tokens).
+   Results sorted by priority DESC (high > medium > low), then creation-date ASC.
    When directory is provided, scopes query to that project.
 
    HCR Wave 5: Automatically aggregates descendant project tasks when
@@ -179,8 +198,10 @@
               ;; Filter to only kanban entries
               kanban-entries (filter kanban-entry? tag-filtered)
               ;; Convert to slim format (with project label when multi-project)
-              slim-entries (mapv #(task->slim % multi-project?) kanban-entries)]
-          {:type "text" :text (json/write-str slim-entries)})))
+              slim-entries (mapv #(task->slim % multi-project?) kanban-entries)
+              ;; Sort by priority DESC, then creation-date ASC
+              sorted-entries (sort-by-priority-then-created slim-entries)]
+          {:type "text" :text (json/write-str (vec sorted-entries))})))
     (catch Exception e
       (log/error e "kanban-list-slim failed")
       {:type "text" :text (str "Error: " (.getMessage e)) :isError true})))

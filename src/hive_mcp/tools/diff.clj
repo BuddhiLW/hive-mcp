@@ -1,7 +1,7 @@
 (ns hive-mcp.tools.diff
   "Diff-based workflow tools for drone agents — facade module.
 
-   This namespace re-exports all public vars from the diff sub-modules
+   This namespace re-exports key public vars from the diff sub-modules
    for backward compatibility. New code should require specific sub-modules:
 
    - hive-mcp.tools.diff.state       — atoms, TDD status
@@ -23,9 +23,7 @@
    - Tier 2: get_diff_details -> formatted hunks (~500 tokens/diff)
    - Tier 3: apply_diff -> uses stored full content internally"
   (:require [hive-mcp.tools.diff.state :as state]
-            [hive-mcp.tools.diff.compute :as compute]
             [hive-mcp.tools.diff.validation :as validation]
-            [hive-mcp.tools.diff.auto-approve :as auto-approve]
             [hive-mcp.tools.diff.handlers :as handlers]
             [hive-mcp.tools.diff.wave :as wave]
             [hive-mcp.tools.diff.batch :as batch]))
@@ -41,61 +39,9 @@
   "Atom storing pending diff proposals. Map of diff-id -> diff-data."
   state/pending-diffs)
 
-(def auto-approve-rules
-  "Atom storing current auto-approve rules."
-  state/auto-approve-rules)
-
-(def default-auto-approve-rules
-  "Default auto-approve rules configuration."
-  state/default-auto-approve-rules)
-
-(def clear-pending-diffs!
-  "Clear pending diffs. GUARDED - no-op if coordinator running."
-  state/clear-pending-diffs!)
-
-(def update-diff-tdd-status!
-  "Update a diff's TDD status after drone runs tests/lint."
-  state/update-diff-tdd-status!)
-
-;; =============================================================================
-;; Re-exports: Compute
-;; =============================================================================
-
-(def generate-diff-id
-  "Generate a unique diff ID."
-  compute/generate-diff-id)
-
-(def compute-unified-diff
-  "DEPRECATED: Use compute-hunks. Compute a unified diff."
-  compute/compute-unified-diff)
-
-(def compute-hunks
-  "Compute git-style hunks using java-diff-utils."
-  compute/compute-hunks)
-
-(def compute-metrics
-  "Compute diff metrics from hunks."
-  compute/compute-metrics)
-
-(def format-hunk-as-unified
-  "Format a single hunk as unified diff text."
-  compute/format-hunk-as-unified)
-
-(def format-hunks-as-unified
-  "Format hunks as human-readable unified diff string."
-  compute/format-hunks-as-unified)
-
-(def create-diff-proposal
-  "Create a diff proposal map from input parameters."
-  compute/create-diff-proposal)
-
 ;; =============================================================================
 ;; Re-exports: Validation
 ;; =============================================================================
-
-(def validate-propose-params
-  "Validate parameters for propose_diff."
-  validation/validate-propose-params)
 
 (def get-project-root
   "Get project root from Emacs or fall back to cwd."
@@ -108,22 +54,6 @@
 (def validate-diff-path
   "Validate a file path for propose_diff."
   validation/validate-diff-path)
-
-;; =============================================================================
-;; Re-exports: Auto-Approve
-;; =============================================================================
-
-(def auto-approve-diff?
-  "Check if a diff meets auto-approve criteria."
-  auto-approve/auto-approve-diff?)
-
-(def get-auto-approve-rules
-  "Get current auto-approve rules with descriptions."
-  auto-approve/get-auto-approve-rules)
-
-(def safe-to-auto-approve?
-  "Check if diff meets auto-approve criteria (alias)."
-  auto-approve/safe-to-auto-approve?)
 
 ;; =============================================================================
 ;; Re-exports: Core Handlers
@@ -149,33 +79,9 @@
   "Handle get_diff_details tool call."
   handlers/handle-get-diff-details)
 
-(def handle-get-auto-approve-rules
-  "Handle get_auto_approve_rules tool call."
-  handlers/handle-get-auto-approve-rules)
-
 ;; =============================================================================
 ;; Re-exports: Wave Operations
 ;; =============================================================================
-
-(def get-wave-diffs
-  "Get all pending diffs for a specific wave-id."
-  wave/get-wave-diffs)
-
-(def review-wave-diffs
-  "Get a summary of all diffs proposed by a wave."
-  wave/review-wave-diffs)
-
-(def approve-wave-diffs!
-  "Approve and apply all diffs from a wave."
-  wave/approve-wave-diffs!)
-
-(def reject-wave-diffs!
-  "Reject all diffs from a wave."
-  wave/reject-wave-diffs!)
-
-(def auto-approve-wave-diffs!
-  "Auto-approve diffs meeting criteria, flag others for review."
-  wave/auto-approve-wave-diffs!)
 
 (def handle-review-wave-diffs
   "Handle review_wave_diffs tool call."
@@ -192,26 +98,6 @@
 (def handle-auto-approve-wave-diffs
   "Handle auto_approve_wave_diffs tool call."
   wave/handle-auto-approve-wave-diffs)
-
-;; =============================================================================
-;; Re-exports: Batch Operations
-;; =============================================================================
-
-(def batch-review-diffs
-  "Get all pending diffs from multiple drones for batch review."
-  batch/batch-review-diffs)
-
-(def approve-safe-diffs!
-  "Auto-approve diffs from multiple drones that meet criteria."
-  batch/approve-safe-diffs!)
-
-(def handle-batch-review-diffs
-  "Handle batch_review_diffs tool call."
-  batch/handle-batch-review-diffs)
-
-(def handle-approve-safe-diffs
-  "Handle approve_safe_diffs tool call."
-  batch/handle-approve-safe-diffs)
 
 ;; =============================================================================
 ;; Tool Definitions
@@ -314,7 +200,7 @@
                                             :items {:type "string"}
                                             :description "Optional: drone IDs to filter (omit for all pending diffs)"}}
                   :required []}
-    :handler handle-batch-review-diffs}
+    :handler batch/handle-batch-review-diffs}
 
    {:name "approve_safe_diffs"
     :description "Auto-approve diffs from multiple drones that meet safety criteria. Diffs not meeting criteria are flagged for manual review."
@@ -325,11 +211,11 @@
                                "dry_run" {:type "boolean"
                                           :description "If true, only report what would be approved without actually applying"}}
                   :required []}
-    :handler handle-approve-safe-diffs}
+    :handler batch/handle-approve-safe-diffs}
 
    {:name "get_auto_approve_rules"
     :description "Get current auto-approve rules configuration. Shows max-lines-changed, no-deletions-only, require-description, and allowed-path-patterns."
     :inputSchema {:type "object"
                   :properties {}
                   :required []}
-    :handler handle-get-auto-approve-rules}])
+    :handler handlers/handle-get-auto-approve-rules}])

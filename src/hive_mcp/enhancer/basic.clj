@@ -3,8 +3,8 @@
 
    CLARITY-L: Layers stay pure - this is the open-source fallback.
 
-   This implementation provides safe defaults when the proprietary
-   hive-knowledge library is not available. All methods return
+   This implementation provides safe defaults when no enhanced
+   extension is available. All methods return
    neutral/empty values that allow the system to function without
    AI-powered enhancement."
   (:require [hive-mcp.enhancer.protocol :as proto]))
@@ -45,8 +45,8 @@
 (defn create-basic-enhancer
   "Create a new BasicEnhancer instance.
 
-   This is the fallback enhancer used when hive-knowledge
-   is not available on the classpath.
+   This is the fallback enhancer used when no enhanced
+   extension is available on the classpath.
 
    Returns:
      BasicEnhancer record implementing IKnowledgeEnhancer"

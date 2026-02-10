@@ -190,7 +190,7 @@
       (mcp-error (str "context-stats failed: " (.getMessage e))))))
 
 ;; =============================================================================
-;; Context Reconstruct Handler - KG-compressed context reconstruction
+;; Context Reconstruct Handler - compressed context reconstruction
 ;; =============================================================================
 
 (defn handle-context-reconstruct
@@ -297,7 +297,7 @@
   "MCP tool definition for consolidated session command."
   {:name "session"
    :consolidated true
-   :description "Session lifecycle: complete (commit + kanban + wrap + shout), wrap (crystallize only without commit), whoami (get agent identity context), catchup (restore session context from memory). Context store: context-put (store data, get ID), context-get (retrieve by ID), context-query (search by tags), context-evict (remove by ID), context-stats (store metrics), context-reconstruct (KG-compressed reconstruction from refs). Use command='help' to list all."
+   :description "Session lifecycle: complete (commit + kanban + wrap + shout), wrap (crystallize only without commit), whoami (get agent identity context), catchup (restore session context from memory). Context store: context-put (store data, get ID), context-get (retrieve by ID), context-query (search by tags), context-evict (remove by ID), context-stats (store metrics), context-reconstruct (compressed reconstruction from refs). Use command='help' to list all."
    :inputSchema {:type "object"
                  :properties {"command" {:type "string"
                                          :enum ["complete" "wrap" "whoami" "catchup"

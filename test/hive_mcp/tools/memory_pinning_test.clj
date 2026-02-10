@@ -10,7 +10,7 @@
             [clojure.data.json :as json]
             [hive-mcp.tools.memory :as memory]
             [hive-mcp.chroma :as chroma]
-            [hive-mcp.emacsclient :as ec]))
+            [hive-mcp.emacs.client :as ec]))
 
 ;; =============================================================================
 ;; Test Helpers

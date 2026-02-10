@@ -15,7 +15,7 @@
             [hive-mcp.tools.memory.search :as search]
             [hive-mcp.plan.tool :as plan-tool]
             [hive-mcp.chroma :as chroma]
-            [hive-mcp.plans :as plans]))
+            [hive-mcp.plan.plans :as plans]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later

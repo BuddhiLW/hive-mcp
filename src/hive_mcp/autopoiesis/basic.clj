@@ -1,8 +1,8 @@
 (ns hive-mcp.autopoiesis.basic
   "BasicAutopoiesis - No-op fallback implementation.
    
-   This implementation is used when the proprietary hive-knowledge
-   library is not available. It provides safe, neutral responses
+   This implementation is used when no enhanced extension
+   is available. It provides safe, neutral responses
    for all IAutopoiesis protocol methods.
    
    CLARITY-L: Layers stay pure - this is the default adapter.
@@ -25,7 +25,7 @@
   (observe [_this _event]
     ;; No-op: observations are not recorded without an autopoiesis engine
     {:observed false
-     :reason "No autopoiesis engine configured. Install hive-knowledge for observation tracking."})
+     :reason "No autopoiesis engine configured. Install enhanced extension for observation tracking."})
 
   (trust? [_this _entry]
     ;; Neutral trust: without an engine, we can't compute trust signals
@@ -42,7 +42,7 @@
     {:learned false
      :model-updates 0
      :new-patterns 0
-     :reason "No autopoiesis engine configured. Install hive-knowledge for learning capabilities."})
+     :reason "No autopoiesis engine configured. Install enhanced extension for learning capabilities."})
 
   (decay [_this]
     ;; No decay: without an engine, we don't modify knowledge
@@ -73,7 +73,7 @@
 (defn init-basic!
   "Initialize the autopoiesis system with the basic no-op implementation.
    
-   Call this during system startup if hive-knowledge is not available.
+   Call this during system startup if no enhanced extension is available.
    This ensures the system can operate (with degraded capabilities)
    without the advanced autopoiesis features.
    

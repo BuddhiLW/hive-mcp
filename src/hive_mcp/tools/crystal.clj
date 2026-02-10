@@ -5,7 +5,7 @@
 
    SOLID: Single Responsibility - crystal/wrap logic in dedicated module.
    DDD: Application service layer exposing crystal domain functionality."
-  (:require [hive-mcp.emacsclient :as ec]
+  (:require [hive-mcp.emacs.client :as ec]
             [hive-mcp.crystal.hooks :as crystal-hooks]
             [hive-mcp.swarm.datascript :as ds]
             [hive-mcp.tools.memory.scope :as scope]

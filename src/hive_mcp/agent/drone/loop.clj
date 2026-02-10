@@ -1,23 +1,23 @@
 (ns hive-mcp.agent.drone.loop
-  "In-process agentic drone loop — AGPL implementation.
+  "In-process agentic drone loop.
 
    Provides a think-act-observe loop for drone task execution:
-   - Each turn: reconstruct context from session KG → call LLM → execute tools → record observations
-   - Session KG (Datalevin) compresses multi-turn context (~200-300 tokens vs ~5000+ raw history)
+   - Each turn: reconstruct compressed context → call LLM → execute tools → record observations
+   - Context compression reduces multi-turn token usage vs raw message history
    - Termination heuristics: max turns, text-only completion, failure threshold, completion language
    - Result evaluation: structural quality assessment from tool outcomes
 
-   Two-tier KG context compression:
-   - Primary: hive-knowledge (proprietary, ~25x compression) via kg-session namespace
-   - Fallback: AGPL session-kg implementation (Datalevin, ~5-10x structural compression)
+   Two-tier context compression:
+   - Primary: enhanced extension via extension registry
+   - Fallback: built-in session store (structural compression)
 
-   When hive-knowledge IS on classpath, proprietary implementations override:
-   - NLP-based completion language detection
-   - Relevance-scored tool selection
-   - Semantic context compression (~25x ratio)
-   - Goal satisfaction analysis via session KG
+   When extensions are registered, enhanced implementations override:
+   - Completion language detection
+   - Tool selection heuristics
+   - Context compression
+   - Goal satisfaction analysis
 
-   AGPL layer provides functional implementations using structural heuristics.
+   Built-in layer provides functional implementations using structural heuristics.
 
    CLARITY-Y: Graceful degradation — nil backends produce safe noop results.
    CLARITY-T: All loop turns logged with drone-id, turn, token usage."
@@ -27,8 +27,9 @@
             [hive-mcp.agent.registry :as registry]
             [hive-mcp.agent.executor :as executor]
             [hive-mcp.agent.context :as ctx]
+            [hive-mcp.extensions.registry :as ext]
             [hive-mcp.protocols.kg]
-            [hive-mcp.channel :as channel]
+            [hive-mcp.channel.core :as channel]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
 
@@ -37,25 +38,16 @@
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 ;; =============================================================================
-;; Dynamic Resolution Helpers (hive-knowledge override layer)
+;; Extension Helpers
 ;; =============================================================================
 
-(defn- try-resolve-hk
-  "Attempt to resolve a symbol from hive-knowledge.agentic-loop.
-   Returns the var if available, nil otherwise."
-  [sym-name]
-  (try
-    (requiring-resolve (symbol "hive-knowledge.agentic-loop" sym-name))
-    (catch Exception _
-      nil)))
-
 ;; =============================================================================
-;; Completion Language Detection (AGPL — structural heuristics)
+;; Completion Language Detection
 ;; =============================================================================
 
 (def ^:private completion-patterns
   "Regex patterns that indicate the LLM considers its task complete.
-   AGPL: Simple keyword matching. hive-knowledge overrides with NLP scoring."
+   Built-in: Simple keyword matching. Extension may override with NLP scoring."
   [#"(?i)task\s+(is\s+)?complet(e|ed)"
    #"(?i)i('ve|\s+have)\s+(successfully\s+)?(complet|finish|done)"
    #"(?i)all\s+(changes|modifications|updates)\s+(have\s+been\s+)?(made|applied|complet)"
@@ -73,21 +65,21 @@
     (boolean (some #(re-find % text) completion-patterns))))
 
 ;; =============================================================================
-;; Termination Logic — AGPL implementation
+;; Termination Logic
 ;; =============================================================================
 
 (defn should-terminate?
   "Determine if the agentic loop should stop.
 
-   AGPL implementation evaluates (in priority order):
+   Built-in implementation evaluates (in priority order):
    1. Max turns reached
    2. Last response was text-only (no tool calls = LLM considers task done)
    3. Consecutive failures exceed threshold (3)
    4. Completion language detected in last text response
    5. No progress: last 3 turns all failed
 
-   When hive-knowledge is on classpath, overrides with proprietary implementation
-   (NLP scoring, goal satisfaction via session KG, weighted failure scoring).
+   When enhanced extension is registered, overrides with enhanced implementation
+   (weighted scoring, goal satisfaction analysis).
 
    Arguments:
      state - Map with :turn, :steps, :consecutive-failures, :last-response-type, :last-text
@@ -96,10 +88,10 @@
    Returns:
      {:terminate? boolean :reason string}"
   [state & [opts]]
-  ;; Try hive-knowledge override first
-  (if-let [hk-fn (try-resolve-hk "should-terminate?")]
-    (hk-fn state opts)
-    ;; AGPL implementation: structural termination heuristics
+  ;; Try enhanced extension first
+  (if-let [ext-fn (ext/get-extension :al/terminate?)]
+    (ext-fn state opts)
+    ;; Built-in: structural termination heuristics
     (let [{:keys [turn steps consecutive-failures last-response-type last-text]} state
           max-turns (or (:max-turns opts) 10)
           failure-threshold 3]
@@ -134,19 +126,19 @@
         {:terminate? false :reason "Continuing"}))))
 
 ;; =============================================================================
-;; Result Evaluation — AGPL implementation
+;; Result Evaluation
 ;; =============================================================================
 
 (defn evaluate-result
   "Evaluate whether a tool result moves toward the goal.
 
-   AGPL implementation: structural quality assessment based on tool outcome.
+   Built-in implementation: structural quality assessment based on tool outcome.
    - Success → :good, continue
    - Failure with retryable error → :bad, continue (may retry)
    - Failure with fatal error → :bad, stop
 
-   When hive-knowledge is on classpath, overrides with proprietary implementation
-   (relevance scoring against session KG observation graph).
+   When enhanced extension is registered, overrides with enhanced implementation
+   (relevance scoring against observation history).
 
    Arguments:
      result  - Tool execution result map {:success :result :error}
@@ -156,10 +148,10 @@
    Returns:
      Map with :quality (:good/:bad/:unknown), :continue? boolean, :reason string"
   [result goal history]
-  ;; Try hive-knowledge override first
-  (if-let [hk-fn (try-resolve-hk "evaluate-result")]
-    (hk-fn result goal history)
-    ;; AGPL implementation: structural quality assessment
+  ;; Try enhanced extension first
+  (if-let [ext-fn (ext/get-extension :al/evaluate)]
+    (ext-fn result goal history)
+    ;; Built-in: structural quality assessment
     (let [success? (:success result)
           error-msg (str (:error result))
           ;; Retryable errors: file not found (may need to search first), permission denied
@@ -185,30 +177,30 @@
         {:quality :bad :continue? true :reason (str "Error: " error-msg)}))))
 
 ;; =============================================================================
-;; Tool Selection — AGPL implementation
+;; Tool Selection
 ;; =============================================================================
 
 (defn select-next-tool
   "Select the next tool to invoke based on current state and observations.
 
-   AGPL implementation: returns nil (let LLM decide via function calling).
+   Built-in implementation: returns nil (let LLM decide via function calling).
    This is the correct default — the LLM's tool selection is usually good enough.
 
-   When hive-knowledge is on classpath, overrides with proprietary implementation
+   When enhanced extension is registered, overrides with enhanced implementation
    (observation pattern analysis, task decomposition, proactive tool sequences).
 
    Arguments:
-     observations     - Vector of observation maps from session KG
+     observations     - Vector of observation maps from session store
      available-tools  - Set of tool name strings
      task-context     - Map with :task, :files, :cwd
 
    Returns:
      Tool selection map or nil (nil = let LLM choose)."
   [observations available-tools task-context]
-  ;; Try hive-knowledge override first
-  (if-let [hk-fn (try-resolve-hk "select-next-tool")]
-    (hk-fn observations available-tools task-context)
-    ;; AGPL: Let LLM decide
+  ;; Try enhanced extension first
+  (if-let [ext-fn (ext/get-extension :al/next-tool)]
+    (ext-fn observations available-tools task-context)
+    ;; Built-in: Let LLM decide
     nil))
 
 ;; =============================================================================
@@ -376,21 +368,20 @@
                           :facts 0}}})))
 
 ;; =============================================================================
-;; Core Agentic Loop — AGPL implementation
+;; Core Agentic Loop
 ;; =============================================================================
 
 (defn run-agentic-loop
   "Run the think-act-observe agentic loop for a drone task.
 
-   AGPL implementation provides:
-   - Multi-turn agent loop with KG-compressed context reconstruction
-   - Each turn: reconstruct context from KG → call LLM → execute tools → record observations
-   - Session KG compression reduces context size vs raw message history
+   Built-in implementation provides:
+   - Multi-turn agent loop with compressed context reconstruction
+   - Each turn: reconstruct context → call LLM → execute tools → record observations
+   - Context compression reduces token usage vs raw message history
    - Termination via should-terminate? heuristics
    - Token tracking across all LLM calls
 
-   When hive-knowledge IS on classpath, overrides with proprietary implementation
-   (semantic compression, relevance scoring, ~25x compression ratio).
+   When enhanced extension is registered, overrides with enhanced implementation.
 
    Arguments:
      task-spec - TaskSpec record or map with :task, :files, :cwd
@@ -414,13 +405,13 @@
       :kg-stats  {:observations N :reasoning N :facts N}}"
   [task-spec ctx & [opts]]
   (let [drone-id (or (:drone-id ctx) "unknown")]
-    ;; Try hive-knowledge override first
-    (if-let [hk-fn (try-resolve-hk "run-agentic-loop")]
+    ;; Try enhanced extension first
+    (if-let [ext-fn (ext/get-extension :al/run)]
       (do
-        (log/info "Delegating to hive-knowledge agentic loop" {:drone-id drone-id})
-        (hk-fn task-spec ctx opts))
+        (log/info "Delegating to enhanced agentic loop" {:drone-id drone-id})
+        (ext-fn task-spec ctx opts))
 
-      ;; AGPL implementation: structural agentic loop
+      ;; Built-in: structural agentic loop
       (let [{:keys [max-turns backend tools permissions trace? agent-id]
              :or {max-turns 10
                   permissions #{}
@@ -429,22 +420,21 @@
             session-store (:kg-store ctx)
             task (:task task-spec)
             files (or (:files task-spec) [])
-            ;; Two-tier KG: try hive-knowledge compression session (L3+)
-            ;; Returns nil when hive-knowledge not on classpath (noop fallback)
-            hk-session (when (kg-session/compression-available?)
-                         (try
-                           (kg-session/create-session-kg! drone-id task)
-                           (catch Exception e
-                             (log/debug "hive-knowledge session creation failed (non-fatal)"
-                                        {:error (.getMessage e)})
-                             nil)))]
+            ;; Try enhanced compression session (nil when extension not registered)
+            enhanced-session (when (kg-session/compression-available?)
+                               (try
+                                 (kg-session/create-session-kg! drone-id task)
+                                 (catch Exception e
+                                   (log/debug "Enhanced session creation failed (non-fatal)"
+                                              {:error (.getMessage e)})
+                                   nil)))]
 
-        (log/info "Starting AGPL agentic loop"
+        (log/info "Starting agentic loop"
                   {:drone-id drone-id
                    :max-turns max-turns
                    :has-backend? (some? backend)
-                   :has-session-kg? (some? session-store)
-                   :has-hk-session? (some? hk-session)
+                   :has-session-store? (some? session-store)
+                   :has-enhanced? (some? enhanced-session)
                    :files (count files)})
 
         ;; Validate backend
@@ -470,7 +460,7 @@
                         (when trace?
                           (channel/emit-event! event-type (assoc data :agent-id agent-id))))]
 
-            ;; Seed session KG from global context
+            ;; Seed session store from global context
             (when session-store
               (try
                 (when (hive-mcp.protocols.kg/store-set?)
@@ -479,7 +469,7 @@
                    (hive-mcp.protocols.kg/get-store)
                    {:task task :files files :cwd (:cwd task-spec)}))
                 (catch Exception e
-                  (log/debug "Session KG seeding failed (non-fatal)" {:error (.getMessage e)}))))
+                  (log/debug "Session seeding failed (non-fatal)" {:error (.getMessage e)}))))
 
             (emit! :agentic-loop-started {:drone-id drone-id :max-turns max-turns :model model-name})
 
@@ -521,23 +511,23 @@
                                                     :turns turn
                                                     :tool-calls tool-calls-made})
 
-                    ;; Two-tier KG cleanup: promote hk-session nodes to global, then close
-                    (when hk-session
+                    ;; Cleanup: promote enhanced session nodes, then close
+                    (when enhanced-session
                       (try
                         (when (and (= status :completed)
                                    (hive-mcp.protocols.kg/store-set?))
                           (let [promo-result (kg-session/promote-to-global!
-                                              hk-session
+                                              enhanced-session
                                               (hive-mcp.protocols.kg/get-store))]
-                            (log/debug "hk-session promotion result" promo-result)))
+                            (log/debug "Enhanced session promotion result" promo-result)))
                         (catch Exception e
-                          (log/debug "hk-session promotion failed (non-fatal)"
+                          (log/debug "Enhanced session promotion failed (non-fatal)"
                                      {:error (.getMessage e)})))
                       (try
-                        (let [hk-stats (kg-session/close-session! hk-session)]
-                          (log/debug "hk-session closed" hk-stats))
+                        (let [enhanced-stats (kg-session/close-session! enhanced-session)]
+                          (log/debug "Enhanced session closed" enhanced-stats))
                         (catch Exception e
-                          (log/debug "hk-session close failed (non-fatal)"
+                          (log/debug "Enhanced session close failed (non-fatal)"
                                      {:error (.getMessage e)}))))
 
                     {:status status
@@ -552,8 +542,8 @@
                                 :facts 0}})
 
                   ;; === CONTINUE — one turn of think-act-observe ===
-                  (let [;; THINK: Reconstruct context from session KG
-                        ;; Two-tier: hk-session (proprietary, ~25x) → session-kg (AGPL, ~5-10x) → raw task
+                  (let [;; THINK: Reconstruct compressed context
+                        ;; Two-tier: enhanced → built-in → raw task
                         context-prompt (if (and session-store (pos? turn))
                                          (session-kg/reconstruct-context session-store task turn)
                                          task)
@@ -562,18 +552,16 @@
                         base-messages [{:role "system" :content system-prompt}
                                        {:role "user" :content context-prompt}]
 
-                        ;; Apply hive-knowledge message compression if available
-                        ;; When hk-session exists, build-compressed-messages replaces raw history
-                        ;; with KG-reconstructed context (~25x compression).
-                        ;; When hk-session is nil, returns base-messages unchanged (noop).
-                        messages (if (and hk-session (pos? turn))
+                        ;; Apply enhanced message compression if available
+                        ;; When enhanced session is nil, returns base-messages unchanged (noop).
+                        messages (if (and enhanced-session (pos? turn))
                                    (kg-session/build-compressed-messages
-                                    hk-session system-prompt base-messages base-messages)
+                                    enhanced-session system-prompt base-messages base-messages)
                                    base-messages)
 
                         _ (log/debug "Agentic loop turn" {:drone-id drone-id :turn turn
                                                           :context-size (count (str messages))
-                                                          :hk-compressed? (and (some? hk-session) (pos? turn))})
+                                                          :enhanced? (and (some? enhanced-session) (pos? turn))})
                         _ (emit! :agentic-loop-turn {:drone-id drone-id :turn turn :phase :calling-llm})
 
                         ;; Execute turn (try/catch inside, returns data map)
@@ -592,14 +580,13 @@
                                       :permissions permissions
                                       :emit! emit!})]
 
-                    ;; Compress turn into hk-session KG (when available)
-                    ;; This extracts meaning from messages and stores as KG nodes
-                    ;; for more efficient context reconstruction next turn.
-                    (when (and hk-session (:recur? turn-result))
+                    ;; Compress turn into enhanced session (when available)
+                    ;; Extracts meaning from messages for context reconstruction next turn.
+                    (when (and enhanced-session (:recur? turn-result))
                       (try
-                        (kg-session/compress-turn! hk-session messages)
+                        (kg-session/compress-turn! enhanced-session messages)
                         (catch Exception e
-                          (log/debug "hk-session compress-turn! failed (non-fatal)"
+                          (log/debug "Enhanced session compress-turn! failed (non-fatal)"
                                      {:turn turn :error (.getMessage e)}))))
 
                     ;; Recur or return based on turn-result
@@ -613,10 +600,10 @@
                              (:last-text turn-result)
                              (:obs-count turn-result)
                              (:reason-count turn-result))
-                      ;; Terminal turn — also clean up hk-session
+                      ;; Terminal turn — also clean up enhanced session
                       (do
-                        (when hk-session
+                        (when enhanced-session
                           (try
-                            (kg-session/close-session! hk-session)
+                            (kg-session/close-session! enhanced-session)
                             (catch Exception _ nil)))
                         (:final turn-result)))))))))))))

@@ -1,9 +1,9 @@
 (ns hive-mcp.agent.drone.kg-session-test
-  "Tests for KG-compressed context reconstruction stubs.
+  "Tests for compressed context reconstruction stubs.
 
-   Tests the noop fallback behavior when hive-knowledge is not on classpath.
-   When hive-knowledge IS available, the real implementation is tested
-   in hive-knowledge's own test suite."
+   Tests the noop fallback behavior when enhanced extension is not on classpath.
+   When enhanced extension IS available, the real implementation is tested
+   in the extension's own test suite."
   (:require [clojure.test :refer [deftest testing is are]]
             [hive-mcp.agent.drone.kg-session :as kg-session]))
 
@@ -46,15 +46,15 @@
     (is (= 5 (count kg-session/node-types)))))
 
 ;; =============================================================================
-;; Noop Fallback Tests (when hive-knowledge is NOT on classpath)
+;; Noop Fallback Tests (when enhanced extension is NOT on classpath)
 ;; =============================================================================
 
 (deftest compression-available-test
-  (testing "compression-available? returns false without hive-knowledge"
+  (testing "compression-available? returns false without enhanced extension"
     (is (false? (kg-session/compression-available?)))))
 
 (deftest create-session-kg-noop-test
-  (testing "create-session-kg! returns nil when hive-knowledge unavailable"
+  (testing "create-session-kg! returns nil when enhanced extension unavailable"
     (is (nil? (kg-session/create-session-kg! "drone-123" "Fix the bug")))))
 
 (deftest compress-turn-noop-test
@@ -63,9 +63,9 @@
 
   (testing "compress-turn! returns 0 for nil session with tool calls"
     (is (zero? (kg-session/compress-turn! nil
-                [{:role "assistant"
-                  :tool_calls [{:id "c1" :function {:name "read_file" :arguments "{}"}}]}
-                 {:role "tool" :tool_call_id "c1" :name "read_file" :content "file content"}])))))
+                                          [{:role "assistant"
+                                            :tool_calls [{:id "c1" :function {:name "read_file" :arguments "{}"}}]}
+                                           {:role "tool" :tool_call_id "c1" :name "read_file" :content "file content"}])))))
 
 (deftest reconstruct-context-noop-test
   (testing "reconstruct-context returns empty string for nil session"
@@ -133,8 +133,8 @@
 
       ;; Compress returns 0
       (is (zero? (kg-session/compress-turn! session
-                   [{:role "assistant" :tool_calls [{:id "c1" :function {:name "read_file" :arguments "{}"}}]}
-                    {:role "tool" :tool_call_id "c1" :name "read_file" :content "file content"}])))
+                                            [{:role "assistant" :tool_calls [{:id "c1" :function {:name "read_file" :arguments "{}"}}]}
+                                             {:role "tool" :tool_call_id "c1" :name "read_file" :content "file content"}])))
 
       ;; Reconstruct returns empty
       (is (= "" (kg-session/reconstruct-context session)))

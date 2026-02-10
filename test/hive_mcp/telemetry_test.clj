@@ -1,7 +1,7 @@
 (ns hive-mcp.telemetry-test
   "Tests for telemetry functionality."
   (:require [clojure.test :refer :all]
-            [hive-mcp.telemetry :as telemetry]
+            [hive-mcp.telemetry.core :as telemetry]
             [taoensso.timbre :as log]))
 
 (deftest test-with-timing

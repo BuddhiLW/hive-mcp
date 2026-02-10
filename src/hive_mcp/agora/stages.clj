@@ -282,8 +282,8 @@
         prompt (format-research-prompt {:topic topic :role role :position position})]
     ;; Delegate to drone
     (try
-      (require 'hive-mcp.agent)
-      (let [delegate-fn (resolve 'hive-mcp.agent/delegate-drone!)
+      (require 'hive-mcp.agent.core)
+      (let [delegate-fn (resolve 'hive-mcp.agent.core/delegate-drone!)
             result (delegate-fn {:task prompt
                                  :preset "research-drone"
                                  :trace false})]

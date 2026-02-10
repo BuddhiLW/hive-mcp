@@ -9,7 +9,8 @@
    - olympus_arrange: Trigger grid arrangement"
   (:require [clojure.test :refer [deftest testing is are use-fixtures]]
             [hive-mcp.tools.olympus :as olympus-tools]
-            [hive-mcp.swarm.datascript.core :as ds]))
+            [hive-mcp.swarm.datascript.lings :as ds-lings]
+            [hive-mcp.swarm.datascript.connection :as ds-conn]))
 
 ;;; =============================================================================
 ;;; Test Helpers
@@ -19,9 +20,9 @@
   "Register a test ling in DataScript with depth=1 (ling tier).
    Returns the slave-id."
   [slave-id & {:keys [name status] :or {status :idle}}]
-  (ds/add-slave! slave-id {:name (or name slave-id)
-                           :status status
-                           :depth 1})
+  (ds-lings/add-slave! slave-id {:name (or name slave-id)
+                                 :status status
+                                 :depth 1})
   slave-id)
 
 ;;; =============================================================================
@@ -31,7 +32,7 @@
 (defn test-fixture [f]
   ;; Reset DataScript to clean empty state before each test.
   ;; No coordinator guard in test context — reset-conn! works.
-  (ds/reset-conn!)
+  (ds-conn/reset-conn!)
   (f))
 
 (use-fixtures :each test-fixture)

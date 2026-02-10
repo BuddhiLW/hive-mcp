@@ -1,6 +1,6 @@
 (ns hive-mcp.hooks-test
   (:require [clojure.test :refer :all]
-            [hive-mcp.hooks :as hooks]))
+            [hive-mcp.hooks.core :as hooks]))
 
 ;; =============================================================================
 ;; Hook Events Definition Tests
@@ -126,91 +126,3 @@
       (is (thrown? Exception
                    (hooks/trigger-hooks registry :invalid-event {}))))))
 
-;; =============================================================================
-;; List Hooks Tests
-;; =============================================================================
-
-(deftest list-hooks-returns-registered-handlers
-  (testing "list-hooks returns all handlers for an event"
-    (let [registry (hooks/create-registry)
-          handler (fn [_] nil)]
-      (hooks/register-hook registry :task-complete handler)
-      (is (= [handler] (hooks/list-hooks registry :task-complete))))))
-
-(deftest list-hooks-returns-empty-for-no-registrations
-  (testing "list-hooks returns empty vector when no handlers registered"
-    (let [registry (hooks/create-registry)]
-      (is (empty? (hooks/list-hooks registry :task-complete))))))
-
-;; =============================================================================
-;; Unregister Hook Tests
-;; =============================================================================
-
-(deftest unregister-hook-removes-handler
-  (testing "unregister-hook removes a specific handler"
-    (let [registry (hooks/create-registry)
-          handler (fn [_] nil)]
-      (hooks/register-hook registry :task-complete handler)
-      (hooks/unregister-hook registry :task-complete handler)
-      (is (empty? (hooks/list-hooks registry :task-complete))))))
-
-(deftest unregister-hook-leaves-other-handlers
-  (testing "unregister-hook only removes specified handler"
-    (let [registry (hooks/create-registry)
-          handler1 (fn [_] :one)
-          handler2 (fn [_] :two)]
-      (hooks/register-hook registry :task-complete handler1)
-      (hooks/register-hook registry :task-complete handler2)
-      (hooks/unregister-hook registry :task-complete handler1)
-      (is (= [handler2] (hooks/list-hooks registry :task-complete))))))
-
-;; =============================================================================
-;; Default Hooks Tests
-;; =============================================================================
-
-(deftest default-hooks-registered
-  (testing "Registry with defaults has hooks for key events"
-    (let [registry (hooks/create-registry-with-defaults)]
-      (is (seq (hooks/list-hooks registry :task-complete))))))
-
-(deftest default-hooks-map-exists
-  (testing "default-hooks map is defined"
-    (is (map? hooks/default-hooks))))
-
-;; =============================================================================
-;; Hook Event Emission Tests
-;; =============================================================================
-
-(deftest emit-hook-event-creates-valid-payload
-  (testing "emit-hook-event creates properly structured payload"
-    (let [payload (hooks/create-hook-event-payload :task-complete
-                                                   {:task-id "test-123" :result :success})]
-      (is (map? payload))
-      (is (= :task-complete (:event payload)))
-      (is (= "test-123" (get-in payload [:context :task-id]))))))
-
-(deftest emit-hook-event-validates-event-type
-  (testing "emit-hook-event throws on invalid event"
-    (is (thrown? Exception
-                 (hooks/create-hook-event-payload :invalid-event {})))))
-
-;; =============================================================================
-;; Clear Hooks Tests
-;; =============================================================================
-
-(deftest clear-hooks-removes-all-for-event
-  (testing "clear-hooks removes all handlers for an event"
-    (let [registry (hooks/create-registry)]
-      (hooks/register-hook registry :task-complete (fn [_] nil))
-      (hooks/register-hook registry :task-complete (fn [_] nil))
-      (hooks/clear-hooks registry :task-complete)
-      (is (empty? (hooks/list-hooks registry :task-complete))))))
-
-(deftest clear-all-hooks-removes-everything
-  (testing "clear-all-hooks removes all handlers from all events"
-    (let [registry (hooks/create-registry)]
-      (hooks/register-hook registry :task-complete (fn [_] nil))
-      (hooks/register-hook registry :session-end (fn [_] nil))
-      (hooks/clear-all-hooks registry)
-      (is (empty? (hooks/list-hooks registry :task-complete)))
-      (is (empty? (hooks/list-hooks registry :session-end))))))

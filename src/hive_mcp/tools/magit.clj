@@ -6,8 +6,8 @@
    - Stage, commit, push, pull, fetch
    - Feature branch listing for /ship and /ship-pr skills"
   (:require [hive-mcp.tools.core :refer [mcp-success mcp-error]]
-            [hive-mcp.emacsclient :as ec]
-            [hive-mcp.elisp :as el]
+            [hive-mcp.emacs.client :as ec]
+            [hive-mcp.emacs.elisp :as el]
             [hive-mcp.agent.context :as ctx]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>

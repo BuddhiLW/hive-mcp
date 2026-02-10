@@ -1,5 +1,6 @@
 (ns hive-mcp.tools.consolidated.wave
-  "Consolidated Wave CLI tool.
+  "Wave tool consolidated handlers
+   Consolidated Wave CLI tool.
 
    Subcommands: dispatch, dispatch-validated (deprecated), status, approve, reject, review, auto-approve
 
@@ -94,10 +95,21 @@
                               "lint_level" {:type "string"
                                             :enum ["error" "warning" "info"]
                                             :description "Lint severity threshold"}
+                              ;; model override
+                              "model" {:type "string"
+                                       :description "Override model for drones (e.g. 'deepseek/deepseek-v3.2'). Bypasses smart routing."}
                               ;; execution mode
                               "mode" {:type "string"
                                       :enum ["delegate" "agentic"]
-                                      :description "Execution mode: 'delegate' (default, external fn) or 'agentic' (in-process loop with session KG)"}
+                                      :description "Execution mode: 'delegate' (default, external fn) or 'agentic' (in-process loop with session store)"}
+                              ;; drone backend
+                              "backend" {:type "string"
+                                         :enum ["openrouter" "hive-agent" "legacy-loop" "sdk-drone"]
+                                         :description "Drone execution backend (default: openrouter for delegate mode, hive-agent for agentic mode)"}
+                              ;; domain priming seeds
+                              "seeds" {:type "array"
+                                       :items {:type "string"}
+                                       :description "Domain topic seeds for context priming (e.g. [\"fp\", \"ddd\"]). Injects relevant domain knowledge into drone prompts."}
                               ;; status/review/approve/reject params
                               "wave_id" {:type "string"
                                          :description "Wave ID to operate on"}

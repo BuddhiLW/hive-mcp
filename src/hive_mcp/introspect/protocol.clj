@@ -5,7 +5,7 @@
    derivation chains, and diff analysis for introspectable reasoning.
 
    CLARITY-L: Layers stay pure - this is the port (interface).
-   Implementation lives in proprietary hive-logic repo.
+   Enhanced implementations available via extension point.
 
    CLARITY-I: Inputs are guarded at protocol boundary.
    CLARITY-R: Represented intent - each method captures a distinct

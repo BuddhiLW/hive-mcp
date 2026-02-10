@@ -11,7 +11,7 @@
    - Scope-filtered Chroma queries (HCR Wave 4, scope-piercing)
    - Expiring entry detection
    - Composed query helpers (axioms, regular conventions)"
-  (:require [hive-mcp.emacsclient :as ec]
+  (:require [hive-mcp.emacs.client :as ec]
             [hive-mcp.chroma :as chroma]
             [hive-mcp.knowledge-graph.scope :as kg-scope]
             [clojure.string :as str]

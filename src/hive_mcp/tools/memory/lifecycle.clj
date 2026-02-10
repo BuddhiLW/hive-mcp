@@ -81,11 +81,12 @@
 
 (defn handle-cleanup-expired
   "Remove all expired memory entries (Chroma-only).
-   Also cleans up KG edges for deleted entries to maintain referential integrity."
+   Also cleans up KG edges for deleted entries to maintain referential integrity.
+   Additionally repairs entries with invalid/missing duration or expires fields."
   [_]
   (log/info "mcp-memory-cleanup-expired")
   (with-chroma
-    (let [{:keys [count deleted-ids]} (chroma/cleanup-expired!)
+    (let [{:keys [count deleted-ids repaired]} (chroma/cleanup-expired!)
           ;; Clean up KG edges for all deleted entries
           edges-removed (when (seq deleted-ids)
                           (reduce (fn [total id]
@@ -94,7 +95,8 @@
       (when (pos? (or edges-removed 0))
         (log/info "Cleaned up" edges-removed "KG edges for" count "deleted entries"))
       {:type "text" :text (json/write-str {:deleted count
-                                           :kg_edges_removed (or edges-removed 0)})})))
+                                           :kg_edges_removed (or edges-removed 0)
+                                           :repaired (or repaired 0)})})))
 
 ;; ============================================================
 ;; Expire (Delete) Handler

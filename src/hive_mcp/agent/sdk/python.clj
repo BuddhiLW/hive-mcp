@@ -30,12 +30,12 @@
       nil)))
 
 (defn py-call
-  "Call a Python function with args.
-   Wraps libpython-clj2.python/py. for method calls."
+  "Call a Python method/attribute with args.
+   Wraps libpython-clj2.python.fn/call-attr [item att-name arglist]."
   [obj method & args]
   (try
-    (let [call-fn (requiring-resolve 'libpython-clj2.python/py.)]
-      (apply call-fn obj method args))
+    (let [call-fn (requiring-resolve 'libpython-clj2.python.fn/call-attr)]
+      (call-fn obj method (vec args)))
     (catch Exception e
       (log/error "[sdk.python] Python call failed"
                  {:method method :error (ex-message e)})
@@ -44,10 +44,11 @@
                       e)))))
 
 (defn py-attr
-  "Get a Python object attribute."
+  "Get a Python object attribute.
+   Wraps libpython-clj2.python/get-attr [obj attr-name]."
   [obj attr]
   (try
-    (let [attr-fn (requiring-resolve 'libpython-clj2.python/py.-)]
+    (let [attr-fn (requiring-resolve 'libpython-clj2.python/get-attr)]
       (attr-fn obj attr))
     (catch Exception e
       (log/warn "[sdk.python] Failed to get Python attribute"
@@ -56,11 +57,11 @@
 
 (defn py-call-kw
   "Call a Python callable with positional and keyword arguments.
-   Uses libpython-clj2.python/call-kw for proper kwargs passing."
+   Wraps libpython-clj2.python.fn/call-kw [callable arglist kw-args]."
   [callable positional-args kw-args]
   (try
-    (let [call-kw-fn (requiring-resolve 'libpython-clj2.python/call-kw)]
-      (call-kw-fn callable positional-args kw-args))
+    (let [call-kw-fn (requiring-resolve 'libpython-clj2.python.fn/call-kw)]
+      (call-kw-fn callable (vec positional-args) kw-args))
     (catch Exception e
       (log/error "[sdk.python] Python keyword call failed"
                  {:error (ex-message e)})

@@ -328,10 +328,17 @@
   {:pre [(string? file-path)
          (string? slave-id)]}
   (let [c (conn/ensure-conn)
+        db @c
+        ;; Only use lookup ref if task entity exists in DataScript.
+        ;; Drone tasks (task-drone-*) are generated but never transacted as entities,
+        ;; so the [:task/id ...] ref would fail with "Nothing found for entity id".
+        task-ref (when task-id
+                   (when (:db/id (d/entity db [:task/id task-id]))
+                     [:task/id task-id]))
         tx-data (cond-> {:claim/file file-path
                          :claim/slave [:slave/id slave-id]
                          :claim/created-at (conn/now)}
-                  task-id (assoc :claim/task [:task/id task-id])
+                  task-ref (assoc :claim/task task-ref)
                   prior-hash (assoc :claim/prior-hash prior-hash))]
     (log/debug "Claiming file:" file-path "for slave:" slave-id
                (when prior-hash (str "hash:" (subs prior-hash 0 8) "...")))
@@ -528,6 +535,34 @@
       (log/debug "Refreshing claim timestamp:" file-path)
       (d/transact! c [{:db/id eid
                        :claim/heartbeat-at (conn/now)}]))))
+
+;;; =============================================================================
+;;; Wait-Queue Functions (inlined from claims.clj)
+;;; =============================================================================
+
+(defn add-to-wait-queue!
+  "Add a ling to the wait queue for a specific file.
+
+   If the ling is already waiting for this file, this is a no-op
+   (upsert behavior via composite unique key).
+
+   Arguments:
+     ling-id   - ID of the ling waiting for access
+     file-path - Path to the file being waited on
+
+   Returns:
+     Transaction report"
+  [ling-id file-path]
+  {:pre [(string? ling-id)
+         (string? file-path)]}
+  (let [c (conn/ensure-conn)
+        wait-id (str "wait:" ling-id ":" file-path)
+        tx-data {:wait-queue/id wait-id
+                 :wait-queue/ling-id ling-id
+                 :wait-queue/file file-path
+                 :wait-queue/queued-at (conn/now)}]
+    (log/debug "Adding to wait-queue: ling" ling-id "waiting for" file-path)
+    (d/transact! c [tx-data])))
 
 ;;; =============================================================================
 ;;; Claim History Functions (CC.6)

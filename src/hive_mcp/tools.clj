@@ -17,8 +17,9 @@
    [hive-mcp.tools.kanban :as kanban]
    ;; swarm require removed - tools now via compat shims
    [hive-mcp.tools.swarm.claim :as claim]
-   [hive-mcp.tools.org :as org]
-   [hive-mcp.tools.prompt :as prompt]
+   ;; org/tools REMOVED - org_clj module deleted (dead code W1)
+   ;; prompt/tools REMOVED - prompt subsystem deleted (dead code, deps on deleted prompt/)
+
    [hive-mcp.tools.presets :as presets-tools]
    [hive-mcp.tools.diff :as diff]
    ;; kondo and scc - now in consolidated/analysis, requires removed
@@ -39,8 +40,8 @@
    [hive-mcp.tools.overarch :as overarch]
    [hive-mcp.plan.tool :as plan]
    ;; hivemind/tools REMOVED - compat shims delegate to consolidated
-   [hive-mcp.channel :as channel]
-   [hive-mcp.agent :as agent]
+   [hive-mcp.channel.core :as channel]
+   [hive-mcp.agent.core :as agent]
    [hive-mcp.chroma :as chroma]
    ;; Consolidated CLI tools (new unified interface)
    [hive-mcp.tools.consolidated.agent :as c-agent]
@@ -73,14 +74,7 @@
 ;; Capability-Based Kanban Tool Switching
 ;; =============================================================================
 
-(def ^:private org-kanban-native-tool-names
-  "Tool names for org-kanban-native (fallback when Chroma unavailable)."
-  #{"org_kanban_native_status" "org_kanban_native_move" "org_kanban_render"})
-
-(defn- org-tools-without-kanban
-  "Org tools excluding the kanban-native tools (used when Chroma is available)."
-  []
-  (filterv #(not (org-kanban-native-tool-names (:name %))) org/tools))
+;; org-kanban-native tools REMOVED — org_clj module deleted (dead code W1)
 
 ;; =============================================================================
 ;; Base Tools (always included)
@@ -107,7 +101,7 @@
                ;; kanban/tools removed - now conditional on Chroma availability
                ;; swarm/tools removed - use compat/tools shims instead
                claim/tools  ; File claim management (claim_list, claim_clear)
-               prompt/tools
+               ;; prompt/tools REMOVED - dead code W1
                presets-tools/tools
                diff/tools
                ;; kondo/tools and scc/tools REMOVED - now in consolidated/analysis
@@ -173,14 +167,10 @@
   (let [chroma-up? (chroma/chroma-available?)
         base (get-base-tools)
         all-tools (if chroma-up?
-                    ;; Chroma available: use mem-kanban only, no org-kanban tools
-                    (vec (concat base
-                                 mem-kanban/tools
-                                 (org-tools-without-kanban)))
-                    ;; Chroma unavailable: use kanban/tools (elisp addon) + org-kanban-native as fallback
-                    (vec (concat base
-                                 kanban/tools  ; elisp org-kanban addon (fallback when Chroma down)
-                                 org/tools)))]
+                    ;; Chroma available: use mem-kanban
+                    (vec (concat base mem-kanban/tools))
+                    ;; Chroma unavailable: use kanban/tools (elisp addon) as fallback
+                    (vec (concat base kanban/tools)))]
     (if include-deprecated?
       all-tools
       ;; Filter out deprecated tools (those with :deprecated true)
@@ -250,8 +240,8 @@
                kanban/tools
                ;; swarm/tools removed - use compat/tools shims instead
                claim/tools  ; File claim management (claim_list, claim_clear)
-               org/tools
-               prompt/tools
+               ;; org/tools REMOVED - org_clj module deleted (dead code W1)
+               ;; prompt/tools REMOVED - dead code W1
                presets-tools/tools
                diff/tools
                ;; kondo/tools and scc/tools REMOVED - now in consolidated/analysis

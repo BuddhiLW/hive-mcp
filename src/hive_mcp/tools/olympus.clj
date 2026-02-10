@@ -9,8 +9,9 @@
    - olympus_focus: Focus/maximize specific ling
    - olympus_arrange: Trigger grid arrangement
    - olympus_tab: Navigate between tabs"
-  (:require [hive-mcp.olympus :as olympus]
-            [hive-mcp.swarm.datascript.core :as ds]
+  (:require [hive-mcp.emacs.olympus :as olympus]
+            [hive-mcp.swarm.datascript.queries :as ds-queries]
+            [hive-mcp.swarm.datascript.connection :as ds-conn]
             [hive-mcp.events.core :as ev]
             [datascript.core :as d]
             [clojure.edn :as edn]))
@@ -24,7 +25,7 @@
    Returns sequence of ling maps with :slave/id, :slave/name.
    Filters to lings at depth=1 (not drones) that aren't in error state."
   []
-  (->> (ds/get-all-slaves)
+  (->> (ds-queries/get-all-slaves)
        ;; Filter to lings (depth 1) - not hivemind (0) or drones (2)
        (filter #(= 1 (:slave/depth %)))
        ;; Exclude errored slaves
@@ -37,7 +38,7 @@
    Returns {:active-tab :layout-mode :ling-positions :focused-ling}.
    Creates default state if singleton doesn't exist."
   []
-  (let [conn (ds/ensure-conn)
+  (let [conn (ds-conn/ensure-conn)
         db @conn]
     (if-let [e (d/entity db [:olympus/id "olympus"])]
       ;; Existing state - parse ling-positions from EDN string
@@ -63,7 +64,7 @@
 
    Uses upsert pattern - singleton is created if it doesn't exist."
   [state]
-  (let [conn (ds/ensure-conn)
+  (let [conn (ds-conn/ensure-conn)
         {:keys [active-tab layout-mode ling-positions focused-ling]} state
         ;; Build transaction data
         tx-data (cond-> {:olympus/id "olympus"

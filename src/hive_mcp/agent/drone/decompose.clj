@@ -27,7 +27,7 @@
    :split-2 15})
 
 (def ^:const step-budgets
-  "Max steps based on task complexity.
+  "Max steps based on task complexity (legacy OpenRouter drones).
    Simple tasks should complete in few steps, complex tasks get more headroom.
 
    FRICTION FIX: Drones were hitting 50 steps on trivial 'remove unused namespace'

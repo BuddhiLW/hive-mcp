@@ -7,7 +7,7 @@
    - Global hooks registry (event-driven workflows)
    - JVM shutdown hooks (auto-wrap, coordinator cleanup)
    - Project configuration (.hive-project.edn)"
-  (:require [hive-mcp.hooks :as hooks]
+  (:require [hive-mcp.hooks.core :as hooks]
             [hive-mcp.crystal.hooks :as crystal-hooks]
             [hive-mcp.swarm.sync :as sync]
             [hive-mcp.transport.olympus :as olympus-ws]

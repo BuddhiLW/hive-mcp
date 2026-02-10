@@ -1,0 +1,95 @@
+{:id "plan-ip-scrub-opaque-registry"
+ :title "Scrub IP leaks + opaque extension registry for requiring-resolve stubs"
+ :decision-id "20260210004838-788c122c"
+ :description "Replace all explicit enhanced-extension/hive-agent namespace references in open AGPL code with an opaque extension registry. Remove all 'closed-source', 'IP boundary', 'L3+' labels from docstrings and comments. Competitors should not be able to derive a feature roadmap from the open source."
+ :tags ["ip-boundary" "security" "opaque-registry" "cleanup"]
+ :steps
+ [{:id "s1-registry"
+   :title "Create opaque extension registry"
+   :description "New file src/hive_mcp/extensions/registry.clj. Single point of indirection for all external extensions. API: (register! :key fn), (get-extension :key), (extension-available? :key). Extensions register themselves on classpath load (via requiring-resolve of a single init fn). No closed-source namespace names leak through the registry — keys are opaque keywords like :similarity-fn, :emergence-detect, :score-observations."
+   :depends-on []
+   :priority :high
+   :files ["src/hive_mcp/extensions/registry.clj"]
+   :estimate :small
+   :tags ["new-file" "architecture"]}
+
+  {:id "s2-similarity"
+   :title "Scrub knowledge_graph/similarity.clj — replace 9 requiring-resolve calls"
+   :description "Replace all (requiring-resolve 'enhanced-extension.similarity/X) with (extensions/get-extension :similarity-X). Remove all 'closed-source' and 'enhanced-extension' references from docstrings. File has ~9 delegate functions."
+   :depends-on ["s1-registry"]
+   :priority :high
+   :files ["src/hive_mcp/knowledge_graph/similarity.clj"]
+   :estimate :small
+   :tags ["scrub"]}
+
+  {:id "s3-emergence"
+   :title "Scrub knowledge_graph/emergence.clj — replace requiring-resolve calls"
+   :description "Replace all (requiring-resolve 'enhanced-extension.emergence/X) with registry lookups. Remove 'closed-source' and 'enhanced-extension' from docstrings. ~4 delegate functions."
+   :depends-on ["s1-registry"]
+   :priority :high
+   :files ["src/hive_mcp/knowledge_graph/emergence.clj"]
+   :estimate :small
+   :tags ["scrub"]}
+
+  {:id "s4-crystal"
+   :title "Scrub crystal/core.clj — cross-pollination requiring-resolves"
+   :description "Replace 3 enhanced-extension.cross-pollination requiring-resolves with registry lookups. Remove closed-source labels."
+   :depends-on ["s1-registry"]
+   :priority :high
+   :files ["src/hive_mcp/crystal/core.clj"]
+   :estimate :small
+   :tags ["scrub"]}
+
+  {:id "s5-saa-orchestrator"
+   :title "Scrub agent/saa/orchestrator.clj — scoring, planning, context"
+   :description "Replace enhanced-extension.scoring, enhanced-extension.planning, enhanced-extension.context requiring-resolves with registry. Remove L3+ and IP boundary references from docstrings."
+   :depends-on ["s1-registry"]
+   :priority :high
+   :files ["src/hive_mcp/agent/saa/orchestrator.clj"]
+   :estimate :small
+   :tags ["scrub"]}
+
+  {:id "s6-drone-stubs"
+   :title "Scrub drone stubs — kg_session, session_kg, loop, kg_priming"
+   :description "Replace enhanced-extension.context-reconstruction, enhanced-extension.session-kg, enhanced-extension.agentic-loop, enhanced-extension.drone-loop, hive-agent.kg.priming requiring-resolves with registry. 4 files, ~6 requiring-resolve sites."
+   :depends-on ["s1-registry"]
+   :priority :high
+   :files ["src/hive_mcp/agent/drone/kg_session.clj" "src/hive_mcp/agent/drone/session_kg.clj" "src/hive_mcp/agent/drone/loop.clj" "src/hive_mcp/agent/drone/kg_priming.clj"]
+   :estimate :medium
+   :tags ["scrub"]}
+
+  {:id "s7-bridge-dispatch"
+   :title "Scrub hive_agent_bridge.clj + protocols/dispatch.clj + sdk/saa.clj"
+   :description "Replace hive-agent.loop.core, hive-agent.context.core, hive-agent.tools.definitions, enhanced-extension.dispatch, enhanced-extension.scoring requiring-resolves. Remove 'IP boundary compliance' from docstrings."
+   :depends-on ["s1-registry"]
+   :priority :high
+   :files ["src/hive_mcp/agent/hive_agent_bridge.clj" "src/hive_mcp/protocols/dispatch.clj" "src/hive_mcp/agent/sdk/saa.clj"]
+   :estimate :medium
+   :tags ["scrub"]}
+
+  {:id "s8-extension-init"
+   :title "Create extension initializer in enhanced-extension and hive-agent"
+   :description "Each closed-source project gets a single init fn that registers all extensions with the registry. enhanced-extension: (defn init! [] (registry/register! :similarity-fn ...) ...). hive-agent: same pattern. Called once on classpath load. This is the ONLY requiring-resolve that remains — to the init fn."
+   :depends-on ["s1-registry"]
+   :priority :high
+   :files ["src/hive_mcp/extensions/loader.clj"]
+   :estimate :small
+   :tags ["new-file"]}
+
+  {:id "s9-comment-scrub"
+   :title "Global scrub of IP-leaking comments and docstrings"
+   :description "grep -r for 'closed-source', 'IP boundary', 'L3+', 'enhanced-extension', and remove or make opaque. Replace 'Delegates to enhanced-extension (closed-source)' with 'Delegates to extension if available'. Replace 'IP boundary compliance' with just 'extension point'."
+   :depends-on ["s2-similarity" "s3-emergence" "s4-crystal" "s5-saa-orchestrator" "s6-drone-stubs" "s7-bridge-dispatch"]
+   :priority :high
+   :files []
+   :estimate :medium
+   :tags ["scrub" "final-pass"]}
+
+  {:id "s10-tests"
+   :title "Verify noop fallback still works after registry migration"
+   :description "Run existing tests to verify noop behavior when extensions not registered. Add registry-specific tests: register/get/available?, noop on missing key."
+   :depends-on ["s9-comment-scrub"]
+   :priority :high
+   :files ["test/hive_mcp/extensions/registry_test.clj"]
+   :estimate :small
+   :tags ["testing"]}]}
