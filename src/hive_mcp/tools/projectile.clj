@@ -5,8 +5,8 @@
    including project info, file listing, search, and navigation.
 
    Requires the hive-mcp-projectile addon to be loaded in Emacs."
-  (:require [hive-mcp.emacsclient :as ec]
-            [hive-mcp.elisp :as el]
+  (:require [hive-mcp.emacs.client :as ec]
+            [hive-mcp.emacs.elisp :as el]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;

@@ -45,7 +45,7 @@
    - tools/hot_test.clj (5 hot reload redefs)
    - hot_reload_e2e_test.clj (6 hot reload redefs)"
   (:require [clojure.string :as str]
-            [hive-mcp.emacsclient :as ec]
+            [hive-mcp.emacs.client :as ec]
             [hive-mcp.evaluator :as evaluator]
             [hive-mcp.chroma :as chroma]))
 

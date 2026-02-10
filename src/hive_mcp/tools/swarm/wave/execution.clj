@@ -18,7 +18,7 @@
             [hive-mcp.tools.swarm.wave.phases :as phases]
             [hive-mcp.tools.swarm.wave.retry :as retry]
             [hive-mcp.swarm.datascript :as ds]
-            [hive-mcp.agent :as agent]
+            [hive-mcp.agent.core :as agent]
             [hive-mcp.knowledge-graph.disc :as kg-disc]
             [taoensso.timbre :as log]))
 
@@ -63,7 +63,7 @@
    Returns:
      TaskResult record"
   [{:keys [change-item/id change-item/file change-item/task]} preset cwd skip-auto-apply wave-id
-   & {:keys [backend model]}]
+   & {:keys [backend model seeds]}]
   (let [task-str (build-task-str file task)
         result (agent/delegate-drone!
                 (cond-> {:task task-str
@@ -73,15 +73,16 @@
                          :cwd cwd
                          :skip-auto-apply skip-auto-apply
                          :wave-id wave-id}
-                  backend (assoc :backend backend)
-                  model   (assoc :model model)))]
+                  backend        (assoc :backend backend)
+                  model          (assoc :model model)
+                  (seq seeds) (assoc :seeds seeds)))]
     (task-result-from-drone id result)))
 
 (defn- execute-drone-task-once-agentic
   "Execute a single drone task without retry (in-process agentic loop path).
 
    Uses delegate-agentic-drone! which runs a multi-turn think-act-observe
-   loop in-process with session KG (Datalevin) for context compression.
+   loop in-process with session store (Datalevin) for context compression.
    No external delegate-fn needed.
 
    Arguments:
@@ -95,7 +96,7 @@
    Returns:
      TaskResult record"
   [{:keys [change-item/id change-item/file change-item/task]} preset cwd skip-auto-apply wave-id
-   & {:keys [backend model]}]
+   & {:keys [backend model seeds]}]
   (let [task-str (build-task-str file task)
         result (agent/delegate-agentic-drone!
                 (cond-> {:task task-str
@@ -105,8 +106,9 @@
                          :cwd cwd
                          :skip-auto-apply skip-auto-apply
                          :wave-id wave-id}
-                  backend (assoc :backend backend)
-                  model   (assoc :model model)))]
+                  backend        (assoc :backend backend)
+                  model          (assoc :model model)
+                  (seq seeds) (assoc :seeds seeds)))]
     (task-result-from-drone id result)))
 
 (defn execute-drone-task
@@ -129,9 +131,10 @@
    Returns:
      TaskResult record with optional :retry-info"
   [{:keys [change-item/id change-item/file] :as item} preset cwd skip-auto-apply wave-id
-   & {:keys [mode backend model] :or {mode :delegate}}]
+   & {:keys [mode backend model seeds] :or {mode :delegate}}]
   (log/info "Executing drone task for item:" id "file:" file "cwd:" cwd
-            {:review-mode skip-auto-apply :mode mode :backend backend :model model})
+            {:review-mode skip-auto-apply :mode mode :backend backend :model model
+             :seeds (when (seq seeds) (count seeds))})
 
   ;; Update status to dispatched
   (ds/update-item-status! id :dispatched)
@@ -139,9 +142,11 @@
   ;; Route to appropriate execution function based on mode
   (let [execute-fn (if (= mode :agentic)
                      #(execute-drone-task-once-agentic item preset cwd skip-auto-apply wave-id
-                                                       :backend backend :model model)
+                                                       :backend backend :model model
+                                                       :seeds seeds)
                      #(execute-drone-task-once item preset cwd skip-auto-apply wave-id
-                                               :backend backend :model model))]
+                                               :backend backend :model model
+                                               :seeds seeds))]
     ;; Execute with retry
     (retry/retry-task-execution
      execute-fn
@@ -191,15 +196,17 @@
    Each step is a named function at a single level of abstraction (SLAP).
 
    Options:
-     :mode    - :delegate (default) or :agentic
-     :backend - :openrouter, :hive-agent, :legacy-loop, :sdk-drone, or nil
-     :model   - Override model for all drones (optional)
+     :mode     - :delegate (default) or :agentic
+     :backend  - :openrouter, :hive-agent, :legacy-loop, :sdk-drone, or nil
+     :model    - Override model for all drones (optional)
+     :seeds - Domain topic seeds for context priming (optional)
 
    Returns fn: work-unit → TaskResult."
-  [& {:keys [mode backend model] :or {mode :delegate}}]
+  [& {:keys [mode backend model seeds] :or {mode :delegate}}]
   (fn [{:keys [item preset cwd skip-auto-apply wave-id]}]
     (let [result (execute-drone-task item preset cwd skip-auto-apply wave-id
-                                     :mode mode :backend backend :model model)]
+                                     :mode mode :backend backend :model model
+                                     :seeds seeds)]
       (update-item-state! result wave-id)
       result)))
 
@@ -221,12 +228,14 @@
      WaveResult record on success, throws on failure."
   [wave-spec items]
   (let [{:keys [plan-id wave-id]} wave-spec
-        ;; Execution mode: :delegate (default) or :agentic (in-process loop with session KG)
+        ;; Execution mode: :delegate (default) or :agentic (in-process loop with session store)
         mode (or (:mode wave-spec) :delegate)
         ;; Drone execution backend (nil = mode-dependent default)
         backend (:backend wave-spec)
         ;; Model override (nil = smart routing)
         model (:model wave-spec)
+        ;; Domain topic seeds for context priming
+        seeds (:seeds wave-spec)
         ;; Create or use provided wave-id
         effective-wave-id (or wave-id (ds/create-wave! plan-id {:concurrency (:concurrency wave-spec)}))
         start-time (System/nanoTime)]
@@ -252,11 +261,12 @@
             ;; Initialize active-count for first batch
             _ (ds/update-wave-counts! effective-wave-id {:active (count (first batches))})
 
-            ;; Phase 4: Execute batches (with mode-aware, backend-aware, model-aware executor)
+            ;; Phase 4: Execute batches (with mode-aware, backend-aware, model-aware, seed-aware executor)
             execution-result (phases/phase:execute-batches!
                               wave-spec effective-wave-id
                               batches item-map
-                              (make-work-executor :mode mode :backend backend :model model))]
+                              (make-work-executor :mode mode :backend backend :model model
+                                                  :seeds seeds))]
 
         ;; Phase 5: Complete
         (phases/phase:complete! wave-spec effective-wave-id execution-result start-time items))
@@ -323,15 +333,17 @@
                :wave-id         - Pre-created wave ID
                :mode            - Execution mode: :delegate (default) or :agentic
                                   When :agentic, uses in-process agentic loop
-                                  with session KG (Datalevin) for context compression
+                                  with session store (Datalevin) for context compression
                :backend         - Drone execution backend keyword (optional)
                                   One of: :openrouter, :hive-agent, :legacy-loop, :sdk-drone
                :model           - Override model for all drones (optional)
                                   Bypasses smart routing when provided
+               :seeds        - Domain topic seeds for context priming (optional)
+                                  e.g. [\"fp\" \"ddd\"]
 
    Returns:
      wave-id after execution completes."
-  [plan-id & [{:keys [concurrency trace cwd skip-auto-apply wave-id mode backend model]
+  [plan-id & [{:keys [concurrency trace cwd skip-auto-apply wave-id mode backend model seeds]
                :or {concurrency domain/default-concurrency
                     trace true
                     skip-auto-apply false
@@ -356,8 +368,9 @@
                                 :wave-id wave-id
                                 :preset preset
                                 :mode mode}
-                         backend (assoc :backend backend)
-                         model   (assoc :model model)))]
+                         backend        (assoc :backend backend)
+                         model          (assoc :model model)
+                         (seq seeds) (assoc :seeds seeds)))]
 
         ;; Run wave and return wave-id
         (:wave-id (run-wave! wave-spec items))))))
@@ -372,10 +385,11 @@
                :mode        - Execution mode: :delegate (default) or :agentic
                :backend     - Drone execution backend keyword (optional)
                :model       - Override model for all drones (optional)
+               :seeds    - Domain topic seeds for context priming (optional)
 
    Returns:
      Map with :wave-id :plan-id :item-count for immediate response."
-  [plan-id & [{:keys [concurrency trace cwd skip-auto-apply on-complete mode backend model]
+  [plan-id & [{:keys [concurrency trace cwd skip-auto-apply on-complete mode backend model seeds]
                :or {concurrency domain/default-concurrency
                     trace true
                     skip-auto-apply false
@@ -400,8 +414,9 @@
                                 :on-complete on-complete
                                 :preset preset
                                 :mode mode}
-                         backend (assoc :backend backend)
-                         model   (assoc :model model)))]
+                         backend        (assoc :backend backend)
+                         model          (assoc :model model)
+                         (seq seeds) (assoc :seeds seeds)))]
 
         (run-wave-async! wave-spec items)))))
 

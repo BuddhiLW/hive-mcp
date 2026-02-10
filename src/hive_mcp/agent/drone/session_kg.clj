@@ -1,25 +1,25 @@
 (ns hive-mcp.agent.drone.session-kg
-  "Per-drone session Knowledge Graph — AGPL implementation.
+  "Per-drone session store — built-in implementation.
 
    Provides:
-   1. Session KG schema (Datalevin-compatible attribute definitions)
+   1. Session schema (Datalevin-compatible attribute definitions)
    2. DatalevinStore factory for per-drone isolated paths (/tmp/drone-{id}/kg)
    3. Lifecycle management (create, close, cleanup temp dir)
-   4. AGPL implementations of session KG operations:
-      - record-observation!  — compress tool result into KG observation node
+   4. Built-in implementations of session operations:
+      - record-observation!  — compress tool result into observation node
       - record-reasoning!    — store LLM intent/rationale as reasoning node
-      - reconstruct-context  — build compact prompt from KG state (~200-300 tokens)
-      - merge-session-to-global! — merge valuable session edges to global KG
+      - reconstruct-context  — build compact prompt from session state
+      - merge-session-to-global! — merge valuable session data to global store
       - seed-from-global!    — seed session with relevant global context
 
-   When hive-knowledge IS on classpath, it overrides with proprietary scoring
-   (structural similarity, emergence detection). The AGPL layer provides
-   functional but simpler implementations.
+   When extensions are registered, enhanced implementations override the defaults.
+   The built-in layer provides functional but simpler implementations.
 
    CLARITY-Y: Graceful degradation — nil stores produce noops, not exceptions.
    CLARITY-T: All operations logged with drone-id for tracing."
   (:require [hive-mcp.knowledge-graph.store.datalevin :as dtlv-store]
             [hive-mcp.protocols.kg :as kg]
+            [hive-mcp.extensions.registry :as ext]
             [clojure.java.io :as io]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
@@ -29,19 +29,8 @@
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 ;; =============================================================================
-;; Dynamic Resolution Helpers (hive-knowledge override layer)
+;; Extension Helpers
 ;; =============================================================================
-
-(defn- try-resolve-hk
-  "Attempt to resolve a symbol from hive-knowledge.session-kg.
-   Returns the var if available, nil otherwise.
-   When hive-knowledge IS on classpath, its proprietary implementations
-   override the AGPL defaults below (structural similarity, scoring, etc.)."
-  [sym-name]
-  (try
-    (requiring-resolve (symbol "hive-knowledge.session-kg" sym-name))
-    (catch Exception _
-      nil)))
 
 ;; =============================================================================
 ;; Internal Helpers
@@ -56,8 +45,8 @@
 
 (defn- extract-key-facts
   "Extract key facts from a tool result.
-   AGPL implementation: simple structural extraction.
-   The proprietary override uses NLP-based fact extraction and scoring.
+   Built-in implementation: simple structural extraction.
+   Enhanced extension may override with scoring-based extraction.
 
    Returns a vector of short fact strings."
   [tool result]
@@ -84,7 +73,7 @@
 
 (defn- summarize-result
   "Create a short summary of a tool result.
-   AGPL implementation: simple structural summarization.
+   Built-in implementation: simple structural summarization.
 
    Returns a string summary (<= 120 chars)."
   [tool result]
@@ -97,14 +86,12 @@
       (str tool " FAILED: " (truncate (or (:error result) "unknown") 80)))))
 
 ;; =============================================================================
-;; Session KG Schema (AGPL — data structure definitions are open)
+;; Session Store Schema
 ;; =============================================================================
 
 (def session-schema
-  "Additional schema attributes for drone session KG.
-   These extend the base KG schema with observation/reasoning tracking.
-
-   Open (AGPL): Schema definitions are structural, not algorithmic."
+  "Additional schema attributes for drone session store.
+   These extend the base schema with observation/reasoning tracking."
   {;; Observation nodes (tool results compressed into meaning)
    :obs/id          {:db/unique :db.unique/identity}
    :obs/turn        {}  ; integer turn number
@@ -135,7 +122,7 @@
    })
 
 ;; =============================================================================
-;; Session KG Lifecycle (AGPL — factory and CRUD are open)
+;; Session Store Lifecycle
 ;; =============================================================================
 
 (defn session-db-path
@@ -145,7 +132,7 @@
   (str "/tmp/drone-" drone-id "/kg"))
 
 (defn create-session-kg!
-  "Create an isolated Datalevin-backed session KG for a drone.
+  "Create an isolated Datalevin-backed session store for a drone.
 
    The session schema (obs/*, reason/*, goal/*, dep/*) is merged with the
    base KG schema via :extra-schema. This ensures :db/unique constraints
@@ -161,22 +148,22 @@
    CLARITY-Y: Falls back gracefully if Datalevin unavailable."
   [drone-id]
   (let [db-path (session-db-path drone-id)]
-    (log/info "Creating session KG for drone" {:drone-id drone-id :path db-path})
+    (log/info "Creating session store for drone" {:drone-id drone-id :path db-path})
     (try
       (let [store (dtlv-store/create-store {:db-path db-path
                                             :extra-schema session-schema})]
         (when store
           (kg/ensure-conn! store)
-          (log/info "Session KG initialized" {:drone-id drone-id :path db-path
-                                              :session-attrs (count session-schema)})
+          (log/info "Session Store initialized" {:drone-id drone-id :path db-path
+                                                 :session-attrs (count session-schema)})
           store))
       (catch Exception e
-        (log/warn "Failed to create session KG, drone will use in-memory fallback"
+        (log/warn "Failed to create session store, drone will use in-memory fallback"
                   {:drone-id drone-id :error (.getMessage e)})
         nil))))
 
 (defn close-session-kg!
-  "Close a session KG store and optionally clean up temp directory.
+  "Close a session store and optionally clean up temp directory.
 
    Arguments:
      store     - IKGStore instance to close
@@ -195,24 +182,24 @@
             (let [parent (.getParentFile dir)]
               (when (and (.exists parent) (empty? (.listFiles parent)))
                 (.delete parent))))))
-      (log/info "Session KG closed" {:drone-id drone-id :cleaned-up? cleanup?})
+      (log/info "Session Store closed" {:drone-id drone-id :cleaned-up? cleanup?})
       (catch Exception e
-        (log/warn "Error closing session KG" {:drone-id drone-id :error (.getMessage e)})))))
+        (log/warn "Error closing session store" {:drone-id drone-id :error (.getMessage e)})))))
 
 ;; =============================================================================
-;; Observation Recording — AGPL implementation
-;; hive-knowledge overrides via try-resolve-hk when on classpath
+;; Observation Recording
+;; Enhanced extension overrides when registered
 ;; =============================================================================
 
 (defn record-observation!
-  "Record a tool execution result as a compressed observation in the session KG.
+  "Record a tool execution result as a compressed observation in the session store.
 
-   AGPL implementation: transacts observation node with summary and key facts.
-   When hive-knowledge is on classpath, delegates to proprietary implementation
-   (NLP-based compression, relevance scoring, dependency edge creation).
+   Built-in implementation: transacts observation node with summary and key facts.
+   When enhanced extension is registered, delegates to it
+   (enhanced compression, scoring, dependency tracking).
 
    Arguments:
-     store   - IKGStore instance (session KG), nil-safe
+     store   - IKGStore instance, nil-safe
      turn    - Integer turn number
      tool    - Tool name string
      result  - Tool execution result map {:success :result :error}
@@ -222,10 +209,10 @@
      The observation ID string."
   [store turn tool result & [opts]]
   (let [obs-id (str "obs-" turn "-" tool)]
-    ;; Try hive-knowledge override first
-    (if-let [hk-fn (try-resolve-hk "record-observation!")]
-      (hk-fn store turn tool result opts)
-      ;; AGPL implementation: structural observation recording
+    ;; Try enhanced extension first
+    (if-let [ext-fn (ext/get-extension :sk/record-obs!)]
+      (ext-fn store turn tool result opts)
+      ;; Built-in implementation: structural observation recording
       (do
         (when store
           (try
@@ -246,19 +233,19 @@
         obs-id))))
 
 ;; =============================================================================
-;; Reasoning Recording — AGPL implementation
-;; hive-knowledge overrides via try-resolve-hk when on classpath
+;; Reasoning Recording
+;; Enhanced extension overrides when registered
 ;; =============================================================================
 
 (defn record-reasoning!
-  "Record an LLM reasoning step in the session KG.
+  "Record an LLM reasoning step in the session store.
 
-   AGPL implementation: transacts reasoning node with intent and rationale.
-   When hive-knowledge is on classpath, delegates to proprietary implementation
-   (intent chain tracking, dependency graph building, compression).
+   Built-in implementation: transacts reasoning node with intent and rationale.
+   When enhanced extension is registered, delegates to it
+   (intent tracking, dependency tracking, compression).
 
    Arguments:
-     store     - IKGStore instance (session KG), nil-safe
+     store     - IKGStore instance, nil-safe
      turn      - Integer turn number
      intent    - What the LLM decided to do (string)
      rationale - Why (string)
@@ -267,10 +254,10 @@
      The reasoning ID string."
   [store turn intent rationale]
   (let [reason-id (str "reason-" turn)]
-    ;; Try hive-knowledge override first
-    (if-let [hk-fn (try-resolve-hk "record-reasoning!")]
-      (hk-fn store turn intent rationale)
-      ;; AGPL implementation: structural reasoning recording
+    ;; Try enhanced extension first
+    (if-let [ext-fn (ext/get-extension :sk/record-rsn!)]
+      (ext-fn store turn intent rationale)
+      ;; Built-in implementation: structural reasoning recording
       (do
         (when store
           (try
@@ -286,12 +273,12 @@
         reason-id))))
 
 ;; =============================================================================
-;; Context Reconstruction — AGPL implementation
-;; hive-knowledge overrides via try-resolve-hk when on classpath
+;; Context Reconstruction
+;; Enhanced extension overrides when registered
 ;; =============================================================================
 
 (defn- query-recent-observations
-  "Query the last N observations from the session KG, ordered by turn.
+  "Query the last N observations from the session store, ordered by turn.
    Returns vector of [obs-id turn tool summary success] tuples."
   [store max-obs]
   (try
@@ -312,7 +299,7 @@
       [])))
 
 (defn- query-recent-reasoning
-  "Query the last N reasoning nodes from the session KG, ordered by turn.
+  "Query the last N reasoning nodes from the session store, ordered by turn.
    Returns vector of [reason-id turn intent] tuples."
   [store max-reasons]
   (try
@@ -345,7 +332,7 @@
       #{})))
 
 (defn- query-goals
-  "Query active goals from the session KG.
+  "Query active goals from the session store.
    Returns vector of [goal-id description status] tuples."
   [store]
   (try
@@ -361,31 +348,30 @@
       [])))
 
 (defn reconstruct-context
-  "Reconstruct a compact context prompt from the session KG state.
+  "Reconstruct a compact context prompt from the session store state.
 
-   AGPL implementation: queries KG for observations, reasoning, key facts,
-   and goals. Builds a compact prompt (~200-300 tokens) suitable for
-   replacing raw message history in multi-turn drone conversations.
+   Built-in implementation: queries store for observations, reasoning, key facts,
+   and goals. Builds a compact prompt suitable for replacing raw message
+   history in multi-turn drone conversations.
 
-   When hive-knowledge is on classpath, delegates to proprietary implementation
-   (relevance scoring, semantic compression, ~25x compression ratio).
+   When enhanced extension is registered, delegates to it.
 
    Arguments:
-     store - IKGStore instance (session KG), nil-safe
+     store - IKGStore instance, nil-safe
      task  - Original task description
      turn  - Current turn number
 
    Returns:
      String - compact context for LLM prompt."
   [store task turn]
-  ;; Try hive-knowledge override first
-  (if-let [hk-fn (try-resolve-hk "reconstruct-context")]
-    (hk-fn store task turn)
-    ;; AGPL implementation: structural context reconstruction
+  ;; Try enhanced extension first
+  (if-let [ext-fn (ext/get-extension :sk/reconstruct)]
+    (ext-fn store task turn)
+    ;; Built-in implementation: structural context reconstruction
     (if (or (nil? store) (zero? turn))
       task
       (try
-        (let [;; Query session KG state
+        (let [;; Query session state
               recent-obs (query-recent-observations store 5)
               recent-reasons (query-recent-reasoning store 3)
               key-facts (query-all-key-facts store)
@@ -434,7 +420,7 @@
           task)))))
 
 ;; =============================================================================
-;; Merge-Back (Session KG → Global KG) — AGPL implementation
+;; Merge-Back (Session → Global Store)
 ;; =============================================================================
 
 (defn- extract-session-edges
@@ -451,14 +437,13 @@
       [])))
 
 (defn merge-session-to-global!
-  "Merge valuable session KG facts into the global KG.
+  "Merge valuable session facts into the global store.
 
-   AGPL implementation: extracts all KG edges from the session store
+   Built-in implementation: extracts edges from the session store
    and transacts them into the global store. Uses :kg-edge/id as identity
    for upsert behavior (no duplicates).
 
-   When hive-knowledge is on classpath, delegates to proprietary implementation
-   (novelty scoring, fact filtering, confidence thresholds).
+   When enhanced extension is registered, delegates to it.
 
    Arguments:
      session-store - IKGStore for the drone session, nil-safe
@@ -468,12 +453,10 @@
    Returns:
      Map with :merged-count, :errors, or nil if stores are nil."
   [session-store global-store & [opts]]
-  ;; Try hive-knowledge override first
-  (if-let [f (try
-               (requiring-resolve 'hive-knowledge.drone-loop/merge-session-to-global!)
-               (catch Exception _ nil))]
+  ;; Try enhanced extension first
+  (if-let [f (ext/get-extension :dl/merge!)]
     (f session-store global-store opts)
-    ;; AGPL implementation: structural merge
+    ;; Built-in implementation: structural merge
     (when (and session-store global-store)
       (let [edges (extract-session-edges session-store)
             min-confidence (or (:min-confidence opts) 0.0)
@@ -499,7 +482,7 @@
           result)))))
 
 ;; =============================================================================
-;; Seed Session KG from Global Context — AGPL implementation
+;; Seed Session from Global Context
 ;; =============================================================================
 
 (defn- extract-global-edges-for-files
@@ -535,13 +518,12 @@
       [])))
 
 (defn seed-from-global!
-  "Seed a session KG with relevant context from the global KG.
+  "Seed a session store with relevant context from the global store.
 
-   AGPL implementation: queries global KG for edges referencing the
+   Built-in implementation: queries global store for edges referencing the
    task files and copies them into the session store as reference context.
 
-   When hive-knowledge is on classpath, delegates to proprietary implementation
-   (semantic relevance scoring, convention extraction, axiom filtering).
+   When enhanced extension is registered, delegates to it.
 
    Arguments:
      session-store - IKGStore for the drone session, nil-safe
@@ -551,10 +533,10 @@
    Returns:
      Number of reference nodes seeded."
   [session-store global-store task-context]
-  ;; Try hive-knowledge override first
-  (if-let [hk-fn (try-resolve-hk "seed-from-global!")]
-    (hk-fn session-store global-store task-context)
-    ;; AGPL implementation: structural seeding
+  ;; Try enhanced extension first
+  (if-let [ext-fn (ext/get-extension :sk/seed!)]
+    (ext-fn session-store global-store task-context)
+    ;; Built-in implementation: structural seeding
     (if (or (nil? session-store) (nil? global-store))
       0
       (let [files (or (:files task-context) [])
@@ -571,6 +553,6 @@
                       0
                       edges))
             seeded-count (or seeded 0)]
-        (log/info "Seeded session KG from global" {:files (clojure.core/count files)
-                                                   :edges-seeded seeded-count})
+        (log/info "Seeded session store from global" {:files (clojure.core/count files)
+                                                      :edges-seeded seeded-count})
         seeded-count))))

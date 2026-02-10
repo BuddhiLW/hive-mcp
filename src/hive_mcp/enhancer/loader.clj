@@ -1,14 +1,14 @@
 (ns hive-mcp.enhancer.loader
   "Dynamic loader for IKnowledgeEnhancer implementations.
 
-   CLARITY-L: Layers stay pure - this bridges open/closed boundary.
+   CLARITY-L: Layers stay pure - this bridges core/extension boundary.
 
-   Attempts to load the proprietary hive-knowledge implementation.
+   Attempts to load enhanced implementation via extension point.
    Falls back to BasicEnhancer if not available.
 
    This pattern allows hive-mcp to be fully functional without
-   proprietary components while gaining enhanced capabilities
-   when hive-knowledge is on the classpath."
+   optional extensions while gaining enhanced capabilities
+   when extensions are available on the classpath."
   (:require [hive-mcp.enhancer.protocol :as proto]
             [hive-mcp.enhancer.basic :as basic]))
 
@@ -16,29 +16,28 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-(defn- try-load-proprietary
-  "Attempt to load the proprietary hive-knowledge enhancer.
+(defn- try-load-enhanced
+  "Attempt to load the enhanced extension enhancer.
 
-   Uses dynamic require to avoid compile-time dependency.
+   Uses extension registry to avoid compile-time dependency.
    Returns the enhancer instance or nil if loading fails."
   []
   (try
-    (require 'hive-knowledge.core)
-    (let [create-fn (resolve 'hive-knowledge.core/create-enhancer)]
-      (when create-fn
-        (create-fn)))
+    (when-let [create-fn (requiring-resolve 'hive-mcp.extensions.registry/get-extension)]
+      (when-let [enhancer-fn (create-fn :enhancer/create)]
+        (enhancer-fn)))
     (catch Exception e
-      ;; Expected when hive-knowledge not on classpath
+      ;; Expected when enhanced extension not on classpath
       ;; Log at debug level only
       (when (System/getProperty "hive.debug")
-        (println "[enhancer] Proprietary enhancer not available:" (.getMessage e)))
+        (println "[enhancer] Enhanced extension not available:" (.getMessage e)))
       nil)))
 
 (defn load-enhancer
   "Load the best available knowledge enhancer.
 
    Attempts to load in order:
-   1. Proprietary hive-knowledge enhancer (if on classpath)
+   1. Enhanced extension (if available)
    2. BasicEnhancer fallback (always available)
 
    Sets the loaded enhancer as active via set-enhancer!.
@@ -47,10 +46,10 @@
      The loaded enhancer instance (also set as active)
 
    Side effects:
-     - Requires hive-knowledge.core if available
+     - Loads enhanced extension if available
      - Sets active enhancer via protocol/set-enhancer!"
   []
-  (let [enhancer (or (try-load-proprietary)
+  (let [enhancer (or (try-load-enhanced)
                      (basic/create-basic-enhancer))]
     (proto/set-enhancer! enhancer)
     enhancer))
@@ -59,7 +58,7 @@
   "Get the type of the currently active enhancer.
 
    Returns:
-     :proprietary - hive-knowledge enhancer loaded
+     :enhanced    - extension enhancer loaded
      :basic       - fallback BasicEnhancer
      :none        - no enhancer loaded yet"
   []
@@ -67,13 +66,13 @@
     (let [enhancer (proto/get-enhancer)]
       (if (instance? hive_mcp.enhancer.basic.BasicEnhancer enhancer)
         :basic
-        :proprietary))
+        :enhanced))
     :none))
 
 (defn reload-enhancer!
   "Force reload of the enhancer.
 
-   Useful for development when hive-knowledge has been
+   Useful for development when enhanced extensions have been
    added to the classpath after initial load.
 
    Returns:

@@ -10,7 +10,7 @@
    - Uses IAgentSession.query! for phase execution (protocol-based, not SDK-private)
    - Tracks per-agent state (phase, observations, plan, timestamps)
    - Integrates with hivemind shouts for phase progress reporting
-   - Uses requiring-resolve stubs for hive-knowledge integration (L3+)
+   - Uses extension registry for optional enhanced scoring/planning
    - References headless-sdk for SAA phase definitions and scoring (public API only)
 
    Philosophy:
@@ -26,6 +26,7 @@
             [clojure.string :as str]
             [hive-mcp.protocols.agent-bridge :as bridge]
             [hive-mcp.agent.headless-sdk :as sdk]
+            [hive-mcp.extensions.registry :as ext]
             [taoensso.timbre :as log]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -120,42 +121,30 @@
     (shout-phase! agent-id phase message)))
 
 ;;; =============================================================================
-;;; Requiring-Resolve Stubs (hive-knowledge L3+ integration)
+;;; Extension Stubs (optional enhanced capabilities)
 ;;; =============================================================================
 
-(defn- score-observations-l3
-  "Score observations using hive-knowledge L3+ scoring.
-   Falls back to headless-sdk heuristic scoring if unavailable.
-
-   L3+ provides: structural similarity, GNN scoring, emergence detection.
-   L1/L2 provides: keyword-based heuristic scoring."
+(defn- score-observations-enhanced
+  "Score observations using enhanced extension.
+   Falls back to built-in heuristic scoring if unavailable."
   [observations]
-  (if-let [score-fn (try (requiring-resolve 'hive-knowledge.scoring/score-observations)
-                         (catch Exception _ nil))]
+  (if-let [score-fn (ext/get-extension :es/score)]
     (score-fn observations)
     (sdk/score-observations observations)))
 
-(defn- plan-from-observations-l3
-  "Generate a plan using hive-knowledge L3+ planning.
-   Falls back to nil (let Abstract phase LLM do planning).
-
-   L3+ provides: graph-aware planning, priority weighting by KG centrality.
-   L1/L2 provides: raw observations forwarded to LLM for synthesis."
+(defn- plan-from-observations-enhanced
+  "Generate a plan using enhanced extension.
+   Falls back to nil (let Abstract phase LLM do planning)."
   [observations task]
-  (if-let [plan-fn (try (requiring-resolve 'hive-knowledge.planning/generate-plan)
-                        (catch Exception _ nil))]
+  (if-let [plan-fn (ext/get-extension :ep/generate)]
     (plan-fn observations task)
     nil))
 
-(defn- enrich-silence-context-l3
-  "Enrich Silence phase with hive-knowledge context.
-   Falls back to nil (no enrichment).
-
-   L3+ provides: relevant KG subgraph, cross-project pattern matches.
-   L1/L2 provides: nothing (the Silence phase explores on its own)."
+(defn- enrich-silence-context
+  "Enrich Silence phase with additional context from extension.
+   Falls back to nil (no enrichment)."
   [task]
-  (if-let [enrich-fn (try (requiring-resolve 'hive-knowledge.context/enrich-task-context)
-                          (catch Exception _ nil))]
+  (if-let [enrich-fn (ext/get-extension :ec/enrich)]
     (enrich-fn task)
     nil))
 
@@ -252,8 +241,8 @@
       (maybe-shout! config agent-id :silence "Starting observation phase")
       (go
         (try
-          (let [;; L3+ enrichment (nil fallback)
-                enrichment (enrich-silence-context-l3 task)
+          (let [;; Extension enrichment (nil fallback)
+                enrichment (enrich-silence-context task)
                 ;; Build prompt and opts
                 prompt (build-phase-prompt :silence task enrichment)
                 phase-opts (build-phase-opts :silence opts)
@@ -289,11 +278,11 @@
                     (str "Starting synthesis with " (count observations) " observations"))
       (go
         (try
-          (let [;; L3+ scoring (heuristic fallback)
-                scored (score-observations-l3 observations)
-                ;; L3+ pre-planning (nil fallback)
+          (let [;; Extension scoring (heuristic fallback)
+                scored (score-observations-enhanced observations)
+                ;; Extension pre-planning (nil fallback)
                 task (:task (get-agent-state agent-id))
-                l3-plan (plan-from-observations-l3 scored task)
+                ext-plan (plan-from-observations-enhanced scored task)
                 ;; Build prompt — pass scored observations + task as context
                 prompt (build-phase-prompt :abstract scored task)
                 phase-opts (build-phase-opts :abstract opts)
@@ -302,8 +291,8 @@
                 ;; Collect all messages (parking ops — safe in go block)
                 messages (<! (collect-phase-messages! phase-ch out-ch :abstract))
                 plan-content (extract-content messages)
-                ;; Prefer L3+ plan if available, else use LLM-generated plan
-                final-plan (or l3-plan (str/join "\n" plan-content))]
+                ;; Prefer extension plan if available, else use LLM-generated plan
+                final-plan (or ext-plan (str/join "\n" plan-content))]
             ;; Store plan in agent state
             (update-agent-state! agent-id {:plan final-plan})
             (maybe-shout! config agent-id :abstract "Completed. Plan ready for execution.")

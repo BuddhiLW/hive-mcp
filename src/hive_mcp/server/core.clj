@@ -1,4 +1,4 @@
-(ns hive-mcp.server
+(ns hive-mcp.server.core
   "MCP server entry point.
 
    Thin orchestrator delegating to sub-modules:

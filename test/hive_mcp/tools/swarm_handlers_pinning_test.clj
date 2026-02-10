@@ -16,7 +16,7 @@
             [clojure.data.json :as json]
             [hive-mcp.tools.swarm :as swarm]
             [hive-mcp.tools.swarm.core :as core]
-            [hive-mcp.emacsclient :as ec]
+            [hive-mcp.emacs.client :as ec]
             [hive-mcp.swarm.coordinator :as coord]))
 
 ;; =============================================================================

@@ -1,9 +1,9 @@
-(ns hive-mcp.agent
+(ns hive-mcp.agent.core
   "Agent delegation for two-tier LLM architecture.
 
    Provides drone delegation for task execution:
    - delegate-drone! for standard drone tasks (routes through agentic path)
-   - delegate-agentic-drone! for in-process agentic execution with session KG
+   - delegate-agentic-drone! for in-process agentic execution with session store
 
    Architecture:
    - LLMBackend protocol for pluggable model backends (see agent.protocol)
@@ -43,8 +43,8 @@
   (drone/delegate-agentic! opts))
 
 (defn delegate-agentic-drone!
-  "Delegate a task to an in-process agentic drone with session KG.
-   This runs the full agentic loop in-process with Datalevin KG.
+  "Delegate a task to an in-process agentic drone with session store.
+   This runs the full agentic loop in-process with Datalevin store.
    See hive-mcp.agent.drone/delegate-agentic! for full documentation."
   [opts]
   (drone/delegate-agentic! opts))

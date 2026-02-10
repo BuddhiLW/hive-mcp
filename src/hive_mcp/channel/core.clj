@@ -1,4 +1,4 @@
-(ns hive-mcp.channel
+(ns hive-mcp.channel.core
   "Bidirectional communication channel between Clojure and Emacs.
 
    Built on transport abstraction for robust async networking.
@@ -14,7 +14,7 @@
      (broadcast! {:type :hivemind-progress :data {...}})
      (subscribe! :hivemind-progress) ; => core.async channel
    "
-  (:require [hive-mcp.transport :as t]
+  (:require [hive-mcp.transport.core :as t]
             [clojure.core.async :as async :refer [chan pub sub unsub close!]]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>

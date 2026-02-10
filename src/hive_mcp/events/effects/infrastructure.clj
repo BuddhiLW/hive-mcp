@@ -20,8 +20,8 @@
    CLARITY: T - Telemetry (metrics reporting)"
   (:require [hive-mcp.events.core :as ev]
             [hive-mcp.swarm.datascript :as ds]
-            [hive-mcp.channel :as channel]
-            [hive-mcp.emacsclient :as ec]
+            [hive-mcp.channel.core :as channel]
+            [hive-mcp.emacs.client :as ec]
             [hive-mcp.validation :as v]
             [clojure.java.shell :as shell]
             [datascript.core :as d]

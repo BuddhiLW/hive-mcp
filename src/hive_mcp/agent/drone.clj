@@ -128,15 +128,15 @@
 ;;; ============================================================
 
 (defn delegate-agentic!
-  "Delegate a task to an in-process agentic drone with session KG.
+  "Delegate a task to an in-process agentic drone with session store.
 
    Unlike delegate! (which requires an external delegate-fn), this runs
    the full agentic loop in-process:
    - Creates an OpenRouter LLM backend
    - Runs a think-act-observe loop with tool calling
-   - Uses a Datalevin-backed session KG for context compression
+   - Uses a Datalevin-backed session store for context compression
    - Terminates via structural heuristics (completion language, max turns)
-   - Merges session KG edges to global KG on success
+   - Merges session store edges to global KG on success
 
    This is the primary entry point for autonomous drone task execution.
    No external execution function needed — everything runs in-process.
@@ -162,7 +162,7 @@
      (delegate-agentic! {:task \"Fix the nil check in parse-config\"
                           :files [\"src/config.clj\"]
                           :cwd \"/home/user/project\"})"
-  [{:keys [task files task-type preset trace parent-id cwd skip-auto-apply wave-id backend model]
+  [{:keys [task files task-type preset trace parent-id cwd skip-auto-apply wave-id backend model seeds]
     :or {trace true
          skip-auto-apply false}}]
   ;; Create TaskSpec from options (CLARITY-R: Represented Intent)
@@ -177,9 +177,10 @@
                     :trace trace
                     :skip-auto-apply skip-auto-apply
                     :backend backend
-                    :model model})]
+                    :model model
+                    :seeds seeds})]
     ;; Delegate to agentic execution orchestrator
-    ;; Uses in-process agentic loop with session KG (Datalevin)
+    ;; Uses in-process agentic loop with session store (Datalevin)
     (execution/run-agentic-execution! task-spec)))
 
 ;;; ============================================================

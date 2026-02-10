@@ -33,7 +33,7 @@
   "Attempt to require the channel namespace. Returns true if available."
   []
   (try
-    (require 'hive-mcp.channel)
+    (require 'hive-mcp.channel.core)
     true
     (catch Exception _
       false)))
@@ -43,7 +43,7 @@
    Returns the subscription channel or nil."
   [event-type]
   (when (try-require-channel)
-    (when-let [subscribe-fn (resolve 'hive-mcp.channel/subscribe!)]
+    (when-let [subscribe-fn (resolve 'hive-mcp.channel.core/subscribe!)]
       (subscribe-fn event-type))))
 
 ;; ============================================================

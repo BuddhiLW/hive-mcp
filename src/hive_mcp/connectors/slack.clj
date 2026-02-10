@@ -195,19 +195,19 @@
 ;; =============================================================================
 
 (defn- try-resolve-channel-fns
-  "Attempt to resolve hive-mcp.channel subscribe!/unsubscribe! functions.
+  "Attempt to resolve hive-mcp.channel.core subscribe!/unsubscribe! functions.
    Returns {:subscribe! fn :unsubscribe! fn} or nil if not available.
    CLARITY-Y: Graceful fallback if channel ns not loaded."
   []
   (try
-    (require 'hive-mcp.channel)
-    (let [sub-fn (ns-resolve (find-ns 'hive-mcp.channel) 'subscribe!)
-          unsub-fn (ns-resolve (find-ns 'hive-mcp.channel) 'unsubscribe!)]
+    (require 'hive-mcp.channel.core)
+    (let [sub-fn (ns-resolve (find-ns 'hive-mcp.channel.core) 'subscribe!)
+          unsub-fn (ns-resolve (find-ns 'hive-mcp.channel.core) 'unsubscribe!)]
       (when (and sub-fn unsub-fn)
         {:subscribe! @sub-fn
          :unsubscribe! @unsub-fn}))
     (catch Exception _
-      (log/debug "[slack] hive-mcp.channel not available - event forwarding disabled")
+      (log/debug "[slack] hive-mcp.channel.core not available - event forwarding disabled")
       nil)))
 
 (defn- start-event-listener!
@@ -591,12 +591,12 @@
                 result (slack-api-request :get "conversations.history" bot-token {:params params})]
             (if (:ok result)
               (let [messages (mapv (fn [msg]
-                                    {:text (:text msg)
-                                     :user (:user msg)
-                                     :ts (:ts msg)
-                                     :type (:type msg)
-                                     :thread-ts (:thread_ts msg)})
-                                  (:messages result))]
+                                     {:text (:text msg)
+                                      :user (:user msg)
+                                      :ts (:ts msg)
+                                      :type (:type msg)
+                                      :thread-ts (:thread_ts msg)})
+                                   (:messages result))]
                 {:success? true
                  :data messages
                  :count (count messages)

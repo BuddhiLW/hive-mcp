@@ -22,7 +22,7 @@
             [hive-mcp.tools.core :refer [mcp-json mcp-error]]
             [hive-mcp.knowledge-graph.edges :as kg-edges]
             [hive-mcp.knowledge-graph.scope :as kg-scope]
-            [hive-mcp.emacsclient :as ec]
+            [hive-mcp.emacs.client :as ec]
             [hive-mcp.chroma :as chroma]
             [clojure.data.json :as json]
             [clojure.edn :as edn]

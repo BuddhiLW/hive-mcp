@@ -1,8 +1,8 @@
-(ns hive-mcp.docs
+(ns hive-mcp.tools.docs
   "MCP tools for Emacs documentation lookup.
    Leverages hive-mcp-docs.el addon for introspection."
   (:require [clojure.string :as str]
-            [hive-mcp.emacsclient :as ec]
+            [hive-mcp.emacs.client :as ec]
             [hive-mcp.tools.core :refer [mcp-success mcp-error]]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;

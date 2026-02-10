@@ -3,14 +3,15 @@
 
    Contains:
    - Phase configuration (tools, permissions, prompts per phase)
-   - Observation scoring (L1/L2 heuristic, L3+ requiring-resolve stub)
+   - Observation scoring (heuristic + enhanced extension)
    - Silence tracking integration with silence.clj
 
    SAA Strategy (Korzybski structural differential):
    - Silence: Observe quietly via read-only tools, collect context
    - Abstract: Synthesize observations into a plan
    - Act: Execute the plan with full tool access"
-  (:require [hive-mcp.agent.sdk.session :as session]))
+  (:require [hive-mcp.agent.sdk.session :as session]
+            [hive-mcp.extensions.registry :as ext]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -91,16 +92,15 @@
 ;;; =============================================================================
 
 (defn score-observations
-  "Score observations using crystal/core promotion scoring.
+  "Score observations using promotion scoring.
    Filters and prioritizes what matters for the Abstract phase.
 
-   Uses requiring-resolve stub pattern for L3+ scoring."
+   Delegates to enhanced extension if available, falls back to heuristic."
   [observations]
-  (if-let [score-fn (try (requiring-resolve 'hive-knowledge.scoring/score-observations)
-                         (catch Exception _ nil))]
-    ;; L3+ proprietary scoring
+  (if-let [score-fn (ext/get-extension :es/score)]
+    ;; Enhanced scoring via extension
     (score-fn observations)
-    ;; L1/L2 fallback: simple heuristic scoring
+    ;; Built-in fallback: simple heuristic scoring
     (let [score-entry (fn [obs]
                         (let [content (str (or (:data obs) obs))
                               ;; Simple heuristics

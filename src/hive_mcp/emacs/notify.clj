@@ -1,4 +1,4 @@
-(ns hive-mcp.notify
+(ns hive-mcp.emacs.notify
   "Desktop notifications via notify-send (freedesktop.org).
    
    Provides OS-level notifications that appear in the system notification area,

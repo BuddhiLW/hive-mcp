@@ -70,7 +70,7 @@
     (let [{:keys [id]} ling-ctx
           {:keys [task]} task-opts
           ;; P3-T2: Thread :raw? through to SDK layer for multi-turn without SAA wrapping
-          ;; Also thread dispatch-context for KG-compressed context in SAA silence phase
+          ;; Also thread dispatch-context for compressed context in SAA silence phase
           dispatch-opts (cond-> (select-keys task-opts [:skip-silence? :skip-abstract? :phase :raw?])
                           (:dispatch-context task-opts)
                           (assoc :dispatch-context (:dispatch-context task-opts)))]

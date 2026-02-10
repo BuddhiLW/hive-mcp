@@ -117,7 +117,7 @@
      (fn [_] {:l1-ids ["node-A"] :l2-queries [] :l3-seeds []})
      #'reconstruction/reconstruct-context
      (fn [refs kg-ids scope]
-       (str "## Reconstructed Context (KG-Compressed)\n"
+       (str "## Reconstructed Context (Compressed)\n"
             "Refs: " (count refs)
             ", KG seeds: " (count kg-ids)
             ", Scope: " scope "\n"))

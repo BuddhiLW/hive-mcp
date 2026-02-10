@@ -9,7 +9,7 @@
    - olympus_focus: Focus/maximize specific ling
    - olympus_arrange: Trigger grid arrangement
    - olympus_tab: Navigate between tabs"
-  (:require [hive-mcp.olympus :as olympus]
+  (:require [hive-mcp.emacs.olympus :as olympus]
             [hive-mcp.swarm.datascript.queries :as ds-queries]
             [hive-mcp.swarm.datascript.connection :as ds-conn]
             [hive-mcp.events.core :as ev]

@@ -1,6 +1,6 @@
 (ns hive-mcp.hooks-test
   (:require [clojure.test :refer :all]
-            [hive-mcp.hooks :as hooks]))
+            [hive-mcp.hooks.core :as hooks]))
 
 ;; =============================================================================
 ;; Hook Events Definition Tests

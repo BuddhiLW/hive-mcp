@@ -17,7 +17,7 @@
             [hive-mcp.tools.swarm.registry :as registry]
             [hive-mcp.swarm.datascript :as ds]
             [hive-mcp.hivemind :as hivemind]
-            [hive-mcp.emacsclient :as ec]
+            [hive-mcp.emacs.client :as ec]
             [hive-mcp.validation :as v]
             [hive-mcp.tools.memory.scope :as scope]
             [hive-mcp.tools.catchup :as catchup]

@@ -77,8 +77,8 @@
   (participant-type [_] :drone)
 
   (send-prompt! [_ prompt]
-    (require 'hive-mcp.agent)
-    (let [delegate-fn (resolve 'hive-mcp.agent/delegate-drone!)]
+    (require 'hive-mcp.agent.core)
+    (let [delegate-fn (resolve 'hive-mcp.agent.core/delegate-drone!)]
       (try
         (let [result (delegate-fn {:task prompt
                                    :preset debate-preset

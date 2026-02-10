@@ -65,7 +65,7 @@
    Opts:
      :backend    - LLMBackend (required)
      :tool-fn    - tool execution fn (default: always success)
-     :record?    - whether to record to session KG"
+     :record?    - whether to record to session store"
   [{:keys [backend tool-fn record?]}]
   (let [obs-log (atom [])
         reason-log (atom [])]
@@ -564,11 +564,11 @@
       (is (= 50 (:total tokens))))))
 
 ;; =============================================================================
-;; 7. Session KG Recording
+;; 7. Session Store Recording
 ;; =============================================================================
 
 (deftest test-fsm-records-observations
-  (testing "observations are recorded to session KG"
+  (testing "observations are recorded to session store"
     (let [backend (mock-backend [(tool-call-response "read_file")
                                  (text-response "All done")])
           resources (make-mock-resources {:backend backend :record? true})

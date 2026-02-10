@@ -171,14 +171,14 @@
                               "priority" {:type "string"
                                           :enum ["low" "normal" "high"]
                                           :description "Task priority for dispatch"}
-                              ;; KG-compressed context params (dispatch)
+                              ;; compressed context params (dispatch)
                               "ctx_refs" {:type "object"
-                                          :description "[dispatch] Map of category->ctx-id for KG-compressed context. When provided, creates RefContext (~25x compression vs text). E.g. {\"axioms\": \"ctx-123\", \"decisions\": \"ctx-456\"}"}
+                                          :description "[dispatch] Map of category->ctx-id for compressed context. When provided, creates RefContext (token-efficient vs text). E.g. {\"axioms\": \"ctx-123\", \"decisions\": \"ctx-456\"}"}
                               "kg_node_ids" {:type "array"
                                              :items {:type "string"}
-                                             :description "[dispatch] KG node IDs for graph traversal seeds. Combined with ctx_refs for structural context reconstruction."}
+                                             :description "[dispatch] Node IDs for context resolution seeds. Combined with ctx_refs for structural context reconstruction."}
                               "scope" {:type "string"
-                                       :description "[dispatch] Project scope for KG traversal (auto-derived from agent if omitted)"}
+                                       :description "[dispatch] Project scope for context resolution (auto-derived from agent if omitted)"}
                               "parent" {:type "string"
                                         :description "Parent agent ID for spawn"}
                               "kanban_task_id" {:type "string"

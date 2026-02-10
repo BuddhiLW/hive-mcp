@@ -1,4 +1,4 @@
-(ns hive-mcp.hooks
+(ns hive-mcp.hooks.core
   "Domain-driven hooks system for event-driven workflow automation.
 
    Implements a registry-based hook system where handlers can be registered
@@ -128,4 +128,3 @@
         results (mapv #(safe-call-handler % context) handlers)]
     (log/debug "Triggered" (count handlers) "hooks for" event)
     (mapv #(if (:error %) % (:result %)) results)))
-

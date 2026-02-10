@@ -11,9 +11,9 @@
    DDD: Application service layer."
   (:require [hive-mcp.crystal.core :as crystal]
             [hive-mcp.crystal.recall :as recall]
-            [hive-mcp.emacsclient :as ec]
-            [hive-mcp.channel :as channel]
-            [hive-mcp.hooks :as hooks]
+            [hive-mcp.emacs.client :as ec]
+            [hive-mcp.channel.core :as channel]
+            [hive-mcp.hooks.core :as hooks]
             [hive-mcp.swarm.datascript :as ds]
             [hive-mcp.events.core :as ev]
             [hive-mcp.agent.context :as ctx]

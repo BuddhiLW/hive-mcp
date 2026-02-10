@@ -1,4 +1,4 @@
-(ns hive-mcp.telemetry
+(ns hive-mcp.telemetry.core
   "Telemetry and logging utilities for evaluation operations.
    Follows CLARITY principle: 'Telemetry first' - observability is essential.
 
@@ -13,7 +13,7 @@
 (defmacro with-timing
   "Execute body and log the operation duration.
    Returns the result of the body execution.
-   
+
    Example:
      (with-timing \"fetch-users\"
        (fetch-users-from-db))"
@@ -26,14 +26,14 @@
 
 (defn log-eval-request
   "Log structured information about an evaluation request.
-   
+
    Parameters:
      - code: The code being evaluated
      - mode: The evaluation mode (e.g., :elisp, :cider-silent, :cider-explicit)
      - metadata: Optional map with additional context
-   
+
    Example:
-     (log-eval-request {:code \"(+ 1 2)\" 
+     (log-eval-request {:code \"(+ 1 2)\"
                         :mode :elisp
                         :metadata {:user \"alice\" :session-id \"123\"}})"
   [{:keys [code mode metadata]}]
@@ -50,19 +50,19 @@
 
 (defn log-eval-result
   "Log structured information about an evaluation result.
-   
+
    Parameters:
      - success: Boolean indicating success/failure
      - error: Error message (when success is false)
      - duration: Duration in milliseconds
      - result-length: Length of result string (optional)
      - metadata: Optional map with additional context
-   
+
    Example:
-     (log-eval-result {:success true 
+     (log-eval-result {:success true
                        :duration-ms 42
                        :result-length 100})
-     
+
      (log-eval-result {:success false
                        :error \"Syntax error\"
                        :duration-ms 15})"
@@ -79,7 +79,7 @@
 
 (defn log-eval-exception
   "Log an unexpected exception during evaluation.
-   
+
    Parameters:
      - exception: The caught exception
      - operation: Name of the operation that failed
@@ -95,15 +95,15 @@
 (defmacro with-eval-telemetry
   "Comprehensive telemetry wrapper for evaluation operations.
    Logs request, result, timing, and any exceptions.
-   
+
    Parameters:
      - mode: Evaluation mode keyword (e.g., :elisp, :cider-silent)
      - code: The code being evaluated
      - metadata: Optional metadata map
      - body: The evaluation code to execute
-   
+
    Returns: Result of body execution
-   
+
    Example:
      (with-eval-telemetry :elisp code {:user-id 123}
        (eval-elisp code))"
@@ -140,12 +140,12 @@
 
 (defn configure-logging!
   "Configure Timbre logging with sensible defaults for production.
-   
+
    Options:
      - :level - Minimum log level (:trace, :debug, :info, :warn, :error)
      - :output-fn - Custom output formatter function
      - :appenders - Map of appender configurations
-   
+
    Example:
      (configure-logging! {:level :info})"
   ([]

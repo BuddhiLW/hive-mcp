@@ -1,4 +1,4 @@
-(ns hive-mcp.elisp
+(ns hive-mcp.emacs.elisp
   "Elisp generation helpers for hive-mcp.
 
    This namespace provides string-based helpers for generating elisp code,
@@ -8,7 +8,7 @@
    As clojure-elisp matures, more features can be migrated to use it.
 
    Usage:
-     (require '[hive-mcp.elisp :as el])
+     (require '[hive-mcp.emacs.elisp :as el])
 
      ;; String-based helpers (stable, recommended)
      (el/require-and-call-json 'hive-mcp-magit 'hive-mcp-magit-api-status)

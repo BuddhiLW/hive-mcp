@@ -7,7 +7,7 @@
    Handlers:
    - search-semantic: Vector similarity search using Chroma embeddings"
   (:require [hive-mcp.chroma :as chroma]
-            [hive-mcp.plans :as plans]
+            [hive-mcp.plan.plans :as plans]
             [hive-mcp.knowledge-graph.edges :as kg-edges]
             [hive-mcp.knowledge-graph.scope :as kg-scope]
             [hive-mcp.tools.memory.scope :as scope]

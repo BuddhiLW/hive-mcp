@@ -15,6 +15,7 @@
             [hive-mcp.agent.sdk.event-loop :as event-loop]
             [hive-mcp.agent.sdk.execution :as exec]
             [hive-mcp.agent.sdk.options :as opts]
+            [hive-mcp.agent.sdk.phase-compress :as phase-compress]
             [hive-mcp.agent.sdk.session :as session]
             [hive-mcp.agent.context-envelope :as ctx-envelope]
             [hive-mcp.protocols.dispatch :as dispatch-ctx]
@@ -117,7 +118,7 @@
       (recur))))
 
 (defn- build-kg-context-prefix
-  "Build KG-compressed context prefix for SAA silence phase.
+  "Build compressed context prefix for SAA silence phase.
    Extracts ctx-refs and kg-node-ids from dispatch-context and builds
    an L2 envelope to prepend to the silence prompt.
    Returns string prefix or nil (CLARITY-Y graceful degradation)."
@@ -129,12 +130,46 @@
           (ctx-envelope/build-l2-envelope ctx-refs kg-node-ids scope
                                           {:mode :inline})))
       (catch Exception e
-        (log/debug "[sdk.lifecycle] KG context prefix failed (non-fatal):" (ex-message e))
+        (log/debug "[sdk.lifecycle] Context prefix failed (non-fatal):" (ex-message e))
         nil))))
+
+(defn- compress-and-transition!
+  "Compress observations from the completed phase and prepare session for the next.
+
+   Uses the resolved IPhaseCompressor (NoOp or custom) to compress the
+   observations collected during from-phase into a compact context string.
+   Updates session state with the compressed context and resets observations.
+
+   Arguments:
+     ling-id    - Ling identifier
+     from-phase - Phase that just completed (keyword)
+     to-phase   - Phase about to start (keyword)
+
+   Returns:
+     Compression result map with :compressed-context, :entries-created, :compressor"
+  [ling-id from-phase to-phase]
+  (let [sess (session/get-session ling-id)
+        compressor (phase-compress/resolve-compressor)
+        result (phase-compress/compress-phase compressor
+                                              (name from-phase)
+                                              (or (:observations sess) [])
+                                              {:project-id (:project-id sess)
+                                               :cwd (:cwd sess)})]
+    (session/update-session! ling-id
+                             {:phase to-phase
+                              :compressed-context (:compressed-context result)
+                              :observations []})
+    (log/info "[sdk.lifecycle] Phase transition compressed"
+              {:ling-id ling-id
+               :from from-phase
+               :to to-phase
+               :compressor (:compressor result)
+               :entries-created (:entries-created result)})
+    result))
 
 (defn- run-saa-silence!
   "Run SAA silence phase: explore codebase and collect observations.
-   When dispatch-context is available in session, prepends KG-compressed
+   When dispatch-context is available in session, prepends compressed
    context to the silence prompt for richer exploration grounding."
   [ling-id task out-ch]
   (let [sess (session/get-session ling-id)
@@ -226,8 +261,16 @@
             (do
               (when-not (or skip-silence? (and phase (not= phase :silence)))
                 (run-saa-silence! ling-id task out-ch))
+              ;; Compress silence observations before abstract phase
+              (when (and (not (or skip-silence? (and phase (not= phase :silence))))
+                         (not (or skip-abstract? (and phase (not= phase :abstract)))))
+                (compress-and-transition! ling-id :silence :abstract))
               (when-not (or skip-abstract? (and phase (not= phase :abstract)))
                 (run-saa-abstract! ling-id task out-ch))
+              ;; Compress abstract output before act phase
+              (when (and (not (or skip-abstract? (and phase (not= phase :abstract))))
+                         (not (and phase (not= phase :act))))
+                (compress-and-transition! ling-id :abstract :act))
               (when-not (and phase (not= phase :act))
                 (run-saa-act! ling-id task out-ch))))
           (emit-dispatch-complete! ling-id out-ch)

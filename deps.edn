@@ -10,6 +10,9 @@
         {:git/tag "v0.1.0-hive" :git/sha "4cef9dd"
          :exclusions [org.apache.logging.log4j/log4j-slf4j2-impl]}
 
+        ;; Python interop for Claude Agent SDK bridge
+        clj-python/libpython-clj {:mvn/version "2.026"}
+
         ;; nREPL client support
         nrepl/bencode {:mvn/version "1.2.0"}
 
@@ -99,7 +102,7 @@
 
  :aliases
  {:mcp
-  {:exec-fn hive-mcp.server/start!
+  {:exec-fn hive-mcp.server.core/start!
    :exec-args {}
    :extra-deps {nrepl/nrepl {:mvn/version "1.3.1"}
                 cider/cider-nrepl {:mvn/version "0.58.0"}}}
@@ -153,12 +156,7 @@
    :exec-fn cognitect.test-runner.api/test
    :exec-args {:includes [:integration]}}
 
-  ;; Optional: libpython-clj for Agent SDK bridge (Python interop)
-  ;; Usage: clj -A:libpython:dev
-  :libpython
-  {:extra-deps {clj-python/libpython-clj {:mvn/version "2.026"}}}
-
-  ;; Local dev overrides for sibling :local/root projects.
+;; Local dev overrides for sibling :local/root projects.
   ;; start-mcp.sh auto-merges deps.local.edn via -Sdeps when present.
   ;; Create deps.local.edn (gitignored) with :deps key, e.g.:
   ;;   {:deps {io.github.hive-agi/hive-events {:local/root "../hive-events"}}}

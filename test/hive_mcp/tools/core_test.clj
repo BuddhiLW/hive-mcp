@@ -9,7 +9,7 @@
             [clojure.data.json :as json]
             [hive-mcp.tools.core :as core]
             [hive-mcp.channel.piggyback :as piggyback]
-            [hive-mcp.emacsclient]))
+            [hive-mcp.emacs.client]))
 
 ;; =============================================================================
 ;; Test Fixtures
@@ -213,7 +213,7 @@
 
 (deftest test-call-elisp-safe-success-default
   (testing "call-elisp-safe returns mcp-json wrapped result on success"
-    (with-redefs [hive-mcp.emacsclient/eval-elisp
+    (with-redefs [hive-mcp.emacs.client/eval-elisp
                   (fn [_elisp] {:success true :result {:status "ok"}})]
       (let [response (core/call-elisp-safe "(some-elisp)")]
         (is (= "text" (:type response)))
@@ -222,7 +222,7 @@
 
 (deftest test-call-elisp-safe-error-default
   (testing "call-elisp-safe returns mcp-json with :error on failure"
-    (with-redefs [hive-mcp.emacsclient/eval-elisp
+    (with-redefs [hive-mcp.emacs.client/eval-elisp
                   (fn [_elisp] {:success false :error "Elisp error occurred"})]
       (let [response (core/call-elisp-safe "(failing-elisp)")]
         (is (= "text" (:type response)))
@@ -231,7 +231,7 @@
 
 (deftest test-call-elisp-safe-custom-on-success
   (testing "call-elisp-safe uses custom :on-success handler"
-    (with-redefs [hive-mcp.emacsclient/eval-elisp
+    (with-redefs [hive-mcp.emacs.client/eval-elisp
                   (fn [_elisp] {:success true :result {:count 42}})]
       (let [response (core/call-elisp-safe "(some-elisp)"
                                            :on-success #(core/mcp-json {:transformed (:count %)}))]
@@ -241,7 +241,7 @@
 
 (deftest test-call-elisp-safe-custom-on-error
   (testing "call-elisp-safe uses custom :on-error handler"
-    (with-redefs [hive-mcp.emacsclient/eval-elisp
+    (with-redefs [hive-mcp.emacs.client/eval-elisp
                   (fn [_elisp] {:success false :error "custom error"})]
       (let [response (core/call-elisp-safe "(failing-elisp)"
                                            :on-error #(core/mcp-error (str "Custom: " %)))]
@@ -251,7 +251,7 @@
 
 (deftest test-call-elisp-safe-string-result
   (testing "call-elisp-safe handles string results correctly"
-    (with-redefs [hive-mcp.emacsclient/eval-elisp
+    (with-redefs [hive-mcp.emacs.client/eval-elisp
                   (fn [_elisp] {:success true :result "plain string result"})]
       (let [response (core/call-elisp-safe "(string-returning-elisp)")]
         (is (= "text" (:type response)))
@@ -260,7 +260,7 @@
 
 (deftest test-call-elisp-safe-nil-result
   (testing "call-elisp-safe handles nil result gracefully"
-    (with-redefs [hive-mcp.emacsclient/eval-elisp
+    (with-redefs [hive-mcp.emacs.client/eval-elisp
                   (fn [_elisp] {:success true :result nil})]
       (let [response (core/call-elisp-safe "(nil-returning-elisp)")]
         (is (= "text" (:type response)))
@@ -283,7 +283,7 @@
 (deftest test-call-elisp-safe-elisp-code-passed-through
   (testing "call-elisp-safe passes elisp code to eval-elisp"
     (let [captured-elisp (atom nil)]
-      (with-redefs [hive-mcp.emacsclient/eval-elisp
+      (with-redefs [hive-mcp.emacs.client/eval-elisp
                     (fn [elisp]
                       (reset! captured-elisp elisp)
                       {:success true :result :ok})]

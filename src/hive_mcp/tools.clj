@@ -40,8 +40,8 @@
    [hive-mcp.tools.overarch :as overarch]
    [hive-mcp.plan.tool :as plan]
    ;; hivemind/tools REMOVED - compat shims delegate to consolidated
-   [hive-mcp.channel :as channel]
-   [hive-mcp.agent :as agent]
+   [hive-mcp.channel.core :as channel]
+   [hive-mcp.agent.core :as agent]
    [hive-mcp.chroma :as chroma]
    ;; Consolidated CLI tools (new unified interface)
    [hive-mcp.tools.consolidated.agent :as c-agent]

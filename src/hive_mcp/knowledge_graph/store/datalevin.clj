@@ -184,8 +184,8 @@
      opts - Optional map with:
        :db-path      - Path for LMDB storage (default: data/kg/datalevin)
        :extra-schema - Additional DataScript-format schema to merge with base KG schema.
-                       Useful for per-drone session KG attributes (obs/*, reason/*, etc.)
-                       that shouldn't pollute the global KG schema.
+                       Useful for per-drone session store attributes (obs/*, reason/*, etc.)
+                       that shouldn't pollute the global schema.
 
    Returns an IKGStore implementation.
 

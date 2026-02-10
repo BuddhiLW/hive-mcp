@@ -311,7 +311,7 @@
                       []))
                   hive-mcp.knowledge-graph.edges/edge-stats
                   (fn [] {:total-edges 0})
-                  hive-mcp.emacsclient/eval-elisp-with-timeout
+                  hive-mcp.emacs.client/eval-elisp-with-timeout
                   (fn [_ _] {:success true :result "{\"branch\":\"main\",\"uncommitted\":false,\"last-commit\":\"abc\"}"})]
       (let [result (hive-mcp.tools.catchup/spawn-context "/tmp/test" {:mode :hints})]
         (is (string? result))
@@ -333,7 +333,7 @@
                   (fn [_ _ _ _] [])
                   hive-mcp.knowledge-graph.disc/top-stale-files
                   (fn [& _] [])
-                  hive-mcp.emacsclient/eval-elisp-with-timeout
+                  hive-mcp.emacs.client/eval-elisp-with-timeout
                   (fn [_ _] {:success true :result "{\"branch\":\"main\",\"uncommitted\":false,\"last-commit\":\"abc\"}"})]
       (let [result (hive-mcp.tools.catchup/spawn-context "/tmp/test")]
         (is (string? result))

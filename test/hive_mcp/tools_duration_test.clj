@@ -21,8 +21,8 @@
             [hive-mcp.tools.core :as core]
             [hive-mcp.tools.memory :as memory]
             [hive-mcp.chroma :as chroma]
-            [hive-mcp.emacsclient :as ec]
-            [hive-mcp.elisp :as el]))
+            [hive-mcp.emacs.client :as ec]
+            [hive-mcp.emacs.elisp :as el]))
 
 ;; =============================================================================
 ;; Test Fixtures and Helpers

@@ -35,9 +35,10 @@
             [hive-mcp.tools.memory.scope :as scope]
             [hive-mcp.agent.context :as ctx]
             [hive-mcp.config :as config]
-            [hive-mcp.emacsclient :as ec]
+            [hive-mcp.emacs.client :as ec]
             [hive-mcp.agent.headless :as headless]
             [hive-mcp.workflows.forge-belt :as forge-belt]
+            [hive-mcp.scheduler.vulcan :as vulcan]
             [clojure.data.json :as json]
             [taoensso.timbre :as log]
             [clojure.string :as str]))
@@ -106,40 +107,67 @@
 ;; SURVEY — Kanban todo tasks, ranked by priority
 ;; =============================================================================
 
-(defn- survey
-  "Query kanban for todo tasks, ranked by priority DESC then creation-date ASC.
-   Returns {:tasks [...] :count N}.
+(defn- parse-kanban-tasks
+  "Parse kanban list handler response into a vector of task maps.
+   Handles both flat arrays and wrapped {:tasks [...]} responses.
 
-   Sort order: high > medium > low priority. Within same priority,
-   older tasks first (by :id which encodes creation timestamp).
+   CLARITY: R - Pure parsing, no side effects."
+  [result]
+  (let [text (if (map? result) (:text result) result)
+        parsed (when (string? text)
+                 (try (json/read-str text :key-fn keyword)
+                      (catch Exception _ nil)))]
+    (cond
+      (sequential? parsed) parsed
+      (map? parsed)        (or (:tasks parsed) [])
+      :else                [])))
+
+(defn- sort-by-priority-then-created
+  "Sort tasks by priority DESC (high > medium > low), then creation-date ASC.
+   Uses :id for creation ordering (IDs encode timestamp).
+
+   CLARITY: R - Pure sort calculation."
+  [tasks]
+  (let [priority-order {"high" 0 "priority-high" 0
+                        "medium" 1 "priority-medium" 1
+                        "low" 2 "priority-low" 2}]
+    (vec (sort (fn [a b]
+                 (let [pa (get priority-order (or (:priority a) "medium") 1)
+                       pb (get priority-order (or (:priority b) "medium") 1)]
+                   (if (= pa pb)
+                     (compare (str (:id a)) (str (:id b)))
+                     (compare pa pb))))
+               tasks))))
+
+(defn- survey
+  "Query kanban for todo tasks, ranked and optionally filtered by dependencies.
+
+   When vulcan-mode is false (default):
+     Simple sort by priority DESC > creation-date ASC.
+
+   When vulcan-mode is true:
+     1. Filters out tasks blocked by incomplete KG :depends-on deps
+     2. Enriches ready tasks with wave numbers (dependency depth)
+     3. Sorts by priority > wave-number > creation-date
+
+   Returns {:tasks [...] :count N} (+ :blocked-count N when vulcan-mode).
 
    CLARITY: R - Read-only survey of available work."
-  [{:keys [directory]}]
+  [{:keys [directory vulcan-mode]}]
   (try
-    (let [;; Get todo tasks via kanban list handler
-          result (c-kanban/handle-kanban {:command "list" :status "todo" :directory directory})
-          ;; Parse the result — it's an MCP response with :text containing JSON
-          text (if (map? result) (:text result) result)
-          parsed (when (string? text)
-                   (try (json/read-str text :key-fn keyword)
-                        (catch Exception _ nil)))
-          tasks (cond
-                  (sequential? parsed) parsed        ;; kanban list returns flat array
-                  (map? parsed)        (or (:tasks parsed) [])
-                  :else                [])
-          ;; Sort by priority DESC, then creation-date ASC within same priority
-          priority-order {"high" 0 "priority-high" 0
-                          "medium" 1 "priority-medium" 1
-                          "low" 2 "priority-low" 2}
-          sorted-tasks (sort (fn [a b]
-                               (let [pa (get priority-order (or (:priority a) "medium") 1)
-                                     pb (get priority-order (or (:priority b) "medium") 1)]
-                                 (if (= pa pb)
-                                   (compare (str (:id a)) (str (:id b)))
-                                   (compare pa pb))))
-                             tasks)]
-      {:tasks (vec sorted-tasks)
-       :count (count sorted-tasks)})
+    (let [result (c-kanban/handle-kanban {:command "list" :status "todo" :directory directory})
+          tasks (parse-kanban-tasks result)]
+      (if vulcan-mode
+        ;; Vulcan mode: KG-aware filtering + sorting
+        (let [prioritized (vulcan/prioritize-tasks tasks)]
+          (log/info "SURVEY (vulcan): ready" (:count prioritized)
+                    "blocked" (:blocked-count prioritized)
+                    "of" (count tasks) "total")
+          prioritized)
+        ;; Default mode: simple priority + creation sort
+        (let [sorted-tasks (sort-by-priority-then-created tasks)]
+          {:tasks sorted-tasks
+           :count (count sorted-tasks)})))
     (catch Exception e
       (log/warn "SURVEY failed" {:error (ex-message e)})
       {:tasks [] :count 0 :error (ex-message e)})))
@@ -381,20 +409,22 @@
 
    Args:
      params — {:directory string, :max_slots int, :presets [string],
-               :spawn_mode string, :model string}
+               :spawn_mode string, :model string, :vulcan_mode bool}
 
    Returns a resources map conforming to forge_belt.clj's contract:
      {:agent-ops, :kanban-ops, :scope-fn, :clock-fn, :config, :directory}
 
    SOLID: D — FSM depends on abstractions (resource fns), not concretions.
    CLARITY: L — Adapter at boundary between pure FSM and imperative tools."
-  [{:keys [directory max_slots presets spawn_mode model]}]
-  (let [effective-spawn-mode (when spawn_mode (keyword spawn_mode))]
+  [{:keys [directory max_slots presets spawn_mode model vulcan_mode]}]
+  (let [effective-spawn-mode (when spawn_mode (keyword spawn_mode))
+        effective-vulcan? (boolean vulcan_mode)]
     {:directory  directory
      :config     {:max-slots  (or max_slots 10)
                   :presets    (or presets ["ling" "mcp-first" "saa"])
                   :spawn-mode effective-spawn-mode
-                  :model      model}
+                  :model      model
+                  :vulcan-mode effective-vulcan?}
      :agent-ops  {:kill-fn  (fn [dir _project-id]
                               (smite! {:directory dir}))
                   :spawn-fn (fn [{:keys [directory max-slots presets tasks] :as opts}]
@@ -409,7 +439,9 @@
                                         ;; Forward model from config if not overridden in opts
                                         (or (:model opts) model)
                                         (assoc :model (or (:model opts) model)))))}
-     :kanban-ops {:list-fn   (fn [dir] (survey {:directory dir}))
+     :kanban-ops {:list-fn   (fn [dir]
+                               (survey {:directory dir
+                                        :vulcan-mode effective-vulcan?}))
                   :update-fn (fn [_opts] nil)}
      :scope-fn   (fn [dir]
                    (when dir (scope/get-current-project-id dir)))
@@ -427,7 +459,7 @@
    This legacy path will be removed in a future release.
 
    CLARITY: A - Legacy orchestration, superseded by FSM path."
-  [{:keys [directory max_slots presets spawn_mode model] :as params}]
+  [{:keys [directory max_slots presets spawn_mode model vulcan_mode] :as params}]
   (log/warn "DEPRECATED: forge strike-legacy called. Use 'forge strike' (FSM) instead."
             {:directory directory})
   (if (:quenched? @forge-state)
@@ -443,8 +475,9 @@
       (let [smite-result (smite! params)
             _ (log/info "FORGE STRIKE: SMITE complete" {:killed (:count smite-result)})
 
-            ;; Phase 2: SURVEY
-            survey-result (survey params)
+            ;; Phase 2: SURVEY (pass vulcan-mode via kebab-case key)
+            survey-result (survey {:directory directory
+                                   :vulcan-mode (boolean vulcan_mode)})
             _ (log/info "FORGE STRIKE: SURVEY complete" {:tasks (:count survey-result)})
 
             ;; Phase 3: SPARK
@@ -528,14 +561,17 @@
    imperative path for emergency rollback. Otherwise routes to FSM engine.
 
    Parameters:
-     directory   - Working directory for project scoping (optional)
-     max_slots   - Max concurrent lings (default: 10)
-     presets     - Ling presets (default: [ling mcp-first saa])
-     spawn_mode  - Spawn mode: 'vterm' (default) or 'headless'
-                   'headless' maps to :agent-sdk (default headless since 0.12.0).
-     model       - Model override for spawned lings: 'claude' (default) or
-                   OpenRouter model ID (e.g. 'moonshotai/kimi-k2.5').
-                   Non-claude models auto-force headless/openrouter spawn mode.
+     directory    - Working directory for project scoping (optional)
+     max_slots    - Max concurrent lings (default: 10)
+     presets      - Ling presets (default: [ling mcp-first saa])
+     spawn_mode   - Spawn mode: 'vterm' (default) or 'headless'
+                    'headless' maps to :agent-sdk (default headless since 0.12.0).
+     model        - Model override for spawned lings: 'claude' (default) or
+                    OpenRouter model ID (e.g. 'moonshotai/kimi-k2.5').
+                    Non-claude models auto-force headless/openrouter spawn mode.
+     vulcan_mode  - When true, enables KG-aware dependency filtering:
+                    tasks blocked by incomplete deps are excluded, ready tasks
+                    sorted by priority > wave-number > creation-date. (default: false)
 
    Returns combined result of all three phases.
 
@@ -687,6 +723,9 @@
                                             :description "Spawn mode for lings: 'vterm' (default, Emacs buffer) or 'headless' (OS subprocess, no Emacs required). Note: 'headless' maps to :agent-sdk (Claude Agent SDK) since 0.12.0."}
                               "model" {:type "string"
                                        :description "Model override for spawned lings: 'claude' (default, Claude Code CLI) or OpenRouter model ID (e.g., 'moonshotai/kimi-k2.5'). Non-claude models auto-force headless/openrouter spawn mode for cost-efficient bulk work."}
+                              ;; vulcan mode
+                              "vulcan_mode" {:type "boolean"
+                                             :description "When true, enables KG-aware dependency filtering in survey phase. Tasks blocked by incomplete KG :depends-on edges are excluded. Ready tasks sorted by priority > wave-number > creation-date. (default: false)"}
                               ;; quench params
                               "restart" {:type "boolean"
                                          :description "Pass true to unquench/restart the forge belt"}}

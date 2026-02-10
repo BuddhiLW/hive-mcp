@@ -201,14 +201,14 @@
 (defn ling-catchup
   "Produce compact context blob for ling spawn injection.
 
-   Replaces the heavy coordinator /catchup with a targeted, KG-compressed
+   Replaces the heavy coordinator /catchup with a targeted, compressed
    context reconstruction (~1-3K tokens vs ~10K+).
 
    Arguments:
      opts - Map with:
             :directory      - Working directory for project scoping (required)
             :task           - Task description string (optional, unused currently)
-            :kanban-task-id - Kanban task memory ID (optional, enables KG targeting)
+            :kanban-task-id - Kanban task memory ID (optional, enables context targeting)
 
    Returns:
      Compact context markdown string (~1-3K tokens), or nil on failure.
@@ -218,8 +218,8 @@
      2. Resolve project scope
      3. Fetch axioms + priority conventions
      4. Cache in context-store for reconstruction pipeline
-     5. Extract KG seeds from kanban task (if provided)
-     6. Run KG-compressed reconstruction
+     5. Extract context seeds from kanban task (if provided)
+     6. Run compressed reconstruction
      7. Append git status + task context
 
    CLARITY-Y: Never throws — returns nil on failure."
@@ -234,7 +234,7 @@
             ;; Step 2: Cache in context-store
             ctx-refs (cache-ling-entries! memory project-id)
 
-            ;; Step 3: KG seeds from kanban task
+            ;; Step 3: context seeds from kanban task
             kg-seeds (or (extract-kg-seeds kanban-task-id) [])
 
             ;; Step 4: Reconstruct compressed context

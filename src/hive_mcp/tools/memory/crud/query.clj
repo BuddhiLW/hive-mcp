@@ -19,7 +19,7 @@
             [hive-mcp.tools.memory.format :as fmt]
             [hive-mcp.tools.core :refer [mcp-json mcp-error coerce-int!]]
             [hive-mcp.chroma :as chroma]
-            [hive-mcp.plans :as plans]
+            [hive-mcp.plan.plans :as plans]
             [hive-mcp.knowledge-graph.edges :as kg-edges]
             [hive-mcp.knowledge-graph.scope :as kg-scope]
             [hive-mcp.agent.context :as ctx]

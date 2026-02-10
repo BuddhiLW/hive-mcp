@@ -12,7 +12,7 @@
           -> compress-to-kg -> check-done -> (loop back or finalize -> end)
 
    Each phase delegates to a compiled sub-FSM:
-   - context-gather: KG-compressed context reconstruction
+   - context-gather: compressed context reconstruction
    - llm-call: LLM API interaction with tool schema injection
    - tool-execution: Permission-checked tool invocation with observation capture
 

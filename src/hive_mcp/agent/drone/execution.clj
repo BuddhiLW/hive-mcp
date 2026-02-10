@@ -221,12 +221,14 @@
      ex-info if file paths escape project directory (CLARITY-I)."
   [ctx task-spec config]
   (let [{:keys [drone-id project-root]} ctx
-        {:keys [task files]} task-spec
+        {:keys [task files options]} task-spec
         {:keys [model step-budget]} config
         cwd (or (:cwd task-spec) project-root)
 
-        ;; Augment task with context
-        augmented-task (augment/augment-task task files {:project-root cwd})
+        ;; Augment task with context (pass seeds for domain priming)
+        augmented-task (augment/augment-task task files
+                                             (cond-> {:project-root cwd}
+                                               (seq (:seeds options)) (assoc :seeds (:seeds options))))
 
         ;; Create sandbox
         effective-root (or cwd (diff/get-project-root))
@@ -425,7 +427,7 @@
    - Delegates execution to resolved backend
 
    Arguments:
-     ctx       - ExecutionContext (must have :kg-store for session KG)
+     ctx       - ExecutionContext (must have :kg-store for session store)
      task-spec - TaskSpec record
      config    - Prepared config from phase:prepare
 
@@ -772,7 +774,7 @@
 
    Like run-execution! but uses the in-process agentic loop (phase:execute-agentic!)
    instead of delegating to an external function. The agentic loop provides:
-   - Multi-turn think-act-observe with session KG (Datalevin)
+   - Multi-turn think-act-observe with session store (Datalevin)
    - Context compression via KG reconstruction (~5-10x vs raw history)
    - Termination heuristics (completion language, max turns, failures)
    - Per-drone KG isolation with merge-back to global
@@ -791,7 +793,7 @@
                       (System/getenv "CLAUDE_SWARM_SLAVE_ID"))
         cwd (or (:cwd task-spec) (diff/get-project-root))
 
-        ;; Create per-drone isolated session KG (Datalevin-backed)
+        ;; Create per-drone isolated session store (Datalevin-backed)
         session-kg-store (try
                            (session-kg/create-session-kg! drone-id)
                            (catch Exception e
@@ -807,7 +809,7 @@
                                             :error (.getMessage e2)})
                                  nil))))
 
-        ;; Create execution context with session KG store
+        ;; Create execution context with session store store
         ctx (domain/->execution-context
              {:drone-id drone-id
               :task-id task-id
@@ -841,7 +843,7 @@
 
       (finally
         ;; Phase 6: Cleanup (always)
-        ;; Close session KG and clean up temp directory
+        ;; Close session store and clean up temp directory
         (when session-kg-store
           (try
             (session-kg/close-session-kg! session-kg-store drone-id)

@@ -25,7 +25,7 @@
             [hive-mcp.events.handlers.saa-fx :as saa-fx]
             [hive-mcp.swarm.coordinator :as coordinator]
             [hive-mcp.validation :as v]
-            [hive-mcp.emacsclient :as ec]
+            [hive-mcp.emacs.client :as ec]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;

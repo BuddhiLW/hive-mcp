@@ -13,7 +13,7 @@
             [hive-mcp.config :as config]
             [hive-mcp.transport.websocket :as ws]
             [hive-mcp.transport.olympus :as olympus-ws]
-            [hive-mcp.channel :as channel]
+            [hive-mcp.channel.core :as channel]
             [hive-mcp.channel.websocket :as ws-channel]
             [clojure.core.async :as async]
             [taoensso.timbre :as log]))

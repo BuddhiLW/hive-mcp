@@ -15,7 +15,7 @@
   (:require [hive-mcp.agent.protocol :as proto]
             [hive-mcp.agent.ollama :as ollama]
             [hive-mcp.agent.openrouter :as openrouter]
-            [hive-mcp.emacsclient :as ec]
+            [hive-mcp.emacs.client :as ec]
             [clojure.data.json :as json]
             [taoensso.timbre :as log])
   (:import [java.util.concurrent ArrayBlockingQueue TimeUnit]))

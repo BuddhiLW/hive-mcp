@@ -17,7 +17,7 @@
             [hive-mcp.plan.parser :as parser]
             [hive-mcp.plan.fsm :as plan-fsm]
             [hive-mcp.chroma :as chroma]
-            [hive-mcp.plans :as plans]
+            [hive-mcp.plan.plans :as plans]
             [hive-mcp.knowledge-graph.edges :as kg-edges]
             [hive-mcp.agent.context :as ctx]
             [clojure.data.json :as json]

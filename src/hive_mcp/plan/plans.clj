@@ -1,4 +1,4 @@
-(ns hive-mcp.plans
+(ns hive-mcp.plan.plans
   "Chroma vector database integration for plan memory entries.
 
    Plans are large memory entries (1000-5000+ chars) that exceed the

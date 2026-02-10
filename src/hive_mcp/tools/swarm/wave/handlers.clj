@@ -83,17 +83,19 @@
      ensure_dirs    - Create parent directories before dispatch (default: true)
      validate_paths - Fail fast if paths are invalid (default: true)
      mode           - Execution mode: \"delegate\" (default) or \"agentic\"
-                      When \"agentic\", uses in-process agentic loop with session KG
+                      When \"agentic\", uses in-process agentic loop with session store
      backend        - Drone execution backend (optional)
                       One of: \"openrouter\", \"hive-agent\", \"legacy-loop\", \"sdk-drone\"
                       Defaults to :openrouter for delegate mode, :hive-agent for agentic mode
      model          - Override model for all drones in this wave (optional)
                       Bypasses smart routing when provided
+     seeds          - Domain topic seeds for context priming (optional)
+                      e.g. [\"fp\" \"ddd\"]. Injects relevant domain knowledge.
 
    Returns:
      JSON with wave-id for immediate response.
      Actual execution happens asynchronously."
-  [{:keys [tasks preset trace cwd ensure_dirs validate_paths mode backend model]}]
+  [{:keys [tasks preset trace cwd ensure_dirs validate_paths mode backend model seeds]}]
   ;; DEPRECATION WARNING: Prefer unified 'delegate' tool
   (log/warn {:event :deprecation-warning
              :tool "dispatch_drone_wave"
@@ -134,7 +136,8 @@
                                                    :cwd effective-cwd
                                                    :mode effective-mode}
                                             effective-backend (assoc :backend effective-backend)
-                                            model (assoc :model model)))]
+                                            model (assoc :model model)
+                                            (seq seeds) (assoc :seeds (vec seeds))))]
         {:type "text"
          :text (json/write-str (cond-> {:status "dispatched"
                                         :plan_id plan-id
@@ -143,7 +146,7 @@
                                         :mode (name effective-mode)
                                         :message (str "Wave dispatched to background"
                                                       (when (= :agentic effective-mode)
-                                                        " (agentic mode with session KG)")
+                                                        " (agentic mode with session store)")
                                                       (when effective-backend
                                                         (str " (backend: " (name effective-backend) ")"))
                                                       ". Poll get_wave_status(wave_id) for progress.")}

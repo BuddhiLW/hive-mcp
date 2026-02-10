@@ -22,7 +22,7 @@
             [hive-mcp.tools.memory.gaps :as gaps]
             [hive-mcp.tools.core :refer [mcp-json mcp-error coerce-vec!]]
             [hive-mcp.chroma :as chroma]
-            [hive-mcp.plans :as plans]
+            [hive-mcp.plan.plans :as plans]
             [hive-mcp.plan.gate :as plan-gate]
             [hive-mcp.knowledge-graph.edges :as kg-edges]
             [hive-mcp.knowledge-graph.schema :as kg-schema]
@@ -156,7 +156,7 @@
               (when (seq edge-ids) (str " with " (count edge-ids) " KG edges"))
               (when (seq knowledge-gaps) (str " gaps:" (count knowledge-gaps))))
     (try
-      (when-let [publish-fn (requiring-resolve 'hive-mcp.channel/publish!)]
+      (when-let [publish-fn (requiring-resolve 'hive-mcp.channel.core/publish!)]
         (publish-fn {:type :memory-added :id entry-id :memory-type type
                      :tags tags-with-scope :project-id project-id}))
       (catch Exception _ nil))

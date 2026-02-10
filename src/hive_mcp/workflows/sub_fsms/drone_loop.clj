@@ -43,7 +43,7 @@
 
      :backend          — LLMBackend instance (required)
      :tool-schemas     — vector of tool schema maps
-     :session-store    — IKGStore for session KG (optional)
+     :session-store    — IKGStore for session store (optional)
      :agent-id         — agent ID for executor/tracking
      :execute-tools-fn — (fn [agent-id calls permissions] -> [result-msgs])
      :record-obs-fn    — (fn [store turn tool-name result opts] -> count)
@@ -140,7 +140,7 @@
    Sets up:
    - Turn counter, token accumulators, step history
    - System prompt from task spec
-   - Session KG seeding (if store available)
+   - Session store seeding (if store available)
 
    Resources used: :seed-kg-fn, :emit-fn"
   [resources data]
@@ -155,12 +155,12 @@
                :files (count (or files []))
                :has-session-store? (some? session-store)})
 
-    ;; Seed session KG from global context (side effect via resource fn)
+    ;; Seed session store from global context (side effect via resource fn)
     (when (and seed-kg-fn session-store)
       (try
         (seed-kg-fn session-store {:task task :files files})
         (catch Exception e
-          (log/debug "Session KG seeding failed (non-fatal)" {:error (.getMessage e)}))))
+          (log/debug "Session store seeding failed (non-fatal)" {:error (.getMessage e)}))))
 
     ;; Emit started event
     (when emit-fn
@@ -187,7 +187,7 @@
   "Reconstruct compressed context from session store for current turn.
 
    On turn 0: uses raw task as context (no history yet).
-   On turn N>0: delegates to reconstruct-fn which queries the session KG
+   On turn N>0: delegates to reconstruct-fn which queries the session store
    for compressed observations/reasoning from previous turns.
 
    Resources used: :reconstruct-fn, :session-store"
@@ -706,7 +706,7 @@
    Args:
      backend       - LLMBackend instance
      opts          - Optional overrides:
-       :session-store  - IKGStore for session KG
+       :session-store  - IKGStore for session store
        :tools          - tool name allowlist
        :permissions    - tool permission set
        :agent-id       - agent ID string
@@ -751,6 +751,6 @@
                              (when (some-> (resolve-fn 'hive-mcp.protocols.kg/store-set?) deref)
                                (seed-fn store (global-store-fn) seed-opts)))))
      :emit-fn          (when trace?
-                         (when-let [emit-fn (resolve-fn 'hive-mcp.channel/emit-event!)]
+                         (when-let [emit-fn (resolve-fn 'hive-mcp.channel.core/emit-event!)]
                            (fn [event-type event-data]
                              (emit-fn event-type (assoc event-data :agent-id agent-id)))))}))

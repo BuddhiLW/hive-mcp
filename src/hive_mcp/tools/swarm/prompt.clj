@@ -9,9 +9,9 @@
    SOLID: SRP - Single responsibility for prompt management.
    CLARITY: I - Inputs validated for slave_id and response."
   (:require [hive-mcp.tools.swarm.core :as core]
-            [hive-mcp.emacsclient :as ec]
+            [hive-mcp.emacs.client :as ec]
             [hive-mcp.validation :as v]
-            [hive-mcp.channel :as channel]
+            [hive-mcp.channel.core :as channel]
             [clojure.data.json :as json]
             [clojure.string :as str]
             [taoensso.timbre :as log]))

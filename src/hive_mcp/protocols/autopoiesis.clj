@@ -1,7 +1,7 @@
 (ns hive-mcp.protocols.autopoiesis
   "Protocol definitions for self-creating knowledge systems.
 
-   IAutopoiesis: Interface between hive-mcp (open) and hive-knowledge (proprietary).
+   IAutopoiesis: Interface between hive-mcp core and optional extensions.
    Defines a system that creates and maintains itself - the defining
    characteristic of living systems (Maturana & Varela, 1972).
 
@@ -48,10 +48,10 @@
 
    Implementations:
    - BasicAutopoiesis: No-op fallback (hive-mcp default)
-   - EnhancedAutopoiesis: Full implementation (hive-knowledge)
+   - EnhancedAutopoiesis: Full implementation (via extension)
 
    The protocol allows hive-mcp to function independently while enabling
-   enhanced capabilities when hive-knowledge is available."
+   enhanced capabilities when extensions are available."
 
   (observe [this query opts]
     "Query with structural awareness and staleness checks.
@@ -392,7 +392,7 @@
      :clusters []
      :novel? false
      :enhanced? false
-     :message "BasicAutopoiesis: Pattern emergence requires hive-knowledge."})
+     :message "BasicAutopoiesis: Pattern emergence requires enhanced extension."})
 
   (cross-pollinate [_ _entry-id]
     ;; No-op: No cross-project analysis
@@ -400,7 +400,7 @@
      :transferable? false
      :adaptations []
      :enhanced? false
-     :message "BasicAutopoiesis: Cross-pollination requires hive-knowledge."})
+     :message "BasicAutopoiesis: Cross-pollination requires enhanced extension."})
 
   (learn [_ _exploration-result]
     ;; No-op: No automatic learning extraction
@@ -409,7 +409,7 @@
      :gaps-filled []
      :new-gaps []
      :enhanced? false
-     :message "BasicAutopoiesis: Automatic learning requires hive-knowledge."})
+     :message "BasicAutopoiesis: Automatic learning requires enhanced extension."})
 
   (decay [_]
     ;; No-op: No automatic decay/pruning
@@ -418,7 +418,7 @@
      :promoted 0
      :demoted 0
      :enhanced? false
-     :message "BasicAutopoiesis: Automatic decay requires hive-knowledge."})
+     :message "BasicAutopoiesis: Automatic decay requires enhanced extension."})
 
   (self-modify! [_ _modification]
     ;; No-op: No self-modification without enhanced implementation
@@ -429,7 +429,7 @@
      :timestamp (java.time.Instant/now)
      :rollback-fn nil
      :enhanced? false
-     :message "BasicAutopoiesis: Self-modification requires hive-knowledge."})
+     :message "BasicAutopoiesis: Self-modification requires enhanced extension."})
 
   (adaptation-history [_ _opts]
     ;; No-op: No adaptation tracking without enhanced implementation
@@ -437,7 +437,7 @@
      :count 0
      :active-params {}
      :enhanced? false
-     :message "BasicAutopoiesis: Adaptation history requires hive-knowledge."})
+     :message "BasicAutopoiesis: Adaptation history requires enhanced extension."})
 
   (adaptation-score [_]
     ;; No-op: Return neutral score
@@ -449,7 +449,7 @@
      :recommendations []
      :confidence 0.0
      :enhanced? false
-     :message "BasicAutopoiesis: Adaptation scoring requires hive-knowledge."}))
+     :message "BasicAutopoiesis: Adaptation scoring requires enhanced extension."}))
 
 ;;; ============================================================================
 ;;; BasicIntrospect (No-Op Fallback Implementation)
@@ -466,7 +466,7 @@
      :influenced []
      :trust-chain []
      :narrative (str "BasicIntrospect: No detailed explanation available for " entry-id
-                     ". Enhanced introspection requires hive-knowledge.")
+                     ". Enhanced introspection requires enhanced extension.")
      :enhanced? false})
 
   (trace [_ _query _result]
@@ -475,7 +475,7 @@
      :filters []
      :scores {}
      :alternatives []
-     :narrative "BasicIntrospect: Query tracing requires hive-knowledge."
+     :narrative "BasicIntrospect: Query tracing requires enhanced extension."
      :enhanced? false})
 
   (diff [_ entry-id-a entry-id-b]
@@ -486,7 +486,7 @@
      :semantic-diff nil
      :relationship :unknown
      :narrative (str "BasicIntrospect: Comparison between " entry-id-a " and " entry-id-b
-                     " requires hive-knowledge.")
+                     " requires enhanced extension.")
      :enhanced? false})
 
   (observe-state [_]
@@ -500,12 +500,12 @@
      :last-emergence nil
      :pending-ops 0
      :enhanced? false
-     :message "BasicIntrospect: State observation requires hive-knowledge."})
+     :message "BasicIntrospect: State observation requires enhanced extension."})
 
   (diagnose [_ _symptom]
     ;; No-op: Return empty diagnosis
     {:diagnosis :unavailable
-     :explanation "BasicIntrospect: Diagnosis requires hive-knowledge."
+     :explanation "BasicIntrospect: Diagnosis requires enhanced extension."
      :contributing []
      :recommended []
      :related-entries []
@@ -523,7 +523,7 @@
      :recommendations []
      :generated-at (java.time.Instant/now)
      :enhanced? false
-     :message "BasicIntrospect: Health reporting requires hive-knowledge."}))
+     :message "BasicIntrospect: Health reporting requires enhanced extension."}))
 
 ;;; ============================================================================
 ;;; Active Implementation Management
@@ -556,7 +556,7 @@
   "Get the active autopoiesis implementation.
 
    Returns BasicAutopoiesis if no enhanced implementation is set.
-   This ensures hive-mcp always works, with or without hive-knowledge."
+   This ensures hive-mcp always works, with or without enhanced extensions."
   []
   (or @active-autopoiesis
       (->BasicAutopoiesis)))

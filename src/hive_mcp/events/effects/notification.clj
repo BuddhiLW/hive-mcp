@@ -20,7 +20,7 @@
   (:require [hive-mcp.events.core :as ev]
             [hive-mcp.hivemind :as hivemind]
             [hive-mcp.swarm.datascript :as ds]
-            [hive-mcp.channel :as channel]
+            [hive-mcp.channel.core :as channel]
             [hive-mcp.agent.context :as ctx]
             [datascript.core :as d]
             [taoensso.timbre :as log]))

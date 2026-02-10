@@ -13,6 +13,8 @@
             [hive-mcp.agent.drone.sandbox :as sandbox]
             [hive-mcp.agent.drone.context :as ctx]
             [hive-mcp.agent.drone.kg-context :as kg-ctx]
+            [hive-mcp.agent.drone.kg-priming :as kg-priming]
+            [hive-mcp.agent.drone.unified-context :as unified-ctx]
             [hive-mcp.knowledge-graph.disc :as kg-disc]
             [hive-mcp.tools.diff :as diff]
             [clojure.data.json :as json]
@@ -142,10 +144,10 @@
     (let [contexts (for [f files]
                      (try
                        (let [ctx-data (ctx/build-drone-context
-                                        {:file-path f
-                                         :task task
-                                         :project-root project-root
-                                         :project-id project-id})]
+                                       {:file-path f
+                                        :task task
+                                        :project-root project-root
+                                        :project-id project-id})]
                          (when (:formatted ctx-data)
                            (str "## Smart Context for " f "\n"
                                 (:formatted ctx-data))))
@@ -163,7 +165,14 @@
 (defn augment-task
   "Augment task with context and file contents using KG-first approach.
 
-   KG-First Flow:
+   Supports two context modes:
+   - **Unified** (default when available): Single KG traversal gathers both
+     conventions AND domain knowledge via structural edges. More efficient,
+     discovers connections between conventions and domain entities.
+   - **Legacy**: Separate pipelines for prepare-context, smart-context,
+     and domain priming. Used when unified context is unavailable.
+
+   KG-First Flow (file contents):
    1. Consult KG for existing knowledge about files
    2. For :kg-known files -> inject KG summary (skip file read)
    3. For :needs-read/:stale -> read file contents
@@ -175,19 +184,59 @@
        :project-root    - Optional project root override
        :project-id      - Optional project ID for memory scoping
        :use-kg-first    - Whether to use KG-first approach (default: true)
+       :use-unified     - Whether to use unified KG traversal (default: true)
        :return-metadata - If true, returns map with {:task :files-read :kg-skipped}
+       :seeds           - Domain topic seeds for context priming (optional)
 
    Returns:
      Augmented task string, or map with metadata if :return-metadata is true."
-  [task files & [{:keys [project-root project-id use-kg-first return-metadata]
-                  :or {use-kg-first true}}]]
+  [task files & [{:keys [project-root project-id use-kg-first return-metadata seeds
+                         use-unified]
+                  :or {use-kg-first true
+                       use-unified  true}}]]
   (let [effective-root (or project-root (diff/get-project-root) "")
         effective-project-id (or project-id "hive-mcp")
-        context (prepare-context)
-        context-str (format-context-str context)
-        smart-ctx-str (build-smart-context files task effective-root effective-project-id)
 
-        ;; KG-FIRST: Use knowledge graph to minimize file reads
+        ;; =================================================================
+        ;; Context Gathering: Unified vs Legacy
+        ;; =================================================================
+        use-unified? (and use-unified (unified-ctx/unified-context-available?))
+
+        ;; UNIFIED PATH: Single KG traversal for conventions + domain
+        unified-ctx-str
+        (when use-unified?
+          (try
+            (let [uctx (unified-ctx/gather-unified-context
+                        {:task       task
+                         :seeds      seeds
+                         :project-id effective-project-id})]
+              (unified-ctx/format-unified-context uctx))
+            (catch Exception e
+              (log/debug "Unified context failed, falling back to legacy:" (.getMessage e))
+              nil)))
+
+        ;; LEGACY PATH: Separate pipelines (fallback when unified unavailable/fails)
+        context-str (when-not unified-ctx-str
+                      (format-context-str (prepare-context)))
+
+        smart-ctx-str (when-not unified-ctx-str
+                        (build-smart-context files task effective-root effective-project-id))
+
+        primed-ctx-str (when (and (not unified-ctx-str) (seq seeds))
+                         (try
+                           (let [primed (kg-priming/prime-context
+                                         {:task task
+                                          :seeds seeds
+                                          :project-id effective-project-id
+                                          :token-budget 1500})]
+                             (when (seq primed) primed))
+                           (catch Exception e
+                             (log/debug "Domain priming failed (non-fatal):" (.getMessage e))
+                             nil)))
+
+        ;; =================================================================
+        ;; File Contents: KG-First approach (shared by both paths)
+        ;; =================================================================
         {:keys [context files-read kg-skipped summary]}
         (if (and use-kg-first (seq files))
           (kg-ctx/format-files-with-kg-context files {:project-root effective-root})
@@ -199,21 +248,41 @@
 
         file-contents-str context
 
-        augmented (str context-str
-                       (when smart-ctx-str
-                         (str "\n" smart-ctx-str "\n"))
+        ;; =================================================================
+        ;; Assemble Augmented Task
+        ;; =================================================================
+        augmented (str ;; Context: unified OR legacy sections
+                   (if unified-ctx-str
+                     (str unified-ctx-str "\n")
+                     (str context-str
+                          (when primed-ctx-str
+                            (str "\n" primed-ctx-str "\n"))
+                          (when smart-ctx-str
+                            (str "\n" smart-ctx-str "\n"))))
                        ;; CRITICAL: Inject project root so drones use correct directory in propose_diff
-                       (when (seq effective-root)
-                         (str "## Project Directory\n"
-                              "IMPORTANT: When calling propose_diff, you MUST include:\n"
-                              "  directory: \"" effective-root "\"\n"
-                              "This ensures paths are validated against YOUR project, not the MCP server.\n\n"))
-                       "## Task\n" task
-                       (when (seq files)
-                         (str "\n\n## Files to modify\n"
-                              (str/join "\n" (map #(str "- " %) files))))
-                       (when file-contents-str
-                         (str "\n\n" file-contents-str)))]
+                   (when (seq effective-root)
+                     (str "## Project Directory\n"
+                          "IMPORTANT: When calling propose_diff, you MUST include:\n"
+                          "  directory: \"" effective-root "\"\n"
+                          "This ensures paths are validated against YOUR project, not the MCP server.\n\n"))
+                   "## Task\n" task
+                   (when (seq files)
+                     (str "\n\n## Files to modify\n"
+                          (str/join "\n" (map #(str "- " %) files))))
+                   (when file-contents-str
+                     (str "\n\n" file-contents-str)))]
+
+    ;; Log which context path was used
+    (if unified-ctx-str
+      (log/info "augment-task used UNIFIED context path"
+                {:project-id effective-project-id
+                 :unified-chars (count unified-ctx-str)})
+      (do
+        (when primed-ctx-str
+          (log/info "Domain context primed"
+                    {:seeds seeds
+                     :primed-chars (count primed-ctx-str)
+                     :priming-available? (kg-priming/priming-available?)}))))
 
     ;; Log KG-first efficiency when files were skipped
     (when (seq kg-skipped)
@@ -226,5 +295,6 @@
       {:task augmented
        :files-read files-read
        :kg-skipped kg-skipped
-       :summary summary}
+       :summary summary
+       :unified? (boolean unified-ctx-str)}
       augmented)))

@@ -1,4 +1,4 @@
-(ns hive-mcp.emacsclient
+(ns hive-mcp.emacs.client
   "Shell wrapper for emacsclient communication with running Emacs.
 
    CLARITY-Y: Yield safe failure — daemon crash detection, circuit breaker,

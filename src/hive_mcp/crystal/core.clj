@@ -8,7 +8,8 @@
    
    SOLID: Single responsibility - promotion scoring only.
    DDD: Pure domain functions, no side effects."
-  (:require [clojure.string :as str]))
+  (:require [clojure.string :as str]
+            [hive-mcp.extensions.registry :as ext]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -313,30 +314,27 @@
   (count (extract-xpoll-projects entry)))
 
 (defn cross-pollination-score
-  "Delegates to hive-knowledge (proprietary). Returns 0.0 when not available.
-   Calculates promotion score contribution from cross-pollination."
+  "Calculates promotion score contribution from cross-pollination.
+   Delegates to extension if available. Returns 0.0 otherwise."
   [entry]
-  (if-let [f (try (requiring-resolve 'hive-knowledge.cross-pollination/cross-pollination-score)
-                  (catch Exception _ nil))]
+  (if-let [f (ext/get-extension :gx/score)]
     (f entry)
     0.0))
 
 (defn cross-pollination-candidate?
-  "Delegates to hive-knowledge (proprietary). Returns false when not available.
-   Predicate: is this entry eligible for cross-pollination auto-promotion?"
+  "Predicate: is this entry eligible for cross-pollination auto-promotion?
+   Delegates to extension if available. Returns false otherwise."
   ([entry] (cross-pollination-candidate? entry {}))
   ([entry opts]
-   (if-let [f (try (requiring-resolve 'hive-knowledge.cross-pollination/cross-pollination-candidate?)
-                   (catch Exception _ nil))]
+   (if-let [f (ext/get-extension :gx/eligible?)]
      (f entry opts)
      false)))
 
 (defn cross-pollination-promotion-tiers
-  "Delegates to hive-knowledge (proprietary). Returns 0 when not available.
-   Calculates how many tiers to promote based on cross-pollination breadth."
+  "Calculates how many tiers to promote based on cross-pollination breadth.
+   Delegates to extension if available. Returns 0 otherwise."
   [entry]
-  (if-let [f (try (requiring-resolve 'hive-knowledge.cross-pollination/cross-pollination-promotion-tiers)
-                  (catch Exception _ nil))]
+  (if-let [f (ext/get-extension :gx/tiers)]
     (f entry)
     0))
 

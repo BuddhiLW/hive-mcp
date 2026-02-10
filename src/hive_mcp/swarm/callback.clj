@@ -13,7 +13,7 @@
    without modifying either system."
   (:require [clojure.core.async :as async]
             [taoensso.timbre :as log]
-            [hive-mcp.channel :as channel]
+            [hive-mcp.channel.core :as channel]
             [hive-mcp.agent.protocol :as proto]
             [hive-mcp.agent.ling :as ling]
             [hive-mcp.swarm.datascript.queries :as ds-queries]))

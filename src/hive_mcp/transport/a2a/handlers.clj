@@ -71,10 +71,10 @@
 ;; =============================================================================
 
 (defn- get-delegate-fn
-  "Lazily resolve hive-mcp.agent/delegate-agentic-drone!"
+  "Lazily resolve hive-mcp.agent.core/delegate-agentic-drone!"
   []
-  (require 'hive-mcp.agent)
-  (resolve 'hive-mcp.agent/delegate-agentic-drone!))
+  (require 'hive-mcp.agent.core)
+  (resolve 'hive-mcp.agent.core/delegate-agentic-drone!))
 
 ;; =============================================================================
 ;; SendMessage Handler

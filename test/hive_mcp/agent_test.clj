@@ -5,7 +5,7 @@
    dangerous operations like file writes, bash execution, and git commits."
   (:require [clojure.test :refer :all]
             [clojure.set :as set]
-            [hive-mcp.agent]
+            [hive-mcp.agent.core]
             [hive-mcp.agent.drone :as drone]
             [hive-mcp.permissions :as permissions]))
 
@@ -145,9 +145,9 @@
 
 (deftest delegate-drone-exists-and-callable
   (testing "delegate-drone! is defined and callable"
-    (is (fn? @#'hive-mcp.agent/delegate-drone!)
+    (is (fn? @#'hive-mcp.agent.core/delegate-drone!)
         "delegate-drone! must be a function")
-    (is (some? @#'hive-mcp.agent/delegate-drone!)
+    (is (some? @#'hive-mcp.agent.core/delegate-drone!)
         "delegate-drone! should be defined")))
 
 (deftest delegate-drone-routes-to-agentic
@@ -158,8 +158,8 @@
                                    (reset! captured-args opts)
                                    {:status :completed :result "mocked"})]
       (with-redefs [hive-mcp.agent.drone/delegate-agentic! mock-delegate-agentic!]
-        (let [result (hive-mcp.agent/delegate-drone! {:task "test task"
-                                                      :files ["foo.clj"]})]
+        (let [result (hive-mcp.agent.core/delegate-drone! {:task "test task"
+                                                           :files ["foo.clj"]})]
           ;; Verify the call went through
           (is (= :completed (:status result))
               "Should return the mocked result")

@@ -1,21 +1,13 @@
 (ns hive-mcp.agent.drone.kg-session
-  "KG-compressed context reconstruction for agent communication.
+  "Compressed context reconstruction for agent communication.
 
-   Delegates to hive-knowledge (proprietary). Returns noop when not available.
+   Delegates to extension if available. Returns noop defaults otherwise.
 
-   This is a thin stub that attempts to load the real implementation from
-   hive-knowledge.context-reconstruction via requiring-resolve. If hive-knowledge
-   is not on the classpath, all functions gracefully degrade to safe noop results
-   that pass messages through uncompressed.
+   Extension points are resolved via the extensions registry at startup.
+   When no extensions are registered, all functions gracefully degrade
+   to safe noop results that pass messages through uncompressed.
 
-   Architecture (when hive-knowledge available):
-   - Session KG: DataScript in-memory per agent session
-   - Each turn: assistant response + tool results -> KG extraction
-   - Next turn: reconstruct context from KG (not raw messages)
-   - On completion: promote valuable nodes to global KG
-   - ~25x compression vs raw history
-
-   Noop fallback (when hive-knowledge NOT available):
+   Noop fallback (when extension NOT available):
    - create-session-kg!     -> returns nil session (no-op)
    - compress-turn!         -> returns 0 (no compression)
    - reconstruct-context    -> returns empty string
@@ -23,28 +15,21 @@
    - promote-to-global!     -> returns {:promoted 0}
    - close-session!         -> returns empty stats
 
-   Integration point: hive-mcp.agent.loop/run-loop
-
-   Decision ref: 20260206235801-2b6fb27a (In-Process Agentic Drone Loop)
-   Decision ref: 20260207000937-72d57fa1 (Pass-by-Reference Communication)
-   IP boundary: L3+ algorithms in hive-knowledge (proprietary)"
-  (:require [taoensso.timbre :as log]))
+   Integration point: hive-mcp.agent.loop/run-loop"
+  (:require [hive-mcp.extensions.registry :as ext]
+            [taoensso.timbre :as log]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 ;; =============================================================================
-;; Session KG Schema (Open — used by both stub and hive-knowledge)
+;; Session Schema
 ;; =============================================================================
 
 (def session-schema
-  "DataScript schema for session KG nodes.
-   Lightweight schema — no need for full KG edge schema here.
-   Session nodes are ephemeral and get promoted post-completion.
-
-   This schema is open (AGPL) as it defines the data contract.
-   The algorithms that populate/query it are in hive-knowledge."
+  "DataScript schema for session nodes.
+   Session nodes are ephemeral and may be promoted post-completion."
   {:node/id         {:db/unique :db.unique/identity
                      :db/doc "Unique node ID within session"}
    :node/type       {:db/doc "Node type: :observation :action :discovery :decision :goal-state"}
@@ -60,11 +45,11 @@
                      :db/doc "Tags for categorization and filtering"}})
 
 ;; =============================================================================
-;; Node Types (Open — part of the data contract)
+;; Node Types — part of the data contract
 ;; =============================================================================
 
 (def node-types
-  "Valid node types for session KG.
+  "Valid node types for session.
    - :observation  — What was seen (file contents, search results)
    - :action       — What was done (tool calls, mutations)
    - :discovery    — Key findings (patterns, bugs, architecture)
@@ -73,25 +58,16 @@
   #{:observation :action :discovery :decision :goal-state})
 
 ;; =============================================================================
-;; Dynamic Resolution Helpers
+;; Extension Delegation Helpers
 ;; =============================================================================
 
-(defn- try-resolve
-  "Attempt to resolve a symbol from hive-knowledge.context-reconstruction.
-   Returns the var if available, nil otherwise."
-  [sym-name]
-  (try
-    (requiring-resolve (symbol "hive-knowledge.context-reconstruction" sym-name))
-    (catch Exception _
-      nil)))
-
 (defn- delegate-or-noop
-  "Try to delegate to hive-knowledge fn, fall back to default value."
-  [fn-name default-val args]
-  (if-let [f (try-resolve fn-name)]
+  "Try to delegate to extension fn, fall back to default value."
+  [ext-key default-val args]
+  (if-let [f (ext/get-extension ext-key)]
     (apply f args)
     (do
-      (log/debug "hive-knowledge not available, returning noop for" fn-name)
+      (log/debug "Extension not available, returning default for" ext-key)
       default-val)))
 
 ;; =============================================================================
@@ -99,7 +75,7 @@
 ;; =============================================================================
 
 (def ^:private noop-session
-  "Noop session — nil-safe placeholder when hive-knowledge is not available."
+  "Noop session — nil-safe placeholder when extension is not available."
   nil)
 
 (def ^:private noop-stats
@@ -113,74 +89,67 @@
    :compressed-tokens 0})
 
 ;; =============================================================================
-;; Public API — delegates to hive-knowledge or returns noop
+;; Public API — delegates to extension or returns noop
 ;; =============================================================================
 
 (defn create-session-kg!
-  "Create a new session KG for an agent execution.
-   Delegates to hive-knowledge (proprietary). Returns nil when not available.
+  "Create a new session for an agent execution.
+   Delegates to extension if available. Returns nil otherwise.
 
    Arguments:
      agent-id — Agent identifier string
      task     — Original task description string
 
    Returns:
-     Session KG map (opaque to caller) or nil if hive-knowledge not available."
+     Session map (opaque to caller) or nil if extension not available."
   [agent-id task]
-  (delegate-or-noop "create-session-kg!" noop-session
+  (delegate-or-noop :cr/create! noop-session
                     [agent-id task]))
 
 (defn compress-turn!
-  "Compress a turn's messages into session KG nodes.
-   Delegates to hive-knowledge (proprietary). Returns 0 when not available.
+  "Compress a turn's messages into session nodes.
+   Delegates to extension if available. Returns 0 otherwise.
 
    Called by the agent loop after each tool execution step.
-   Extracts meaning from messages, stores as KG nodes, and
-   supersedes outdated observations.
 
    Arguments:
-     session  — Session KG map from create-session-kg! (nil-safe)
+     session  — Session map from create-session-kg! (nil-safe)
      messages — Vector of messages from this turn
 
    Returns:
      Number of nodes created this turn (0 if noop)."
   [session messages]
   (if session
-    (delegate-or-noop "compress-turn!" 0 [session messages])
+    (delegate-or-noop :cr/compress! 0 [session messages])
     0))
 
 (defn reconstruct-context
-  "Reconstruct a compact context prompt from the session KG.
-   Delegates to hive-knowledge (proprietary). Returns empty string when not available.
+  "Reconstruct a compact context prompt from the session.
+   Delegates to extension if available. Returns empty string otherwise.
 
    Called before each LLM call to replace the full message history
-   with a compressed representation (~200-300 tokens vs thousands).
+   with a compressed representation.
 
    Arguments:
-     session — Session KG map from create-session-kg! (nil-safe)
+     session — Session map from create-session-kg! (nil-safe)
      opts    — Optional map with :max-tokens, :recency-bias
 
    Returns:
      String — compact context prompt, or empty string if noop."
   [session & [opts]]
   (if session
-    (delegate-or-noop "reconstruct-context" ""
+    (delegate-or-noop :cr/reconstruct ""
                       (if opts [session opts] [session]))
     ""))
 
 (defn build-compressed-messages
-  "Build the message array for the next LLM call using KG compression.
-   Delegates to hive-knowledge (proprietary).
+  "Build the message array for the next LLM call using context compression.
+   Delegates to extension if available.
 
    Noop fallback: returns original messages unchanged (no compression).
 
-   Instead of passing the full conversation history, builds:
-   1. System prompt (unchanged)
-   2. KG-reconstructed context as a user message
-   3. Only the most recent tool results (current turn)
-
    Arguments:
-     session       — Session KG map (nil-safe)
+     session       — Session map (nil-safe)
      system-prompt — Original system prompt string
      all-messages  — Full message history (returned as-is if noop)
      recent-msgs   — Messages from the most recent turn only
@@ -190,7 +159,7 @@
      Vector of messages ready for LLM call."
   [session system-prompt all-messages recent-msgs & [opts]]
   (if session
-    (delegate-or-noop "build-compressed-messages" all-messages
+    (delegate-or-noop :cr/messages all-messages
                       (if opts
                         [session system-prompt recent-msgs opts]
                         [session system-prompt recent-msgs]))
@@ -198,59 +167,59 @@
     all-messages))
 
 (defn promote-to-global!
-  "Promote valuable session KG nodes to the global knowledge graph.
-   Delegates to hive-knowledge (proprietary). Returns {:promoted 0} when not available.
+  "Promote valuable session nodes to the global store.
+   Delegates to extension if available. Returns {:promoted 0} otherwise.
 
    Called after successful task completion.
 
    Arguments:
-     session      — Session KG map (nil-safe)
-     global-store — IKGStore instance (global KG)
+     session      — Session map (nil-safe)
+     global-store — IKGStore instance (global store)
      opts         — Optional map with :threshold, :scope
 
    Returns:
      {:promoted N :edges-created N}"
   [session global-store & [opts]]
   (if session
-    (delegate-or-noop "promote-to-global!" {:promoted 0 :edges-created 0}
+    (delegate-or-noop :cr/promote! {:promoted 0 :edges-created 0}
                       (if opts [session global-store opts] [session global-store]))
     {:promoted 0 :edges-created 0}))
 
 (defn promotable-nodes
-  "Get nodes from session KG worth promoting to global KG.
-   Delegates to hive-knowledge (proprietary). Returns [] when not available.
+  "Get nodes from session worth promoting to global store.
+   Delegates to extension if available. Returns [] otherwise.
 
    Arguments:
-     session — Session KG map (nil-safe)
+     session — Session map (nil-safe)
      opts    — Optional map with :threshold
 
    Returns:
-     Vector of node maps suitable for global KG storage."
+     Vector of node maps suitable for global store storage."
   [session & [opts]]
   (if session
-    (delegate-or-noop "promotable-nodes" []
+    (delegate-or-noop :cr/promotable []
                       (if opts [session opts] [session]))
     []))
 
 (defn session-stats
   "Get compression statistics for the session.
-   Delegates to hive-knowledge (proprietary). Returns noop stats when not available.
+   Delegates to extension if available. Returns noop stats otherwise.
 
    Returns:
      Map with :turns-compressed, :tokens-saved, :compression-ratio, etc."
   [session]
   (if session
-    (delegate-or-noop "session-stats" noop-stats [session])
+    (delegate-or-noop :cr/stats noop-stats [session])
     noop-stats))
 
 (defn close-session!
-  "Close a session KG and release resources.
-   Delegates to hive-knowledge (proprietary). Returns noop stats when not available.
+  "Close a session and release resources.
+   Delegates to extension if available. Returns noop stats otherwise.
 
    Returns final stats."
   [session]
   (if session
-    (delegate-or-noop "close-session!" noop-stats [session])
+    (delegate-or-noop :cr/close! noop-stats [session])
     noop-stats))
 
 ;; =============================================================================
@@ -258,7 +227,7 @@
 ;; =============================================================================
 
 (defn compression-available?
-  "Check if KG-compressed context reconstruction is available.
-   Returns true if hive-knowledge.context-reconstruction is on the classpath."
+  "Check if compressed context reconstruction is available.
+   Returns true if the context reconstruction extension is registered."
   []
-  (boolean (try-resolve "create-session-kg!")))
+  (ext/extension-available? :cr/create!))

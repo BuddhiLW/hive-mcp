@@ -9,7 +9,7 @@
    - RefContext resolve-context includes refs and kg-nodes when present
    - ensure-context wraps plain strings into TextContext
    - ensure-context passes through existing IDispatchContext instances
-   - ->graph-context falls back to TextContext when hive-knowledge unavailable
+   - ->graph-context falls back to TextContext when enhanced extension unavailable
    - ->text-context and ->ref-context factory functions"
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.string :as str]
@@ -77,7 +77,7 @@
 ;;; ============================================================================
 
 (deftest graph-context-fallback-test
-  (testing "->graph-context falls back to TextContext when hive-knowledge not on classpath"
+  (testing "->graph-context falls back to TextContext when enhanced extension not on classpath"
     (let [ctx (dispatch/->graph-context "node-123" nil)]
       (is (satisfies? dispatch/IDispatchContext ctx))
       (is (= :text (dispatch/context-type ctx)))

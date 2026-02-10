@@ -12,7 +12,7 @@
             [clojure.string :as str]
             [hive-mcp.tools.swarm.dispatch :as dispatch]
             [hive-mcp.tools.swarm.core :as core]
-            [hive-mcp.emacsclient :as ec]
+            [hive-mcp.emacs.client :as ec]
             [hive-mcp.swarm.coordinator :as coord]
             [hive-mcp.knowledge-graph.disc :as disc]
             [hive-mcp.knowledge-graph.store.fixtures :as fixtures]))

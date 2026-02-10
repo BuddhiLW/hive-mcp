@@ -3,7 +3,7 @@
 
    Validates the full pipeline:
    - delegate-agentic! → run-agentic-execution! → phase:execute-agentic! → backend
-   - Session KG (Datalevin) creation, recording, cleanup
+   - Session store (Datalevin) creation, recording, cleanup
    - Fallback to DataScript in-memory KG when Datalevin unavailable
    - phase:execute-agentic! resolves IDroneExecutionBackend and dispatches
    - Backend fallback from :hive-agent to :legacy-loop
@@ -177,12 +177,12 @@
 ;;; ============================================================
 
 (deftest run-agentic-execution-creates-session-kg
-  (testing "run-agentic-execution! creates and cleans up session KG"
+  (testing "run-agentic-execution! creates and cleans up session store"
     (let [session-created (atom false)
           session-closed (atom false)
           task-spec (domain/->task-spec {:task "session kg test"
                                          :files []})]
-      ;; Stub everything to focus on session KG lifecycle
+      ;; Stub everything to focus on session store lifecycle
       (with-redefs [session-kg/create-session-kg!
                     (fn [_drone-id]
                       (reset! session-created true)
@@ -215,8 +215,8 @@
                     diff-mgmt/capture-diffs-before
                     (fn [] #{})]
         (execution/run-agentic-execution! task-spec))
-      (is @session-created "Session KG should be created")
-      (is @session-closed "Session KG should be closed in finally"))))
+      (is @session-created "Session store should be created")
+      (is @session-closed "Session store should be closed in finally"))))
 
 (deftest run-agentic-execution-fallback-to-datascript
   (testing "run-agentic-execution! falls back to DataScript when Datalevin fails"

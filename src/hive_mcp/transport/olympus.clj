@@ -743,7 +743,7 @@
     ;; 2. Subscribe to memory-added events via channel pub/sub
     ;;    Memory CRUD (handle-add) publishes :memory-added events to channel.
     ;;    We subscribe and forward to Olympus.
-    (when-let [subscribe-fn (requiring-resolve 'hive-mcp.channel/subscribe!)]
+    (when-let [subscribe-fn (requiring-resolve 'hive-mcp.channel.core/subscribe!)]
       (let [sub-ch (subscribe-fn :memory-added)]
         (future
           (loop []

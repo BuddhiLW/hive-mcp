@@ -2,8 +2,8 @@
   "Buffer and Emacs interaction tools.
 
    Handles buffer operations, file operations, and hive-mcp.el integration."
-  (:require [hive-mcp.emacsclient :as ec]
-            [hive-mcp.telemetry :as telemetry]
+  (:require [hive-mcp.emacs.client :as ec]
+            [hive-mcp.telemetry.core :as telemetry]
             [hive-mcp.validation :as v]
             [clojure.data.json :as json]
             [taoensso.timbre :as log]))
@@ -152,8 +152,8 @@
   (log/info "mcp-notify:" message)
   (let [type-str (or type "info")]
     ;; Send desktop notification (primary - catches attention)
-    (require 'hive-mcp.notify)
-    ((resolve 'hive-mcp.notify/notify!) {:summary "Hive-MCP"
+    (require 'hive-mcp.emacs.notify)
+    ((resolve 'hive-mcp.emacs.notify/notify!) {:summary "Hive-MCP"
                                          :body message
                                          :type type-str})
     ;; Also send to Emacs echo-area (secondary - visible if Emacs focused)

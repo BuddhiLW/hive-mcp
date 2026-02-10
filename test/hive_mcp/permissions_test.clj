@@ -12,7 +12,7 @@
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [hive-mcp.permissions :as perm]
             [hive-mcp.hivemind :as hivemind]
-            [hive-mcp.channel :as channel]))
+            [hive-mcp.channel.core :as channel]))
 
 ;; =============================================================================
 ;; Test Fixtures & Helpers

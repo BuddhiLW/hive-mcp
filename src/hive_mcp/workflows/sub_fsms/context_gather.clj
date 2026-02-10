@@ -1,5 +1,5 @@
 (ns hive-mcp.workflows.sub-fsms.context-gather
-  "Context-gather sub-FSM: reusable FSM for KG-compressed context reconstruction.
+  "Context-gather sub-FSM: reusable FSM for compressed context reconstruction.
 
    Wraps context.reconstruction pipeline as a composable FSM that can be embedded
    as a state handler in any parent FSM needing agent context.

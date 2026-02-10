@@ -161,8 +161,8 @@
    Subscribes to channel events and pushes TaskStatusUpdateEvents."
   [task-id]
   (try
-    (let [subscribe! (requiring-resolve 'hive-mcp.channel/subscribe!)
-          unsubscribe! (requiring-resolve 'hive-mcp.channel/unsubscribe!)
+    (let [subscribe! (requiring-resolve 'hive-mcp.channel.core/subscribe!)
+          unsubscribe! (requiring-resolve 'hive-mcp.channel.core/unsubscribe!)
           event-ch (subscribe! :task-completed)
           output (s/stream 32)]
       (swap! sse-clients conj output)

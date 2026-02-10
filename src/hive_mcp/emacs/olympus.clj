@@ -1,4 +1,4 @@
-(ns hive-mcp.olympus
+(ns hive-mcp.emacs.olympus
   "Pure Clojure core for Olympus grid view layout calculation.
 
    SOLID-S: Single Responsibility - only layout calculation, no I/O.

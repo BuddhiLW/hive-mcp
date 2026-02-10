@@ -99,10 +99,10 @@
      The budget guardrail then checks cumulative cost on every tool call
      via the permission system, denying+interrupting when exceeded.
 
-     KG-compressed context injection:
+     compressed context injection:
      When a task is provided, runs ling-catchup to generate a compact
-     context blob (~1-3K tokens) using KG + memory reconstruction.
-     This pre-resolves axioms, conventions, and KG subgraph into the
+     context blob (~1-3K tokens) using memory reconstruction.
+     This pre-resolves axioms, conventions, and relevant context into the
      task prompt BEFORE passing to strategy-spawn!, so lings don't
      need to run /catchup themselves."
     (let [;; Non-claude models spawn via OpenRouter API (no CLI needed)
@@ -121,7 +121,7 @@
           {:keys [depth parent kanban-task-id]
            :or {depth 1}} opts
 
-          ;; Generate KG-compressed ling context BEFORE spawn.
+          ;; Generate compressed ling context BEFORE spawn.
           ;; Replaces pointer-based hints with pre-resolved context blob.
           ;; Works with or without kanban-task-id (project-level fallback).
           ;; Lings get context at spawn — no need to run /catchup themselves.
@@ -135,7 +135,7 @@
                                  (log/debug "Ling catchup in spawn failed (non-fatal):" (.getMessage e))
                                  nil)))
 
-          ;; Enrich task with KG-compressed context (prepend before task prompt)
+          ;; Enrich task with compressed context (prepend before task prompt)
           enriched-task (when (:task opts)
                           (if ling-context-str
                             (str ling-context-str "\n\n---\n\n" (:task opts))

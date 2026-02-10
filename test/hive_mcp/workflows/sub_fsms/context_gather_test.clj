@@ -41,7 +41,7 @@
            {:from "node-A" :to "node-C" :relation :depends-on :confidence 1.0}]})
 
 (def sample-rendered-context
-  "## Reconstructed Context (KG-Compressed)\n\n### Axioms (2 total)\n- Never spawn drones from lings\n- Cap 5-6 lings per Emacs daemon\n\nKG Subgraph (3 nodes, 2 edges):\n  node-A -impl-> node-B [0.9]\n  node-A -dep-> node-C [1.0]")
+  "## Reconstructed Context (Compressed)\n\n### Axioms (2 total)\n- Never spawn drones from lings\n- Cap 5-6 lings per Emacs daemon\n\nKG Subgraph (3 nodes, 2 edges):\n  node-A -impl-> node-B [0.9]\n  node-A -dep-> node-C [1.0]")
 
 ;; =============================================================================
 ;; Test Helpers -- Mock Resources

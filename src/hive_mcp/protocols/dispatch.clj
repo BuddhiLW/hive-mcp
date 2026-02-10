@@ -3,23 +3,20 @@
 
    Defines the OCP boundary for how tasks are communicated to lings/drones:
    - IDispatchContext: Protocol for resolving task context
-   - TextContext: OSS implementation (plain text prompts)
-   - RefContext: Context-store reference-based dispatch (pass-by-reference)
-   - GraphContext: Private implementation via requiring-resolve stub
-     (hive-knowledge provides KG-native context traversal)
+   - TextContext: Plain text prompts (default, zero deps)
+   - RefContext: Reference-based dispatch (pass-by-reference, lazy resolution)
+   - ExtContext: Extension-backed implementation via registry
 
    Architecture:
    - TextContext wraps plain prompts (backward compatible, zero deps)
-   - RefContext carries context-store IDs + KG node IDs, resolves lazily
-     via context-store lookups and KG traversal (~25x compression vs text)
-   - GraphContext traverses task subgraphs, renders compact prompts
-     from L1 disc nodes + L2 semantic nodes (requires hive-knowledge)
+   - RefContext carries context-store IDs, resolves lazily via lookups
+   - ExtContext delegates to extension when available
    - ensure-context provides backward compat: string → TextContext coercion
 
    SOLID-O: Open for extension (new context types), closed for modification.
    SOLID-D: Consumers depend on IDispatchContext, not concretions.
    SOLID-I: Minimal interface — just resolve-context and context-type.
-   CLARITY-Y: Yield safe failure — graph context degrades to text gracefully.")
+   CLARITY-Y: Yield safe failure — extension context degrades to text gracefully.")
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -34,12 +31,12 @@
 
    Implementations produce a consumable map that lings/drones use as their
    task specification. Minimum shape: {:prompt <string>}.
-   Extended shape: {:prompt <string> :refs [<ctx-ids>] :grounding [<L1-nodes>]}."
+   Extended shape: {:prompt <string> :refs [<ctx-ids>] :grounding [<nodes>]}."
 
   (resolve-context [this]
     "Returns a map that a ling/drone can consume.
      Minimum shape: {:prompt <string>}
-     Extended shape: {:prompt <string> :refs [<ctx-ids>] :grounding [<L1-nodes>]}")
+     Extended shape: {:prompt <string> :refs [<ctx-ids>] :grounding [<nodes>]}")
 
   (context-type [this]
     "Returns keyword identifying the context type: :text, :graph-ref, :hybrid"))
@@ -54,18 +51,17 @@
   (context-type [_] :text))
 
 ;;; ============================================================================
-;;; RefContext Record (Pass-by-Reference + KG Compressed)
+;;; RefContext Record (Pass-by-Reference + Compressed)
 ;;; ============================================================================
 
 (defrecord RefContext [prompt ctx-refs kg-node-ids scope reconstruct-fn]
-  ;; prompt       - Base task prompt string (always present for fallback)
-  ;; ctx-refs     - Map of category->ctx-id for context-store lookups
-  ;;                e.g. {:axioms "ctx-123" :conventions "ctx-456"}
-  ;; kg-node-ids  - Vector of KG node IDs for graph traversal
-  ;;                e.g. ["20260206235801-2b6fb27a" "20260207002000-034fae2b"]
-  ;; scope        - Project scope for KG traversal (e.g. "hive-mcp")
+  ;; prompt         - Base task prompt string (always present for fallback)
+  ;; ctx-refs       - Map of category->ctx-id for context-store lookups
+  ;;                  e.g. {:axioms "ctx-123" :conventions "ctx-456"}
+  ;; kg-node-ids    - Vector of node IDs for context resolution
+  ;; scope          - Project scope for context resolution (e.g. "hive-mcp")
   ;; reconstruct-fn - Function (fn [ctx-refs kg-node-ids scope] -> string)
-  ;;                   that reconstructs compressed context from refs + KG.
+  ;;                   that reconstructs compressed context from references.
   ;;                   Injected at creation time to avoid protocol coupling.
   IDispatchContext
   (resolve-context [_]
@@ -97,11 +93,11 @@
   (->TextContext prompt))
 
 (defn ->ref-context
-  "Create a RefContext for pass-by-reference dispatch with KG compression.
+  "Create a RefContext for pass-by-reference dispatch with context compression.
 
    Instead of passing 2000+ token text blobs, carries lightweight IDs:
    - ctx-refs: context-store entry IDs (fetched lazily)
-   - kg-node-ids: KG nodes for graph traversal context
+   - kg-node-ids: node IDs for context resolution
 
    The reconstruct-fn is called at resolve-context time to produce
    a compressed prompt from the referenced data.
@@ -135,22 +131,24 @@
                   effective-fn)))
 
 (defn ->graph-context
-  "Create a graph-native dispatch context. Requires hive-knowledge on classpath.
-   Returns TextContext fallback when not available.
+  "Create an extension-backed dispatch context.
+   Delegates to extension if available. Returns TextContext fallback otherwise.
 
    Arguments:
-     task-node-id - KG node ID for the task
-     kg-store     - KG store instance for graph traversal
+     task-node-id - Node ID for the task
+     kg-store     - Store instance for context resolution
 
    Returns:
-     GraphContext (if hive-knowledge available) or TextContext fallback.
+     Extension context (if available) or TextContext fallback.
 
-   CLARITY-Y: Graceful degradation when private layer unavailable."
+   CLARITY-Y: Graceful degradation when extension unavailable."
   [task-node-id kg-store]
-  (if-let [f (try (requiring-resolve 'hive-knowledge.dispatch/->graph-context)
-                  (catch Exception _ nil))]
+  (if-let [f (try
+               (when-let [get-ext (requiring-resolve 'hive-mcp.extensions.registry/get-extension)]
+                 (get-ext :dp/graph-ctx))
+               (catch Exception _ nil))]
     (f task-node-id kg-store)
-    (->TextContext (str "Graph context unavailable. Task node: " task-node-id))))
+    (->TextContext (str "Extension context unavailable. Task node: " task-node-id))))
 
 ;;; ============================================================================
 ;;; Backward Compatibility

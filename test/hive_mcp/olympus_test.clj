@@ -10,7 +10,7 @@
    n=4: {:rows 2 :cols 2}           ; 2x2
    n=5+: {:tabs (ceil n/4) :per-tab 4}  ; tabbed"
   (:require [clojure.test :refer [deftest testing is are use-fixtures]]
-            [hive-mcp.olympus :as olympus]))
+            [hive-mcp.emacs.olympus :as olympus]))
 
 ;;; =============================================================================
 ;;; Test Fixtures

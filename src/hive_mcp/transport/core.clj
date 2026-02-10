@@ -1,26 +1,26 @@
-(ns hive-mcp.transport
+(ns hive-mcp.transport.core
   "Transport abstraction layer for hive-mcp channel communication.
-   
+
    Provides a unified protocol for TCP and Unix Domain Socket transports,
    allowing seamless switching between transport types.
-   
+
    Architecture:
    - Transport protocol defines connect!/disconnect!/send!/recv!/connected?
    - UnixTransport uses Java 16+ native UnixDomainSocketAddress
    - TCPTransport uses standard Java NIO SocketChannel
    - Server implementations accept connections and yield client transports
-   
+
    Usage:
      ;; Create transports
      (def unix-t (unix-transport \"/tmp/my.sock\"))
      (def tcp-t (tcp-transport \"localhost\" 9998))
-     
+
      ;; Client operations
      (connect! unix-t)
      (send! unix-t {:type \"ping\"})
      (recv! unix-t) ; => {:type \"pong\"}
      (disconnect! unix-t)
-     
+
      ;; Server operations
      (def server (start-unix-server! \"/tmp/my.sock\" handler-fn))
      (stop-server! server)"
@@ -35,7 +35,6 @@
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
-
 
 ;; =============================================================================
 ;; Bencode Helpers (shared with channel.clj)
@@ -309,12 +308,12 @@
 
 (defn start-unix-server!
   "Start a Unix Domain Socket server.
-   
+
    Options:
      :path       - Socket file path (required)
      :on-message - Callback for received messages (fn [msg])
      :on-connect - Callback when client connects (fn [client-id])
-   
+
    Returns UnixServer record."
   [{:keys [path on-message on-connect]
     :or {path "/tmp/hive-mcp-channel.sock"}}]
@@ -389,12 +388,12 @@
 
 (defn start-tcp-server!
   "Start a TCP server.
-   
+
    Options:
      :port       - TCP port (required)
      :on-message - Callback for received messages (fn [msg])
      :on-connect - Callback when client connects (fn [client-id])
-   
+
    Returns TCPServer record."
   [{:keys [port on-message on-connect]
     :or {port 9998}}]
@@ -433,14 +432,14 @@
 
 (defn start-server!
   "Start a server of the specified type.
-   
+
    Options:
      :type       - :unix or :tcp (default: :tcp)
      :path       - Socket path for :unix type
      :port       - Port for :tcp type (default: 9998)
      :on-message - Callback for received messages
      :on-connect - Callback when client connects
-   
+
    Returns server record implementing IServer."
   [{:keys [type] :as opts}]
   (case type

@@ -86,8 +86,8 @@
   (participant-type [_] :impl-drone)
 
   (execute-task! [_ task]
-    (require 'hive-mcp.agent)
-    (let [delegate-fn (resolve 'hive-mcp.agent/delegate-drone!)]
+    (require 'hive-mcp.agent.core)
+    (let [delegate-fn (resolve 'hive-mcp.agent.core/delegate-drone!)]
       (try
         (let [result (delegate-fn {:task (:prompt task)
                                    :preset (or preset "drone-worker")
@@ -128,8 +128,8 @@
 
   (execute-task! [_ task]
     ;; TestDrone executes test commands and parses output
-    (require 'hive-mcp.agent)
-    (let [delegate-fn (resolve 'hive-mcp.agent/delegate-drone!)]
+    (require 'hive-mcp.agent.core)
+    (let [delegate-fn (resolve 'hive-mcp.agent.core/delegate-drone!)]
       (try
         (let [result (delegate-fn {:task (str "Run tests and report results.\n\n"
                                               "Test command: " (:prompt task) "\n\n"
@@ -174,8 +174,8 @@
   (participant-type [_] :fix-drone)
 
   (execute-task! [_ task]
-    (require 'hive-mcp.agent)
-    (let [delegate-fn (resolve 'hive-mcp.agent/delegate-drone!)]
+    (require 'hive-mcp.agent.core)
+    (let [delegate-fn (resolve 'hive-mcp.agent.core/delegate-drone!)]
       (try
         (let [;; Include test failure context in fix prompt
               fix-prompt (str "Fix the following test failures:\n\n"

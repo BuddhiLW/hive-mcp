@@ -1,15 +1,15 @@
 (ns hive-mcp.agent.drone.session-kg-test
-  "Tests for per-drone session KG lifecycle and requiring-resolve stubs.
+  "Tests for per-drone session store lifecycle and requiring-resolve stubs.
 
    Tests verify:
-   - Session KG lifecycle (create, close, cleanup) — AGPL, open code
-   - Schema definitions are correct — AGPL, open code
-   - Stub noop fallbacks for proprietary operations — AGPL, stub contracts
-   - DatalevinStore factory integration — AGPL, open code
+   - Session store lifecycle (create, close, cleanup) — built-in, open code
+   - Schema definitions are correct — built-in, open code
+   - Stub noop fallbacks for extension operations — stub contracts
+   - DatalevinStore factory integration — open code
 
-   Note: The actual observation recording, reasoning tracking, and context
-   reconstruction algorithms are proprietary (hive-knowledge). These tests
-   verify the stub contracts only."
+   Note: The enhanced observation recording, reasoning tracking, and context
+   reconstruction are available via extension point. These tests
+   verify the fallback contracts only."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [hive-mcp.agent.drone.session-kg :as skg]
             [hive-mcp.protocols.kg :as kg]))
@@ -22,7 +22,7 @@
 (def ^:dynamic *test-drone-id* nil)
 
 (defn session-kg-fixture
-  "Create a fresh session KG for each test, clean up after."
+  "Create a fresh session store for each test, clean up after."
   [f]
   (let [drone-id (str "test-drone-" (System/currentTimeMillis))
         store (skg/create-session-kg! drone-id)]
@@ -39,7 +39,7 @@
 (use-fixtures :each session-kg-fixture)
 
 ;; =============================================================================
-;; Schema Tests (AGPL — structural, not algorithmic)
+;; Schema Tests (built-in — structural, not algorithmic)
 ;; =============================================================================
 
 (deftest test-session-schema-structure
@@ -74,7 +74,7 @@
     (is (= :db.cardinality/many (get-in skg/session-schema [:obs/key-facts :db/cardinality])))))
 
 ;; =============================================================================
-;; Session KG Lifecycle Tests (AGPL — factory/CRUD)
+;; Session store Lifecycle Tests (built-in — factory/CRUD)
 ;; =============================================================================
 
 (deftest test-session-db-path
@@ -87,7 +87,7 @@
     (is (satisfies? kg/IKGStore *test-store*))))
 
 (deftest test-session-kg-transact-and-query
-  (testing "can transact and query data in session KG"
+  (testing "can transact and query data in session store"
     (when *test-store*
       (kg/transact! *test-store*
                     [{:obs/id "test-obs-1"
@@ -164,7 +164,7 @@
 ;; =============================================================================
 
 (deftest test-merge-session-to-global-noop
-  (testing "returns nil when hive-knowledge not available"
+  (testing "returns nil when enhanced extension not available"
     (let [result (skg/merge-session-to-global! *test-store* nil)]
       (is (nil? result)))))
 
@@ -173,7 +173,7 @@
 ;; =============================================================================
 
 (deftest test-seed-from-global-noop
-  (testing "returns 0 when hive-knowledge not available"
+  (testing "returns 0 when enhanced extension not available"
     (let [result (skg/seed-from-global! *test-store* nil
                                         {:task "test" :files ["a.clj"]})]
       (is (= 0 result)))))

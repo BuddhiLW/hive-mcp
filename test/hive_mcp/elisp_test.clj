@@ -1,5 +1,5 @@
 (ns hive-mcp.elisp-test
-  "Comprehensive unit tests for the hive-mcp.elisp namespace.
+  "Comprehensive unit tests for the hive-mcp.emacs.elisp namespace.
 
    Tests cover all public functions:
    - require-and-call-json: Generate elisp with require, call, JSON-encode
@@ -12,7 +12,7 @@
    - emit-forms: Multiple form emission"
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.string :as str]
-            [hive-mcp.elisp :as el]))
+            [hive-mcp.emacs.elisp :as el]))
 
 ;; =============================================================================
 ;; Test require-and-call-json

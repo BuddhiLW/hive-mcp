@@ -1,5 +1,5 @@
 (ns hive-mcp.agent.sdk.kg-context-test
-  "Tests for KG-compressed context injection into SDK ling spawn and dispatch.
+  "Tests for compressed context injection into SDK ling spawn and dispatch.
 
    Tests the integration between:
    - agent_sdk_strategy.clj (spawn + dispatch with L2 context)

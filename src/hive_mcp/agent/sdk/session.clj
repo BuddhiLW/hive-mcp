@@ -8,20 +8,21 @@
    - Ling ID to Python-safe identifier conversion
 
    Session data structure:
-   {:ling-id      String
-    :phase        keyword (:idle :silence :abstract :act)
-    :phase-history [{:phase kw :started-at inst :ended-at inst}]
-    :observations  vector (collected during silence phase)
-    :plan          string (produced during abstract phase)
-    :message-ch    core.async channel (streaming messages)
-    :result-ch     core.async channel (final result)
-    :turn-count    int (number of query() calls)
-    :client-ref    String (Python global var name for client)
-    :py-loop-var   String (Python global var name for event loop)
-    :py-safe-id    String (Python-safe ling identifier)
-    :started-at    long
-    :cwd           string
-    :system-prompt string}"
+   {:ling-id             String
+    :phase               keyword (:idle :silence :abstract :act)
+    :phase-history       [{:phase kw :started-at inst :ended-at inst}]
+    :observations        vector (collected during silence phase)
+    :plan                string (produced during abstract phase)
+    :compressed-context  string (compressed observations from last phase transition)
+    :message-ch          core.async channel (streaming messages)
+    :result-ch           core.async channel (final result)
+    :turn-count          int (number of query() calls)
+    :client-ref          String (Python global var name for client)
+    :py-loop-var         String (Python global var name for event loop)
+    :py-safe-id          String (Python-safe ling identifier)
+    :started-at          long
+    :cwd                 string
+    :system-prompt       string}"
   (:require [clojure.core.async :refer [close!]]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
