@@ -10,7 +10,7 @@
    - Coordinator registration in DataScript
    - Memory store wiring (IMemoryStore protocol)
    - Channel bridge + swarm sync + registry sync
-   - L2 decay scheduler (periodic memory/edge/disc decay)"
+   - decay scheduler (periodic memory/edge/disc decay)"
   (:require [hive-mcp.chroma :as chroma]
             [hive-mcp.channel.websocket :as ws-channel]
             [hive-mcp.embeddings.ollama :as ollama]
@@ -156,7 +156,7 @@
       false)))
 
 ;; =============================================================================
-;; Hot-Reload Auto-Healing (CLARITY-Y: Yield safe failure)
+;; Hot-Reload Auto-Healing
 ;; =============================================================================
 
 (defn- emit-mcp-health-event!
@@ -177,7 +177,6 @@
 (defn- handle-hot-reload-success!
   "Handler for successful hot-reload - refreshes tools and emits health event.
 
-   CLARITY: Yield safe failure - errors logged but don't break the reload.
 
    Parameters:
      server-context-atom - atom containing MCP server context"
@@ -237,7 +236,6 @@
 (defn register-coordinator!
   "Register coordinator in DataScript + hivemind (Phase 4).
 
-   CLARITY-T: Telemetry first - expose coordinator identity for hivemind operations.
 
    Parameters:
      coordinator-id-atom - atom to store coordinator project-id"
@@ -268,7 +266,6 @@
 
 (defn wire-memory-store!
   "Wire ChromaMemoryStore as active IMemoryStore backend (Phase 1 vectordb abstraction).
-   SOLID-D: Consumers can depend on IMemoryStore protocol instead of chroma directly.
    Must run AFTER init-embedding-provider! since Chroma config is set there."
   []
   (try
@@ -310,7 +307,6 @@
   "Initialize hot-reload watcher with claim-aware coordination.
 
    ADR: State-based debouncing - claimed files buffer until release.
-   CLARITY-I: Check :hot-reload config before starting watcher.
 
    Parameters:
      server-context-atom - atom containing MCP server context
@@ -364,11 +360,10 @@
       (log/warn "Lings registry sync failed to start (non-fatal):" (.getMessage e)))))
 
 ;; =============================================================================
-;; L2 Decay Scheduler
 ;; =============================================================================
 
 (defn start-decay-scheduler!
-  "Start the L2 periodic decay scheduler.
+  "Start the periodic decay scheduler.
    Runs memory staleness decay, edge confidence decay, and disc certainty
    decay on a configurable interval (default: 60 minutes).
 
@@ -384,13 +379,13 @@
       (when start-fn
         (let [result (start-fn)]
           (if (:started result)
-            (log/info "L2 decay scheduler started:" result)
-            (log/info "L2 decay scheduler not started:" (:reason result))))))
+            (log/info "Decay scheduler started:" result)
+            (log/info "Decay scheduler not started:" (:reason result))))))
     (catch Exception e
-      (log/warn "L2 decay scheduler failed to start (non-fatal):" (.getMessage e)))))
+      (log/warn "Decay scheduler failed to start (non-fatal):" (.getMessage e)))))
 
 (defn stop-decay-scheduler!
-  "Stop the L2 periodic decay scheduler. Called during shutdown."
+  "Stop the periodic decay scheduler. Called during shutdown."
   []
   (try
     (require 'hive-mcp.scheduler.decay)
@@ -403,7 +398,8 @@
 ;; =============================================================================
 
 (defn init-nats!
-  "Initialize NATS client + bridge for push-based drone notifications.
+  "Initialize NATS client + bridge + callback listener for push-based drone notifications.
+   Startup sequence: NATS connect → bridge subscribe → callback listener start.
    Opt-in via config: services.nats.enabled = true.
    Non-fatal: system degrades to polling if NATS unavailable."
   []
@@ -413,9 +409,31 @@
         (let [start! (requiring-resolve 'hive-mcp.nats.client/start!)
               bridge! (requiring-resolve 'hive-mcp.nats.bridge/start-subscriptions!)]
           (start! nats-config)
-          (bridge!))))
+          (bridge!)
+          (when-let [cb-start (requiring-resolve 'hive-mcp.swarm.callback/start-listener!)]
+            (cb-start)))))
     (catch Exception e
       (log/warn "NATS init failed (non-fatal):" (.getMessage e)))))
+
+;; =============================================================================
+;; Extension Loading
+;; =============================================================================
+
+(defn load-extensions!
+  "Load optional extension capabilities (hive-knowledge, hive-agent).
+   Uses dual strategy: self-registration init! functions + manifest fallback.
+   Non-fatal: system works without extensions (noop defaults).
+
+   Must run AFTER embedding/memory services (extensions may use Chroma)."
+  []
+  (try
+    (require 'hive-mcp.extensions.loader)
+    (let [load-fn (resolve 'hive-mcp.extensions.loader/load-extensions!)]
+      (when load-fn
+        (let [result (load-fn)]
+          (log/info "Extension loading complete:" result))))
+    (catch Exception e
+      (log/warn "Extension loading failed (non-fatal):" (.getMessage e)))))
 
 ;; =============================================================================
 ;; Workflow Engine Initialization

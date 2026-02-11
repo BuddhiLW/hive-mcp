@@ -5,7 +5,6 @@
    **Nash equilibrium** - no participant would unilaterally change their
    position given the others' positions.
 
-   SOLID: Single responsibility - consensus detection only.
    DDD: Pure domain functions, no side effects.
 
    Depends on: hive-mcp.agora.schema (dialogue state queries)"

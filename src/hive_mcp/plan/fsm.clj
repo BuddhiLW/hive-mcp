@@ -25,8 +25,6 @@
    The FSM spec is compiled once and reused. Resources inject
    memory/kanban/KG clients for side effects during transitions.
 
-   SOLID-S: Plan lifecycle only.
-   CLARITY-I: Guards validate at each transition boundary."
   (:refer-clojure :exclude [compile])
   (:require [hive.events.fsm :as fsm]
             [hive-mcp.plan.schema :as schema]

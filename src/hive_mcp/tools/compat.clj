@@ -6,8 +6,6 @@
    - Translate old parameter names to new ones
    - Delegate to consolidated tool handlers
 
-   SOLID: Open/Closed Principle - extend old tools without modifying them.
-   CLARITY: L - Thin adapter layer between old and new tool interfaces."
   (:require [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -557,7 +555,6 @@
 ;; - Permissive inputSchema (validation handled by consolidated handlers)
 ;; - Handler pointing to the shim function
 ;;
-;; CLARITY: O (Open/Closed) - shims extend behavior without modifying originals
 
 (defn- make-tool-def
   "Generate MCP tool definition for a deprecated tool.

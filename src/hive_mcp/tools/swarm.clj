@@ -13,8 +13,6 @@
    - swarm.wave      - Batch drone wave execution
    - swarm.validated-wave - Validated wave with self-healing
 
-   SOLID: Facade pattern - thin delegation to focused modules.
-   CLARITY: L - Layers stay pure (facade separate from implementation)."
   (:require [hive-mcp.tools.swarm.core :as core]
             [hive-mcp.tools.swarm.registry :as registry]
             [hive-mcp.tools.swarm.state :as state]

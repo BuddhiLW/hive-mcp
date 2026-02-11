@@ -7,7 +7,6 @@
    3. Phase-based plans ({:phase N :tasks [...]}) across multiple blocks
    4. Mixed markdown/text with embedded EDN
 
-   SOLID-S: Single responsibility — EDN plan parsing only."
   (:require [clojure.string :as str]
             [clojure.edn :as edn]
             [hive-mcp.plan.schema :as schema]))
@@ -176,7 +175,11 @@
   "Normalize an EDN step map, converting namespaced keys to non-namespaced.
 
    :step/id -> :id, :step/title -> :title, etc.
-   Also coerces :id and :depends-on items from keywords to strings."
+   Also coerces :id and :depends-on items from keywords to strings.
+
+   Aliases normalized:
+   - :dependencies -> :depends-on (SAA plans use :dependencies)
+   - :file (string) -> :files (vector) (SAA plans use singular :file)"
   [step]
   (let [base (reduce-kv (fn [m k v]
                           (assoc m (strip-namespace k) v))
@@ -186,9 +189,25 @@
         base (if-let [id (:id base)]
                (assoc base :id (keyword->string id))
                base)
+        ;; Normalize :dependencies alias -> :depends-on (SAA plans use :dependencies)
+        base (if (and (contains? base :dependencies)
+                      (not (contains? base :depends-on)))
+               (-> base
+                   (assoc :depends-on (:dependencies base))
+                   (dissoc :dependencies))
+               base)
         ;; Coerce :depends-on items from keywords to strings
         base (if-let [deps (:depends-on base)]
                (assoc base :depends-on (mapv keyword->string deps))
+               base)
+        ;; Normalize :file (singular string) -> :files (vector)
+        base (if (and (contains? base :file)
+                      (not (contains? base :files)))
+               (-> base
+                   (assoc :files (if (string? (:file base))
+                                   [(:file base)]
+                                   (vec (:file base))))
+                   (dissoc :file))
                base)]
     base))
 
@@ -196,12 +215,16 @@
   "Normalize an EDN plan map, converting namespaced keys to non-namespaced.
 
    :plan/title -> :title, :plan/steps -> :steps, etc.
-   Also normalizes nested step maps."
+   Also normalizes nested step maps and coerces plan-level :id to string."
   [data]
   (let [base-map (reduce-kv (fn [m k v]
                               (assoc m (strip-namespace k) v))
                             {}
                             data)
+        ;; Coerce plan-level :id from keyword to string
+        base-map (if-let [id (:id base-map)]
+                   (assoc base-map :id (keyword->string id))
+                   base-map)
         steps (get-steps-key data)]
     (if steps
       (assoc base-map :steps (mapv normalize-edn-step steps))

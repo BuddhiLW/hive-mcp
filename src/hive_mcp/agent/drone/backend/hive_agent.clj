@@ -1,13 +1,5 @@
 (ns hive-mcp.agent.drone.backend.hive-agent
-  "HiveAgentBackend — IDroneExecutionBackend implementation wrapping hive-agent bridge.
-
-   Delegates drone execution to the hive-agent multi-turn agentic loop
-   via the hive-agent-bridge. The bridge uses requiring-resolve for IP
-   boundary compliance — hive-agent may or may not be on classpath.
-
-   SOLID-O: Registered via defmethod, no modification to execution.clj.
-   SOLID-D: Depends on IDroneExecutionBackend abstraction.
-   CLARITY-Y: Graceful degradation when hive-agent unavailable."
+  "HiveAgentBackend -- IDroneExecutionBackend wrapping hive-agent bridge."
   (:require [hive-mcp.agent.drone.backend :as backend]
             [hive-mcp.agent.hive-agent-bridge :as bridge]
             [hive-mcp.config :as config]
@@ -16,20 +8,8 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;; =============================================================================
-;; Result Adaptation
-;; =============================================================================
-
 (defn- adapt-bridge-result
-  "Adapt hive-agent-bridge result to IDroneExecutionBackend contract.
-
-   Bridge returns:
-     {:status :completed/:error, :result str, :steps [], :tool_calls_made N,
-      :tokens {:input N :output N :total N}, :model str, :hive-agent-metadata map}
-
-   Protocol expects:
-     {:status :completed/:failed/:timeout, :result str,
-      :tokens {:input-tokens N :output-tokens N}, :model str}"
+  "Adapt hive-agent-bridge result to IDroneExecutionBackend contract."
   [bridge-result]
   (let [status (case (:status bridge-result)
                  :completed :completed
@@ -45,19 +25,13 @@
                 (:hive-agent-metadata bridge-result)
                 {:backend :hive-agent})}))
 
-;; =============================================================================
-;; HiveAgentBackend Record
-;; =============================================================================
-
 (defrecord HiveAgentBackend []
   backend/IDroneExecutionBackend
 
   (execute-drone [_this task-context]
     (let [{:keys [task model max-steps preset cwd files]} task-context
           bridge-opts {:task           task
-                       :model          (or model
-                                           (config/get-config-value "models.default-model")
-                                           "moonshotai/kimi-k2.5")
+                       :model          (or model (config/default-drone-model))
                        :max-turns      (or max-steps 20)
                        :preset-content preset
                        :project-id     nil
@@ -71,7 +45,6 @@
           (log/info {:event  :hive-agent-backend/completed
                      :status (:status result)})
           (adapt-bridge-result result))
-        ;; Bridge returned nil — hive-agent not on classpath
         (do
           (log/warn {:event :hive-agent-backend/unavailable})
           {:status :failed
@@ -88,18 +61,10 @@
   (backend-type [_this]
     :hive-agent))
 
-;; =============================================================================
-;; Constructor
-;; =============================================================================
-
 (defn make-hive-agent-backend
   "Create a HiveAgentBackend instance."
   []
   (->HiveAgentBackend))
-
-;; =============================================================================
-;; resolve-backend Registration
-;; =============================================================================
 
 (defmethod backend/resolve-backend :hive-agent [_context]
   (make-hive-agent-backend))

@@ -1,19 +1,5 @@
 (ns hive-mcp.agent.drone.retry
-  "Retry logic for drone agents with exponential backoff.
-
-   CLARITY-Y (Yield Safe Failure): Graceful degradation through smart retries.
-   CLARITY-T (Telemetry First): All retries are logged for observability.
-
-   Error Categories:
-     :transient  - Rate limits, timeouts, temporary failures (can retry)
-     :permanent  - Auth errors, invalid requests (fail fast)
-     :unknown    - Unclassified (cautious retry with limit)
-
-   Recovery Strategies:
-     - Rate limit: Wait + retry with alternative model
-     - Timeout: Reduce complexity/max-steps + retry
-     - Auth error: Fail fast with actionable message
-     - Model error: Try fallback model"
+  "Retry logic for drone agents with exponential backoff and model fallback."
   (:require [hive-mcp.agent.config :as config]
             [hive-mcp.telemetry.prometheus :as prom]
             [taoensso.timbre :as log]
@@ -22,10 +8,6 @@
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
-
-;;; ============================================================
-;;; Error Classification
-;;; ============================================================
 
 (defn rate-limit?
   "Check if exception indicates a rate limit error."
@@ -60,7 +42,7 @@
         (str/includes? (str/lower-case msg) "forbidden"))))
 
 (defn model-error?
-  "Check if exception indicates a model-specific error (model unavailable, etc)."
+  "Check if exception indicates a model-specific error."
   [ex]
   (let [data (ex-data ex)
         msg (str (ex-message ex))]
@@ -83,13 +65,7 @@
     (str/includes? (str/lower-case msg) "empty response")))
 
 (defn classify-error
-  "Classify an exception into error categories.
-
-   Returns:
-     :transient  - Can retry (rate limits, timeouts, server errors)
-     :permanent  - Don't retry (auth errors, invalid requests)
-     :model-fallback - Try alternative model
-     :unknown    - Unclassified (limited retry)"
+  "Classify an exception into error categories."
   [ex]
   (cond
     (rate-limit? ex) :transient
@@ -105,30 +81,16 @@
   [category]
   (name category))
 
-;;; ============================================================
-;;; Retry Configuration
-;;; ============================================================
-
 (def default-retry-opts
   "Default retry configuration."
   {:max-retries 3
-   :initial-delay-ms 1000      ; 1 second
-   :max-delay-ms 30000         ; 30 seconds
+   :initial-delay-ms 1000
+   :max-delay-ms 30000
    :backoff-multiplier 2.0
-   :jitter-factor 0.2})        ; Add up to 20% random jitter
+   :jitter-factor 0.2})
 
 (defn calculate-delay
-  "Calculate delay for retry attempt with exponential backoff and jitter.
-
-   Arguments:
-     attempt            - Current retry attempt (0-indexed)
-     initial-delay-ms   - Initial delay in milliseconds
-     max-delay-ms       - Maximum delay cap
-     backoff-multiplier - Multiplier for each attempt
-     jitter-factor      - Randomness factor (0.0 - 1.0)
-
-   Returns:
-     Delay in milliseconds with jitter applied."
+  "Calculate delay for retry attempt with exponential backoff and jitter."
   [attempt {:keys [initial-delay-ms max-delay-ms backoff-multiplier jitter-factor]
             :or {initial-delay-ms 1000
                  max-delay-ms 30000
@@ -139,19 +101,8 @@
         jitter (* capped-delay jitter-factor (rand))]
     (long (+ capped-delay jitter))))
 
-;;; ============================================================
-;;; Model Fallback
-;;; ============================================================
-
 (defn get-fallback-model
-  "Get a fallback model for the given model/preset.
-
-   Returns nil if no fallback available.
-
-   Strategy:
-   - If using :coding model, try :coding-alt
-   - If using :coding-alt, try :docs (simpler tasks)
-   - Otherwise return nil (no fallback)"
+  "Get a fallback model for the given model/preset."
   [current-model preset]
   (let [task-type (config/preset->task-type (or preset "drone-worker"))
         alt-task-type (case task-type
@@ -163,19 +114,8 @@
         (when (and fallback (not= fallback current-model))
           fallback)))))
 
-;;; ============================================================
-;;; Recovery Strategies
-;;; ============================================================
-
 (defn recovery-strategy
-  "Determine recovery strategy based on error classification.
-
-   Returns a map with:
-     :action       - :retry, :retry-with-fallback, :fail
-     :delay-ms     - Delay before retry (if retrying)
-     :model        - Alternative model to use (if fallback)
-     :max-steps    - Reduced max-steps (for timeout recovery)
-     :reason       - Human-readable explanation"
+  "Determine recovery strategy based on error classification."
   [ex attempt opts]
   (let [category (classify-error ex)
         delay-ms (calculate-delay attempt opts)
@@ -186,7 +126,7 @@
       (if within-retries?
         {:action :retry
          :delay-ms (if (rate-limit? ex)
-                     (max delay-ms 5000) ; Min 5s for rate limits
+                     (max delay-ms 5000)
                      delay-ms)
          :reason (if (rate-limit? ex)
                    "Rate limited - backing off"
@@ -217,32 +157,8 @@
         {:action :fail
          :reason "Unknown error - max cautious retries exceeded"}))))
 
-;;; ============================================================
-;;; Core Retry Logic
-;;; ============================================================
-
 (defn with-retry
-  "Execute function f with retry logic and recovery strategies.
-
-   Arguments:
-     f    - Function to execute (takes a map of options)
-     opts - Options map:
-            :max-retries       - Max retry attempts (default: 3)
-            :initial-delay-ms  - Initial backoff delay (default: 1000)
-            :max-delay-ms      - Maximum backoff delay (default: 30000)
-            :backoff-multiplier - Exponential multiplier (default: 2.0)
-            :jitter-factor     - Random jitter (default: 0.2)
-            :model             - Current model name
-            :preset            - Preset name for fallback lookup
-            :drone-id          - Drone ID for telemetry
-            :task-id           - Task ID for telemetry
-            :on-retry          - Callback (fn [attempt ex strategy])
-
-   Returns:
-     Result from f on success.
-
-   Throws:
-     Original exception after all retries exhausted."
+  "Execute function f with retry logic and recovery strategies."
   [f opts]
   (let [merged-opts (merge default-retry-opts opts)
         {:keys [max-retries drone-id task-id on-retry]} merged-opts]
@@ -250,7 +166,6 @@
            current-opts merged-opts
            last-exception nil]
       (if (> attempt max-retries)
-        ;; All retries exhausted
         (do
           (log/error {:event :drone/retry-exhausted
                       :drone-id drone-id
@@ -259,7 +174,6 @@
                       :last-error (ex-message last-exception)})
           (throw last-exception))
 
-        ;; Try execution and capture result outside try block for recur
         (let [result (try
                        (when (pos? attempt)
                          (log/info {:event :drone/retry-attempt
@@ -271,20 +185,16 @@
                        (catch Exception e
                          {:status :error :exception e}))]
           (if (= :success (:status result))
-            ;; Success - return the value
             (:value result)
-            ;; Error - handle retry logic outside try block
             (let [e (:exception result)
                   strategy (recovery-strategy e attempt merged-opts)
                   category (classify-error e)]
 
-              ;; CLARITY-T: Record retry metrics
               (prom/record-retry! {:drone-id drone-id
                                    :attempt attempt
                                    :error-category category
                                    :action (:action strategy)})
 
-              ;; Telemetry logging
               (log/warn {:event :drone/error-caught
                          :drone-id drone-id
                          :task-id task-id
@@ -294,7 +204,6 @@
                          :reason (:reason strategy)
                          :error-message (ex-message e)})
 
-              ;; Invoke callback if provided
               (when on-retry
                 (on-retry attempt e strategy))
 
@@ -314,21 +223,8 @@
                 ;; :fail
                 (throw e)))))))))
 
-;;; ============================================================
-;;; Convenience Wrappers
-;;; ============================================================
-
 (defn retry-drone-execution
-  "Wrap drone execution with retry logic.
-
-   Designed to integrate with drone/delegate!
-
-   Arguments:
-     execute-fn - The drone execution function
-     opts       - Execution options (task, files, preset, etc.)
-
-   Returns:
-     Execution result with :retry-info metadata."
+  "Wrap drone execution with retry logic."
   [execute-fn opts]
   (let [start-time (System/currentTimeMillis)
         retry-count (atom 0)
@@ -354,14 +250,8 @@
                          :original-error (ex-message e)}
                         e))))))
 
-;;; ============================================================
-;;; Testing/Simulation Helpers
-;;; ============================================================
-
 (defn simulate-error
-  "Create a simulated exception for testing retry logic.
-
-   Type can be: :rate-limit, :timeout, :auth, :model, :server, :empty, :unknown"
+  "Create a simulated exception for testing retry logic."
   [error-type]
   (case error-type
     :rate-limit (ex-info "Rate limit exceeded" {:status 429})

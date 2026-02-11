@@ -1,27 +1,5 @@
 (ns hive-mcp.scheduler.dag-waves
-  "DAGWave Scheduler — self-scheduling Forja Belt via KG dependencies.
-
-   Uses KG `depends-on` edges as a DAG to determine task dispatch order.
-   Automatically dispatches lings for ready tasks and re-dispatches when
-   tasks complete, creating a self-scheduling execution loop.
-
-   Data Flow:
-   1. Coordinator feeds plan → plan-to-kanban → creates kanban tasks + KG depends-on edges
-   2. DAGWave scheduler queries: kanban todos WHERE all depends-on targets have status=done
-   3. Scheduler spawns lings for frontier tasks (up to max-slots)
-   4. On :ling/completed event → mark kanban done → re-query frontier → auto-spawn
-   5. Repeat until DAG empty or user says stop
-
-   Key building blocks (all pre-existing):
-   - plan/tool.clj: compute-waves (Kahn's algo), creates KG depends-on edges
-   - edges.clj: get-edges-from with relation filter for :depends-on
-   - agent/ling.clj: create-ling! with kanban-task-id linking
-   - memory-kanban.clj: Chroma-based kanban CRUD
-   - hivemind.clj: shout! for coordinator notifications
-   - channel.clj: subscribe! for event listening (core.async pub/sub)
-
-   SOLID: SRP - Pure scheduling logic, delegates to existing subsystems.
-   CLARITY: L - Layers stay pure; scheduler only orchestrates."
+  "DAGWave scheduler for dependency-ordered task dispatch."
   (:require [hive-mcp.knowledge-graph.edges :as kg-edges]
             [hive-mcp.tools.memory-kanban :as mem-kanban]
             [hive-mcp.chroma :as chroma]
@@ -57,8 +35,7 @@
 ;; =============================================================================
 
 (defn- get-kanban-todos
-  "Get all kanban tasks with status 'todo' for the given project.
-   Returns seq of {:id :title :status :priority}."
+  "Get all kanban tasks with status 'todo' for the given project."
   [directory]
   (try
     (let [result (mem-kanban/handle-mem-kanban-list-slim
@@ -71,7 +48,7 @@
       [])))
 
 (defn- get-kanban-task
-  "Get a kanban task by ID from Chroma. Returns the entry map or nil."
+  "Get a kanban task by ID from Chroma."
   [task-id]
   (try
     (chroma/get-entry-by-id task-id)
@@ -79,15 +56,13 @@
       nil)))
 
 (defn- kanban-task-done?
-  "Check if a kanban task has been completed (moved to done = deleted from Chroma).
-   Returns true if the task no longer exists (deleted on done) or is in completed set."
+  "Check if a kanban task has been completed."
   [task-id completed-set]
   (or (contains? completed-set task-id)
       (nil? (get-kanban-task task-id))))
 
 (defn- move-kanban-done!
-  "Move a kanban task to 'done' status.
-   Note: In memory-kanban, moving to 'done' DELETES the entry."
+  "Move a kanban task to 'done' status."
   [task-id directory]
   (try
     (mem-kanban/handle-mem-kanban-move
@@ -100,12 +75,7 @@
 ;; =============================================================================
 
 (defn- get-task-dependencies
-  "Get the task IDs that a given task depends on (via KG :depends-on edges).
-   
-   A task-B --depends-on--> task-A means B depends on A completing first.
-   So we look for outgoing :depends-on edges FROM this task.
-   
-   Returns set of task-ids that this task depends on."
+  "Get the task IDs that a given task depends on via KG edges."
   [task-id]
   (try
     (let [edges (kg-edges/get-edges-from task-id)
@@ -120,20 +90,7 @@
 ;; =============================================================================
 
 (defn find-ready-tasks
-  "Find tasks whose ALL dependencies have been completed.
-   
-   A task is 'ready' when:
-   1. It has kanban status 'todo'
-   2. ALL of its :depends-on targets are in the completed set OR no longer exist in Chroma
-   3. It is NOT already dispatched or completed
-   
-   Arguments:
-     directory    - Working directory for kanban scoping
-     completed    - Set of task IDs already completed
-     dispatched   - Map of task-id -> ling-id (currently running)
-     failed       - Set of task IDs that failed
-   
-   Returns vector of {:task-id :title :deps :dep-count}."
+  "Find tasks whose all dependencies have been completed."
   [directory completed dispatched failed]
   (let [todos (get-kanban-todos directory)
         already-handled (into (set (keys dispatched))
@@ -157,14 +114,7 @@
 ;; =============================================================================
 
 (defn dispatch-wave!
-  "Dispatch lings for ready tasks up to available slots.
-   
-   Arguments:
-     ready-tasks - Vector from find-ready-tasks
-     max-slots   - Maximum concurrent lings
-     opts        - Map with :cwd, :presets, :project-id
-   
-   Returns {:dispatched-count N :dispatched-tasks [...] :skipped-count N}."
+  "Dispatch lings for ready tasks up to available slots."
   [ready-tasks max-slots opts]
   (let [{:keys [cwd presets project-id]} opts
         current-dispatched (:dispatched @dag-state)
@@ -217,18 +167,7 @@
 ;; =============================================================================
 
 (defn on-ling-complete
-  "Handle ling completion event. Called when a ling shouts :completed.
-   
-   1. Finds the kanban-task-id from the ling's DataScript record
-   2. Marks the kanban task as done
-   3. Removes from dispatched, adds to completed
-   4. Re-queries find-ready-tasks
-   5. Auto-dispatches newly unblocked tasks
-   
-   Arguments:
-     event - Map with :agent-id, :project-id, :data
-   
-   Returns nil (side-effecting)."
+  "Handle ling completion event and auto-dispatch next wave."
   [{:keys [agent-id project-id data]}]
   (when (:active @dag-state)
     (let [;; Find the kanban-task-id for this ling
@@ -308,11 +247,7 @@
 (defonce ^:private dag-sub-channel (atom nil))
 
 (defn- start-event-listener!
-  "Start a go-loop that listens to :hivemind-completed events from the channel
-   pub/sub system and routes them to on-ling-complete.
-   
-   channel/subscribe! returns a core.async channel that receives events
-   matching the given :type keyword."
+  "Start a go-loop listening for completion events."
   []
   (let [ch (channel/subscribe! :hivemind-completed)]
     (reset! dag-sub-channel ch)
@@ -329,7 +264,7 @@
     (log/info "DAGWaves event listener started")))
 
 (defn- stop-event-listener!
-  "Stop the event listener go-loop by closing the subscription channel."
+  "Stop the event listener go-loop."
   []
   (when-let [ch @dag-sub-channel]
     (try
@@ -345,22 +280,7 @@
 ;; =============================================================================
 
 (defn start-dag!
-  "Initialize and start the DAG scheduler for a plan.
-   
-   Arguments:
-     plan-id - Memory entry ID of the plan (already converted to kanban via plan-to-kanban)
-     opts    - Map with:
-               :max-slots  - Max concurrent lings (default: 5)
-               :cwd        - Working directory (required)
-               :presets    - Ling presets (default: [\"ling\"])
-               :project-id - Project ID (auto-detected from cwd if nil)
-   
-   Returns {:started true :plan-id ... :initial-dispatch ...}
-   
-   Side effects:
-   - Initializes dag-state atom
-   - Subscribes to channel events for completion detection
-   - Dispatches first wave of ready tasks"
+  "Initialize and start the DAG scheduler for a plan."
   [plan-id opts]
   (when (:active @dag-state)
     (throw (ex-info "DAG already active. Call stop-dag! first."
@@ -409,9 +329,7 @@
        :initial-dispatch result})))
 
 (defn stop-dag!
-  "Stop the DAG scheduler. Deregisters event handlers but does NOT kill active lings.
-   
-   Returns final stats map."
+  "Stop the DAG scheduler."
   []
   (let [state @dag-state]
     ;; Stop event listener
@@ -437,16 +355,7 @@
 ;; =============================================================================
 
 (defn dag-status
-  "Get current DAG progress.
-   
-   Returns map with:
-   - :active        - Whether scheduler is running
-   - :plan-id       - Plan memory entry ID
-   - :completed     - Count of completed tasks
-   - :failed        - Count of failed tasks  
-   - :dispatched    - Count of currently running tasks
-   - :ready         - Count of tasks ready to dispatch
-   - :wave-log      - Recent dispatch/completion events"
+  "Get current DAG scheduler progress."
   []
   (let [state @dag-state
         directory (get-in state [:opts :cwd])

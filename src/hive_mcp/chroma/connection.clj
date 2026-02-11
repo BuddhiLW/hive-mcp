@@ -1,8 +1,5 @@
 (ns hive-mcp.chroma.connection
-  "Chroma connection configuration, collection management, and health status.
-
-   Manages connection config, collection cache, availability checks,
-   and embedding reinitialization for hot-reload recovery."
+  "Chroma connection configuration, collection management, and health status."
   (:require [clojure-chroma-client.api :as chroma]
             [clojure-chroma-client.config :as chroma-config]
             [hive-mcp.chroma.embeddings :as emb]
@@ -11,10 +8,6 @@
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
-
-;;; ============================================================
-;;; Configuration
-;;; ============================================================
 
 (def ^:private default-config
   {:host "localhost"
@@ -29,22 +22,11 @@
   @config)
 
 (defn configure!
-  "Configure Chroma connection settings.
-
-   Options:
-     :host - Chroma server host (default: localhost)
-     :port - Chroma server port (default: 8000)
-     :collection-name - Collection for memory entries (default: hive-mcp-memory)
-
-   Note: For Chroma Cloud, set CHROMA_API_KEY, CHROMA_TENANT, CHROMA_DATABASE env vars."
+  "Configure Chroma connection settings."
   [opts]
   (swap! config merge opts)
   (chroma-config/configure (select-keys opts [:host :port :api-version :tenant :database]))
   (log/info "Chroma configured:" (select-keys @config [:host :port :collection-name])))
-
-;;; ============================================================
-;;; Collection Management
-;;; ============================================================
 
 (defonce ^:private collection-cache (atom nil))
 
@@ -83,10 +65,6 @@
   []
   (reset! collection-cache nil))
 
-;;; ============================================================
-;;; Status & Health
-;;; ============================================================
-
 (defn status
   "Get Chroma integration status."
   []
@@ -97,12 +75,7 @@
    :port (:port @config)})
 
 (defn chroma-available?
-  "Check if Chroma is configured AND reachable.
-   Returns true only if:
-   1. Embedding provider is configured
-   2. Chroma server responds to health check
-
-   Used for capability-based tool switching."
+  "Check if Chroma is configured and reachable."
   []
   (when (emb/embedding-configured?)
     (try
@@ -113,48 +86,34 @@
         false))))
 
 (defn reinitialize-embeddings!
-  "Fix hot-reload protocol mismatch by reloading namespaces and reinitializing.
-
-   Call this when you see:
-     'No implementation of method: :embed-text of protocol: EmbeddingProvider'
-
-   Options:
-     :provider-type - :ollama (default), :openai, or :openrouter
-
-   Returns status map on success."
+  "Fix hot-reload protocol mismatch by reloading namespaces and reinitializing."
   [& {:keys [provider-type] :or {provider-type :ollama}}]
   (log/info "Reinitializing embeddings due to protocol mismatch...")
 
-  ;; 1. Remove provider namespaces (not service - it has alias to this ns)
   (remove-ns 'hive-mcp.embeddings.ollama)
   (remove-ns 'hive-mcp.embeddings.openai)
   (remove-ns 'hive-mcp.embeddings.openrouter)
   (remove-ns 'hive-mcp.embeddings.registry)
 
-  ;; 2. Reload implementors in correct order
   (require 'hive-mcp.embeddings.ollama :reload)
   (require 'hive-mcp.embeddings.openai :reload)
   (require 'hive-mcp.embeddings.openrouter :reload)
   (require 'hive-mcp.embeddings.registry :reload)
 
-  ;; 3. Clear all caches
   (reset-collection-cache!)
   (emb/reset-embedding-provider!)
 
-  ;; 4. Reinitialize registry (service uses resolve, no reload needed)
   (let [registry-init (resolve 'hive-mcp.embeddings.registry/init!)
         registry-clear (resolve 'hive-mcp.embeddings.registry/clear-cache!)]
     (registry-clear)
     (registry-init))
 
-  ;; 5. Create fresh provider based on type
   (let [provider (case provider-type
                    :ollama ((resolve 'hive-mcp.embeddings.ollama/->provider))
                    :openai ((resolve 'hive-mcp.embeddings.openai/->provider))
                    :openrouter ((resolve 'hive-mcp.embeddings.openrouter/->provider)))]
     (emb/set-embedding-provider! provider)
 
-    ;; 6. Verify fix
     (let [fixed? (satisfies? emb/EmbeddingProvider provider)]
       (if fixed?
         (log/info "Embeddings reinitialized successfully")

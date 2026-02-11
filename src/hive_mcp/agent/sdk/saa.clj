@@ -1,28 +1,13 @@
 (ns hive-mcp.agent.sdk.saa
-  "SAA (Silence-Abstract-Act) phase definitions, scoring, and tracking.
-
-   Contains:
-   - Phase configuration (tools, permissions, prompts per phase)
-   - Observation scoring (heuristic + enhanced extension)
-   - Silence tracking integration with silence.clj
-
-   SAA Strategy (Korzybski structural differential):
-   - Silence: Observe quietly via read-only tools, collect context
-   - Abstract: Synthesize observations into a plan
-   - Act: Execute the plan with full tool access"
+  "SAA (Silence-Abstract-Act) phase definitions, scoring, and tracking."
   (:require [hive-mcp.agent.sdk.session :as session]
             [hive-mcp.extensions.registry :as ext]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;;; =============================================================================
-;;; SAA Phase Definitions
-;;; =============================================================================
-
 (def saa-phases
-  "SAA phase configuration.
-   Each phase defines the tools allowed and the system prompt modifier."
+  "SAA phase configuration map keyed by phase keyword."
   {:silence
    {:name :silence
     :description "Observe quietly - read files, query memory, traverse KG"
@@ -61,10 +46,6 @@
          "- Make precise, focused changes\n"
          "- Verify each change before moving to the next")}})
 
-;;; =============================================================================
-;;; Integration with silence.clj
-;;; =============================================================================
-
 (defn- resolve-silence-fn
   "Dynamically resolve silence.clj functions."
   [fn-sym]
@@ -73,8 +54,7 @@
     (catch Exception _ nil)))
 
 (defn with-silence-tracking
-  "Wrap a phase execution with silence.clj tracking.
-   Records file reads and discoveries during the Silence phase."
+  "Wrap a phase execution with silence.clj tracking."
   [ling-id task body-fn]
   (if-let [start-fn (resolve-silence-fn 'start-exploration!)]
     (let [_session-id (start-fn {:task task :agent-id ling-id})]
@@ -84,26 +64,15 @@
           (when-let [end-fn (resolve-silence-fn 'end-exploration!)]
             (let [summary (end-fn)]
               (session/update-session! ling-id {:silence-summary summary}))))))
-    ;; silence.clj not available, just run
     (body-fn)))
 
-;;; =============================================================================
-;;; Crystal/Core Integration (Recall Scoring)
-;;; =============================================================================
-
 (defn score-observations
-  "Score observations using promotion scoring.
-   Filters and prioritizes what matters for the Abstract phase.
-
-   Delegates to enhanced extension if available, falls back to heuristic."
+  "Score observations for prioritization in the Abstract phase."
   [observations]
   (if-let [score-fn (ext/get-extension :es/score)]
-    ;; Enhanced scoring via extension
     (score-fn observations)
-    ;; Built-in fallback: simple heuristic scoring
     (let [score-entry (fn [obs]
                         (let [content (str (or (:data obs) obs))
-                              ;; Simple heuristics
                               has-pattern? (re-find #"pattern|convention|decision" content)
                               has-issue? (re-find #"bug|error|issue|fix" content)
                               has-test? (re-find #"test|spec|assert" content)

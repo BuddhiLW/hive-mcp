@@ -7,7 +7,6 @@
    - Notion (JSON API format)
    - Custom (user-defined transforms)
 
-   CLARITY-L: Clean protocol boundary for extensibility."
   (:require [clojure.walk :as walk]
             [taoensso.timbre :as log]))
 

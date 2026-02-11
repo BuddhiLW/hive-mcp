@@ -6,7 +6,6 @@
    - Status enumerations for validation
    - Schema documentation
 
-   SOLID-S: Single Responsibility - only schema definitions.
    DDD: Value Objects for status enums, schema as domain model."
   (:require [clojure.string :as str]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>

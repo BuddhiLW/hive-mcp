@@ -1,22 +1,5 @@
 (ns hive-mcp.protocols.dispatch
-  "Polymorphic dispatch context protocol for agent communication.
-
-   Defines the OCP boundary for how tasks are communicated to lings/drones:
-   - IDispatchContext: Protocol for resolving task context
-   - TextContext: Plain text prompts (default, zero deps)
-   - RefContext: Reference-based dispatch (pass-by-reference, lazy resolution)
-   - ExtContext: Extension-backed implementation via registry
-
-   Architecture:
-   - TextContext wraps plain prompts (backward compatible, zero deps)
-   - RefContext carries context-store IDs, resolves lazily via lookups
-   - ExtContext delegates to extension when available
-   - ensure-context provides backward compat: string → TextContext coercion
-
-   SOLID-O: Open for extension (new context types), closed for modification.
-   SOLID-D: Consumers depend on IDispatchContext, not concretions.
-   SOLID-I: Minimal interface — just resolve-context and context-type.
-   CLARITY-Y: Yield safe failure — extension context degrades to text gracefully.")
+  "Polymorphic dispatch context protocol for agent communication.")
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -27,19 +10,13 @@
 ;;; ============================================================================
 
 (defprotocol IDispatchContext
-  "Protocol for resolving task context for agent dispatch.
-
-   Implementations produce a consumable map that lings/drones use as their
-   task specification. Minimum shape: {:prompt <string>}.
-   Extended shape: {:prompt <string> :refs [<ctx-ids>] :grounding [<nodes>]}."
+  "Protocol for resolving task context for agent dispatch."
 
   (resolve-context [this]
-    "Returns a map that a ling/drone can consume.
-     Minimum shape: {:prompt <string>}
-     Extended shape: {:prompt <string> :refs [<ctx-ids>] :grounding [<nodes>]}")
+    "Return a consumable map with at minimum {:prompt string}.")
 
   (context-type [this]
-    "Returns keyword identifying the context type: :text, :graph-ref, :hybrid"))
+    "Return keyword identifying the context type."))
 
 ;;; ============================================================================
 ;;; TextContext Record (OSS Implementation)
@@ -82,38 +59,13 @@
 ;;; ============================================================================
 
 (defn ->text-context
-  "Create a TextContext wrapping a plain text prompt.
-
-   Arguments:
-     prompt - String task description
-
-   Returns:
-     TextContext record satisfying IDispatchContext."
+  "Create a TextContext wrapping a plain text prompt."
   [prompt]
   (->TextContext prompt))
 
 (defn ->ref-context
-  "Create a RefContext for pass-by-reference dispatch with context compression.
+  "Create a RefContext for pass-by-reference dispatch."
 
-   Instead of passing 2000+ token text blobs, carries lightweight IDs:
-   - ctx-refs: context-store entry IDs (fetched lazily)
-   - kg-node-ids: node IDs for context resolution
-
-   The reconstruct-fn is called at resolve-context time to produce
-   a compressed prompt from the referenced data.
-
-   Arguments:
-     prompt         - Base task description (always present as fallback)
-     opts           - Map with optional keys:
-                      :ctx-refs       - Map of category->ctx-id
-                      :kg-node-ids    - Vector of KG node IDs
-                      :scope          - Project scope string
-                      :reconstruct-fn - (fn [ctx-refs kg-node-ids scope] -> string)
-
-   Returns:
-     RefContext record satisfying IDispatchContext.
-
-   CLARITY-Y: Falls back to prompt-only if reconstruction fails."
   [prompt {:keys [ctx-refs kg-node-ids scope reconstruct-fn]}]
   (let [;; Default reconstruct-fn: resolve lazily to avoid circular deps.
         ;; Uses requiring-resolve to load hive-mcp.context.reconstruction
@@ -131,17 +83,8 @@
                   effective-fn)))
 
 (defn ->graph-context
-  "Create an extension-backed dispatch context.
-   Delegates to extension if available. Returns TextContext fallback otherwise.
+  "Create an extension-backed dispatch context."
 
-   Arguments:
-     task-node-id - Node ID for the task
-     kg-store     - Store instance for context resolution
-
-   Returns:
-     Extension context (if available) or TextContext fallback.
-
-   CLARITY-Y: Graceful degradation when extension unavailable."
   [task-node-id kg-store]
   (if-let [f (try
                (when-let [get-ext (requiring-resolve 'hive-mcp.extensions.registry/get-extension)]
@@ -155,13 +98,7 @@
 ;;; ============================================================================
 
 (defn ensure-context
-  "Wraps a plain string into TextContext if needed. Passes IDispatchContext through.
-
-   Arguments:
-     prompt-or-context - Either a string/value or an IDispatchContext instance
-
-   Returns:
-     IDispatchContext instance (original if already satisfies, TextContext otherwise)."
+  "Coerce a string or IDispatchContext into an IDispatchContext."
   [prompt-or-context]
   (if (satisfies? IDispatchContext prompt-or-context)
     prompt-or-context

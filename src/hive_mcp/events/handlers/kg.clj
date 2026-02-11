@@ -7,9 +7,6 @@
    - :kg/edge-removed   - Edge deleted
    - :kg/node-promoted  - Knowledge promoted to parent scope
 
-   SOLID: SRP - KG edge lifecycle only
-   CLARITY: R - Represented intent through kg domain
-   CLARITY: T - Telemetry first (logging and channel publish)"
   (:require [hive-mcp.events.core :as ev]
             [hive-mcp.events.interceptors :as interceptors]
             [hive-mcp.knowledge-graph.schema :as schema]))

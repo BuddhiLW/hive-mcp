@@ -11,8 +11,6 @@
    3. Status filter — only :active daemons considered
    4. Project affinity (optional) — prefer daemons already hosting same-project lings
 
-   SOLID-S: Single Responsibility — daemon selection logic only.
-   SOLID-O: Open for extension — scoring functions can be overridden.
    DDD: Domain Service — stateless selection algorithm."
   (:require [hive-mcp.emacs.daemon :as daemon]
             [hive-mcp.swarm.datascript.connection :as conn]
@@ -22,9 +20,6 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;;; =============================================================================
-;;; Constants
-;;; =============================================================================
 
 (def ^:const max-lings-per-daemon
   "Maximum number of lings a single daemon should host.
@@ -36,9 +31,6 @@
    Daemons start healthy until proven otherwise."
   100)
 
-;;; =============================================================================
-;;; Health Classification (mirrors schema/daemon-health-levels)
-;;; =============================================================================
 
 (defn health-level
   "Classify a health score into a health level.
@@ -60,9 +52,6 @@
   [score]
   (not= :unhealthy (health-level score)))
 
-;;; =============================================================================
-;;; Daemon Metrics (Pure Query Functions)
-;;; =============================================================================
 
 (defn daemon-ling-count
   "Count the number of lings currently bound to a daemon.
@@ -122,9 +111,6 @@
         (pos? same-project-count)  5
         :else                      0))))
 
-;;; =============================================================================
-;;; Composite Scoring
-;;; =============================================================================
 
 (defn score-daemon
   "Compute a composite selection score for a daemon.
@@ -176,9 +162,6 @@
                      :capacity capacity-bonus
                      :affinity affinity-bonus}}))
 
-;;; =============================================================================
-;;; Selection Algorithm
-;;; =============================================================================
 
 (defn select-daemon
   "Select the best daemon for a new ling spawn.
@@ -234,9 +217,6 @@
              :reason    :all-disqualified
              :scored    scored}))))))
 
-;;; =============================================================================
-;;; Health Score Update
-;;; =============================================================================
 
 (defn update-health-score!
   "Update a daemon's health score in DataScript.
@@ -260,9 +240,6 @@
       (d/transact! c [{:db/id eid
                        :emacs-daemon/health-score clamped}]))))
 
-;;; =============================================================================
-;;; Health Degradation Logic (EWMA-based)
-;;; =============================================================================
 
 (def ^:const ewma-alpha
   "EWMA smoothing factor. Higher = more weight on latest measurement.
@@ -371,9 +348,6 @@
                     (* (- 1.0 ewma-alpha) prev))]
     (max 0 (min 100 (int blended)))))
 
-;;; =============================================================================
-;;; Heartbeat with Health Scoring
-;;; =============================================================================
 
 (defn heartbeat!
   "Execute a heartbeat for a daemon: ping Emacs, measure latency, update health.
@@ -452,9 +426,6 @@
             :ling-count         ling-count
             :success?           success?}))))))
 
-;;; =============================================================================
-;;; W4: Ling Redistribution
-;;; =============================================================================
 ;;
 ;; Redistributes lings from overloaded/degraded daemons to healthier ones.
 ;; Unlike W3 (autoheal) which handles DEAD daemons, redistribution handles

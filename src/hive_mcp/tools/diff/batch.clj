@@ -1,11 +1,5 @@
 (ns hive-mcp.tools.diff.batch
-  "Multi-drone batch operations for diff review and approval.
-
-   Operations across multiple drones (not wave-scoped):
-   - batch-review: all pending diffs with auto-approve analysis
-   - approve-safe: auto-approve meeting criteria, flag others
-
-   SOLID: SRP - Cross-drone batch operations."
+  "Multi-drone batch operations for diff review and approval."
   (:require [hive-mcp.tools.core :refer [mcp-json]]
             [hive-mcp.tools.diff.state :as state :refer [mcp-error-json]]
             [hive-mcp.tools.diff.auto-approve :as auto-approve]
@@ -16,20 +10,8 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;; =============================================================================
-;; Multi-Drone Batch Operations
-;; =============================================================================
-
 (defn batch-review-diffs
-  "Get all pending diffs from multiple drones for batch review.
-
-   Token-Efficient Tier 1 Response (ADR 20260125002853):
-   Returns metadata only - use get_diff_details for hunk inspection.
-
-   Arguments:
-     drone-ids - Collection of drone IDs (or nil for all pending diffs)
-
-   Returns list of diffs sorted by timestamp, with auto-approve analysis."
+  "Get all pending diffs from multiple drones for batch review."
   ([] (batch-review-diffs nil))
   ([drone-ids]
    (let [all-diffs (vals @state/pending-diffs)
@@ -50,18 +32,7 @@
                    :auto-approve-check (auto-approve/auto-approve-diff? d)}))))))
 
 (defn approve-safe-diffs!
-  "Auto-approve diffs from multiple drones that meet safety criteria.
-
-   Arguments:
-     drone-ids - Collection of drone IDs (or nil for all pending diffs)
-     opts      - Optional map with:
-                 :rules - Custom rules (defaults to @auto-approve-rules)
-                 :dry-run - If true, only report what would be approved
-
-   Returns map with:
-     :auto-approved - Diffs that were approved and applied
-     :manual-review - Diffs that need manual review (with reasons)
-     :failed        - Diffs that failed to apply"
+  "Auto-approve diffs meeting safety criteria, flag others for manual review."
   ([] (approve-safe-diffs! nil {}))
   ([drone-ids] (approve-safe-diffs! drone-ids {}))
   ([drone-ids {:keys [rules dry-run] :or {rules @state/auto-approve-rules dry-run false}}]
@@ -74,11 +45,9 @@
          auto-approvable (filter #(get-in % [:auto-check :approved]) categorized)
          manual-review (remove #(get-in % [:auto-check :approved]) categorized)]
      (if dry-run
-       ;; Dry run - just report what would happen
        {:dry-run true
         :would-approve (mapv #(select-keys % [:id :file-path :drone-id]) auto-approvable)
         :manual-review (mapv #(select-keys % [:id :file-path :drone-id :auto-check]) manual-review)}
-       ;; Actual execution - apply safe diffs
        (let [apply-results (for [{:keys [id]} auto-approvable]
                              (let [response (handlers/handle-apply-diff {:diff_id id})
                                    parsed (try (json/read-str (:text response) :key-fn keyword)
@@ -101,13 +70,8 @@
                                manual-review)
           :failed (vec failed)})))))
 
-;; =============================================================================
-;; Batch MCP Handlers
-;; =============================================================================
-
 (defn handle-batch-review-diffs
-  "Handle batch_review_diffs tool call.
-   Returns all pending diffs from multiple drones for batch review."
+  "Handle batch_review_diffs tool call."
   [{:keys [drone_ids]}]
   (log/debug "batch_review_diffs called" {:drone_ids drone_ids})
   (try
@@ -121,8 +85,7 @@
       (mcp-error-json (str "Failed to batch review: " (.getMessage e))))))
 
 (defn handle-approve-safe-diffs
-  "Handle approve_safe_diffs tool call.
-   Auto-approve diffs from multiple drones that meet safety criteria."
+  "Handle approve_safe_diffs tool call."
   [{:keys [drone_ids dry_run]}]
   (log/debug "approve_safe_diffs called" {:drone_ids drone_ids :dry_run dry_run})
   (try

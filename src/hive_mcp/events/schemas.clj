@@ -1,7 +1,6 @@
 (ns hive-mcp.events.schemas
   "Malli schemas for event system validation.
    
-   CLARITY Principle: Inputs are guarded at boundaries.
    
    This module provides validation at key system boundaries:
    - Event dispatch (validate event format)

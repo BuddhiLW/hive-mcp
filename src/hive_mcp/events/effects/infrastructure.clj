@@ -6,7 +6,7 @@
    - :git-commit             - Stage files and create git commit
    - :kanban-sync            - Synchronize kanban state
    - :kanban-move-done       - Move kanban tasks to done
-   - :report-metrics         - Report event system metrics (CLARITY-T)
+   - :report-metrics         - Report event system metrics
    - :tool-registry-refresh  - Refresh tool handlers after hot-reload
 
    Usage:
@@ -15,9 +15,6 @@
    (infra-effects/register-infrastructure-effects!)
    ```
 
-   SOLID: Single Responsibility - infrastructure effect execution only
-   CLARITY: Y - Yield safe failure (effects catch and log errors)
-   CLARITY: T - Telemetry (metrics reporting)"
   (:require [hive-mcp.events.core :as ev]
             [hive-mcp.swarm.datascript :as ds]
             [hive-mcp.channel.core :as channel]
@@ -132,7 +129,7 @@
           (log/error "[EVENT] Kanban move error for" task-id ":" (.getMessage e)))))))
 
 ;; =============================================================================
-;; Effect: :report-metrics (CLARITY-T: Telemetry)
+;; Effect: :report-metrics
 ;; =============================================================================
 
 (defn- handle-report-metrics
@@ -144,7 +141,6 @@
    Expected data shape:
    {:destination :log | :prometheus | :statsd}  ; default: :log
 
-   CLARITY Principle: Telemetry first - observable system behavior."
   [{:keys [destination] :or {destination :log}}]
   (let [metrics (ev/get-metrics)]
     (case destination
@@ -179,7 +175,7 @@
    - :git-commit             - Stage files and create git commit
    - :kanban-sync            - Synchronize kanban state
    - :kanban-move-done       - Move kanban tasks to done
-   - :report-metrics         - Report metrics (CLARITY-T)
+   - :report-metrics         - Report metrics
    - :tool-registry-refresh  - Refresh tool handlers after hot-reload
 
    Called from hive-mcp.events.effects/register-effects!"

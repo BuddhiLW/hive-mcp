@@ -11,6 +11,7 @@
    - hive-mcp.events.effects.dispatch         — event chaining (dispatch, dispatch-n)
    - hive-mcp.events.effects.infrastructure   — ds-transact, git, kanban, metrics
    - hive-mcp.events.effects.kg               — knowledge graph edges
+   - hive-mcp.events.effects.drone-loop       — drone-loop FSM side effects
 
    Usage:
    ```clojure
@@ -18,8 +19,6 @@
    (effects/register-effects!)
    ```
 
-   SOLID: Single Responsibility - facade for effect registration
-   CLARITY: Y - Yield safe failure (effects catch and log errors)"
   (:require [hive-mcp.events.effects.coeffect :as cofx-effects]
             [hive-mcp.events.effects.notification :as notif-effects]
             [hive-mcp.events.effects.memory :as mem-effects]
@@ -27,6 +26,7 @@
             [hive-mcp.events.effects.dispatch :as dispatch-effects]
             [hive-mcp.events.effects.infrastructure :as infra-effects]
             [hive-mcp.events.effects.kg :as kg-effects]
+            [hive-mcp.events.effects.drone-loop :as drone-loop-effects]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -64,6 +64,7 @@
    - dispatch:     :dispatch :dispatch-n
    - infrastructure: :ds-transact :git-commit :kanban-sync :kanban-move-done :report-metrics :tool-registry-refresh
    - kg:           :kg-add-edge :kg-update-confidence :kg-increment-confidence :kg-remove-edge :kg-remove-edges-for-node
+   - drone-loop:   :drone/seed-session :drone/emit :drone/record-obs :drone/record-reason
 
    Coeffects registered (POC-08/09/10/11):
    - :now             - Current timestamp in milliseconds
@@ -91,13 +92,14 @@
     (dispatch-effects/register-dispatch-effects!)
     (infra-effects/register-infrastructure-effects!)
     (kg-effects/register-kg-effects!)
+    (drone-loop-effects/register-drone-loop-effects!)
 
     ;; NOTE: :crystal/wrap-notify event handler is registered in
     ;; hive-mcp.events.handlers.crystal/register-handlers! with proper
     ;; defensive stats handling. Do NOT duplicate here.
 
     (reset! *registered true)
-    (log/info "[hive-events] All effect/coeffect submodules registered (coeffect, notification, memory, agent, dispatch, infrastructure, kg)")
+    (log/info "[hive-events] All effect/coeffect submodules registered (coeffect, notification, memory, agent, dispatch, infrastructure, kg, drone-loop)")
     true))
 
 (defn reset-registration!

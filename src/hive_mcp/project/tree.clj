@@ -4,7 +4,6 @@
    Scans filesystem for .hive-project.edn files, builds parent-child
    relationships, and persists to DataScript/Datalevin for fast queries.
 
-   CLARITY Framework:
    - C: Composition - builds on scope.clj, hive_project.clj
    - L: Layers pure - scan logic separated from persistence
    - A: Abstractions honored - uses IGraphStore protocol

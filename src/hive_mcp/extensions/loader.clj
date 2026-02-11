@@ -59,7 +59,7 @@
 ;;   :cr  = context-recon       :al  = agent-loop
 ;;   :sk  = session-kernel      :dl  = data-lifecycle
 ;;   :dp  = dispatch            :ag  = agent-gateway
-;;   :pm  = prompt-material
+;;   :pm  = prompt-material     :uc  = unified-context
 
 (def ^:private ext-group-a
   {:ns 'hive-knowledge.similarity
@@ -158,6 +158,12 @@
    :fns [["prime-context"   :pm/prime]
          ["resolve-seeds"   :pm/seeds]]})
 
+;; --- Group P: Unified Context Enrichment ---
+(def ^:private ext-group-p
+  {:ns 'hive-knowledge.unified-context
+   :fns [["resolve-seeds"    :uc/resolve-seeds]
+         ["enrich-context"   :uc/enrich]]})
+
 ;; =============================================================================
 ;; All Extension Manifests
 ;; =============================================================================
@@ -165,7 +171,34 @@
 (def ^:private all-manifests
   [ext-group-a ext-group-b ext-group-c ext-group-d ext-group-e
    ext-group-f ext-group-g ext-group-h ext-group-i ext-group-j
-   ext-group-k ext-group-l ext-group-m ext-group-n ext-group-o])
+   ext-group-k ext-group-l ext-group-m ext-group-n ext-group-o
+   ext-group-p])
+
+;; =============================================================================
+;; Extension Self-Registration
+;; =============================================================================
+;;
+;; Extension projects (hive-knowledge, hive-agent) can provide their own
+;; init! functions that self-register into the registry. This is the
+;; preferred path — extensions know what they provide.
+
+(def ^:private extension-initializers
+  "Namespace symbols for extension self-registration init! functions.
+   Each must have a zero-arg init! that returns {:registered [...] :total N}."
+  ['hive-knowledge.init/init!
+   'hive-agent.init/init!])
+
+(defn- try-call-initializer
+  "Attempt to call an extension initializer. Returns result or nil."
+  [sym]
+  (try
+    (when-let [init-fn (try-resolve sym)]
+      (let [result (init-fn)]
+        (log/info "Extension initializer" sym "registered" (:total result 0) "capabilities")
+        result))
+    (catch Exception e
+      (log/debug "Extension initializer" sym "not available:" (.getMessage e))
+      nil)))
 
 ;; =============================================================================
 ;; Public API
@@ -175,18 +208,39 @@
   "Resolve and register all available extensions.
    Called once at startup. Thread-safe, idempotent.
 
-   Returns map of {:registered [keys...] :total count}."
+   Dual strategy:
+   1. Try extension self-registration (init! functions) — preferred path
+   2. Fall back to manifest-based resolution for any keys not yet registered
+
+   Returns map of {:registered [keys...] :total count :sources {...}}."
   []
-  (let [all-resolved (reduce
-                      (fn [acc {:keys [ns fns]}]
-                        (let [resolved (resolve-extension-group ns fns)]
-                          (merge acc resolved)))
-                      {}
-                      all-manifests)]
-    (when (seq all-resolved)
-      (ext/register-many! all-resolved)
-      (log/info "Extensions loaded:" (count all-resolved) "capabilities registered"))
-    (when (empty? all-resolved)
+  (let [;; Strategy 1: Let extensions self-register
+        init-results (keep try-call-initializer extension-initializers)
+        init-total (reduce + 0 (map :total init-results))
+
+        ;; Strategy 2: Manifest-based resolution (fills gaps)
+        manifest-resolved (reduce
+                           (fn [acc {:keys [ns fns]}]
+                             (let [resolved (resolve-extension-group ns fns)
+                                   ;; Only register keys not already registered by init!
+                                   new-keys (remove ext/extension-available? (keys resolved))]
+                               (merge acc (select-keys resolved new-keys))))
+                           {}
+                           all-manifests)
+
+        ;; Register any manifest-resolved keys not covered by init!
+        _ (when (seq manifest-resolved)
+            (ext/register-many! manifest-resolved)
+            (log/info "Manifest loader filled" (count manifest-resolved) "additional capabilities"))
+
+        total-registered (count (ext/registered-keys))]
+
+    (if (pos? total-registered)
+      (log/info "Extensions loaded:" total-registered "total capabilities"
+                "(init!:" init-total ", manifest:" (count manifest-resolved) ")")
       (log/debug "No extensions found on classpath — all capabilities will use defaults"))
-    {:registered (vec (keys all-resolved))
-     :total (count all-resolved)}))
+
+    {:registered (vec (ext/registered-keys))
+     :total total-registered
+     :sources {:initializers init-total
+               :manifest (count manifest-resolved)}}))

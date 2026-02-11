@@ -12,15 +12,11 @@
    - :db/unique - :db.unique/identity or :db.unique/value for uniqueness
    - :db/isComponent - true for owned refs (cascade delete)
    
-   SOLID: Single responsibility - schema definition only.
    DDD: Value objects and entity definitions for graph domain.")
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;;; -----------------------------------------------------------------------------
-;;; Friction Types (Enum values)
-;;; -----------------------------------------------------------------------------
 
 (def friction-types
   "Valid friction types reported by lings.
@@ -30,9 +26,6 @@
    :workflow-blocker - Process/workflow impediment"
   #{:tool-missing :preset-gap :workflow-blocker})
 
-;;; -----------------------------------------------------------------------------
-;;; Knowledge Types (Enum values)
-;;; -----------------------------------------------------------------------------
 
 (def knowledge-types
   "Valid knowledge entry types.
@@ -42,9 +35,6 @@
    :pattern    - Reusable solution pattern extracted from experience"
   #{:convention :decision :pattern})
 
-;;; -----------------------------------------------------------------------------
-;;; Memory Types (Enum values)
-;;; -----------------------------------------------------------------------------
 
 (def memory-types
   "Valid memory entry types (from Emacs memory store).
@@ -56,9 +46,6 @@
    :axiom      - Foundational, inviolable principles (loaded first by catchup)"
   #{:note :snippet :convention :decision :axiom})
 
-;;; -----------------------------------------------------------------------------
-;;; Memory Duration Types (Enum values)
-;;; -----------------------------------------------------------------------------
 
 (def duration-types
   "Valid duration/TTL categories for memory entries.
@@ -70,9 +57,6 @@
    :permanent  - Never expires"
   #{:ephemeral :short :medium :long :permanent})
 
-;;; -----------------------------------------------------------------------------
-;;; Recall Context Types (Enum values)
-;;; -----------------------------------------------------------------------------
 
 (def recall-contexts
   "Valid recall context types for tracking access patterns.
@@ -86,9 +70,6 @@
   #{:catchup-structural :wrap-structural :explicit-reference
     :cross-session :cross-project :user-feedback})
 
-;;; -----------------------------------------------------------------------------
-;;; Agent Types (Enum values)
-;;; -----------------------------------------------------------------------------
 
 (def agent-types
   "Valid agent types in the swarm.
@@ -98,9 +79,6 @@
    :drone    - Lightweight agent for simple tasks"
   #{:hivemind :ling :drone})
 
-;;; -----------------------------------------------------------------------------
-;;; Change Plan Status Types (Enum values)
-;;; -----------------------------------------------------------------------------
 
 (def change-plan-statuses
   "Valid statuses for change plans (batch drone execution).
@@ -111,9 +89,6 @@
    :partial-fail - Some items failed, others completed"
   #{:pending :executing :complete :partial-fail})
 
-;;; -----------------------------------------------------------------------------
-;;; Change Item Status Types (Enum values)
-;;; -----------------------------------------------------------------------------
 
 (def change-item-statuses
   "Valid statuses for individual change items.
@@ -124,9 +99,6 @@
    :error      - Failed with error"
   #{:pending :dispatched :completed :error})
 
-;;; -----------------------------------------------------------------------------
-;;; Wave Status Types (Enum values)
-;;; -----------------------------------------------------------------------------
 
 (def wave-statuses
   "Valid statuses for execution waves (batch of concurrent drones).
@@ -136,9 +108,6 @@
    :partial-fail - Some drones failed"
   #{:running :complete :partial-fail})
 
-;;; -----------------------------------------------------------------------------
-;;; Schema Definition
-;;; -----------------------------------------------------------------------------
 
 (def schema
   "Datascript schema for knowledge graph.
@@ -299,9 +268,6 @@
    ;; are schemaless (no special constraints needed)
    })
 
-;;; -----------------------------------------------------------------------------
-;;; Schema Helpers
-;;; -----------------------------------------------------------------------------
 
 (defn valid-friction-type?
   "Check if type is a valid friction type."
@@ -348,9 +314,6 @@
   [s]
   (contains? wave-statuses s))
 
-;;; -----------------------------------------------------------------------------
-;;; Entity Constructors
-;;; -----------------------------------------------------------------------------
 
 (defn make-friction
   "Create a friction entity map.

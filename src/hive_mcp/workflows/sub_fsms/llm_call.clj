@@ -37,9 +37,6 @@
      :tool-schemas    — vector of tool schema maps (or nil for no tools)
      :system-prompt-fn — (fn [task-spec] -> string) (optional, default provided)
 
-   SOLID-S: LLM calling only — no tool execution, no KG operations.
-   CLARITY-Y: Graceful degradation on nil backend, empty responses.
-   CLARITY-T: Logs turn, model, response type, token usage."
   (:require [hive.events.fsm :as fsm]
             [hive-mcp.agent.protocol :as proto]
             [clojure.string :as str]
@@ -128,7 +125,6 @@
         messages (:messages-ready data)
         turn (or (:turn data) 0)]
     (if-not backend
-      ;; CLARITY-Y: graceful degradation
       (do
         (log/warn "LLM-call sub-FSM: no backend provided")
         (assoc data

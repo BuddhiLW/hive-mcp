@@ -11,8 +11,6 @@
    (dispatch-effects/register-dispatch-effects!)
    ```
 
-   SOLID: Single Responsibility - event chaining effect execution only
-   CLARITY: Y - Yield safe failure (async dispatch with error logging)"
   (:require [hive-mcp.events.core :as ev]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>

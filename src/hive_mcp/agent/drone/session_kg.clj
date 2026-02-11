@@ -1,22 +1,5 @@
 (ns hive-mcp.agent.drone.session-kg
-  "Per-drone session store — built-in implementation.
-
-   Provides:
-   1. Session schema (Datalevin-compatible attribute definitions)
-   2. DatalevinStore factory for per-drone isolated paths (/tmp/drone-{id}/kg)
-   3. Lifecycle management (create, close, cleanup temp dir)
-   4. Built-in implementations of session operations:
-      - record-observation!  — compress tool result into observation node
-      - record-reasoning!    — store LLM intent/rationale as reasoning node
-      - reconstruct-context  — build compact prompt from session state
-      - merge-session-to-global! — merge valuable session data to global store
-      - seed-from-global!    — seed session with relevant global context
-
-   When extensions are registered, enhanced implementations override the defaults.
-   The built-in layer provides functional but simpler implementations.
-
-   CLARITY-Y: Graceful degradation — nil stores produce noops, not exceptions.
-   CLARITY-T: All operations logged with drone-id for tracing."
+  "Per-drone session store with observation recording, reasoning tracking, and context reconstruction."
   (:require [hive-mcp.knowledge-graph.store.datalevin :as dtlv-store]
             [hive-mcp.protocols.kg :as kg]
             [hive-mcp.extensions.registry :as ext]
@@ -28,14 +11,6 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;; =============================================================================
-;; Extension Helpers
-;; =============================================================================
-
-;; =============================================================================
-;; Internal Helpers
-;; =============================================================================
-
 (defn- truncate
   "Truncate a string to max-len characters with ellipsis."
   [s max-len]
@@ -44,38 +19,27 @@
     (str s)))
 
 (defn- extract-key-facts
-  "Extract key facts from a tool result.
-   Built-in implementation: simple structural extraction.
-   Enhanced extension may override with scoring-based extraction.
-
-   Returns a vector of short fact strings."
+  "Extract key facts from a tool result."
   [tool result]
   (let [success? (:success result)
         text (or (get-in result [:result :text])
                  (get-in result [:result])
                  "")]
     (cond-> []
-      ;; Always record success/failure
       true (conj (if success? (str tool " succeeded") (str tool " failed")))
 
-      ;; For read_file: extract namespace if Clojure
       (and success? (= tool "read_file") (string? text))
       (into (when-let [ns-match (re-find #"\(ns\s+([\w\.\-]+)" text)]
               [(str "namespace: " (second ns-match))]))
 
-      ;; For grep: count matches
       (and success? (= tool "grep") (string? text))
       (conj (str "matches: " (count (str/split-lines text))))
 
-      ;; For errors: capture error message
       (and (not success?) (:error result))
       (conj (str "error: " (truncate (:error result) 80))))))
 
 (defn- summarize-result
-  "Create a short summary of a tool result.
-   Built-in implementation: simple structural summarization.
-
-   Returns a string summary (<= 120 chars)."
+  "Create a short summary of a tool result."
   [tool result]
   (let [success? (:success result)
         text (or (get-in result [:result :text])
@@ -85,67 +49,43 @@
       (str tool ": " (truncate text 100))
       (str tool " FAILED: " (truncate (or (:error result) "unknown") 80)))))
 
-;; =============================================================================
-;; Session Store Schema
-;; =============================================================================
-
 (def session-schema
-  "Additional schema attributes for drone session store.
-   These extend the base schema with observation/reasoning tracking."
-  {;; Observation nodes (tool results compressed into meaning)
+  "Additional schema attributes for drone session store."
+  {;; Observation nodes
    :obs/id          {:db/unique :db.unique/identity}
-   :obs/turn        {}  ; integer turn number
-   :obs/tool        {}  ; tool name string
-   :obs/summary     {}  ; compressed meaning (not raw output)
-   :obs/success     {}  ; boolean
-   :obs/timestamp   {}  ; inst
-   :obs/file        {}  ; optional file path involved
-   :obs/key-facts   {:db/cardinality :db.cardinality/many}  ; extracted facts
+   :obs/turn        {}
+   :obs/tool        {}
+   :obs/summary     {}
+   :obs/success     {}
+   :obs/timestamp   {}
+   :obs/file        {}
+   :obs/key-facts   {:db/cardinality :db.cardinality/many}
 
-   ;; Reasoning nodes (LLM thoughts compressed)
+   ;; Reasoning nodes
    :reason/id       {:db/unique :db.unique/identity}
-   :reason/turn     {}  ; integer turn number
-   :reason/intent   {}  ; what the LLM decided to do
-   :reason/rationale {} ; why (compressed)
+   :reason/turn     {}
+   :reason/intent   {}
+   :reason/rationale {}
    :reason/timestamp {}
 
    ;; Goal tracking
    :goal/id         {:db/unique :db.unique/identity}
    :goal/description {}
-   :goal/status     {}  ; :active :achieved :abandoned
-   :goal/turn-set   {}  ; turn when goal was identified
+   :goal/status     {}
+   :goal/turn-set   {}
 
    ;; Dependency edges between observations
-   :dep/from        {}  ; obs/id or reason/id
-   :dep/to          {}  ; obs/id or reason/id
-   :dep/relation    {}  ; :caused-by :enables :contradicts :refines
-   })
-
-;; =============================================================================
-;; Session Store Lifecycle
-;; =============================================================================
+   :dep/from        {}
+   :dep/to          {}
+   :dep/relation    {}})
 
 (defn session-db-path
-  "Compute the temp database path for a drone session.
-   Returns string path like /tmp/drone-{id}/kg"
+  "Compute the temp database path for a drone session."
   [drone-id]
   (str "/tmp/drone-" drone-id "/kg"))
 
 (defn create-session-kg!
-  "Create an isolated Datalevin-backed session store for a drone.
-
-   The session schema (obs/*, reason/*, goal/*, dep/*) is merged with the
-   base KG schema via :extra-schema. This ensures :db/unique constraints
-   are applied for upsert behavior (e.g., same obs-id updates instead of
-   creating duplicates).
-
-   Arguments:
-     drone-id - Unique drone identifier
-
-   Returns:
-     IKGStore instance (DatalevinStore) or nil on failure.
-
-   CLARITY-Y: Falls back gracefully if Datalevin unavailable."
+  "Create an isolated Datalevin-backed session store for a drone."
   [drone-id]
   (let [db-path (session-db-path drone-id)]
     (log/info "Creating session store for drone" {:drone-id drone-id :path db-path})
@@ -163,12 +103,7 @@
         nil))))
 
 (defn close-session-kg!
-  "Close a session store and optionally clean up temp directory.
-
-   Arguments:
-     store     - IKGStore instance to close
-     drone-id  - Drone identifier (for path computation)
-     cleanup?  - If true, delete the temp directory (default: true on success)"
+  "Close a session store and optionally clean up temp directory."
   [store drone-id & {:keys [cleanup?] :or {cleanup? true}}]
   (when store
     (try
@@ -178,7 +113,6 @@
           (when (.exists dir)
             (doseq [f (reverse (file-seq dir))]
               (.delete f))
-            ;; Also delete parent drone dir if empty
             (let [parent (.getParentFile dir)]
               (when (and (.exists parent) (empty? (.listFiles parent)))
                 (.delete parent))))))
@@ -186,33 +120,12 @@
       (catch Exception e
         (log/warn "Error closing session store" {:drone-id drone-id :error (.getMessage e)})))))
 
-;; =============================================================================
-;; Observation Recording
-;; Enhanced extension overrides when registered
-;; =============================================================================
-
 (defn record-observation!
-  "Record a tool execution result as a compressed observation in the session store.
-
-   Built-in implementation: transacts observation node with summary and key facts.
-   When enhanced extension is registered, delegates to it
-   (enhanced compression, scoring, dependency tracking).
-
-   Arguments:
-     store   - IKGStore instance, nil-safe
-     turn    - Integer turn number
-     tool    - Tool name string
-     result  - Tool execution result map {:success :result :error}
-     opts    - Optional map with :file, :summary-fn
-
-   Returns:
-     The observation ID string."
+  "Record a tool execution result as a compressed observation in the session store."
   [store turn tool result & [opts]]
   (let [obs-id (str "obs-" turn "-" tool)]
-    ;; Try enhanced extension first
     (if-let [ext-fn (ext/get-extension :sk/record-obs!)]
       (ext-fn store turn tool result opts)
-      ;; Built-in implementation: structural observation recording
       (do
         (when store
           (try
@@ -232,32 +145,12 @@
               (log/warn "Failed to record observation" {:obs-id obs-id :error (.getMessage e)}))))
         obs-id))))
 
-;; =============================================================================
-;; Reasoning Recording
-;; Enhanced extension overrides when registered
-;; =============================================================================
-
 (defn record-reasoning!
-  "Record an LLM reasoning step in the session store.
-
-   Built-in implementation: transacts reasoning node with intent and rationale.
-   When enhanced extension is registered, delegates to it
-   (intent tracking, dependency tracking, compression).
-
-   Arguments:
-     store     - IKGStore instance, nil-safe
-     turn      - Integer turn number
-     intent    - What the LLM decided to do (string)
-     rationale - Why (string)
-
-   Returns:
-     The reasoning ID string."
+  "Record an LLM reasoning step in the session store."
   [store turn intent rationale]
   (let [reason-id (str "reason-" turn)]
-    ;; Try enhanced extension first
     (if-let [ext-fn (ext/get-extension :sk/record-rsn!)]
       (ext-fn store turn intent rationale)
-      ;; Built-in implementation: structural reasoning recording
       (do
         (when store
           (try
@@ -272,14 +165,8 @@
               (log/warn "Failed to record reasoning" {:reason-id reason-id :error (.getMessage e)}))))
         reason-id))))
 
-;; =============================================================================
-;; Context Reconstruction
-;; Enhanced extension overrides when registered
-;; =============================================================================
-
 (defn- query-recent-observations
-  "Query the last N observations from the session store, ordered by turn.
-   Returns vector of [obs-id turn tool summary success] tuples."
+  "Query the last N observations from the session store, ordered by turn."
   [store max-obs]
   (try
     (let [results (kg/query store
@@ -291,7 +178,7 @@
                               [?e :obs/summary ?summary]
                               [?e :obs/success ?success]])]
       (->> results
-           (sort-by second >)  ; sort by turn descending
+           (sort-by second >)
            (take max-obs)
            vec))
     (catch Exception e
@@ -299,8 +186,7 @@
       [])))
 
 (defn- query-recent-reasoning
-  "Query the last N reasoning nodes from the session store, ordered by turn.
-   Returns vector of [reason-id turn intent] tuples."
+  "Query the last N reasoning nodes from the session store, ordered by turn."
   [store max-reasons]
   (try
     (let [results (kg/query store
@@ -318,8 +204,7 @@
       [])))
 
 (defn- query-all-key-facts
-  "Query all accumulated key facts from observations.
-   Returns set of fact strings."
+  "Query all accumulated key facts from observations."
   [store]
   (try
     (let [results (kg/query store
@@ -332,8 +217,7 @@
       #{})))
 
 (defn- query-goals
-  "Query active goals from the session store.
-   Returns vector of [goal-id description status] tuples."
+  "Query active goals from the session store."
   [store]
   (try
     (let [results (kg/query store
@@ -348,45 +232,25 @@
       [])))
 
 (defn reconstruct-context
-  "Reconstruct a compact context prompt from the session store state.
-
-   Built-in implementation: queries store for observations, reasoning, key facts,
-   and goals. Builds a compact prompt suitable for replacing raw message
-   history in multi-turn drone conversations.
-
-   When enhanced extension is registered, delegates to it.
-
-   Arguments:
-     store - IKGStore instance, nil-safe
-     task  - Original task description
-     turn  - Current turn number
-
-   Returns:
-     String - compact context for LLM prompt."
+  "Reconstruct a compact context prompt from the session store state."
   [store task turn]
-  ;; Try enhanced extension first
   (if-let [ext-fn (ext/get-extension :sk/reconstruct)]
     (ext-fn store task turn)
-    ;; Built-in implementation: structural context reconstruction
     (if (or (nil? store) (zero? turn))
       task
       (try
-        (let [;; Query session state
-              recent-obs (query-recent-observations store 5)
+        (let [recent-obs (query-recent-observations store 5)
               recent-reasons (query-recent-reasoning store 3)
               key-facts (query-all-key-facts store)
               goals (query-goals store)
               active-goals (filter #(= :active (nth % 2)) goals)
 
-              ;; Build compact context
               sections (cond-> [(str "TASK: " task)]
 
-                         ;; Key facts accumulated
                          (seq key-facts)
                          (conj (str "\nKNOWN FACTS:\n"
                                     (str/join "\n" (map #(str "- " %) (take 10 key-facts)))))
 
-                         ;; Recent observations (most recent first)
                          (seq recent-obs)
                          (conj (str "\nRECENT OBSERVATIONS:\n"
                                     (str/join "\n"
@@ -394,7 +258,6 @@
                                                      (str "T" turn ": " (if success "[OK]" "[FAIL]") " " summary))
                                                    recent-obs))))
 
-                         ;; Recent reasoning
                          (seq recent-reasons)
                          (conj (str "\nRECENT REASONING:\n"
                                     (str/join "\n"
@@ -402,7 +265,6 @@
                                                      (str "T" turn ": " intent))
                                                    recent-reasons))))
 
-                         ;; Active goals
                          (seq active-goals)
                          (conj (str "\nACTIVE GOALS:\n"
                                     (str/join "\n"
@@ -410,7 +272,6 @@
                                                      (str "- " desc))
                                                    active-goals))))
 
-                         ;; Current turn
                          true
                          (conj (str "\nCurrent turn: " turn ". Continue working on the task.")))]
           (str/join "\n" sections))
@@ -419,13 +280,8 @@
                     {:turn turn :error (.getMessage e)})
           task)))))
 
-;; =============================================================================
-;; Merge-Back (Session → Global Store)
-;; =============================================================================
-
 (defn- extract-session-edges
-  "Extract all KG edges from a session store.
-   Returns vector of edge maps without :db/id."
+  "Extract all KG edges from a session store."
   [store]
   (try
     (let [edge-eids (kg/query store '[:find ?e :where [?e :kg-edge/id _]])]
@@ -437,31 +293,14 @@
       [])))
 
 (defn merge-session-to-global!
-  "Merge valuable session facts into the global store.
-
-   Built-in implementation: extracts edges from the session store
-   and transacts them into the global store. Uses :kg-edge/id as identity
-   for upsert behavior (no duplicates).
-
-   When enhanced extension is registered, delegates to it.
-
-   Arguments:
-     session-store - IKGStore for the drone session, nil-safe
-     global-store  - IKGStore for the global/shared KG, nil-safe
-     opts          - Optional {:filter-fn, :min-confidence}
-
-   Returns:
-     Map with :merged-count, :errors, or nil if stores are nil."
+  "Merge valuable session facts into the global store."
   [session-store global-store & [opts]]
-  ;; Try enhanced extension first
   (if-let [f (ext/get-extension :dl/merge!)]
     (f session-store global-store opts)
-    ;; Built-in implementation: structural merge
     (when (and session-store global-store)
       (let [edges (extract-session-edges session-store)
             min-confidence (or (:min-confidence opts) 0.0)
             filter-fn (or (:filter-fn opts) (constantly true))
-            ;; Filter edges by confidence and custom filter
             filtered (filter (fn [edge]
                                (and (>= (or (:kg-edge/confidence edge) 1.0) min-confidence)
                                     (filter-fn edge)))
@@ -478,20 +317,14 @@
                                                       :error (.getMessage e)}))))
                       {:merged-count 0 :errors []}
                       filtered)]
-          (log/info "Session→global merge complete" (select-keys result [:merged-count]))
+          (log/info "Session->global merge complete" (select-keys result [:merged-count]))
           result)))))
 
-;; =============================================================================
-;; Seed Session from Global Context
-;; =============================================================================
-
 (defn- extract-global-edges-for-files
-  "Extract edges from global store that reference the given file paths.
-   Returns vector of edge maps."
+  "Extract edges from global store that reference the given file paths."
   [global-store files]
   (try
-    (let [;; Query edges whose :from or :to matches file-related patterns
-          all-edges (kg/query global-store
+    (let [all-edges (kg/query global-store
                               '[:find ?e ?id ?from ?to ?rel
                                 :where
                                 [?e :kg-edge/id ?id]
@@ -499,11 +332,9 @@
                                 [?e :kg-edge/to ?to]
                                 [?e :kg-edge/relation ?rel]])
           file-set (set files)
-          ;; Filter for edges that reference any of the target files
           relevant (filter (fn [[_e _id from to _rel]]
                              (or (contains? file-set from)
                                  (contains? file-set to)
-                                 ;; Also match partial paths
                                  (some (fn [f]
                                          (or (str/includes? (str from) f)
                                              (str/includes? (str to) f)))
@@ -518,25 +349,10 @@
       [])))
 
 (defn seed-from-global!
-  "Seed a session store with relevant context from the global store.
-
-   Built-in implementation: queries global store for edges referencing the
-   task files and copies them into the session store as reference context.
-
-   When enhanced extension is registered, delegates to it.
-
-   Arguments:
-     session-store - IKGStore for the drone session, nil-safe
-     global-store  - IKGStore for the global/shared KG, nil-safe
-     task-context  - Map with :task, :files, :cwd
-
-   Returns:
-     Number of reference nodes seeded."
+  "Seed a session store with relevant context from the global store."
   [session-store global-store task-context]
-  ;; Try enhanced extension first
   (if-let [ext-fn (ext/get-extension :sk/seed!)]
     (ext-fn session-store global-store task-context)
-    ;; Built-in implementation: structural seeding
     (if (or (nil? session-store) (nil? global-store))
       0
       (let [files (or (:files task-context) [])

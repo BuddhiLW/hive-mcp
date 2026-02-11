@@ -1,36 +1,17 @@
 (ns hive-mcp.tools.swarm.channel
-  "Channel-based event management for swarm task tracking.
-   
-   Provides push-based task completion detection via channel subscriptions.
-   Maintains an event journal for sub-100ms task completion detection.
-   
-   Functions:
-   - start-channel-subscriptions! / stop-channel-subscriptions!
-   - check-event-journal / clear-event-journal!
-   - Event handlers for task-completed, task-failed, prompt-shown"
+  "Channel-based event management for swarm task tracking via core.async and NATS."
   (:require [clojure.core.async :as async :refer [go-loop <! close!]]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;; ============================================================
-;; Event Journal (Push-based task tracking)
-;; ============================================================
-
-;; In-memory journal of swarm events received via channel.
-;; Maps task-id -> {:status :result :timestamp :slave-id}
 (defonce ^:private event-journal (atom {}))
 
-;; Active channel subscriptions (for cleanup).
 (defonce ^:private channel-subscriptions (atom []))
 
-;; ============================================================
-;; Channel Integration
-;; ============================================================
-
 (defn- try-require-channel
-  "Attempt to require the channel namespace. Returns true if available."
+  "Attempt to require the channel namespace, returns true if available."
   []
   (try
     (require 'hive-mcp.channel.core)
@@ -39,20 +20,14 @@
       false)))
 
 (defn- channel-subscribe!
-  "Subscribe to an event type if channel is available.
-   Returns the subscription channel or nil."
+  "Subscribe to an event type if channel is available."
   [event-type]
   (when (try-require-channel)
     (when-let [subscribe-fn (resolve 'hive-mcp.channel.core/subscribe!)]
       (subscribe-fn event-type))))
 
-;; ============================================================
-;; Event Handlers
-;; ============================================================
-
 (defn- handle-task-completed
-  "Handle task-completed event from channel.
-   Note: bencode returns string keys, so we use get instead of keywords."
+  "Handle task-completed event from channel."
   [event]
   (let [task-id (get event "task-id")
         slave-id (get event "slave-id")
@@ -66,8 +41,7 @@
             :timestamp (or timestamp (System/currentTimeMillis))})))
 
 (defn- handle-task-failed
-  "Handle task-failed event from channel.
-   Note: bencode returns string keys, so we use get instead of keywords."
+  "Handle task-failed event from channel."
   [event]
   (let [task-id (get event "task-id")
         slave-id (get event "slave-id")
@@ -81,8 +55,7 @@
             :timestamp (or timestamp (System/currentTimeMillis))})))
 
 (defn- handle-prompt-shown
-  "Handle prompt-shown event from channel.
-   Note: bencode returns string keys, so we use get instead of keywords."
+  "Handle prompt-shown event from channel."
   [event]
   (let [slave-id (get event "slave-id")
         _prompt (get event "prompt")
@@ -91,13 +64,8 @@
     ;; For now just log - could add to a prompts journal if needed
     ))
 
-;; ============================================================
-;; Public API
-;; ============================================================
-
 (defn start-channel-subscriptions!
-  "Start listening for swarm events via channel.
-   Called at startup if channel is available."
+  "Start listening for swarm events via channel subscriptions."
   []
   (when (try-require-channel)
     (log/info "Starting channel subscriptions for swarm events...")
@@ -137,8 +105,7 @@
   (log/info "Channel subscriptions stopped"))
 
 (defn check-event-journal
-  "Check event journal for task completion.
-   Returns the event if found, nil otherwise."
+  "Check event journal for task completion, returns the event or nil."
   [task-id]
   (get @event-journal (str task-id)))
 
@@ -148,8 +115,6 @@
   (reset! event-journal {}))
 
 (defn record-nats-event!
-  "Record event from NATS into the event journal.
-   Same atom that check-event-journal reads from.
-   Called by hive-mcp.nats.bridge to populate journal for headless drones."
+  "Record event from NATS into the shared event-journal atom."
   [task-id event-data]
   (swap! event-journal assoc (str task-id) event-data))

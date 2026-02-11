@@ -22,8 +22,6 @@
    - {:valid? true  :plan <normalized-plan> :metadata <enriched-metadata>}
    - {:valid? false :errors [...] :hint \"...\" :raw-error \"...\"}
 
-   SOLID-S: Single responsibility - plan write validation only.
-   CLARITY-I: Input validated at memory write boundary."
   (:require [hive-mcp.plan.fsm :as plan-fsm]
             [hive-mcp.plan.parser :as parser]
             [clojure.string :as str]

@@ -8,8 +8,6 @@
    Purpose: Enforce ADR-004 token efficiency pattern where lings
    NEVER implement directly - all file mutations via drones.
 
-   SOLID: SRP - Enforcement logic only
-   CLARITY: I - Inputs are guarded at tool boundaries"
   (:require [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -229,7 +227,7 @@
    :coordinator-running? @coordinator-running-atom})
 
 ;;; =============================================================================
-;;; Coordinator Protection (CLARITY-Y)
+;;; Coordinator Protection
 ;;; =============================================================================
 
 (defn coordinator-running?
@@ -259,7 +257,6 @@
 (defmacro when-not-coordinator
   "Execute body only if coordinator is NOT running.
 
-   CLARITY-Y: Yield safe failure - prevents test fixtures from
    corrupting production state when tests run in same JVM.
 
    Arguments:

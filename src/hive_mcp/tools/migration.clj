@@ -18,7 +18,6 @@
    - restore: Checks scope compatibility, blocks cross-project by default
    - list: Supports :project-id filtering
 
-   CLARITY-T: All operations logged with full context."
   (:require [hive-mcp.migration.core :as core]
             [hive-mcp.migration.adapter :as adapter]
             [hive-mcp.knowledge-graph.connection :as kg-conn]

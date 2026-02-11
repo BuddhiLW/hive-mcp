@@ -1,8 +1,6 @@
 (ns hive-mcp.tools.olympus
   "MCP tool handlers for Olympus grid control.
 
-   SOLID-S: Tool handlers only - orchestrates olympus core + DataScript.
-   CLARITY-L: Adapter layer between MCP and domain.
 
    Tools:
    - olympus_status: Get current grid layout and ling positions

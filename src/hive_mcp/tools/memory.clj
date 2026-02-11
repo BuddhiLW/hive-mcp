@@ -102,7 +102,7 @@
                                "abstraction_level" {:type "integer"
                                                     :minimum 1
                                                     :maximum 4
-                                                    :description "Abstraction level (1=Disc/files, 2=Semantic/behavior, 3=Pattern/conventions, 4=Intent/ADRs). Auto-derived from type if not specified: axiom/decision→L4, convention→L3, snippet/note→L2."}}
+                                                    :description "Abstraction level (1=Disc/files, 2=Semantic/behavior, 3=Pattern/conventions, 4=Intent/ADRs). Auto-derived from type if not specified: axiom/decision→4, convention→3, snippet/note→2."}}
                   :required ["type" "content"]}
     :handler handle-mcp-memory-add}
 

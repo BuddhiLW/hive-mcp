@@ -5,8 +5,6 @@
    - :kanban/done - Kanban task completed
    - :kanban/sync - Sync kanban at session end
 
-   SOLID: SRP - Kanban state only
-   CLARITY: R - Represented intent through kanban domain"
   (:require [hive-mcp.events.core :as ev]
             [hive-mcp.events.interceptors :as interceptors]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>

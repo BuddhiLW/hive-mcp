@@ -7,7 +7,6 @@
    Publisher side: called from :nats-publish effect handler.
    Subscriber side: populates event journal for instant collect.
 
-   CLARITY-Y: Yield safe failure — all operations no-op when NATS unavailable."
   (:require [hive-mcp.nats.client :as nats]
             [hive-mcp.tools.swarm.channel :as channel]
             [taoensso.timbre :as log]))
@@ -44,30 +43,76 @@
     (nats/publish! subject payload)))
 
 ;; =============================================================================
-;; Subscriber Side (populates event journal)
+;; Callback Bridge (requiring-resolve to avoid circular deps)
+;; =============================================================================
+
+(defn- fire-callback-if-registered!
+  "Fire callback for task if registered. Uses requiring-resolve to avoid
+   circular dependency on hive-mcp.swarm.callback."
+  [task-id event-data]
+  (try
+    (when-let [notify! (requiring-resolve 'hive-mcp.swarm.callback/notify-completion!)]
+      (notify! task-id event-data))
+    (catch Exception e
+      (log/debug "[NATS] Callback fire failed for" task-id (.getMessage e)))))
+
+;; =============================================================================
+;; Hivemind Auto-Shout (drone visibility via piggyback)
+;; =============================================================================
+
+(defn- auto-shout-drone-event!
+  "Auto-shout drone completion/failure to hivemind for visibility.
+   Makes drone wave results appear in ---HIVEMIND--- piggyback blocks.
+   Uses requiring-resolve to avoid circular dep on hivemind.messaging."
+  [task-id event-type summary-msg]
+  (try
+    (when-let [shout-fn (requiring-resolve 'hive-mcp.hivemind/shout!)]
+      (shout-fn (str "drone:" task-id)
+                event-type
+                {:message summary-msg
+                 :task (str "drone-task:" task-id)}))
+    (catch Exception e
+      (log/debug "[NATS] Auto-shout failed for" task-id (.getMessage e)))))
+
+;; =============================================================================
+;; Subscriber Side (populates event journal + fires callbacks + auto-shout)
 ;; =============================================================================
 
 (defn- handle-drone-completed
-  "Handle drone completion from NATS — write to event journal."
+  "Handle drone completion from NATS — write to event journal, fire callback, and auto-shout."
   [{:keys [task-id parent-id result] :as _msg}]
   (log/info "[NATS] drone completed:" task-id)
-  (channel/record-nats-event! task-id
-                              {:status "completed"
-                               :result result
-                               :slave-id parent-id
-                               :timestamp (System/currentTimeMillis)
-                               :via "nats-push"}))
+  (let [files-modified (get result :files-modified [])
+        files-failed (get result :files-failed [])
+        duration-ms (get result :duration-ms)
+        event-data {:status "completed"
+                    :result result
+                    :slave-id parent-id
+                    :timestamp (System/currentTimeMillis)
+                    :via "nats-push"}]
+    (channel/record-nats-event! task-id event-data)
+    (fire-callback-if-registered! task-id event-data)
+    (auto-shout-drone-event!
+     task-id :completed
+     (str "Drone " task-id " completed: "
+          (count files-modified) " files modified"
+          (when (seq files-failed) (str ", " (count files-failed) " failed"))
+          (when duration-ms (str " (" duration-ms "ms)"))))))
 
 (defn- handle-drone-failed
-  "Handle drone failure from NATS — write to event journal."
+  "Handle drone failure from NATS — write to event journal, fire callback, and auto-shout."
   [{:keys [task-id parent-id error] :as _msg}]
   (log/info "[NATS] drone failed:" task-id)
-  (channel/record-nats-event! task-id
-                              {:status "failed"
-                               :error error
-                               :slave-id parent-id
-                               :timestamp (System/currentTimeMillis)
-                               :via "nats-push"}))
+  (let [event-data {:status "failed"
+                    :error error
+                    :slave-id parent-id
+                    :timestamp (System/currentTimeMillis)
+                    :via "nats-push"}]
+    (channel/record-nats-event! task-id event-data)
+    (fire-callback-if-registered! task-id event-data)
+    (auto-shout-drone-event!
+     task-id :error
+     (str "Drone " task-id " failed: " (or error "unknown error")))))
 
 ;; =============================================================================
 ;; Lifecycle

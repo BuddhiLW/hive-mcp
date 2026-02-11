@@ -12,7 +12,6 @@
    - hive-mcp.swarm.datascript.queries     - Read-only queries
    - hive-mcp.swarm.datascript.coordination - Coordinators/Wrap/Plans
 
-   SOLID: Single Responsibility - swarm state only, no graph/memory concerns.
    DDD: Repository pattern for swarm entity persistence."
   (:require [hive-mcp.swarm.datascript.connection :as connection]
             [hive-mcp.swarm.datascript.lings :as lings]

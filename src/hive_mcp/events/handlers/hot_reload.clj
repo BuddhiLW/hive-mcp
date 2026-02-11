@@ -11,8 +11,6 @@
    - Coordinator can track file changes across drones
    - Telemetry captures reload latency and success rates
 
-   CLARITY-T: Telemetry first - structured events for monitoring
-   SOLID: SRP - Hot-reload lifecycle only"
   (:require [hive-mcp.events.core :as ev]
             [hive-mcp.events.interceptors :as interceptors]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>

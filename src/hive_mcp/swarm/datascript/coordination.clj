@@ -8,7 +8,6 @@
    - Wave execution management
    - Completed task registry (session-scoped for wrap)
 
-   SOLID-S: Single Responsibility - coordination orchestration.
    DDD: Application Service layer for multi-agent coordination."
   (:require [datascript.core :as d]
             [taoensso.timbre :as log]
@@ -402,7 +401,6 @@
    Returns:
      Transaction report with :tempids
 
-   CLARITY-I: Validates status is :active on registration"
   [coordinator-id {:keys [project pid session-id]}]
   {:pre [(string? coordinator-id)]}
   (let [c (conn/ensure-conn)
@@ -428,7 +426,6 @@
    Returns:
      Transaction report or nil if coordinator not found
 
-   CLARITY-T: Heartbeat is the telemetry signal for liveness detection"
   [coordinator-id]
   (let [c (conn/ensure-conn)
         db @c]
@@ -556,7 +553,6 @@
    Returns:
      Seq of coordinator-ids that were marked stale
 
-   CLARITY-Y: Graceful degradation - marks as stale rather than deleting"
   [& [{:keys [threshold-ms] :or {threshold-ms stale-threshold-ms}}]]
   (let [c (conn/ensure-conn)
         db @c
@@ -590,7 +586,6 @@
    Returns:
      Count of claims removed
 
-   CLARITY-Y: Graceful degradation - removes stale claims to unblock waves"
   [& [{:keys [threshold-ms] :or {threshold-ms (* 5 60 1000)}}]]
   (let [c (conn/ensure-conn)
         db @c
@@ -647,7 +642,6 @@
    Returns:
      Transaction report
 
-   CLARITY-T: Telemetry for session task completions"
   [task-id {:keys [title agent-id]}]
   {:pre [(string? task-id)]}
   (let [c (conn/ensure-conn)

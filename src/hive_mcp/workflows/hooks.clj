@@ -5,9 +5,6 @@
    The wrap workflow's wrap_notify emission becomes a registered hook,
    not a hardcoded special case.
    
-   SOLID: O - Open/Closed (add hooks via registration, not modification)
-   CLARITY: C - Composition over modification (hooks compose via events)
-   CLARITY: T - Telemetry first (all workflow executions emit events)"
   (:require [hive-mcp.events.core :as ev]
             [hive-mcp.events.effects]
             [taoensso.timbre :as log]

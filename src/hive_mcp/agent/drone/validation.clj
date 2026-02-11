@@ -1,13 +1,5 @@
 (ns hive-mcp.agent.drone.validation
-  "Pre/Post execution validation for drone agents.
-
-   CLARITY-I (Inputs are Guarded): Validates files before mutation.
-   CLARITY-Y (Yield Safe Failure): Returns structured validation results.
-   CLARITY-T (Telemetry First): Metrics-friendly validation outcomes.
-
-   Provides:
-   - Pre-execution: file exists, not binary, size limits, claim verification
-   - Post-execution: modification check, kondo lint, syntax errors, diff stats"
+  "Pre/post execution validation for drone agents."
   (:require [hive-mcp.tools.kondo :as kondo]
             [hive-mcp.swarm.logic :as logic]
             [clojure.java.io :as io]
@@ -19,17 +11,12 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;;; ============================================================
-;;; Constants
-;;; ============================================================
-
 (def ^:const max-file-size-bytes
-  "Maximum file size for drone mutation (1MB).
-   Larger files risk LLM context overflow and slow processing."
+  "Maximum file size for drone mutation (1MB)."
   (* 1024 1024))
 
 (def ^:const binary-extensions
-  "File extensions considered binary (not safe for text mutation)."
+  "File extensions considered binary."
   #{".png" ".jpg" ".jpeg" ".gif" ".ico" ".bmp" ".webp"
     ".pdf" ".doc" ".docx" ".xls" ".xlsx"
     ".zip" ".tar" ".gz" ".rar" ".7z"
@@ -39,26 +26,8 @@
     ".ttf" ".otf" ".woff" ".woff2"
     ".db" ".sqlite" ".sqlite3"})
 
-;;; ============================================================
-;;; Validation Result Structure
-;;; ============================================================
-
 (defn make-validation-result
-  "Create a validation result map.
-
-   Arguments:
-     pre-valid?   - Pre-execution validation passed
-     post-valid?  - Post-execution validation passed (nil if not yet run)
-     lint-errors  - Vector of lint error maps
-     diff-lines   - Number of lines changed (nil if not computed)
-     warnings     - Vector of warning strings
-
-   Returns:
-     {:pre-valid? true/false
-      :post-valid? true/false/nil
-      :lint-errors []
-      :diff-lines 42
-      :warnings []}"
+  "Create a validation result map."
   [{:keys [pre-valid? post-valid? lint-errors diff-lines warnings]
     :or {pre-valid? false
          post-valid? nil
@@ -70,10 +39,6 @@
    :lint-errors (vec lint-errors)
    :diff-lines diff-lines
    :warnings (vec warnings)})
-
-;;; ============================================================
-;;; Pre-Execution Validation
-;;; ============================================================
 
 (defn- file-extension
   "Extract lowercase file extension from path."
@@ -106,44 +71,18 @@
     (catch Exception _ false)))
 
 (defn- has-valid-claim?
-  "Check if drone has a valid claim on the file.
-
-   Arguments:
-     task-id - Drone's task ID
-     file    - File path to check
-
-   Returns true if:
-   - The file is claimed by this drone's task
-   - Or no claims exist (backwards compatibility)"
+  "Check if drone has a valid claim on the file."
   [task-id file]
   (try
     (let [file-claim (logic/get-claim-for-file file)]
-      (or (nil? file-claim)                        ; No claim on this file
-          (= task-id (:slave-id file-claim))))     ; Our claim (task-id maps to slave-id)
+      (or (nil? file-claim)
+          (= task-id (:slave-id file-claim))))
     (catch Exception e
       (log/warn "Failed to check file claim:" (.getMessage e))
-      true))) ; Fail open for claim check errors
+      true)))
 
 (defn validate-pre-execution
-  "Validate file before drone mutation.
-
-   Arguments:
-     file         - File path to validate
-     task-id      - Drone's task ID for claim verification
-     allow-create - If true, allow non-existent files (for new file creation)
-
-   Returns validation result map:
-     {:pre-valid? true/false
-      :post-valid? nil
-      :lint-errors []
-      :diff-lines nil
-      :warnings [\"...\"]}
-
-   Checks:
-   1. File exists (unless allow-create)
-   2. File is not binary
-   3. File size within limits
-   4. Drone has valid claim on file"
+  "Validate file before drone mutation."
   [file task-id & [{:keys [allow-create] :or {allow-create false}}]]
   (let [warnings (atom [])
         add-warning! (fn [msg] (swap! warnings conj msg))
@@ -151,19 +90,16 @@
         exists? (.exists f)]
 
     (cond
-      ;; Check 1: File existence
       (and (not exists?) (not allow-create))
       (make-validation-result
        {:pre-valid? false
         :warnings [(str "File does not exist: " file)]})
 
-      ;; Check 2: Binary file
       (binary-file? file)
       (make-validation-result
        {:pre-valid? false
         :warnings [(str "Cannot mutate binary file: " file)]})
 
-      ;; Check 3: File size (only for existing files)
       (and exists? (> (or (file-size file) 0) max-file-size-bytes))
       (do
         (add-warning! (format "File exceeds size limit (%d bytes > %d max): %s"
@@ -172,22 +108,18 @@
          {:pre-valid? false
           :warnings @warnings}))
 
-      ;; Check 4: Valid claim
       (not (has-valid-claim? task-id file))
       (make-validation-result
        {:pre-valid? false
         :warnings [(str "Drone does not have claim on file: " file)]})
 
-      ;; Check 5: File readable (if exists)
       (and exists? (not (file-readable? file)))
       (make-validation-result
        {:pre-valid? false
         :warnings [(str "File exists but is not readable: " file)]})
 
-      ;; All checks passed
       :else
       (do
-        ;; Add informational warnings
         (when (not exists?)
           (add-warning! (str "File will be created: " file)))
         (when (and exists? (> (or (file-size file) 0) (* 100 1024)))
@@ -197,14 +129,8 @@
          {:pre-valid? true
           :warnings @warnings})))))
 
-;;; ============================================================
-;;; Post-Execution Validation
-;;; ============================================================
-
 (defn- count-diff-lines
-  "Count number of changed lines between old and new content.
-
-   Returns count of lines that differ (additions + deletions)."
+  "Count number of changed lines between old and new content."
   [old-content new-content]
   (when (and old-content new-content)
     (let [old-lines (set (str/split-lines old-content))
@@ -214,13 +140,7 @@
       (+ added removed))))
 
 (defn- run-lint-check
-  "Run kondo lint on file and extract errors.
-
-   Arguments:
-     file       - File path to lint
-     lint-level - Severity threshold (:error, :warning, :info)
-
-   Returns vector of lint finding maps."
+  "Run kondo lint on file and extract errors."
   [file lint-level]
   (try
     (let [{:keys [findings]} (kondo/run-analysis file)
@@ -240,13 +160,7 @@
         :message (str "Lint check failed: " (.getMessage e))}])))
 
 (defn- file-was-modified?
-  "Check if file was actually modified by comparing content.
-
-   Arguments:
-     file         - File path
-     old-content  - Content before drone execution
-
-   Returns true if file content differs from old-content."
+  "Check if file was actually modified by comparing content."
   [file old-content]
   (try
     (let [new-content (slurp file)]
@@ -256,27 +170,7 @@
       false)))
 
 (defn validate-post-execution
-  "Validate file after drone mutation.
-
-   Arguments:
-     file          - File path to validate
-     old-content   - Content before mutation (for diff comparison)
-     pre-result    - Pre-validation result to merge with
-     opts          - Options map:
-                     :lint-level - Severity threshold (default: :error)
-                     :require-modification - Fail if file wasn't changed (default: true)
-
-   Returns updated validation result map:
-     {:pre-valid? true (from pre-result)
-      :post-valid? true/false
-      :lint-errors [{:filename :row :col :level :type :message}]
-      :diff-lines 42
-      :warnings [\"...\"]}
-
-   Checks:
-   1. File was actually modified (if require-modification)
-   2. No syntax/lint errors above threshold
-   3. Computes diff statistics"
+  "Validate file after drone mutation."
   [file old-content pre-result & [{:keys [lint-level require-modification]
                                    :or {lint-level :error
                                         require-modification true}}]]
@@ -285,7 +179,6 @@
         f (io/file file)]
 
     (cond
-      ;; File doesn't exist after execution
       (not (.exists f))
       (do
         (add-warning! (str "File does not exist after execution: " file))
@@ -294,7 +187,6 @@
                 {:post-valid? false
                  :warnings @warnings})))
 
-      ;; File wasn't modified but should have been
       (and require-modification
            old-content
            (not (file-was-modified? file old-content)))
@@ -306,7 +198,6 @@
                  :diff-lines 0
                  :warnings @warnings})))
 
-      ;; Run lint check and evaluate
       :else
       (let [new-content (try (slurp file) (catch Exception _ nil))
             diff-lines (count-diff-lines old-content new-content)
@@ -326,34 +217,15 @@
                  :diff-lines (or diff-lines 0)
                  :warnings @warnings}))))))
 
-;;; ============================================================
-;;; Combined Validation API
-;;; ============================================================
-
 (defn validate-files-pre
-  "Validate multiple files before drone execution.
-
-   Arguments:
-     files   - Collection of file paths
-     task-id - Drone's task ID
-
-   Returns map of file -> validation result:
-     {\"src/foo.clj\" {:pre-valid? true ...}
-      \"src/bar.clj\" {:pre-valid? false ...}}"
+  "Validate multiple files before drone execution."
   [files task-id]
   (into {}
         (for [file files]
           [file (validate-pre-execution file task-id)])))
 
 (defn validate-files-post
-  "Validate multiple files after drone execution.
-
-   Arguments:
-     file-contents - Map of file -> old content before mutation
-     pre-results   - Map of file -> pre-validation results
-     opts          - Options passed to validate-post-execution
-
-   Returns map of file -> validation result with post-validation added."
+  "Validate multiple files after drone execution."
   [file-contents pre-results & [opts]]
   (into {}
         (for [[file old-content] file-contents]
@@ -361,13 +233,7 @@
             [file (validate-post-execution file old-content pre-result opts)]))))
 
 (defn all-valid?
-  "Check if all validation results passed.
-
-   Arguments:
-     results - Map of file -> validation result
-     phase   - :pre or :post (which validation to check)
-
-   Returns true if all files passed the specified validation phase."
+  "Check if all validation results passed for a given phase."
   [results phase]
   (let [key (case phase
               :pre :pre-valid?
@@ -375,21 +241,7 @@
     (every? #(get % key) (vals results))))
 
 (defn summarize-validation
-  "Create a summary of validation results.
-
-   Arguments:
-     results - Map of file -> validation result
-
-   Returns:
-     {:total-files 5
-      :pre-valid 4
-      :pre-invalid 1
-      :post-valid 3
-      :post-invalid 1
-      :post-pending 1
-      :total-lint-errors 7
-      :total-diff-lines 142
-      :all-warnings [\"...\"]}"
+  "Create a summary of validation results."
   [results]
   (let [all-results (vals results)]
     {:total-files (count all-results)

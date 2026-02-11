@@ -1,12 +1,5 @@
 (ns hive-mcp.agent.executor
-  "Tool execution with permission gates and allowlist enforcement.
-
-   Application layer use case for executing tool calls with:
-   - Tool allowlist enforcement (drones can only call allowed tools)
-   - Permission checking (dangerous tools require approval)
-   - Human approval flow via hivemind
-   - Result formatting for conversation history
-   - Agent-id context propagation (P1: drone attribution)"
+  "Tool execution with permission gates and allowlist enforcement."
   (:require [hive-mcp.agent.registry :as registry]
             [hive-mcp.agent.context :as ctx]
             [hive-mcp.agent.drone.tool-allowlist :as allowlist]
@@ -15,27 +8,16 @@
             [clojure.data.json :as json]
             [taoensso.timbre :as log]))
 
-;;; ============================================================
-;;; Agent Context Re-exports (P1: Drone Attribution)
-;;; ============================================================
-
-;; Re-export from context namespace for backward compatibility
-;; DEPRECATED: Use ctx/current-agent-id function or ctx/with-request-context macro
 #_{:clj-kondo/ignore [:deprecated-var]}
 (def ^:dynamic ^:deprecated *current-agent-id* ctx/*current-agent-id*)
 
 (defn current-agent-id
-  "Get the current agent-id from execution context.
-   Delegates to hive-mcp.agent.context/current-agent-id."
+  "Get the current agent-id from execution context."
   []
   (ctx/current-agent-id))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
-
-;;; ============================================================
-;;; Permission Gates
-;;; ============================================================
 
 (defn requires-approval?
   "Check if a tool call requires human approval."
@@ -44,7 +26,7 @@
        (not (contains? (set perms) :auto-approve))))
 
 (defn request-approval!
-  "Request human approval via hivemind channel. Blocks until response."
+  "Request human approval via hivemind channel."
   [agent-id tool-name arguments]
   (let [question (format "Agent %s wants to call %s with:\n%s\n\nApprove?"
                          agent-id tool-name (json/write-str arguments))
@@ -52,12 +34,8 @@
                                 :timeout-ms 60000)]
     (= "yes" (:decision response))))
 
-;;; ============================================================
-;;; Tool Execution
-;;; ============================================================
-
 (defn execute-tool
-  "Execute a tool by name with arguments. Returns MCP response format."
+  "Execute a tool by name with arguments."
   [tool-name arguments]
   (if-let [tool (registry/get-tool tool-name)]
     (try
@@ -81,39 +59,17 @@
               (str "Error: " (:error result)))})
 
 (defn execute-tool-calls
-  "Execute a batch of tool calls, respecting allowlist and permissions.
-
-   Enforcement order:
-   1. Allowlist check (if provided) — reject tools not on the list
-   2. Permission check — dangerous tools require human approval
-   3. Execute — run the tool handler
-
-   Binds request context during execution so that tools like
-   hivemind_shout can identify the calling agent without requiring
-   explicit agent_id parameter.
-
-   Arguments:
-     agent-id    - The agent making the calls
-     tool-calls  - Vector of {:id :name :arguments} maps
-     permissions - Set of permission keywords (e.g., #{:auto-approve})
-     opts        - Optional map with:
-                   :tool-allowlist - Set of allowed tool names (nil = no filtering)
-                   :task-type      - Task type for profile-based allowlist
-
-   Returns vector of tool result messages for conversation history."
+  "Execute a batch of tool calls, respecting allowlist and permissions."
   ([agent-id tool-calls permissions]
    (execute-tool-calls agent-id tool-calls permissions nil))
   ([agent-id tool-calls permissions {:keys [tool-allowlist task-type] :as opts}]
    (ctx/with-request-context {:agent-id agent-id}
-     (let [;; Resolve allowlist if any filtering options provided
-           effective-allowlist (when (or tool-allowlist task-type)
+     (let [effective-allowlist (when (or tool-allowlist task-type)
                                  (allowlist/resolve-allowlist opts))
-           ;; Partition into allowed and rejected
            {:keys [allowed rejected]}
            (if effective-allowlist
              (allowlist/enforce-allowlist tool-calls effective-allowlist)
              {:allowed tool-calls :rejected []})
-           ;; Execute allowed calls with permission gates
            executed (mapv (fn [{:keys [id name arguments]}]
                             (let [approved? (or (not (requires-approval? name permissions))
                                                 (request-approval! agent-id name arguments))]
@@ -123,5 +79,4 @@
                                 (format-tool-result id name
                                                     {:success false :error "Rejected by human"}))))
                           allowed)]
-       ;; Combine: rejected results first, then executed results
        (into (vec rejected) executed)))))

@@ -1,28 +1,5 @@
 (ns hive-mcp.tools.consolidated.multi
-  "Consolidated multi tool — single MCP entry point for ALL consolidated tools.
-
-   Instead of 18 separate tool registrations (agent, memory, kg, hivemind, ...),
-   this exposes ONE tool that routes via {:tool \"memory\" :command \"add\" ...}.
-
-   Two modes of operation:
-
-   1. **Single dispatch** (default):
-      multi {tool: X, command: Y, ...params}
-        → resolve consolidated handler for X
-        → forward {command: Y, ...params} to handler
-
-   2. **Batch dispatch** (when :operations present without :tool):
-      multi {operations: [{id: \"op1\", tool: \"memory\", command: \"add\", ...},
-                          {id: \"op2\", tool: \"kg\", command: \"edge\", ..., depends_on: [\"op1\"]}],
-             parallel: true, dry_run: false}
-        → validate ops → topological sort → wave-assign → execute per wave
-        → dependency-ordered, parallel within waves
-
-   Use case: Headless lings, Agent SDK sessions, and minimal-surface-area clients
-   that benefit from a single tool instead of 18.
-
-   SOLID: Facade pattern over facades (meta-facade).
-   CLARITY: L - Pure routing, zero business logic."
+  "Single MCP entry point routing to all consolidated tools."
   (:require [hive-mcp.tools.consolidated.agent :as c-agent]
             [hive-mcp.tools.consolidated.memory :as c-memory]
             [hive-mcp.tools.consolidated.kg :as c-kg]
@@ -47,13 +24,7 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;; =============================================================================
-;; Tool Router Registry
-;; =============================================================================
-
 (def ^:private tool-handlers
-  "Map of tool name keywords to their consolidated CLI handlers.
-   Each handler is a (make-cli-handler ...) that dispatches on :command."
   {:agent     c-agent/handle-agent
    :memory    c-memory/handle-memory
    :kg        c-kg/handle-kg
@@ -71,28 +42,19 @@
    :wave      c-wave/handle-wave
    :migration c-migration/handle-migration
    :config    c-config/handle-config
+   :lsp       (fn [params] (if-let [h (try (requiring-resolve 'lsp-mcp.tools/handle-lsp) (catch Exception _ nil))] (h params) {:content [{:type "text" :text (pr-str {:error "lsp-mcp not available" :hint "Add lsp-mcp to deps.local.edn"})}]}))
    :workflow  c-workflow/handle-workflow})
 
 (def ^:private tool-names
-  "Sorted list of available tool names for help/error messages."
   (sort (map name (keys tool-handlers))))
 
 (defn get-tool-handler
-  "Public accessor for tool handler resolution.
-   Used by hive-mcp.tools.multi bridge layer to resolve consolidated handlers
-   without accessing the private tool-handlers map directly.
-
-   Returns handler fn or nil if tool not found."
+  "Resolve a consolidated tool handler by name."
   [tool-name]
   (get tool-handlers (keyword tool-name)))
 
-;; =============================================================================
-;; Batch Engine (requiring-resolve to avoid circular deps)
-;; =============================================================================
-
 (defn- resolve-run-multi
-  "Lazily resolve hive-mcp.tools.multi/run-multi to avoid circular deps.
-   Returns the run-multi function or nil."
+  "Lazily resolve hive-mcp.tools.multi/run-multi to avoid circular deps."
   []
   (try
     (requiring-resolve 'hive-mcp.tools.multi/run-multi)
@@ -108,10 +70,6 @@
     (requiring-resolve 'hive-mcp.tools.multi/format-results)
     (catch Exception _
       nil)))
-
-;; =============================================================================
-;; Help
-;; =============================================================================
 
 (defn- format-multi-help
   "Format help listing all available tools and their commands."
@@ -131,24 +89,8 @@
        "  multi {\"tool\": \"memory\", \"command\": \"help\"}\n\n"
        "All additional params are forwarded to the target tool handler."))
 
-;; =============================================================================
-;; Batch Dispatch Handler
-;; =============================================================================
-
 (defn- handle-batch
-  "Handle batch dispatch mode.
-
-   Takes an operations vector where each op has:
-     :id         - Unique operation ID
-     :tool       - Target consolidated tool name
-     :command    - Subcommand for that tool
-     :depends_on - (optional) Vector of op IDs this depends on
-     ...         - All other params forwarded to tool handler
-
-   Options (from outer params):
-     :dry_run - If true, validate and plan only (don't execute)
-
-   Returns formatted result with wave execution summary."
+  "Handle batch dispatch mode with dependency-ordered wave execution."
   [{:keys [operations dry_run] :as _params}]
   (cond
     (nil? operations)
@@ -182,32 +124,10 @@
             ;; Fallback if format-results not resolved
             {:type "text" :text (pr-str result)}))))))
 
-;; =============================================================================
-;; Multi Handler
-;; =============================================================================
-
 (defn handle-multi
-  "Meta-facade handler. Routes to consolidated tool by :tool param,
-   then forwards remaining params (including :command) to that tool's handler.
-
-   Two modes:
-   1. Single dispatch: {:tool \"memory\" :command \"add\" :content \"...\"}
-   2. Batch dispatch:  {:operations [{:id \"op1\" :tool \"memory\" :command \"add\" ...}]}
-
-   Batch mode is activated when :operations is present and :tool is absent.
-
-   Normalizes string keys to keywords (MCP sends JSON string keys).
-
-   Parameters:
-     :tool       - Name of consolidated tool (e.g. \"memory\", \"agent\", \"kg\")
-     :command    - Subcommand for the target tool (e.g. \"add\", \"spawn\", \"traverse\")
-     :operations - (batch mode) Array of cross-tool operations with dependency ordering
-     :dry_run    - (batch mode) If true, validate and plan without executing
-     ...         - All other params forwarded to the target handler
-
-   Returns: Result from the target consolidated tool handler, or batch execution summary."
+  "Route to consolidated tool by :tool param, forwarding remaining params."
   [params]
-  ;; Normalize string keys → keywords (MCP sends JSON with string keys)
+  ;; Normalize string keys -> keywords (MCP sends JSON with string keys)
   (let [normalized (into {} (map (fn [[k v]] [(keyword k) v]) params))
         {:keys [tool command operations]} normalized]
     (cond
@@ -215,7 +135,7 @@
       (and (some? operations) (or (nil? tool) (str/blank? (str tool))))
       (handle-batch normalized)
 
-      ;; No tool and no operations — show help
+      ;; No tool and no operations -- show help
       (or (nil? tool) (str/blank? (str tool)))
       {:type "text" :text (format-multi-help)}
 
@@ -235,12 +155,7 @@
            :text (str "Unknown tool: " (name tool-kw)
                       ". Available: " (str/join ", " tool-names))})))))
 
-;; =============================================================================
-;; Tool Definition
-;; =============================================================================
-
 (def tool-def
-  "MCP tool definition for the multi meta-facade."
   {:name "multi"
    :consolidated true
    :description (str "Unified entry point for ALL hive-mcp operations. "
@@ -254,8 +169,6 @@
                                          :description "Target consolidated tool name"}
                               "command" {:type "string"
                                          :description "Subcommand for the target tool (e.g. 'add', 'spawn', 'status')"}
-                              ;; Common params across tools — listed for discoverability.
-                              ;; All params are forwarded regardless.
                               "directory"  {:type "string"
                                             :description "Working directory for project-scoped operations"}
                               "agent_id"   {:type "string"
@@ -290,6 +203,4 @@
                  :required []}
    :handler handle-multi})
 
-(def tools
-  "Tool definitions for registration."
-  [tool-def])
+(def tools [tool-def])

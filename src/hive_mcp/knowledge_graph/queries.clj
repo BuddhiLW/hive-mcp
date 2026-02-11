@@ -9,10 +9,6 @@
    - find-contradictions: Locate conflicting knowledge
    - get-node-context: Full context for node display
 
-   SOLID-S: Single Responsibility - graph query operations only.
-   SOLID-O: Open/Closed - new query types via new functions.
-   CLARITY-A: Architectural performance via bounded depth.
-   CLARITY-I: Inputs guarded - validates parameters."
   (:require [clojure.set :as set]
             [hive-mcp.knowledge-graph.edges :as edges]
             [hive-mcp.knowledge-graph.scope :as scope]

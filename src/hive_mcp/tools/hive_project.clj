@@ -1,7 +1,6 @@
 (ns hive-mcp.tools.hive-project
   "MCP tool for auto-generating .hive-project.edn configuration.
 
-   CLARITY Framework:
    - C: Composition - builds on projectile_info for detection
    - L: Layers pure - inference logic separated from I/O
    - I: Inputs guarded - validates directory exists
@@ -237,8 +236,6 @@
    or 'generic' if .git exists but no known marker files found.
    Returns nil if directory doesn't exist or has no .git.
 
-   CLARITY-I: Inputs guarded — validates directory exists.
-   CLARITY-L: Layers pure — only reads filesystem, no side effects."
   [directory]
   (when directory
     (let [dir (io/file directory)]
@@ -259,8 +256,6 @@
    project-id = directory basename (NOT hash) for Chroma backward-compat.
    parent-id resolved via config.clj's get-parent-for-path.
 
-   CLARITY-Y: Yield safe failure — returns nil on any error, never throws.
-   CLARITY-I: Inputs guarded — validates directory and checks for existing file.
 
    Returns:
    - {:success true :path ... :config ...} on successful generation
@@ -338,7 +333,6 @@
    Designed for server.clj Phase 5.5 (after services, before hot-reload).
    Uses config/get-project-roots for root directories.
 
-   CLARITY-Y: Yield safe failure — logs errors per-project, never throws.
    Returns {:scanned N :generated N :skipped N :errors N :details [...]}"
   []
   (let [roots (config/get-project-roots)]

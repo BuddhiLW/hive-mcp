@@ -32,8 +32,6 @@
    Note: This namespace shadows clojure.core/ancestors with a
    versioning-specific function for traversing the commit graph.
 
-   CLARITY-L: Layers stay pure - version control is separate concern.
-   CLARITY-Y: Graceful degradation when Yggdrasil unavailable."
   (:refer-clojure :exclude [ancestors])
   (:require [hive-mcp.knowledge-graph.protocol :as proto]
             [taoensso.timbre :as log]))
@@ -122,7 +120,6 @@
      :store  - DatahikeStore implementing IGraphStore
      :system - Yggdrasil DatahikeSystem for versioning
 
-   CLARITY-Y: Falls back to plain DatahikeStore if Yggdrasil unavailable."
   [& [opts]]
   (let [db-path (or (:db-path opts) "data/kg/datahike-versioned")
         backend (or (:backend opts) :file)

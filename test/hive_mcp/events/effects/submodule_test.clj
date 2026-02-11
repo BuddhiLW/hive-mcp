@@ -11,6 +11,7 @@
             [hive-mcp.events.effects.agent :as agent-fx]
             [hive-mcp.events.effects.dispatch :as dispatch-fx]
             [hive-mcp.events.effects.infrastructure :as infra]
+            [hive-mcp.events.effects.drone-loop :as drone-loop-fx]
             [hive-mcp.events.core :as ev]))
 
 ;; =============================================================================
@@ -78,6 +79,14 @@
     (is (fn? (ev/get-fx-handler :report-metrics)) ":report-metrics registered")
     (is (fn? (ev/get-fx-handler :tool-registry-refresh)) ":tool-registry-refresh registered")))
 
+(deftest drone-loop-effects-register-test
+  (testing "Drone-loop submodule registers all expected effects"
+    (drone-loop-fx/register-drone-loop-effects!)
+    (is (fn? (ev/get-fx-handler :drone/seed-session)) ":drone/seed-session registered")
+    (is (fn? (ev/get-fx-handler :drone/emit)) ":drone/emit registered")
+    (is (fn? (ev/get-fx-handler :drone/record-obs)) ":drone/record-obs registered")
+    (is (fn? (ev/get-fx-handler :drone/record-reason)) ":drone/record-reason registered")))
+
 ;; =============================================================================
 ;; Facade delegation test
 ;; =============================================================================
@@ -93,7 +102,8 @@
     (is (fn? (ev/get-fx-handler :dispatch-task)) "agent registered via facade")
     (is (fn? (ev/get-fx-handler :dispatch)) "dispatch registered via facade")
     (is (fn? (ev/get-fx-handler :ds-transact)) "infrastructure registered via facade")
-    (is (fn? (ev/get-fx-handler :kg-add-edge)) "kg registered via facade")))
+    (is (fn? (ev/get-fx-handler :kg-add-edge)) "kg registered via facade")
+    (is (fn? (ev/get-fx-handler :drone/seed-session)) "drone-loop registered via facade")))
 
 ;; =============================================================================
 ;; Re-export test

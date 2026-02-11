@@ -1,13 +1,5 @@
 (ns hive-mcp.knowledge-graph.store.datalevin
-  "Datalevin implementation of IKGStore protocol.
-
-   Persistent Datalog store backed by LMDB. Data survives restarts.
-   Schema translation from DataScript format (no :db/valueType)
-   to Datalevin format (explicit :db/valueType for range queries).
-
-   CLARITY-I: Validates schema before connecting.
-   CLARITY-T: Logs backend selection, path, schema translation.
-   CLARITY-Y: Falls back to DataScript with warning if Datalevin fails."
+  "Datalevin implementation of IKGStore protocol."
   (:require [datalevin.core :as dtlv]
             [hive-mcp.protocols.kg :as kg]
             [hive-mcp.knowledge-graph.schema :as schema]
@@ -18,14 +10,8 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;; =============================================================================
-;; Schema Translation (DataScript → Datalevin)
-;; =============================================================================
-
 (def ^:private value-type-map
-  "Maps DataScript attribute names to their Datalevin :db/valueType.
-   DataScript is type-agnostic; Datalevin requires explicit types
-   for range queries to work correctly."
+  "Maps DataScript attribute names to Datalevin :db/valueType."
   {;; KG Edge attributes
    :kg-edge/id            :db.type/string
    :kg-edge/from          :db.type/string
@@ -56,24 +42,11 @@
    :disc/read-count   :db.type/long})
 
 (defn translate-schema
-  "Translate DataScript schema to Datalevin schema.
-
-   Transformations:
-   1. Strip :db/doc (not supported by Datalevin)
-   2. Add :db/valueType from value-type-map
-   3. Preserve :db/unique and :db/cardinality
-
-   Arguments:
-     ds-schema - DataScript schema (map of attribute → props)
-
-   Returns:
-     Datalevin schema (map of attribute → props with :db/valueType)"
+  "Translate DataScript schema to Datalevin schema."
   [ds-schema]
   (reduce-kv
    (fn [acc attr props]
-     (let [;; Strip :db/doc (not supported by Datalevin)
-           clean-props (dissoc props :db/doc)
-           ;; Add :db/valueType if we know the type
+     (let [clean-props (dissoc props :db/doc)
            typed-props (if-let [vt (get value-type-map attr)]
                          (assoc clean-props :db/valueType vt)
                          clean-props)]
@@ -82,19 +55,12 @@
    ds-schema))
 
 (defn datalevin-schema
-  "Get the full Datalevin-compatible KG schema.
-   Translates from DataScript format."
+  "Get the full Datalevin-compatible KG schema."
   []
   (translate-schema (schema/full-schema)))
 
-;; =============================================================================
-;; Input Validation (CLARITY-I)
-;; =============================================================================
-
 (defn- validate-db-path!
-  "Validate and ensure the database directory path exists.
-   Creates parent directories if needed.
-   Throws on invalid path."
+  "Validate and ensure the database directory path exists."
   [db-path]
   (when (or (nil? db-path) (empty? db-path))
     (throw (ex-info "Datalevin db-path cannot be nil or empty"
@@ -102,12 +68,8 @@
   (let [dir (io/file db-path)]
     (when-not (.exists (.getParentFile dir))
       (log/info "Creating Datalevin parent directory" {:path (.getParent dir)})
-      (.mkdirs (.getParentFile dir)))
-    db-path))
-
-;; =============================================================================
-;; Datalevin Store Implementation
-;; =============================================================================
+      (.mkdirs (.getParentFile dir))))
+  db-path)
 
 (defrecord DatalevinStore [conn-atom db-path extra-schema]
   kg/IKGStore
@@ -149,19 +111,16 @@
 
   (reset-conn! [this]
     (log/info "Resetting Datalevin KG store" {:path db-path})
-    ;; Close existing connection if open
     (when-let [c @conn-atom]
       (try
         (dtlv/close c)
         (catch Exception e
           (log/warn "Failed to close Datalevin conn during reset"
                     {:error (.getMessage e)}))))
-    ;; Delete the database directory contents
     (let [dir (io/file db-path)]
       (when (.exists dir)
         (doseq [f (reverse (file-seq dir))]
           (.delete f))))
-    ;; Reconnect with fresh schema
     (reset! conn-atom nil)
     (kg/ensure-conn! this))
 
@@ -178,19 +137,7 @@
 (def ^:private default-db-path "data/kg/datalevin")
 
 (defn create-store
-  "Create a new Datalevin-backed graph store.
-
-   Arguments:
-     opts - Optional map with:
-       :db-path      - Path for LMDB storage (default: data/kg/datalevin)
-       :extra-schema - Additional DataScript-format schema to merge with base KG schema.
-                       Useful for per-drone session store attributes (obs/*, reason/*, etc.)
-                       that shouldn't pollute the global schema.
-
-   Returns an IKGStore implementation.
-
-   CLARITY-Y: If Datalevin fails to initialize, logs warning
-   and returns nil (caller should fall back to DataScript)."
+  "Create a new Datalevin-backed graph store."
   [& [{:keys [db-path extra-schema] :or {db-path default-db-path}}]]
   (try
     (log/info "Creating Datalevin graph store" {:path db-path

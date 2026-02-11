@@ -1,21 +1,5 @@
 (ns hive-mcp.tools.consolidated.agent
-  "Consolidated Agent CLI tool — thin facade.
-
-   Subcommands: spawn, status, kill, kill-batch, interrupt, batch-spawn,
-                dispatch, claims, collect, broadcast, cleanup, dag
-   Deprecated aliases: list → status
-
-   All handler logic lives in hive-mcp.tools.agent.* modules:
-   - agent.spawn     — spawn handler + project scope resolution
-   - agent.status    — status queries + elisp merge
-   - agent.kill      — kill + kill-batch with ownership checks
-   - agent.dispatch  — task dispatch + IDispatchContext
-   - agent.dag       — DAG scheduler (start/stop/status)
-   - agent.lifecycle — interrupt, cleanup, claims, collect, broadcast
-   - agent.helpers   — shared utilities (formatting, elisp queries, ID gen)
-
-   SOLID: Facade pattern - single tool entry point for agent lifecycle.
-   CLARITY: L - Thin adapter delegating to domain handlers."
+  "Consolidated Agent CLI tool — thin facade over agent.* modules."
   (:require [hive-mcp.tools.cli :refer [make-cli-handler make-batch-handler]]
             [hive-mcp.tools.core :refer [mcp-error]]
             [hive-mcp.tools.agent.spawn :as spawn]
@@ -29,39 +13,18 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;; =============================================================================
-;; Deprecated Alias Support
-;; =============================================================================
-
 (def ^:private deprecated-aliases
-  "Map of deprecated command keywords to their canonical replacements."
   {:list :status})
 
 (defn- wrap-deprecated
-  "Wrap a handler fn to emit a deprecation warning before delegating."
   [alias-kw canonical-kw handler-fn]
   (fn [params]
     (log/warn (str "DEPRECATED: command '" (name alias-kw)
                    "' is deprecated, use '" (name canonical-kw) "' instead."))
     (handler-fn params)))
 
-;; =============================================================================
-;; Batch-Spawn Handler (via make-batch-handler HOF)
-;; =============================================================================
-
 (def ^:private batch-spawn-handler
-  "Batch spawn multiple agents in one call.
-   Uses make-batch-handler HOF from cli.clj.
-
-   Each operation in :operations is a spawn call.
-   :command 'spawn' is auto-injected into each operation.
-
-   Parameters:
-     operations - Array of spawn parameter objects:
-                  [{:type 'ling', :name 'a', :cwd '/path', :presets ['ling']}, ...]
-     parallel   - Run spawns in parallel (default: false)
-
-   Returns: {:results [...] :summary {:total N :success M :failed F}}"
+  "Batch spawn multiple agents in one call via make-batch-handler."
   (let [spawn-handlers {:spawn spawn/handle-spawn}
         batch-fn (make-batch-handler spawn-handlers)]
     (fn [{:keys [operations] :as params}]
@@ -71,15 +34,7 @@
               ops-with-command (mapv #(assoc % :command "spawn") operations)]
           (batch-fn (assoc params :operations ops-with-command)))))))
 
-;; =============================================================================
-;; Handlers Map
-;; =============================================================================
-
 (def canonical-handlers
-  "Map of canonical command keywords to handler functions.
-   Supports n-depth dispatch via cli/make-cli-handler:
-   - Flat: spawn, status, kill, kill-batch, interrupt, dispatch, claims, collect, broadcast, cleanup
-   - Nested: dag start, dag stop, dag status (dag alone defaults to status)"
   {:spawn       spawn/handle-spawn
    :status      status/handle-status
    :kill        kill/handle-kill
@@ -97,7 +52,6 @@
                  :_handler dag/handle-dag-status}})
 
 (def handlers
-  "Canonical handlers merged with deprecated aliases (with log warnings)."
   (merge canonical-handlers
          (reduce-kv (fn [m alias-kw canonical-kw]
                       (assoc m alias-kw
@@ -105,20 +59,10 @@
                                               (get canonical-handlers canonical-kw))))
                     {} deprecated-aliases)))
 
-;; =============================================================================
-;; CLI Handler
-;; =============================================================================
-
 (def handle-agent
-  "Unified CLI handler for agent lifecycle."
   (make-cli-handler handlers))
 
-;; =============================================================================
-;; Tool Definition
-;; =============================================================================
-
 (def tool-def
-  "MCP tool definition for consolidated agent command."
   {:name "agent"
    :consolidated true
    :description "Unified agent operations: spawn (create ling/drone), status (query agents), kill (terminate), kill-batch (terminate multiple agents in one call), batch-spawn (spawn multiple agents at once via operations array), dispatch (send task), interrupt (interrupt current query of agent-sdk ling), claims (file ownership), list (deprecated alias for status), collect (get task result), broadcast (prompt all), cleanup (remove orphan agents after Emacs restart). Type: 'ling' (Claude Code instance) or 'drone' (OpenRouter leaf worker). Nested: dag (start/stop/status DAGWave scheduler). Use command='help' to list all."
@@ -203,6 +147,4 @@
                  :required ["command"]}
    :handler handle-agent})
 
-(def tools
-  "Tool definitions for registration."
-  [tool-def])
+(def tools [tool-def])

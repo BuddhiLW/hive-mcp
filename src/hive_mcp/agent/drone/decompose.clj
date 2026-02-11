@@ -1,61 +1,25 @@
 (ns hive-mcp.agent.drone.decompose
-  "Task decomposition for drone delegation.
-
-   Large tasks overwhelm free-tier models. This module provides:
-   - Complexity estimation based on file size, task length, operation count
-   - Decomposition strategies (by-function, by-section, by-operation)
-   - Auto-decomposition for delegate_drone
-
-   SOLID: SRP - Single responsibility for task decomposition
-   CLARITY: I - Inputs validated, complexity estimated before dispatch"
+  "Task decomposition with complexity estimation and step budgets."
   (:require [clojure.string :as str]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;;; ============================================================
-;;; Complexity Estimation
-;;; ============================================================
-
 (def ^:const complexity-thresholds
-  "Thresholds for decomposition recommendations.
-   :single-drone - task can be handled by one drone
-   :split-2      - split into 2 subtasks
-   :split-many   - split into multiple subtasks"
+  "Thresholds for decomposition recommendations."
   {:single-drone 5
    :split-2 15})
 
 (def ^:const step-budgets
-  "Max steps based on task complexity (legacy OpenRouter drones).
-   Simple tasks should complete in few steps, complex tasks get more headroom.
-
-   FRICTION FIX: Drones were hitting 50 steps on trivial 'remove unused namespace'
-   tasks. This maps complexity to appropriate step budgets:
-   - :trivial (< 2): 8 steps - single read, lint, propose
-   - :simple (2-5):  15 steps - typical single-file edit
-   - :medium (5-15): 25 steps - multi-function changes
-   - :complex (> 15): 40 steps - large refactoring"
+  "Max steps based on task complexity tier."
   {:trivial 8
    :simple 15
    :medium 25
    :complex 40})
 
 (defn estimate-complexity
-  "Estimate task complexity based on file size, task description, and operations.
-
-   Arguments:
-     task      - Task description string
-     file-path - Path to the file being modified
-
-   Returns:
-     {:score           - Numeric complexity score
-      :file-size       - File size in bytes (0 if not found)
-      :task-length     - Task description length
-      :operation-count - Count of modification keywords
-      :recommendation  - :single-drone, :split-2, or :split-many
-      :complexity-tier - :trivial, :simple, :medium, or :complex
-      :max-steps       - Recommended step budget for this complexity}"
+  "Estimate task complexity and return score, recommendation, and step budget."
   [task file-path]
   (let [file-size (try (count (slurp file-path)) (catch Exception _ 0))
         task-length (count (or task ""))
@@ -85,18 +49,7 @@
      :max-steps max-steps}))
 
 (defn get-step-budget
-  "Get recommended max-steps for a task based on complexity.
-
-   FRICTION FIX: Simple tasks like 'remove unused namespace' were exhausting
-   50 steps. This function returns an appropriate step budget based on
-   estimated complexity.
-
-   Arguments:
-     task  - Task description string
-     files - List of file paths (uses first for complexity estimation)
-
-   Returns:
-     Integer max-steps value (8-40 based on complexity)"
+  "Return appropriate max-steps value based on estimated task complexity."
   [task files]
   (let [file (first files)
         {:keys [max-steps complexity-tier score]} (when file
@@ -107,13 +60,8 @@
                                          :max-steps max-steps})
     (or max-steps (:simple step-budgets))))
 
-;;; ============================================================
-;;; Decomposition Strategies
-;;; ============================================================
-
 (defn- extract-clojure-functions
-  "Extract function definitions from Clojure source.
-   Returns list of {:name :start-line :end-line}."
+  "Extract function definitions from Clojure source."
   [content]
   (let [lines (str/split-lines content)
         indexed (map-indexed vector lines)]
@@ -125,8 +73,7 @@
          (filter :name))))
 
 (defn- extract-section-markers
-  "Extract section markers (;;; comments) from Clojure source.
-   Returns list of {:name :start-line}."
+  "Extract section markers (;;; comments) from Clojure source."
   [content]
   (let [lines (str/split-lines content)
         indexed (map-indexed vector lines)]
@@ -137,15 +84,7 @@
                   {:name name :start-line idx}))))))
 
 (defn split-task-by-functions
-  "Split a task by function definitions in the file.
-   Each function mentioned in the task becomes a separate subtask.
-
-   Arguments:
-     task      - Original task description
-     file-path - Path to source file
-
-   Returns:
-     Vector of {:task :file :scope} maps"
+  "Split a task into subtasks by function definitions mentioned in it."
   [task file-path]
   (try
     (let [content (slurp file-path)
@@ -168,15 +107,7 @@
       [{:task task :file file-path :scope {:type :whole-file}}])))
 
 (defn split-task-by-sections
-  "Split a task by section markers (;;; comments) in the file.
-
-   Arguments:
-     task      - Original task description
-     file-path - Path to source file
-     n         - Target number of splits
-
-   Returns:
-     Vector of {:task :file :scope} maps"
+  "Split a task into subtasks by section markers in the file."
   [task file-path n]
   (try
     (let [content (slurp file-path)
@@ -199,14 +130,7 @@
       [{:task task :file file-path :scope {:type :whole-file}}])))
 
 (defn split-task-by-operations
-  "Split a task by operation type (add/modify/delete).
-
-   Arguments:
-     task      - Original task description
-     file-path - Path to source file
-
-   Returns:
-     Vector of {:task :file :scope} maps"
+  "Split a task into subtasks by operation type (add/modify/delete)."
   [task file-path]
   (let [task-lower (str/lower-case task)
         has-add? (re-find #"\b(add|create|implement|new)\b" task-lower)
@@ -224,23 +148,8 @@
             ops)
       [{:task task :file file-path :scope {:type :whole-file}}])))
 
-;;; ============================================================
-;;; Auto-Decomposition
-;;; ============================================================
-
 (defn maybe-decompose
-  "Auto-decompose task if complexity warrants it.
-
-   Arguments:
-     task    - Task description
-     file    - File path (single file for now)
-     opts    - Options map:
-               :strategy - Override decomposition strategy
-               :force?   - Force decomposition even if not recommended
-
-   Returns:
-     Vector of {:task :file :scope} maps.
-     Returns single-element vector if no decomposition needed."
+  "Auto-decompose task if complexity warrants it, returning subtask vector."
   [task file {:keys [strategy force?] :as _opts}]
   (let [{:keys [recommendation score]} (estimate-complexity task file)]
     (log/debug "Task complexity" {:score score :recommendation recommendation :file file})
@@ -266,13 +175,7 @@
       [{:task task :file file :scope {:type :whole-file}}])))
 
 (defn recombine-results
-  "Recombine results from parallel drone execution.
-
-   Arguments:
-     results - Sequence of drone result maps
-
-   Returns:
-     Merged result with combined files-modified, aggregated status"
+  "Recombine results from parallel drone subtask execution."
   [results]
   (let [all-modified (mapcat :files-modified results)
         all-failed (mapcat :files-failed results)

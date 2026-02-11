@@ -1,9 +1,6 @@
 (ns hive-mcp.embeddings.registry
   "ProviderRegistry for lazy instantiation and caching of embedding providers.
 
-   SOLID: OCP - New providers via factory registration, not code changes.
-   SOLID: DIP - Callers depend on registry abstraction, not concrete providers.
-   CLARITY: A - Architectural performance via memoization.
 
    The registry maintains:
    - Provider factories: Functions that create providers from EmbeddingConfig
@@ -24,9 +21,6 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;;; ============================================================
-;;; Registry State
-;;; ============================================================
 
 ;; Map of provider-type -> factory function.
 ;; Factory fn takes EmbeddingConfig, returns EmbeddingProvider.
@@ -37,9 +31,6 @@
 ;; Value: EmbeddingProvider instance
 (defonce ^:private provider-cache (atom {}))
 
-;;; ============================================================
-;;; Cache Key Generation
-;;; ============================================================
 
 (defn- config->cache-key
   "Generate cache key from EmbeddingConfig.
@@ -50,9 +41,6 @@
      (:model config)
      (hash safe-opts)]))
 
-;;; ============================================================
-;;; Provider Factories (Built-in)
-;;; ============================================================
 
 (defn- create-ollama-provider
   "Create Ollama embedding provider from config."
@@ -79,9 +67,6 @@
     (factory {:api-key (get-in config [:options :api-key])
               :model (:model config)})))
 
-;;; ============================================================
-;;; Registry API
-;;; ============================================================
 
 (defn register-factory!
   "Register a factory function for a provider type.
@@ -149,9 +134,6 @@
   {:cached-count (count @provider-cache)
    :factories (vec (keys @provider-factories))})
 
-;;; ============================================================
-;;; Utility Functions
-;;; ============================================================
 
 (defn provider-available?
   "Check if a provider can be created for the given config.

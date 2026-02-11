@@ -1,13 +1,5 @@
 (ns hive-mcp.knowledge-graph.disc.propagation
-  "Time decay and transitive staleness propagation for disc entities.
-
-   Manages:
-   - Time decay application (periodic certainty degradation)
-   - Transitive staleness propagation via KG edges
-
-   Extracted from disc.clj (Sprint 2 decomposition).
-
-   CLARITY-Y: Status codes instead of exceptions for all outcomes."
+  "Time decay and transitive staleness propagation for disc entities."
   (:require [hive-mcp.knowledge-graph.queries :as queries]
             [hive-mcp.chroma :as chroma]
             [hive-mcp.knowledge-graph.disc.crud :as crud]
@@ -18,23 +10,8 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;; =============================================================================
-;; Time Decay (Batch)
-;; =============================================================================
-
 (defn apply-time-decay-to-all-discs!
-  "Apply time decay to all disc entities in DataScript.
-
-   Iterates through all discs and applies time-based certainty decay
-   based on each disc's volatility class. Persists updates to DataScript.
-
-   Arguments:
-     project-id - Optional project filter (nil = all projects)
-
-   Returns:
-     {:updated int :skipped int :errors int}
-
-   Use for periodic background maintenance of certainty scores."
+  "Apply time-based certainty decay to all disc entities."
   [& {:keys [project-id]}]
   (let [discs (crud/get-all-discs :project-id project-id)
         results (reduce
@@ -42,7 +19,6 @@
                    (try
                      (let [path (:disc/path disc)
                            decayed (vol/apply-time-decay disc)
-                           ;; Only persist the certainty fields
                            updates {:disc/certainty-beta (:disc/certainty-beta decayed)
                                     :disc/last-observation (:disc/last-observation decayed)}]
                        (crud/update-disc! path updates)
@@ -56,25 +32,8 @@
     (log/info "Time decay applied to discs" results)
     results))
 
-;; =============================================================================
-;; L1-P2 Transitive Staleness Propagation
-;; =============================================================================
-
 (defn- apply-transitive-staleness!
-  "Apply staleness to a single Chroma entry with decay based on depth.
-
-   Arguments:
-     entry-id         - Chroma entry ID to update
-     base-staleness   - Base staleness value before decay
-     depth            - Propagation depth (0 = source, 1 = direct dependent, etc.)
-     staleness-source - Source event type keyword
-
-   Returns:
-     {:status :updated|:skipped|:error
-      :entry-id entry-id
-      :beta-increment amount added to staleness-beta}
-
-   Skips update if decayed staleness is below staleness-min-threshold."
+  "Apply staleness to a single Chroma entry with depth-based decay."
   [entry-id base-staleness depth staleness-source]
   (let [beta-increment (* base-staleness
                           (Math/pow vol/staleness-decay-factor depth))]
@@ -97,46 +56,25 @@
           {:status :error :entry-id entry-id :error (.getMessage e)})))))
 
 (defn propagate-staleness!
-  "Propagate staleness from a disc to dependent labels via KG edges.
-   Uses Bayesian beta update with 0.5^depth decay.
-
-   Algorithm:
-   1. Query Chroma for entries WHERE grounded-from = disc-path
-   2. For each grounded entry, update it at depth 0 (source)
-   3. Call impact-analysis to find dependents
-   4. Update direct dependents at depth 1
-   5. Update transitive dependents at depth 2 (simplified - actual depth may vary)
-   6. Only propagate if beta-increment >= staleness-min-threshold
-
-   Arguments:
-     disc-path        - File path of the disc entity triggering staleness
-     base-staleness   - Base staleness value (from base-staleness-values map)
-     staleness-source - Source event type (e.g., :hash-mismatch, :git-commit, :time-decay)
-
-   Returns:
-     {:propagated int :skipped int :errors int :grounded int}"
+  "Propagate staleness from a disc to dependent entries via KG edges."
   [disc-path base-staleness staleness-source]
   (try
-    ;; Step 1: Query Chroma for entries grounded from this disc
     (let [grounded-entries (chroma/query-grounded-from disc-path)
           results (atom {:propagated 0 :skipped 0 :errors 0 :grounded 0})]
 
       (doseq [entry grounded-entries]
         (let [entry-id (:id entry)]
-          ;; Step 2: Update the grounded entry itself at depth 0
           (let [result (apply-transitive-staleness! entry-id base-staleness 0 staleness-source)]
             (case (:status result)
               :updated (swap! results update :grounded inc)
               :skipped (swap! results update :skipped inc)
               :error (swap! results update :errors inc)))
 
-          ;; Step 3: Run impact analysis to find dependents
           (try
             (let [{:keys [direct transitive]}
                   (queries/impact-analysis entry-id
                                            {:max-depth vol/staleness-max-depth})]
 
-              ;; Step 4: Update direct dependents at depth 1
               (doseq [dep-id direct]
                 (let [result (apply-transitive-staleness! dep-id base-staleness 1 staleness-source)]
                   (case (:status result)
@@ -144,7 +82,6 @@
                     :skipped (swap! results update :skipped inc)
                     :error (swap! results update :errors inc))))
 
-              ;; Step 5: Update transitive dependents at depth 2
               (doseq [trans-id transitive]
                 (let [result (apply-transitive-staleness! trans-id base-staleness 2 staleness-source)]
                   (case (:status result)

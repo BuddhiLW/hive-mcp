@@ -1,14 +1,5 @@
 (ns hive-mcp.agent.drone.context
-  "Smart context injection for drone agents.
-
-   Provides rich file context to maximize drone success rate:
-   - Surrounding lines around edit targets
-   - Import/require extraction from ns forms
-   - Related function signatures via kondo
-   - Pre-lint analysis to surface existing issues
-   - Relevant memory conventions based on task keywords
-
-   CLARITY-A: Architectural performance via minimal but high-value context"
+  "Smart context injection for drone agents including surrounding lines, imports, kondo analysis, and conventions."
   (:require [hive-mcp.tools.kondo :as kondo]
             [hive-mcp.chroma :as chroma]
             [hive-mcp.knowledge-graph.disc :as kg-disc]
@@ -19,12 +10,8 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;;; ============================================================
-;;; File Reading Utilities
-;;; ============================================================
-
 (defn- read-file-lines
-  "Read file as vector of lines. Returns nil if file doesn't exist."
+  "Read file as vector of lines, returning nil if file doesn't exist."
   [path]
   (try
     (when (.exists (io/file path))
@@ -34,15 +21,7 @@
       nil)))
 
 (defn read-surrounding-lines
-  "Read surrounding lines around a target line number.
-
-   Arguments:
-     path        - File path (absolute or relative to project root)
-     target-line - Line number to center on (1-indexed, nil = start of file)
-     context     - Number of lines before and after (default: 20)
-
-   Returns:
-     Map with :content (string), :start-line, :end-line, or nil if file not found."
+  "Read surrounding lines around a target line number."
   [path target-line & [{:keys [context] :or {context 20}}]]
   (when-let [lines (read-file-lines path)]
     (let [total-lines (count lines)
@@ -60,12 +39,8 @@
        :target-line target
        :total-lines total-lines})))
 
-;;; ============================================================
-;;; Namespace Analysis
-;;; ============================================================
-
 (defn- parse-ns-form
-  "Parse ns form from file content. Returns the ns form or nil."
+  "Parse ns form from file content, returning nil on failure."
   [content]
   (try
     (let [forms (read-string (str "[" content "]"))]
@@ -74,13 +49,7 @@
       nil)))
 
 (defn extract-imports
-  "Extract require/import clauses from a Clojure file.
-
-   Arguments:
-     path - File path
-
-   Returns:
-     Map with :namespace, :requires, :imports, :uses"
+  "Extract require/import clauses from a Clojure file."
   [path]
   (when-let [content (try (slurp path) (catch Exception _ nil))]
     (when-let [ns-form (parse-ns-form content)]
@@ -108,19 +77,8 @@
              "  (:require " (str/join "\n            " (map pr-str requires)) "))\n"
              "```\n")))))
 
-;;; ============================================================
-;;; Kondo-Based Analysis
-;;; ============================================================
-
 (defn find-related-symbols
-  "Find function signatures related to the task using kondo analysis.
-
-   Arguments:
-     path - File path to analyze
-     task - Task description (used to extract keywords)
-
-   Returns:
-     Vector of {:name :arglists :ns :doc-preview} maps"
+  "Find function signatures related to the task using kondo analysis."
   [path task]
   (try
     (let [{:keys [analysis]} (kondo/run-analysis path)
@@ -160,19 +118,8 @@
                         symbols))
          "\n")))
 
-;;; ============================================================
-;;; Lint Analysis
-;;; ============================================================
-
 (defn get-existing-warnings
-  "Get existing lint warnings for a file.
-
-   Arguments:
-     path  - File path
-     level - Severity level (:error, :warning, :info)
-
-   Returns:
-     Vector of {:row :col :level :type :message} maps"
+  "Get existing lint warnings for a file."
   [path & [{:keys [level] :or {level :warning}}]]
   (try
     (let [{:keys [findings]} (kondo/run-analysis path)]
@@ -199,21 +146,8 @@
                         findings))
          "\n")))
 
-;;; ============================================================
-;;; Memory Conventions
-;;; ============================================================
-
 (defn get-relevant-conventions
-  "Query memory for conventions relevant to the task.
-
-   Uses semantic search when available, falls back to tag-based.
-
-   Arguments:
-     task       - Task description
-     project-id - Project ID for scoping
-
-   Returns:
-     Vector of convention content strings"
+  "Query memory for conventions relevant to the task."
   [task project-id]
   (try
     ;; Try semantic search first (filter by project at DB level)
@@ -222,7 +156,6 @@
       (if (seq results)
         (->> results
              (map (fn [r]
-                    ;; search-similar returns {:metadata {:content ...}}
                     (or (get-in r [:metadata :content])
                         (:document r))))
              (remove nil?)
@@ -255,27 +188,14 @@
          (str/join "\n\n---\n\n"
                    (map-indexed (fn [i conv]
                                   (str (inc i) ". "
-                                       ;; Truncate long conventions
                                        (if (> (count conv) 500)
                                          (str (subs conv 0 500) "...")
                                          conv)))
                                 conventions))
          "\n")))
 
-;;; ============================================================
-;;; Knowledge Graph File Context
-;;; ============================================================
-
 (defn get-kg-file-knowledge
-  "Check KG for existing knowledge about a file before reading it.
-   Returns disc state and any knowledge entries grounded from this file.
-
-   Arguments:
-     file-path - Absolute file path
-
-   Returns:
-     Map with :disc (disc entity or nil), :stale? boolean,
-     :staleness-score float, :knowledge-entries (grounded entries)"
+  "Check KG for existing knowledge about a file before reading it."
   [file-path]
   (try
     (let [disc (kg-disc/get-disc file-path)
@@ -285,8 +205,6 @@
                          (and hash (:disc/content-hash disc)
                               (not= hash (:disc/content-hash disc))))))
           staleness (when disc (kg-disc/staleness-score disc))
-          ;; Find knowledge entries grounded from this file
-          ;; Search Chroma for entries with source-file metadata matching this path
           grounded-entries (try
                              (when (chroma/embedding-configured?)
                                (->> (chroma/query-entries :limit 10)
@@ -304,8 +222,7 @@
        :knowledge-entries [] :has-knowledge? false})))
 
 (defn format-kg-file-context
-  "Format KG knowledge about a file as context string for drone injection.
-   Only includes context when relevant knowledge exists."
+  "Format KG knowledge about a file as context string for drone injection."
   [kg-info file-path]
   (when (:has-knowledge? kg-info)
     (let [{:keys [disc stale? staleness-score knowledge-entries]} kg-info
@@ -332,29 +249,8 @@
              (str/join "\n" sections)
              "\n")))))
 
-;;; ============================================================
-;;; Main Context Builder
-;;; ============================================================
-
 (defn build-drone-context
-  "Build rich context for drone delegation.
-
-   Arguments:
-     file-path    - Target file to modify
-     task         - Task description
-     project-root - Project root directory
-     project-id   - Project ID for memory scoping
-
-   Returns:
-     Map with context sections:
-       :file-snippet - Surrounding lines around likely edit location
-       :imports      - Namespace and require statements
-       :related-fns  - Related function signatures
-       :lint-issues  - Existing lint warnings
-       :conventions  - Relevant coding conventions
-       :formatted    - Pre-formatted string for injection
-   
-   CLARITY-I: Validates paths don't escape project directory."
+  "Build rich context for drone delegation."
   [{:keys [file-path task project-root project-id target-line]}]
   ;; SECURITY FIX: Validate path containment using canonical resolution
   (let [file-obj (io/file (if (str/starts-with? file-path "/")
@@ -411,9 +307,7 @@
          :formatted formatted}))))
 
 (defn format-full-context
-  "Format full drone context for task augmentation.
-
-   Used by drone.clj to inject rich context into task description."
+  "Format full drone context for task augmentation."
   [context-data]
   (when context-data
     (str "## Smart Context (Auto-Generated)\n"

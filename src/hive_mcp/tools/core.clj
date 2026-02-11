@@ -87,7 +87,6 @@
      (addon-available? :swarm)      ; checks 'hive-mcp-swarm
      (addon-available? \"my-feat\") ; checks 'my-feat
 
-   CLARITY: Y - Yield safe failure (returns false on error/timeout)"
   [addon-key]
   (let [feature-name (if (keyword? addon-key)
                        (get addon-feature-map addon-key
@@ -119,8 +118,6 @@
        (let [result (ec/eval-elisp ...)]
          (mcp-success result)))
 
-   CLARITY: Y - Yield safe failure (graceful addon check)
-   SOLID: DRY - Centralizes addon validation pattern"
   [addon-key & body]
   `(if (addon-available? ~addon-key)
      (do ~@body)
@@ -185,8 +182,6 @@
      - nil if valid
      - error map (e.g., {:error \"message\"}) if invalid
 
-   CLARITY: I - Inputs are guarded (validation at boundaries)
-   SOLID: DRY - Centralizes validation pattern"
   [[params validator] & body]
   `(if-let [errors# (~validator ~params)]
      (mcp-json errors#)
@@ -207,8 +202,6 @@
      (coerce-int \"abc\" :limit)      => {:error \"I was expecting...\"}
      (coerce-int nil :limit 20)      => {:ok 20}  ; uses default
 
-   CLARITY: Y - Yield safe failure with useful context
-   CLARITY: I - Inputs are guarded at boundary"
   ([value param-name] (coerce-int value param-name nil))
   ([value param-name default]
    (cond
@@ -287,8 +280,6 @@ HINT: Pass an integer value:
    Returns {:ok vec} on success, {:error message} on failure.
 
    ELM Principle: User-facing errors should be helpful, not internal stack traces.
-   CLARITY: Y - Yield safe failure with useful context
-   CLARITY: I - Inputs are guarded at boundary"
   ([value param-name] (coerce-vec value param-name nil))
   ([value param-name default]
    (cond
@@ -384,8 +375,6 @@ HINT: Provide a JSON array like [\"item1\", \"item2\"]
 
    Returns mcp-error response on coercion failure.
 
-   CLARITY: I - Inputs are guarded at boundary
-   CLARITY: Y - Yield safe failure with helpful messages"
   [[bindings params & coercions] & body]
   (let [coercion-pairs (partition 2 coercions)
         coercion-checks (for [[var-name [param-name default]] coercion-pairs]

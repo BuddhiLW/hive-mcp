@@ -29,9 +29,6 @@
    - Validation interceptor (malli schema)
    - init! / reset-all! / with-clean-registry
 
-   SOLID: Single Responsibility - facade + hive-mcp extensions
-   CLARITY: Composition over modification - wraps hive.events
-   CLARITY: Inputs are guarded - malli validation at dispatch boundary"
   (:require [hive.events.interceptor :as interceptor]
             [hive.events.fx :as fx]
             [hive.events.cofx :as cofx]
@@ -58,7 +55,7 @@
 (defonce ^:private *event-handlers (atom {}))
 
 ;; =============================================================================
-;; Metrics State (CLARITY: Telemetry first) - hive-mcp specific
+;; Metrics State - hive-mcp specific
 ;; =============================================================================
 
 (def ^:private *metrics
@@ -91,7 +88,6 @@
    - :timings-count      - Number of timing samples
    - :timings-by-type    - Map of event-id -> [timing samples]
 
-   CLARITY: Telemetry first - observable system."
   []
   (let [m @*metrics
         timings (:timings m)
@@ -268,7 +264,6 @@
    - [context] - Uses hive.events global fx registry (production)
    - [context fx-handlers] - Legacy 2-arity (uses global registry)
 
-   CLARITY: Telemetry first - tracks effect execution metrics."
   ([context]
    (doseq [[effect-id effect-data] (:effects context)]
      (if-let [handler (fx/get-fx effect-id)]
@@ -312,18 +307,17 @@
   "Dispatch an event through its registered handler chain.
 
    Wraps the core interceptor execution with:
-   1. Malli schema validation at boundary (CLARITY: Inputs are guarded)
-   2. Prometheus telemetry (CLARITY-T: Telemetry first)
+   1. Malli schema validation at boundary
+   2. Prometheus telemetry
 
    Uses hive.events.interceptor/execute for chain processing and
    hive.events.fx/get-fx for effect handler lookup.
 
    Throws: ExceptionInfo if event is invalid or no handler registered."
   [event]
-  (schemas/validate-event! event) ;; CLARITY: Guard inputs at boundary
+  (schemas/validate-event! event)
   (let [event-id (first event)
         start-ns (System/nanoTime)]
-    ;; CLARITY-T: Record event to Prometheus
     (prom/inc-events-total! event-id :info)
     (if-let [{:keys [interceptors handler]} (get @*event-handlers event-id)]
       (let [;; Handler interceptor converts coeffects to effects
@@ -337,7 +331,6 @@
             full-chain (conj (vec interceptors) handler-interceptor)
             ;; Execute via hive.events interceptor engine
             result (execute event full-chain)
-            ;; CLARITY-T: Record dispatch duration to Prometheus
             elapsed-sec (/ (- (System/nanoTime) start-ns) 1e9)]
         (prom/observe-request-duration! (str "event-dispatch-" (name event-id)) elapsed-sec)
         (do-fx result)
@@ -379,7 +372,6 @@
 
    Uses a rolling window of 100 timing samples per event type to compute averages.
 
-   CLARITY Principle: Telemetry first - observable system behavior."
   (->interceptor
    :id :metrics
    :before (fn [context]
@@ -448,7 +440,6 @@
    - :error       - Humanized error message
    - :schema-type - :structure or :data (which validation failed)
 
-   CLARITY Principle: Inputs are guarded at boundaries.
    POC-14: Validation interceptor for event system."
   ([]
    (->interceptor
@@ -544,7 +535,6 @@
             (fn [{:keys [event data]}]
               (ws/emit! event data)))
 
-    ;; CLARITY-T: Prometheus metrics effect
     ;; Handles :prometheus effects from event handlers for drone/wave telemetry
     ;; Effect shape: {:counter :drone_started :labels {:parent "none"}
     ;;                :histogram {:name :drone_duration_seconds :value 5.0}}
@@ -555,7 +545,6 @@
                 (catch Exception e
                   (log/warn "Prometheus effect failed:" (.getMessage e))))))
 
-    ;; CLARITY-T: Log effect
     ;; Handles :log effects from event handlers for structured logging
     ;; Effect shape: {:level :info :message "Drone started: drone-123"}
     ;; NOTE: Uses timbre logging instead of println to avoid stdout pollution
@@ -608,8 +597,6 @@
    )
    ```
 
-   SOLID: Enables unit testing without global state pollution
-   CLARITY: Clean boundary for test isolation"
   [& body]
   `(let [;; Save hive-mcp event registry
          event-handlers# (var-get #'*event-handlers)
@@ -635,7 +622,6 @@
    Resets handlers, coeffects, effects, and metrics.
    Clears both hive-mcp event registry and hive.events fx/cofx registries.
 
-   CLARITY-Y: Guarded - skipped if coordinator is running to protect production."
   []
   (guards/when-not-coordinator
    "ev/reset-all! blocked"

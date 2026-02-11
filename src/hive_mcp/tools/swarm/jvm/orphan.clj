@@ -1,29 +1,12 @@
 (ns hive-mcp.tools.swarm.jvm.orphan
-  "Orphan process detection for JVM process management.
-
-   Pattern: Higher-order function composition for orphan detection.
-   Predicates can be composed to create custom detection strategies.
-
-   CLARITY: Single responsibility - orphan logic only, no I/O."
+  "Orphan process detection using composable predicates."
   (:require [hive-mcp.tools.swarm.jvm.parser :as parser]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-
-;;; ============================================================
-;;; Parent Info Enrichment
-;;; ============================================================
-
 (defn enrich-with-parent-info
-  "Enrich process with parent info from pre-fetched map.
-
-   all-parents: Map of pid -> {:ppid :comm}
-   Returns process with added keys:
-     :parent-alive - boolean
-     :parent-comm - parent command name
-     :parent-is-claude - boolean
-     :truly-orphaned - boolean (parent dead or PID 1)"
+  "Enrich process with parent info from pre-fetched map."
   [proc all-parents]
   (let [ppid (:ppid proc)
         parent (get all-parents ppid)
@@ -37,10 +20,6 @@
            :parent-comm parent-comm
            :parent-is-claude is-claude
            :truly-orphaned truly-orphaned)))
-
-;;; ============================================================
-;;; Orphan Detection Predicates
-;;; ============================================================
 
 (defn protected-type?
   "Check if process type is in protected set."
@@ -58,53 +37,26 @@
   [proc]
   (:truly-orphaned proc))
 
-;;; ============================================================
-;;; Orphan Detector (Higher-Order Function)
-;;; ============================================================
-
 (defn orphan-detector
-  "Create an orphan detector function with configurable predicates.
-
-   Options:
-     :protected-types - Set of type names to never mark as orphan
-     :true-orphans-only - Only detect truly orphaned (parent dead)
-     :min-age-minutes - Minimum age for age-based orphan detection
-
-   Returns: (fn [proc] -> boolean) - true if proc is orphan
-
-   Pattern: Higher-order function composition"
+  "Create an orphan detector function with configurable predicates."
   [& {:keys [protected-types true-orphans-only min-age-minutes]
       :or {protected-types #{}
            true-orphans-only true
            min-age-minutes 30}}]
   (fn [proc]
     (cond
-      ;; Protected types are never orphans
       (protected-type? proc protected-types)
       false
 
-      ;; True orphan mode: only detect if parent is dead
       true-orphans-only
       (truly-orphaned? proc)
 
-      ;; Age-based mode: truly orphaned AND old enough
       :else
       (and (truly-orphaned? proc)
            (age-orphan? proc min-age-minutes)))))
 
-;;; ============================================================
-;;; Orphan Identification (Full Result)
-;;; ============================================================
-
 (defn identify-orphan
-  "Identify if a process is an orphan and compute reason.
-
-   Returns process with added keys:
-     :orphan - boolean
-     :age-minutes - parsed age
-     :reason - human-readable explanation
-
-   Options same as orphan-detector."
+  "Identify if a process is an orphan and compute reason."
   [proc & {:keys [protected-types true-orphans-only min-age-minutes]
            :or {protected-types #{}
                 true-orphans-only true
@@ -128,9 +80,7 @@
            :reason reason)))
 
 (defn identify-orphans
-  "Identify orphans in a collection of processes.
-
-   Applies identify-orphan to each process with shared options."
+  "Identify orphans in a collection of processes."
   [procs & {:keys [protected-types true-orphans-only min-age-minutes]
             :or {protected-types #{}
                  true-orphans-only true

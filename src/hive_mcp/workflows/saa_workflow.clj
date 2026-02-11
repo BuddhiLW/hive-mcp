@@ -1,12 +1,10 @@
 (ns hive-mcp.workflows.saa-workflow
   "hive-events FSM handlers for the SAA (Silence-Abstract-Act) workflow.
 
-   The SAA workflow is a Korzybski-grounded methodology for structured exploration:
      S (Silence)  -- Ground in territory: read files, query memory, traverse KG
      A (Abstract) -- Create structured EDN plan with steps, dependencies, waves
      A (Act)      -- Execute plan via DAG-Wave, validate with TDD
 
-   'The map is not the territory.' -- Read first, abstract second, act third.
 
    State graph:
    ```
@@ -32,8 +30,8 @@
    Design constraints (same as forge-belt, wrap-session):
    - Normal handlers are (resources, data) -> data'
    - Terminal handlers (::end, ::error, ::halt) are (resources, fsm) -> result
-   - Side effects flow through the resources map (L1 territory)
-   - The FSM is the L2 map -- deterministic state transitions
+   - Side effects flow through the resources map (territory)
+   - The FSM is the map -- deterministic state transitions
    - Dispatch predicates are pure functions of state data
 
    Resources map (injected at run time):
@@ -53,9 +51,6 @@
 
    State data shape: See resources/fsm/saa-workflow.edn for full spec.
 
-   SOLID-S: FSM state handlers only, no orchestration logic.
-   SOLID-D: Delegates to resources map (dependency inversion).
-   CLARITY-L: Pure data transformation via resources fns."
   (:require [hive.events.fsm :as fsm]
             [taoensso.timbre :as log]))
 

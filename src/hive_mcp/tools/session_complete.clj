@@ -1,7 +1,6 @@
 (ns hive-mcp.tools.session-complete
   "MCP tool for completing ling sessions with full lifecycle.
 
-   CLARITY Framework:
    - C: Composition - orchestrates git, kanban, crystal, hivemind, plan-to-kanban
    - L: Layers pure - handler validates, event system executes effects
    - A: Architectural performance - single tool call instead of 4
@@ -59,7 +58,7 @@
   @config)
 
 ;; =============================================================================
-;; Validation (CLARITY: Inputs are guarded)
+;; Validation
 ;; =============================================================================
 
 (defn- validate-params

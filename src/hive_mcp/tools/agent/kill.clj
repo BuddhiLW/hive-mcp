@@ -1,13 +1,5 @@
 (ns hive-mcp.tools.agent.kill
-  "Agent kill and kill-batch handlers.
-
-   Handles agent termination with:
-   - Cross-project ownership checks (HIL safety)
-   - Agent type detection and reconstruction
-   - Batch kill with per-agent result reporting
-
-   SOLID-S: Single responsibility - agent termination only.
-   CLARITY-Y: Safe failure with ownership validation."
+  "Agent kill and kill-batch handlers with cross-project ownership checks."
   (:require [hive-mcp.tools.core :refer [mcp-error mcp-json]]
             [hive-mcp.agent.protocol :as proto]
             [hive-mcp.agent.ling :as ling]
@@ -19,28 +11,12 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;; =============================================================================
-;; Core Kill Logic
-;; =============================================================================
-
 (defn- kill-one!
-  "Core kill logic for a single agent. Returns plain data:
-   - {:killed id :result proto-result} on success
-   - {:error \"reason\" :id id} on failure
-
-   Used by both handle-kill and handle-kill-batch to avoid duplicating
-   ownership checks, agent construction, and proto/kill! dispatch.
-
-   Ownership rules (HIL):
-   - Caller without explicit directory (coordinator): can kill anything
-   - Legacy lings without project-id: can be killed by anyone
-   - Same project: kill proceeds normally
-   - Different project: requires force_cross_project=true"
+  "Kill a single agent, returning {:killed id :result ...} or {:error ... :id id}."
   [agent-id {:keys [directory force_cross_project]}]
   (try
     (if-let [agent-data (queries/get-slave agent-id)]
-      (let [;; CRITICAL: Only use EXPLICIT directory param, not ctx fallback.
-            caller-project-id (when directory
+      (let [caller-project-id (when directory
                                 (scope/get-current-project-id directory))
             target-project-id (:slave/project-id agent-data)
             can-kill? (or force_cross_project
@@ -71,27 +47,8 @@
       (log/error "Failed to kill agent" {:agent_id agent-id :error (ex-message e)})
       {:error (str "Failed to kill agent: " (ex-message e)) :id agent-id})))
 
-;; =============================================================================
-;; Kill Handler
-;; =============================================================================
-
 (defn handle-kill
-  "Terminate an agent.
-
-   Parameters:
-     agent_id            - Agent ID to kill (required)
-     directory           - Caller's working directory for ownership check (optional)
-     force               - Force kill even if critical ops in progress (default: false)
-     force_cross_project - Allow killing agents from different projects (default: false)
-
-   HUMAN-IN-THE-LOOP (HIL): Cross-project kill prevention.
-   If target agent's project differs from caller's project, kill is denied
-   unless force_cross_project=true is explicitly passed.
-
-   CLARITY: Y - Safe failure, checks ownership + critical ops before killing.
-   CLARITY: I - Inputs guarded with HIL for cross-project safety.
-
-   BUG FIX (2026-02): Only use EXPLICIT directory param for ownership check."
+  "Terminate an agent with cross-project ownership safety."
   [{:keys [agent_id] :as params}]
   (if (empty? agent_id)
     (mcp-error "agent_id is required")
@@ -100,25 +57,8 @@
         (mcp-error (:error result))
         (mcp-json (:result result))))))
 
-;; =============================================================================
-;; Kill-Batch Handler
-;; =============================================================================
-
 (defn handle-kill-batch
-  "Terminate multiple agents in a single call.
-
-   Parameters:
-     agent_ids           - Array of agent IDs to kill (required)
-     force               - Force kill even if critical ops in progress (default: false)
-     force_cross_project - Allow killing agents from different projects (default: false)
-     directory           - Caller's working directory for ownership check (optional)
-
-   Returns: {killed: [...], failed: [{id: ..., error: ...}], summary: {...}}
-
-   Reuses kill-one! core logic — same ownership checks apply per agent.
-
-   CLARITY: I - Validates agent_ids array before processing.
-   CLARITY: R - Returns detailed per-agent results for transparency."
+  "Terminate multiple agents in a single call."
   [{:keys [agent_ids] :as params}]
   (if (or (nil? agent_ids) (empty? agent_ids))
     (mcp-error "agent_ids is required (array of agent ID strings)")

@@ -1,11 +1,5 @@
 (ns hive-mcp.knowledge-graph.disc.hash
-  "Pure hash computation utilities for disc entities.
-
-   Extracted from disc.clj (Sprint 1 - SAA refactoring).
-   These functions compute content hashes for file change detection.
-
-   CLARITY-L: Pure layer - no DataScript dependencies.
-   CLARITY-Y: Graceful failure with status maps."
+  "Hash computation utilities for disc entities."
   (:require [clojure.java.io :as io]
             [taoensso.timbre :as log])
   (:import [java.security MessageDigest]))
@@ -13,10 +7,6 @@
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
-
-;; =============================================================================
-;; Hash Computation
-;; =============================================================================
 
 (defn compute-hash
   "Compute SHA-256 hash of content string.

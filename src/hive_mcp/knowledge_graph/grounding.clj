@@ -2,7 +2,6 @@
   "Re-grounding workflow for knowledge entries.
    Verifies entries against source files and updates grounding timestamps.
    
-   CLARITY-Y: Graceful failure with status codes instead of exceptions."
   (:require [hive-mcp.chroma :as chroma]
             [clojure.java.io :as io]
             [clojure.string :as str]

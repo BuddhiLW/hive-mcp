@@ -23,8 +23,6 @@
    - [:kg/edge-created data], [:kg/edge-updated data], [:kg/edge-removed data]
    - [:kg/node-promoted data], [:kg/edges-batch-created data]
 
-   SOLID: OCP - New hook types via defmethod, not modification
-   CLARITY: Represented intent - Clear hook->event mappings")
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -206,8 +204,6 @@
      (fn [event] (println \"Would dispatch:\" event)))
    ```
    
-   SOLID: DIP - Dispatch function can be injected for testing
-   CLARITY: Inputs are guarded - transformation before dispatch"
   ([hook-type payload]
    (bridge-dispatch! hook-type payload
                      (fn [event]

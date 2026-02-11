@@ -1,8 +1,5 @@
 (ns hive-mcp.chroma.crud
-  "Core CRUD operations for Chroma memory entries.
-
-   Provides create, read, update, delete, batch operations,
-   and collection statistics."
+  "Core CRUD operations for Chroma memory entries."
   (:require [clojure-chroma-client.api :as chroma]
             [hive-mcp.chroma.connection :as conn]
             [hive-mcp.chroma.embeddings :as emb]
@@ -13,14 +10,8 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;;; ============================================================
-;;; Async Eviction
-;;; ============================================================
-
 (defn- evict-expired-async!
-  "Fire-and-forget deletion of expired entry IDs from Chroma.
-   Opportunistic lazy eviction: clean up expired entries discovered during reads.
-   Non-blocking — errors are logged but never propagate to callers."
+  "Async deletion of expired entry IDs from Chroma."
   [expired-ids]
   (when (seq expired-ids)
     (future
@@ -31,14 +22,8 @@
         (catch Exception e
           (log/warn "Lazy eviction failed (non-blocking):" (.getMessage e)))))))
 
-;;; ============================================================
-;;; Create / Index
-;;; ============================================================
-
 (defn index-memory-entry!
-  "Index a memory entry in Chroma (full storage, not just search).
-   Entry should have :id, :content, :type, and optionally :tags, :created, etc.
-   Returns the entry ID on success."
+  "Index a memory entry in Chroma, returns entry ID."
   [{:keys [id content type tags created updated duration expires
            content-hash access-count helpful-count unhelpful-count project-id
            kg-outgoing kg-incoming abstraction-level
@@ -75,8 +60,7 @@
     entry-id))
 
 (defn index-memory-entries!
-  "Index multiple memory entries in batch.
-   More efficient than calling index-memory-entry! repeatedly."
+  "Index multiple memory entries in batch."
   [entries]
   (emb/require-embedding!)
   (let [coll (conn/get-or-create-collection)
@@ -94,13 +78,8 @@
     (log/info "Indexed" (count entries) "memory entries")
     (mapv :id entries)))
 
-;;; ============================================================
-;;; Read / Query
-;;; ============================================================
-
 (defn get-entry-by-id
-  "Get a specific memory entry by ID from Chroma.
-   Returns the full entry as a map, or nil if not found."
+  "Get a memory entry by ID from Chroma."
   [id]
   (emb/require-embedding!)
   (let [coll (conn/get-or-create-collection)
@@ -108,24 +87,23 @@
     (some-> (first results) h/metadata->entry)))
 
 (defn query-entries
-  "Query memory entries from Chroma with filtering.
-   Options:
-     :type - Filter by type (note, snippet, convention, decision)
-     :project-id - Filter by single project (backward compat)
-     :project-ids - Filter by multiple projects using Chroma $in operator
-     :limit - Max results (default: 100)
-     :include-expired? - Include expired entries (default: false)
-   Returns seq of entry maps."
-  [& {:keys [type project-id project-ids limit include-expired?]
+  "Query memory entries from Chroma with filtering."
+  [& {:keys [type project-id project-ids tags limit include-expired?]
       :or {limit 100 include-expired? false}}]
   (emb/require-embedding!)
   (let [coll (conn/get-or-create-collection)
-        where-clause (cond-> {}
-                       type (assoc :type type)
-                       project-ids (assoc :project-id {:$in (vec project-ids)})
-                       (and project-id (not project-ids)) (assoc :project-id project-id))
-        where (when (seq where-clause) where-clause)
-        ;; Over-fetch to compensate for expired entries that will be filtered out
+        base-clause (cond-> {}
+                      type (assoc :type type)
+                      project-ids (assoc :project-id {:$in (vec project-ids)})
+                      (and project-id (not project-ids)) (assoc :project-id project-id))
+        tag-conditions (when (seq tags)
+                         (mapv (fn [tag] {:tags {:$contains tag}}) tags))
+        where (cond
+                (seq tag-conditions)
+                (let [base-conditions (mapv (fn [[k v]] {k v}) base-clause)]
+                  {:$and (into base-conditions tag-conditions)})
+                (seq base-clause) base-clause
+                :else nil)
         fetch-limit (if include-expired? limit (+ limit 50))
         results @(chroma/get coll
                              :where where
@@ -133,7 +111,6 @@
                              :limit fetch-limit)
         entries (map h/metadata->entry results)
         {expired true live false} (group-by #(boolean (h/expired? %)) entries)]
-    ;; Lazy eviction: async-delete expired entries discovered during read
     (when-not include-expired?
       (evict-expired-async! (mapv :id expired)))
     (->> (if include-expired? entries live)
@@ -142,8 +119,7 @@
          vec)))
 
 (defn query-grounded-from
-  "Query Chroma for entries grounded from a specific disc path.
-   Returns seq of entry maps."
+  "Query entries grounded from a specific disc path."
   [disc-path]
   (emb/require-embedding!)
   (let [coll (conn/get-or-create-collection)
@@ -152,14 +128,8 @@
                              :include #{:documents :metadatas})]
     (map h/metadata->entry results)))
 
-;;; ============================================================
-;;; Update
-;;; ============================================================
-
 (defn update-entry!
-  "Update a memory entry in Chroma.
-   ID is required. Updates only provided fields.
-   Returns the updated entry."
+  "Update a memory entry in Chroma by ID."
   [id updates]
   (emb/require-embedding!)
   (when-let [existing (get-entry-by-id id)]
@@ -168,9 +138,7 @@
       (get-entry-by-id id))))
 
 (defn update-staleness!
-  "Update staleness fields for a Chroma entry.
-   Options: :alpha, :beta, :source (keyword), :depth (int).
-   Returns updated entry."
+  "Update staleness fields for a Chroma entry."
   [entry-id {:keys [alpha beta source depth]}]
   (emb/require-embedding!)
   (let [updates (-> {}
@@ -179,10 +147,6 @@
                     (cond-> source (assoc :staleness-source source))
                     (cond-> depth (assoc :staleness-depth depth)))]
     (update-entry! entry-id updates)))
-
-;;; ============================================================
-;;; Delete / Find / Stats
-;;; ============================================================
 
 (defn delete-entry!
   "Delete a memory entry from the Chroma index."
@@ -193,8 +157,7 @@
     id))
 
 (defn find-duplicate
-  "Find entry with matching content-hash in the given type.
-   Returns the existing entry or nil."
+  "Find entry with matching content-hash in the given type."
   [type content-hash & {:keys [project-id]}]
   (emb/require-embedding!)
   (let [entries (query-entries :type type :project-id project-id :limit 1000)]

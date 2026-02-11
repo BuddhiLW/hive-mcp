@@ -1,16 +1,5 @@
 (ns hive-mcp.crystal.graph
-  "Knowledge graph for memory entries using Datascript GraphStore.
-   
-   Builds a queryable graph from memory entries, enabling:
-   - Session lineage tracking (which session produced which entries)
-   - Cross-reference discovery (entry-to-entry links)
-   - Recall pattern analysis (access frequency by context)
-   - Promotion candidate identification
-   
-   Reconstructed on startup from Emacs memory store.
-   
-   SOLID: Single responsibility - graph queries only.
-   DDD: Persistence adapter for memory domain."
+  "Queryable graph of memory entries built on DataScript."
   (:require [clojure.data.json :as json]
             [hive-mcp.emacs.client :as ec]
             [hive-mcp.crystal.core :as crystal]
@@ -48,11 +37,7 @@
 ;; =============================================================================
 
 (defn add-entry-fact!
-  "Add a memory entry to the graph database.
-   
-   entry: {:id :type :duration :tags :recalls :created}
-   
-   Extracts session from tags and populates all relations."
+  "Add a memory entry to the graph database."
   [{:keys [id type duration tags recalls] :as _entry}]
   (when id
     ;; Add base memory entry
@@ -206,8 +191,7 @@
 ;; =============================================================================
 
 (defn- query-emacs-memory
-  "Query Emacs memory for entries of a given type.
-   Returns parsed JSON or nil on error."
+  "Query Emacs memory for entries of a given type."
   [entry-type]
   (let [elisp (format "(json-encode (hive-mcp-api-memory-query %s nil 1000 \"all\"))"
                       (pr-str entry-type))
@@ -228,10 +212,7 @@
         nil))))
 
 (defn rebuild-from-memory!
-  "Rebuild the graph database from Emacs memory store.
-   
-   Queries all memory types and populates the logic database.
-   Returns {:entries-loaded int :errors []}."
+  "Rebuild the graph database from Emacs memory store."
   []
   (log/info "Rebuilding graph from Emacs memory...")
   (reset-db!)
@@ -259,11 +240,7 @@
       @results)))
 
 (defn ensure-rebuilt!
-  "Ensure the graph is rebuilt if stale or empty.
-   
-   Options:
-   - :force - always rebuild
-   - :max-age-ms - rebuild if older than this (default: 5 min)"
+  "Ensure the graph is rebuilt if stale or empty."
   [& {:keys [force max-age-ms] :or {max-age-ms 300000}}]
   (let [should-rebuild? (or force
                             (nil? @last-rebuild)
@@ -278,11 +255,7 @@
 ;; =============================================================================
 
 (defn session-entries
-  "Get all entries produced in a session.
-   
-   session-id: date string or session tag
-   
-   Returns: [{:id :type :duration} ...]"
+  "Get all entries produced in a session."
   [session-id]
   (let [results (ds/query @graph-store
                           '[:find ?id ?type ?duration
@@ -298,11 +271,7 @@
          results)))
 
 (defn entry-lineage
-  "Find all entries that reference a given entry (reverse lookup).
-   
-   entry-id: the entry to find references to
-   
-   Returns: [{:id :type :duration} ...] of entries that reference this one"
+  "Find all entries that reference a given entry (reverse lookup)."
   [entry-id]
   (let [results (ds/query @graph-store
                           '[:find ?src-id ?type ?duration
@@ -319,11 +288,7 @@
          results)))
 
 (defn entry-references-to
-  "Find all entries that a given entry references (forward lookup).
-   
-   entry-id: the entry to find outgoing references from
-   
-   Returns: [{:id :type :duration} ...]"
+  "Find all entries that a given entry references (forward lookup)."
   [entry-id]
   (let [results (ds/query @graph-store
                           '[:find ?ref-id ?type ?duration
@@ -340,11 +305,7 @@
          results)))
 
 (defn entries-by-tag
-  "Find all entries with a given tag.
-   
-   tag: the tag to search for
-   
-   Returns: [{:id :type :duration} ...]"
+  "Find all entries with a given tag."
   [tag]
   (let [results (ds/query @graph-store
                           '[:find ?id ?type ?duration
@@ -360,11 +321,7 @@
          results)))
 
 (defn entries-by-duration
-  "Find all entries with a given duration.
-   
-   duration: :ephemeral :short :medium :long :permanent
-   
-   Returns: [{:id :type} ...]"
+  "Find all entries with a given duration."
   [duration]
   (let [results (ds/query @graph-store
                           '[:find ?id ?type
@@ -379,11 +336,7 @@
          results)))
 
 (defn entry-recall-summary
-  "Get recall summary for an entry.
-
-   entry-id: the entry to summarize (string memory/id)
-
-   Returns: [{:context :count} ...]"
+  "Get recall summary for an entry."
   [entry-id]
   (let [results (ds/query @graph-store
                           '[:find ?ctx ?cnt
@@ -399,11 +352,7 @@
          results)))
 
 (defn promotion-candidates
-  "Find entries that should be promoted based on recall patterns.
-   
-   Uses crystal/core scoring logic.
-   
-   Returns: [{:id :type :current-duration :next-duration :score} ...]"
+  "Find entries that should be promoted based on recall patterns."
   []
   (let [;; Get all non-permanent entries
         candidates (ds/query @graph-store
@@ -436,9 +385,7 @@
     scored))
 
 (defn orphaned-entries
-  "Find entries with no session tag (potentially orphaned).
-   
-   Returns: [{:id :type :duration} ...]"
+  "Find entries with no session tag (potentially orphaned)."
   []
   (let [all-entries (ds/query @graph-store
                               '[:find ?id ?type ?duration
@@ -462,12 +409,7 @@
          orphaned)))
 
 (defn connected-entries
-  "Find entries connected to a root entry via references (both directions).
-
-   root-id: starting entry (string memory/id)
-   max-depth: maximum traversal depth (default: 3)
-
-   Returns: [{:id :type :duration :direction :depth} ...]"
+  "Find entries connected to a root entry via references (BFS traversal)."
   [root-id & {:keys [max-depth] :or {max-depth 3}}]
   (let [visited (atom #{root-id})
         result (atom [])]

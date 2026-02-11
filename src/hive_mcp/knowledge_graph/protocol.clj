@@ -12,9 +12,7 @@
      (proto/set-store! store)  ;; delegates to protocols.kg/set-store!
      (proto/ensure-conn! store) ;; delegates to protocols.kg/ensure-conn!
 
-   CLARITY-L: Layers stay pure - protocol is the boundary between
    KG domain logic and storage implementation.
-   CLARITY-I: Inputs guarded at protocol boundary."
   (:require [hive-mcp.protocols.kg :as kg]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>

@@ -6,8 +6,6 @@
    - :ling/completed     - Ling finished all work
    - :ling/ready-for-wrap - Auto-wrap hook on ling completion
 
-   SOLID: SRP - Ling lifecycle only
-   CLARITY: R - Represented intent through ling domain"
   (:require [hive-mcp.events.core :as ev]
             [hive-mcp.events.interceptors :as interceptors]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>

@@ -5,8 +5,6 @@
    - :crystal/wrap-request - Unified wrap path
    - :crystal/wrap-notify  - Wrap notification for HIVEMIND piggyback
 
-   SOLID: SRP - Crystal/wrap lifecycle only
-   CLARITY: R - Represented intent through crystal domain"
   (:require [hive-mcp.events.core :as ev]
             [hive-mcp.events.interceptors :as interceptors]
             [clojure.string :as str]))
@@ -124,8 +122,6 @@
    - :wrap-notify - Record to DataScript wrap-queue (with project-id for scoping)
    - :shout       - Broadcast to HIVEMIND (makes it visible in piggyback)
 
-   CLARITY-I: Inputs are guarded - defensive handling for stats structure
-   CLARITY-Y: Yield safe failure - graceful fallback for malformed stats"
   [_coeffects [_ {:keys [agent-id session-id project-id created-ids stats]}]]
   (let [note-count (count (or created-ids []))
         ;; Defensive: ensure stats is a map before accessing keys

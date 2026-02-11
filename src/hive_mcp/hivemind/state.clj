@@ -1,54 +1,25 @@
 (ns hive-mcp.hivemind.state
-  "Hivemind state management — atoms and their direct accessors.
+  "Hivemind state atoms and direct accessors."
 
-   Contains all mutable state for the hivemind coordination system:
-   - pending-asks: Blocking ask/respond channels
-   - agent-registry: Message history ring buffer (max 10 per agent)
-   - pending-swarm-prompts: Permission prompts from Emacs slaves
-   - ling-results: Completion results for coordinator review
-
-   SOLID: SRP — state management only, no messaging or query logic.
-   CLARITY: L — Pure accessor functions, side-effects limited to atom swaps."
   (:require [hive-mcp.guards :as guards]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;; =============================================================================
-;; State Atoms
-;; =============================================================================
-
 (defonce ^{:doc "Map of ask-id -> {:question ... :response-chan ...}"}
   pending-asks
   (atom {}))
 
-(defonce ^{:doc "LEGACY: Message history storage. DataScript is source of truth for slave data.
-
-                 ADR-002 AMENDED: This atom stores ONLY message history (ring buffer).
-                 Slave metadata (status, name, presets, cwd) comes from DataScript.
-
-                 Map of agent-id -> {:messages [...] :last-seen timestamp}
-                 Messages is a vector of recent shouts (max 10 per agent).
-
-                 Migration note: This was previously the authoritative agent registry.
-                 Now DataScript (swarm/datascript.clj) is the source of truth for slaves.
-                 This atom persists messages which are hivemind-specific (not swarm state)."}
+(defonce ^{:doc "Agent message history ring buffer. Map of agent-id -> {:messages [...] :last-seen timestamp}."}
   agent-registry
   (atom {}))
 
-(defonce ^{:doc "Map of slave-id -> {:prompt :timestamp :session-id}
-                 Permission prompts pushed from Emacs swarm slaves.
-                 These are distinct from asks (agent-initiated questions)."}
+(defonce ^{:doc "Map of slave-id -> {:prompt :timestamp :session-id}. Permission prompts from Emacs slaves."}
   pending-swarm-prompts
   (atom {}))
 
-;; Ling result tracking for coordinator review
 (defonce ling-results (atom {}))
-
-;; =============================================================================
-;; Ling Results
-;; =============================================================================
 
 (defn record-ling-result!
   "Record ling completion for coordinator review."
@@ -75,13 +46,8 @@
   []
   (reset! ling-results {}))
 
-;; =============================================================================
-;; Swarm Prompts
-;; =============================================================================
-
 (defn add-swarm-prompt!
-  "Add a permission prompt from a swarm slave.
-   Called by sync.clj when :prompt-shown event received from Emacs."
+  "Add a permission prompt from a swarm slave."
   [slave-id prompt-text session-id timestamp]
   (let [prompt-data {:prompt prompt-text
                      :timestamp timestamp
@@ -103,15 +69,8 @@
   []
   @pending-swarm-prompts)
 
-;; =============================================================================
-;; Agent Registry Utilities
-;; =============================================================================
-
 (defn clear-agent-registry!
-  "Clear agent registry. GUARDED - no-op if coordinator running.
-
-   CLARITY-Y: Yield safe failure - prevents test fixtures from
-   corrupting production hivemind state."
+  "Clear agent registry. Guarded — no-op if coordinator running."
   []
   (guards/when-not-coordinator
    "clear-agent-registry! called"

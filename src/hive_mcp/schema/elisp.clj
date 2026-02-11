@@ -1,24 +1,5 @@
 (ns hive-mcp.schema.elisp
-  "Elisp struct generation from Malli schemas.
-
-   This namespace provides functions to generate Elisp cl-defstruct code
-   from Malli :map schemas, enabling type-safe data exchange between
-   Clojure and Emacs Lisp.
-
-   Usage:
-   ```clojure
-   (require '[hive-mcp.schema.elisp :as se])
-
-   (def MemoryEntry
-     [:map
-      [:id :string]
-      [:type [:enum :note :snippet :decision]]
-      [:content :string]
-      [:tags [:vector :string]]])
-
-   (se/emit-struct MemoryEntry {:name \"hive-memory-entry\"})
-   ;; => \"(cl-defstruct (hive-memory-entry (:constructor hive-memory-entry-create))\\n  id type content tags)\"
-   ```"
+  "Elisp struct generation from Malli schemas."
   (:require [malli.core :as m]
             [clojure.string :as str]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -35,13 +16,7 @@
   (= :map (m/type schema)))
 
 (defn- extract-field-names
-  "Extract field names from a :map schema.
-
-   Returns a sequence of field name keywords.
-
-   Example:
-     (extract-field-names [:map [:id :string] [:name :string]])
-     ;; => (:id :name)"
+  "Extract field names from a :map schema."
   [schema]
   (when (map-schema? schema)
     (->> (m/children schema)
@@ -71,32 +46,14 @@
     :else (pr-str v)))
 
 (defn- format-struct-options
-  "Format cl-defstruct options as elisp string.
-
-   Currently supports:
-   - :constructor - generates (:constructor <name>-create)"
+  "Format cl-defstruct options as elisp string."
   [struct-name opts]
   (let [constructor-name (or (:constructor opts)
                              (str struct-name "-create"))]
     (format "(:constructor %s)" constructor-name)))
 
 (defn emit-struct
-  "Generate elisp cl-defstruct from Malli :map schema.
-
-   Takes a Malli schema and options map, returns elisp code as string.
-
-   Options:
-   - :name (required) - The struct name (e.g., \"hive-memory-entry\")
-   - :constructor - Custom constructor name (default: <name>-create)
-   - :include - Include another struct type (for inheritance)
-
-   Example:
-     (emit-struct
-       [:map [:id :string] [:content :string]]
-       {:name \"hive-note\"})
-     ;; => \"(cl-defstruct (hive-note (:constructor hive-note-create))\\n  id content)\"
-
-   Throws: ex-info if schema is not a :map or :name is missing"
+  "Generate elisp cl-defstruct from a Malli :map schema."
   [schema opts]
   (let [struct-name (:name opts)]
     ;; Validate inputs
@@ -120,20 +77,7 @@
               fields-str))))
 
 (defn emit-struct-with-defaults
-  "Generate elisp cl-defstruct with default slot values.
-
-   Like emit-struct but allows specifying default values for slots.
-
-   Options:
-   - :name (required) - The struct name
-   - :defaults - Map of field-name -> default-value
-
-   Example:
-     (emit-struct-with-defaults
-       [:map [:id :string] [:enabled :boolean]]
-       {:name \"hive-config\"
-        :defaults {:enabled true}})
-     ;; => \"(cl-defstruct (hive-config (:constructor hive-config-create))\\n  id (enabled t))\""
+  "Generate elisp cl-defstruct with default slot values."
   [schema opts]
   (let [struct-name (:name opts)
         defaults (or (:defaults opts) {})]
@@ -164,15 +108,7 @@
 ;; =============================================================================
 
 (defn emit-structs
-  "Generate multiple cl-defstruct definitions.
-
-   Takes a sequence of [schema opts] pairs.
-   Returns elisp code with all struct definitions.
-
-   Example:
-     (emit-structs
-       [[[:map [:id :string]] {:name \"hive-item\"}]
-        [[:map [:name :string] [:value :int]] {:name \"hive-pair\"}]])"
+  "Generate multiple cl-defstruct definitions."
   [schema-opts-pairs]
   (->> schema-opts-pairs
        (map (fn [[schema opts]] (emit-struct schema opts)))
@@ -183,13 +119,7 @@
 ;; =============================================================================
 
 (defn- extract-field-entries
-  "Extract field entries from a :map schema.
-
-   Returns a sequence of [field-key field-schema optional?] tuples.
-
-   Example:
-     (extract-field-entries [:map [:id :string] [:tags {:optional true} [:vector :string]]])
-     ;; => ([:id :string false] [:tags [:vector :string] true])"
+  "Extract field entries from a :map schema."
   [schema]
   (when (map-schema? schema)
     (for [child (m/children schema)]
@@ -246,36 +176,7 @@
     (str (elisp-keyword field-key) " " final-expr)))
 
 (defn emit-from-plist
-  "Generate elisp -from-plist function from Malli schema.
-
-   For converting JSON-decoded plists to structs.
-
-   Args:
-   - schema: A Malli [:map ...] schema
-   - opts: Options map with:
-     - :name (required) - Base name for the struct (e.g., \"hive-memory-entry\")
-
-   Returns elisp code as string.
-
-   Example:
-   ```clojure
-   (def MemoryEntry
-     [:map
-      [:id :string]
-      [:type [:enum :note :snippet :decision]]
-      [:content :string]
-      [:tags [:vector :string]]])
-
-   (emit-from-plist MemoryEntry {:name \"hive-memory-entry\"})
-   ;; =>
-   ;; \"(defun hive-memory-entry-from-plist (plist)
-   ;;    \\\"Create hive-memory-entry from PLIST.\\\"
-   ;;    (hive-memory-entry-create
-   ;;     :id (plist-get plist :id)
-   ;;     :type (intern (plist-get plist :type))
-   ;;     :content (plist-get plist :content)
-   ;;     :tags (plist-get plist :tags)))\"
-   ```"
+  "Generate elisp -from-plist function from Malli schema."
   [schema opts]
   (let [struct-name (:name opts)]
     ;; Validate inputs
@@ -299,12 +200,7 @@
               fn-name struct-name create-fn args-str))))
 
 (defn emit-from-plist-all
-  "Generate -from-plist functions for multiple schemas.
-
-   Args:
-   - schemas: Sequence of [schema opts] pairs
-
-   Returns elisp code as string with all functions."
+  "Generate -from-plist functions for multiple schemas."
   [schemas]
   (->> schemas
        (map (fn [[schema opts]] (emit-from-plist schema opts)))
@@ -315,17 +211,7 @@
 ;; =============================================================================
 
 (defn- type->elisp-predicate
-  "Convert a Malli type to an Elisp predicate function name.
-
-   Type mapping:
-   - :string → stringp
-   - :int/:integer → integerp
-   - :boolean → booleanp
-   - :keyword → symbolp
-   - :map → hash-table-p (or plist check)
-   - :any → always true (no check needed)
-
-   Returns nil for types that need special handling (enum, vector, maybe)."
+  "Convert a Malli type to an Elisp predicate function name."
   [schema-type]
   (case schema-type
     :string "stringp"
@@ -355,13 +241,7 @@
     (first (m/children schema))))
 
 (defn- generate-type-check
-  "Generate elisp type check expression for a field.
-
-   Args:
-   - field-schema: The Malli schema for this field
-   - accessor-expr: The elisp accessor expression (e.g., \"(hive-entry-id entry)\")
-
-   Returns elisp expression string."
+  "Generate elisp type check expression for a field."
   [field-schema accessor-expr]
   (let [typ (schema-type field-schema)]
     (cond
@@ -395,14 +275,7 @@
         "t"))))
 
 (defn- generate-field-check
-  "Generate elisp check expression for a schema field.
-
-   Args:
-   - struct-name: Name of the struct (e.g., \"hive-memory-entry\")
-   - entry-var: Variable name in the elisp function (e.g., \"entry\")
-   - field-entry: [field-key field-schema optional?] tuple
-
-   Returns elisp expression string."
+  "Generate elisp check expression for a schema field."
   [struct-name entry-var [field-key field-schema optional?]]
   (let [field-name (field-name->elisp field-key)
         accessor-expr (format "(%s-%s %s)" struct-name field-name entry-var)
@@ -413,44 +286,7 @@
       type-check)))
 
 (defn emit-validator
-  "Generate elisp -valid-p predicate from Malli schema.
-
-   Creates an elisp defun that validates a struct instance against
-   the schema's type constraints.
-
-   Args:
-   - schema: A Malli [:map ...] schema
-   - opts: Options map with:
-     - :name (required) - Base name for the struct (e.g., \"hive-memory-entry\")
-     - :var (optional) - Variable name in generated function (default: \"entry\")
-
-   Returns elisp code as string.
-
-   Type Mapping:
-   - :string → stringp
-   - :int/:integer → integerp
-   - :boolean → booleanp
-   - [:enum ...] → memq with quoted list
-   - [:vector ...] → listp
-   - [:maybe X] → (or (null ...) (X ...))
-
-   Example:
-   ```clojure
-   (def MemoryEntry
-     [:map
-      [:id :string]
-      [:type [:enum :note :snippet :decision]]
-      [:content :string]])
-
-   (emit-validator MemoryEntry {:name \"hive-memory-entry\"})
-   ;; =>
-   ;; \"(defun hive-memory-entry-valid-p (entry)
-   ;;    \\\"Validate ENTRY against hive-memory-entry schema.\\\"
-   ;;    (and (hive-memory-entry-p entry)
-   ;;         (stringp (hive-memory-entry-id entry))
-   ;;         (memq (hive-memory-entry-type entry) '(note snippet decision))
-   ;;         (stringp (hive-memory-entry-content entry))))\"
-   ```"
+  "Generate elisp -valid-p predicate from Malli schema."
   [schema opts]
   (let [struct-name (:name opts)
         entry-var (or (:var opts) "entry")]
@@ -480,12 +316,7 @@
               checks-str))))
 
 (defn emit-validators
-  "Generate -valid-p functions for multiple schemas.
-
-   Args:
-   - schemas: Sequence of [schema opts] pairs
-
-   Returns elisp code as string with all validator functions."
+  "Generate -valid-p functions for multiple schemas."
   [schemas]
   (->> schemas
        (map (fn [[schema opts]] (emit-validator schema opts)))

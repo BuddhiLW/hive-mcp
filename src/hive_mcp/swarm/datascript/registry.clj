@@ -4,7 +4,6 @@
    Wraps the existing module-level functions from lings.clj and queries.clj
    to provide a protocol-based interface for dependency injection.
 
-   SOLID-D: Dependency Inversion - clients depend on ISwarmRegistry abstraction.
    DDD: Repository pattern with DataScript backend."
   (:require [hive-mcp.swarm.protocol :as proto]
             [hive-mcp.swarm.datascript.lings :as lings]

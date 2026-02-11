@@ -1,32 +1,5 @@
 (ns hive-mcp.agent.permissions
-  "IAgentPermissions implementation + hooks bridge.
-
-   Bridges Claude Code's permission/hooks system with the hive agent framework.
-   Provides configurable permission policies for autonomous agents:
-
-   Permission Levels:
-   - :allow-all    — Bypass all checks (dangerous, dev/test only)
-   - :allow-safe   — Allow read + safe writes, prompt for destructive ops
-   - :prompt-user  — Prompt for every mutation (interactive mode)
-   - :deny-all     — Deny all tool calls (lockdown)
-
-   Tool Categories:
-   - :read-only    — File reads, search, inspection
-   - :safe-write   — File edits, propose_diff
-   - :destructive  — Shell commands, git push, kill
-   - :coordination — Hivemind shouts, memory ops
-   - :eval         — REPL evaluation (cider, clojure_eval)
-
-   Integration:
-   - Bridges tool_allowlist.clj for drone tool filtering
-   - Supports hooks-style callbacks for permission prompts
-   - Budget guardrail hooks via agent.hooks.budget (P2-T4)
-   - Default policy: safe-autonomy (read + safe-write allowed)
-
-   SOLID-I: Permission logic separate from session/backend.
-   SOLID-O: Open for new permission levels via policy maps.
-   CLARITY-I: Inputs guarded — every tool call checked.
-   CLARITY-Y: Yield safe failure — deny returns error map, never throws."
+  "Permission policies and enforcement for agent tool calls."
   (:require [hive-mcp.agent.drone.tool-allowlist :as allowlist]
             [hive-mcp.protocols.agent-bridge :as bridge]
             [taoensso.timbre :as log]))
@@ -35,19 +8,8 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;;; ============================================================================
-;;; Tool Categories
-;;; ============================================================================
-
 (def tool-categories
-  "Map of tool names to their permission category.
-   Categories determine what permission level is required.
-
-   :read-only    — Always safe, no side effects
-   :safe-write   — File modifications within sandbox
-   :destructive  — Shell exec, git push, agent kill
-   :coordination — Hivemind, memory, kanban (agent infra)
-   :eval         — REPL evaluation (side effects possible)"
+  "Map of tool names to their permission category."
   {;; Read-only tools
    "read_file"      :read-only
    "grep"           :read-only
@@ -88,28 +50,12 @@
    "cider_eval"        :eval})
 
 (defn categorize-tool
-  "Return the permission category for a tool name.
-
-   Arguments:
-     tool-name - String name of the tool
-
-   Returns:
-     Keyword category (:read-only, :safe-write, :destructive,
-     :coordination, :eval) or :unknown if not categorized."
+  "Return the permission category for a tool name, or :unknown."
   [tool-name]
   (get tool-categories tool-name :unknown))
 
-;;; ============================================================================
-;;; Permission Levels (Policy Maps)
-;;; ============================================================================
-
 (def permission-levels
-  "Permission level definitions. Each level maps tool categories to actions.
-
-   Actions:
-   - :allow  — Tool call proceeds
-   - :deny   — Tool call rejected with reason
-   - :prompt — Defer to handler-fn (hooks callback)"
+  "Permission level definitions mapping tool categories to actions (:allow, :deny, :prompt)."
   {:allow-all
    {:read-only    :allow
     :safe-write   :allow
@@ -149,37 +95,13 @@
   [level]
   (contains? valid-levels level))
 
-;;; ============================================================================
-;;; Permission Decision Engine
-;;; ============================================================================
-
 (defn- category-action
-  "Resolve the action for a tool category under a permission level.
-
-   Arguments:
-     level    - Permission level keyword
-     category - Tool category keyword
-
-   Returns:
-     :allow, :deny, or :prompt"
+  "Resolve the action for a tool category under a permission level."
   [level category]
   (get-in permission-levels [level category] :deny))
 
 (defn check-permission
-  "Check whether a tool call is permitted under the given policy.
-
-   Arguments:
-     policy    - Map with :level and optional :handler-fn
-     tool-name - String name of the tool being called
-     input     - Tool input data (passed to handler if :prompt)
-     context   - Additional context map (agent-id, session-id, etc.)
-
-   Returns:
-     Permission result map:
-     {:action :allow}
-     {:action :allow :updated-input <map>}
-     {:action :deny :message <string>}
-     {:action :deny :message <string> :interrupt? true}"
+  "Check whether a tool call is permitted under the given policy."
   [{:keys [level handler-fn]} tool-name input context]
   (let [category (categorize-tool tool-name)
         action   (category-action level category)]
@@ -204,26 +126,13 @@
             (log/warn "Permission handler threw exception, denying" {:tool tool-name :error (.getMessage e)})
             {:action :deny
              :message (str "Permission handler error: " (.getMessage e))}))
-        ;; No handler → deny (safe default)
         (do
           (log/info "Permission prompt with no handler, denying" {:tool tool-name :category category})
           {:action :deny
            :message (str "Tool '" tool-name "' requires approval but no permission handler is configured")})))))
 
-;;; ============================================================================
-;;; Permission Policy Construction
-;;; ============================================================================
-
 (defn ->policy
-  "Create a permission policy map.
-
-   Arguments:
-     level      - Permission level keyword (:allow-all, :allow-safe, :prompt-user, :deny-all)
-     handler-fn - Optional (fn [tool-name input context] -> permission-result)
-                  Called when action is :prompt
-
-   Returns:
-     Policy map {:level <kw> :handler-fn <fn-or-nil>}"
+  "Create a permission policy map from a level and optional handler-fn."
   ([level]
    (->policy level nil))
   ([level handler-fn]
@@ -232,21 +141,11 @@
     :handler-fn handler-fn}))
 
 (def default-policy
-  "Default permission policy: allow-safe.
-   Read and safe writes permitted, destructive ops denied unless handler set.
-   This is the safe default for autonomous agents (lings/drones)."
+  "Default permission policy: allow-safe (read + safe writes permitted)."
   (->policy :allow-safe))
 
-;;; ============================================================================
-;;; Hooks-Style Handler Factories
-;;; ============================================================================
-
 (defn logging-handler
-  "Create a permission handler that logs and allows all prompted tools.
-   Useful for development/debugging — see what would be prompted.
-
-   Returns:
-     (fn [tool-name input context] -> {:action :allow})"
+  "Create a permission handler that logs and auto-allows all prompted tools."
   []
   (fn [tool-name _input context]
     (log/info "Permission prompt (auto-allowed)"
@@ -255,15 +154,7 @@
     {:action :allow}))
 
 (defn allowlist-handler
-  "Create a permission handler that checks against an allowlist.
-   Bridges tool_allowlist.clj for drone-style filtering on :prompt actions.
-
-   Arguments:
-     allowlist-opts - Options for allowlist/resolve-allowlist
-                      {:tool-allowlist #{...}} or {:task-type :testing}
-
-   Returns:
-     (fn [tool-name input context] -> permission-result)"
+  "Create a permission handler that checks against a tool allowlist."
   [allowlist-opts]
   (let [al (allowlist/resolve-allowlist allowlist-opts)]
     (fn [tool-name _input _context]
@@ -274,16 +165,7 @@
                        "Allowed: " (pr-str (sort al)))}))))
 
 (defn callback-handler
-  "Create a permission handler that invokes a callback function.
-   The callback receives full context and returns a boolean or result map.
-
-   Arguments:
-     callback-fn - (fn [tool-name input context] -> boolean | permission-result)
-                   If boolean: true → allow, false → deny
-                   If map: passed through as-is
-
-   Returns:
-     Permission handler fn"
+  "Create a permission handler that invokes a callback returning boolean or result map."
   [callback-fn]
   (fn [tool-name input context]
     (let [result (callback-fn tool-name input context)]
@@ -294,14 +176,7 @@
         :else           {:action :deny :message (str "Unexpected callback result for: " tool-name)}))))
 
 (defn composite-handler
-  "Create a handler that chains multiple handlers. First non-allow result wins.
-   If all handlers allow, the final result is :allow.
-
-   Arguments:
-     handlers - Sequence of permission handler fns
-
-   Returns:
-     Composite permission handler fn"
+  "Create a handler that chains multiple handlers; first non-allow result wins."
   [handlers]
   (fn [tool-name input context]
     (reduce
@@ -313,94 +188,43 @@
      {:action :allow}
      handlers)))
 
-;;; ============================================================================
-;;; Protocol Bridge: mode keyword → policy mapping
-;;; ============================================================================
-
 (defn mode->policy
-  "Convert IAgentPermissions mode keywords to internal policies.
-   Maps the protocol's 3 modes to our 4-level system.
-
-   Arguments:
-     mode - Protocol mode keyword (:default, :accept-edits, :bypass)
-
-   Returns:
-     Policy map"
+  "Convert IAgentPermissions mode keyword to an internal policy."
   [mode]
   (case mode
     :default      (->policy :prompt-user)
     :accept-edits (->policy :allow-safe)
     :bypass       (->policy :allow-all)
-    ;; Fallback for unknown modes
     (do (log/warn "Unknown permission mode, using default" {:mode mode})
         (->policy :prompt-user))))
 
 (defn mode->sdk-string
-  "Convert internal permission mode keywords to Claude SDK string values.
-   Used when delegating to headless_sdk.clj.
-
-   Arguments:
-     mode - Keyword (:default, :accept-edits, :bypass)
-
-   Returns:
-     String for SDK API (\"default\", \"acceptEdits\", \"bypassPermissions\")"
+  "Convert internal permission mode keyword to Claude SDK string value."
   [mode]
   (case mode
     :default      "default"
     :accept-edits "acceptEdits"
     :bypass       "bypassPermissions"
-    ;; Fallback
     (do (log/warn "Unknown mode for SDK string, using default" {:mode mode})
         "default")))
 
-;;; ============================================================================
-;;; Agent-Specific Policy Presets
-;;; ============================================================================
-
 (defn ling-policy
-  "Permission policy for ling agents.
-   Lings are coordinators: they read, search, and delegate.
-   They should NOT do destructive ops directly.
-
-   Returns:
-     Policy with :allow-safe level"
+  "Permission policy for ling agents (allow-safe)."
   []
   (->policy :allow-safe))
 
 (defn drone-policy
-  "Permission policy for drone agents.
-   Drones execute atomic tasks within a bounded allowlist.
-   Uses allowlist-handler to enforce tool_allowlist.clj.
-
-   Arguments:
-     opts - Drone options map with optional:
-            :tool-allowlist - Explicit allowlist set
-            :task-type      - Task type for profile-based allowlist
-
-   Returns:
-     Policy with :allow-safe level + allowlist handler for :prompt actions"
+  "Permission policy for drone agents with allowlist enforcement."
   [opts]
   (->policy :allow-safe (allowlist-handler opts)))
 
 (defn coordinator-policy
-  "Permission policy for the coordinator (hivemind).
-   Full access — the coordinator is human-supervised.
-
-   Returns:
-     Policy with :allow-all level"
+  "Permission policy for the coordinator (allow-all)."
   []
   (->policy :allow-all))
 
-;;; ============================================================================
-;;; Budget-Aware Policy Presets (P2-T4 Hook Integration)
-;;; ============================================================================
-
 (defn- resolve-budget-guardrail-handler
-  "Dynamically resolve the budget guardrail handler factory.
-   Uses requiring-resolve to avoid circular deps and keep budget module optional.
-
-   Returns:
-     Budget guardrail handler fn, or nil if module unavailable."
+  "Dynamically resolve the budget guardrail handler factory."
   []
   (try
     (when-let [factory-fn (requiring-resolve 'hive-mcp.agent.hooks.budget/budget-guardrail-handler)]
@@ -410,25 +234,10 @@
       nil)))
 
 (defn ling-policy-with-budget
-  "Permission policy for ling agents with budget guardrail.
-   Composes :allow-safe permissions with budget checking.
-   If budget module is unavailable, falls back to plain ling-policy.
-
-   The budget guardrail checks cumulative USD cost per agent and
-   denies+interrupts tool calls when max-budget-usd is exceeded.
-
-   Arguments:
-     opts - Optional map:
-            :max-budget-usd - USD budget limit (registers on first check)
-            :agent-id       - Agent ID for budget tracking
-            :model          - Model for cost estimation
-
-   Returns:
-     Policy with :allow-safe level + budget guardrail composite handler"
+  "Permission policy for ling agents with optional budget guardrail."
   ([] (ling-policy-with-budget {}))
   ([opts]
    (if-let [budget-handler (resolve-budget-guardrail-handler)]
-     ;; Register the budget if provided
      (do
        (when (and (:agent-id opts) (:max-budget-usd opts))
          (try
@@ -438,32 +247,17 @@
                           {:model (:model opts)}))
            (catch Exception e
              (log/warn "Failed to register budget" {:error (ex-message e)}))))
-       ;; Compose: logging + budget guardrail
        (->policy :allow-safe
                  (composite-handler [(logging-handler) budget-handler])))
-     ;; Budget module not available → fallback to plain ling-policy
      (do
        (log/debug "Budget module unavailable, using plain ling-policy")
        (ling-policy)))))
 
 (defn drone-policy-with-budget
-  "Permission policy for drone agents with budget guardrail.
-   Composes allowlist filtering with budget checking.
-
-   Arguments:
-     opts - Drone options map with:
-            :tool-allowlist  - Explicit allowlist set
-            :task-type       - Task type for profile-based allowlist
-            :max-budget-usd  - USD budget limit
-            :agent-id        - Agent ID for budget tracking
-            :model           - Model for cost estimation
-
-   Returns:
-     Policy with :allow-safe level + allowlist + budget composite handler"
+  "Permission policy for drone agents with allowlist and budget guardrail."
   [opts]
   (let [al-handler (allowlist-handler opts)
         budget-handler (resolve-budget-guardrail-handler)]
-    ;; Register the budget if provided
     (when (and (:agent-id opts) (:max-budget-usd opts) budget-handler)
       (try
         (let [register-fn (requiring-resolve 'hive-mcp.agent.hooks.budget/register-budget!)]
@@ -475,12 +269,7 @@
     (if budget-handler
       (->policy :allow-safe
                 (composite-handler [al-handler budget-handler]))
-      ;; No budget module → plain drone-policy
       (->policy :allow-safe al-handler))))
-
-;;; ============================================================================
-;;; Stateful Permission Manager (per-session)
-;;; ============================================================================
 
 (defrecord PermissionManager [policy-atom]
   bridge/IAgentPermissions
@@ -497,46 +286,18 @@
     {:success? true}))
 
 (defn ->permission-manager
-  "Create a new PermissionManager with the given initial policy.
-
-   Arguments:
-     policy - Initial policy map (default: default-policy)
-
-   Returns:
-     PermissionManager record implementing IAgentPermissions"
+  "Create a new PermissionManager with the given initial policy."
   ([] (->permission-manager default-policy))
   ([policy]
    (->PermissionManager (atom policy))))
 
 (defn check-tool-permission
-  "Convenience: check permission on a PermissionManager instance.
-
-   Arguments:
-     manager   - PermissionManager
-     tool-name - String tool name
-     input     - Tool input data
-     context   - Context map {:agent-id ... :session-id ...}
-
-   Returns:
-     Permission result map"
+  "Check permission on a PermissionManager instance."
   [^PermissionManager manager tool-name input context]
   (check-permission @(.policy-atom manager) tool-name input context))
 
-;;; ============================================================================
-;;; Enforcement Middleware
-;;; ============================================================================
-
 (defn wrap-permission-check
-  "Middleware that wraps a tool handler with permission enforcement.
-   Returns a new handler that checks permissions before executing.
-
-   Arguments:
-     handler  - Original tool handler (fn [tool-name input] -> result)
-     manager  - PermissionManager instance
-     context  - Base context map (agent-id, session-id)
-
-   Returns:
-     Wrapped handler fn that checks permissions first"
+  "Middleware that wraps a tool handler with permission enforcement."
   [handler manager context]
   (fn [tool-name input]
     (let [result (check-tool-permission manager tool-name input context)]

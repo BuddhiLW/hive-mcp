@@ -6,7 +6,7 @@
    - :targeted-shout     - Send shout to specific agent (File Claim Cascade)
    - :log                - Log a message
    - :channel-publish    - Emit event to WebSocket channel
-   - :emit-system-error  - Structured error telemetry (CLARITY-T: Telemetry)
+   - :emit-system-error  - Structured error telemetry
    - :olympus-broadcast  - Broadcast event to Olympus Web UI
 
    Usage:
@@ -15,8 +15,6 @@
    (notif-effects/register-notification-effects!)
    ```
 
-   SOLID: Single Responsibility - notification/broadcast effect execution only
-   CLARITY: Y - Yield safe failure (effects catch and log errors)"
   (:require [hive-mcp.events.core :as ev]
             [hive-mcp.hivemind :as hivemind]
             [hive-mcp.swarm.datascript :as ds]
@@ -134,7 +132,6 @@
     :message    \"Emacs unreachable\"
     :context    {:fn \"harvest-session-progress\" :attempt 1}}
 
-   CLARITY Principle: Telemetry first - observable system behavior."
   [{:keys [error-type source message context] :as data}]
   (let [timestamp (System/currentTimeMillis)
         error-data (assoc data :timestamp timestamp)]

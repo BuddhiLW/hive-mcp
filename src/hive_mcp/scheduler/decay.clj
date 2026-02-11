@@ -1,31 +1,5 @@
 (ns hive-mcp.scheduler.decay
-  "L2 Time-Decay Scheduler — periodic background decay for memory, edges, and discs.
-
-   All three decay functions already exist and are wired into event hooks
-   (wrap/catchup), but they only run when a user triggers those events.
-   This scheduler ensures decay runs on a fixed cadence regardless of
-   user activity, preventing knowledge staleness in long-idle periods.
-
-   Decay operations:
-   1. Memory staleness decay — Bayesian beta update for low-access entries (P0.3)
-   2. Edge confidence decay — reduce confidence of unverified KG edges (P2.9)
-   3. Disc certainty decay — time-based certainty degradation for file discs (P0.2)
-
-   All operations are:
-   - Bounded (configurable limits per cycle)
-   - Idempotent (safe to run multiple times)
-   - Non-blocking (errors caught, logged, never propagate)
-   - Project-scoped (when project-id available)
-
-   Configuration via config.edn :services :scheduler:
-     {:enabled true
-      :interval-minutes 60
-      :memory-limit 50
-      :edge-limit 100
-      :disc-enabled true}
-
-   CLARITY-Y: Yield safe failure — scheduler errors never crash the system.
-   CLARITY-T: Telemetry — all cycles logged with structured metrics."
+  "Periodic background decay for memory, edges, and discs."
   (:require [hive-mcp.config :as config]
             [taoensso.timbre :as log])
   (:import [java.util.concurrent Executors ScheduledExecutorService TimeUnit]))
@@ -49,8 +23,7 @@
 ;; =============================================================================
 
 (defn- run-memory-decay!
-  "Run memory staleness decay cycle. Returns stats map or error map.
-   Uses requiring-resolve to avoid hard dependency on lifecycle ns."
+  "Run memory staleness decay cycle."
   [opts]
   (try
     (if-let [run-fn (requiring-resolve 'hive-mcp.tools.memory.lifecycle/run-decay-cycle!)]
@@ -61,8 +34,7 @@
       {:error (.getMessage e) :decayed 0 :expired 0 :total-scanned 0})))
 
 (defn- run-edge-decay!
-  "Run edge confidence decay cycle. Returns stats map or error map.
-   Uses requiring-resolve to avoid hard dependency on edges ns."
+  "Run edge confidence decay cycle."
   [opts]
   (try
     (if-let [decay-fn (requiring-resolve 'hive-mcp.knowledge-graph.edges/decay-unverified-edges!)]
@@ -73,8 +45,7 @@
       {:error (.getMessage e) :decayed 0 :pruned 0 :fresh 0 :evaluated 0})))
 
 (defn- run-disc-decay!
-  "Run disc certainty time-decay. Returns stats map or error map.
-   Uses requiring-resolve to avoid hard dependency on disc ns."
+  "Run disc certainty time-decay."
   [opts]
   (try
     (if-let [disc-fn (requiring-resolve 'hive-mcp.knowledge-graph.disc/apply-time-decay-to-all-discs!)]
@@ -85,25 +56,7 @@
       {:error (.getMessage e) :updated 0 :skipped 0 :errors 1})))
 
 (defn run-decay-cycle!
-  "Run a complete decay cycle: memory + edges + discs.
-
-   This is the main entry point called by the scheduler on each tick.
-   Also callable manually for testing or on-demand decay.
-
-   Options:
-     :directory     - Working directory for project scope (optional)
-     :project-id    - Explicit project ID (optional, derived from directory)
-     :memory-limit  - Max memory entries to scan (default: 50)
-     :edge-limit    - Max edges to evaluate (default: 100)
-     :disc-enabled  - Whether to run disc decay (default: true)
-
-   Returns:
-     {:memory-stats  {...}
-      :edge-stats    {...}
-      :disc-stats    {...}
-      :cycle-number  int
-      :duration-ms   long
-      :timestamp     Instant}"
+  "Run a complete decay cycle: memory + edges + discs."
   ([] (run-decay-cycle! {}))
   ([{:keys [directory project-id memory-limit edge-limit disc-enabled]
      :or {memory-limit 50 edge-limit 100 disc-enabled true}}]
@@ -161,8 +114,7 @@
 ;; =============================================================================
 
 (defn- get-scheduler-config
-  "Read scheduler config from config.edn :services :scheduler.
-   Returns config map with defaults applied."
+  "Read scheduler config with defaults applied."
   []
   (let [cfg (config/get-service-config :scheduler)]
     {:enabled (get cfg :enabled true)
@@ -173,8 +125,7 @@
      :project-id (get cfg :project-id nil)}))
 
 (defn- make-decay-task
-  "Create a Runnable that runs a decay cycle with the given config.
-   Catches ALL exceptions to prevent ScheduledExecutorService from dying."
+  "Create a Runnable that runs a decay cycle."
   [config]
   (reify Runnable
     (run [_]
@@ -190,17 +141,7 @@
           (log/error t "Scheduler: decay cycle threw (caught at boundary)"))))))
 
 (defn start!
-  "Start the periodic decay scheduler.
-
-   Reads config from config.edn :services :scheduler.
-   Creates a single-thread ScheduledExecutorService that runs
-   decay cycles at a fixed interval.
-
-   Safe to call multiple times — no-ops if already running.
-
-   Returns:
-     {:started true :interval-minutes N} on success
-     {:started false :reason string} if disabled or already running"
+  "Start the periodic decay scheduler."
   []
   (let [{:keys [enabled interval-minutes] :as cfg} (get-scheduler-config)]
     (cond
@@ -245,14 +186,7 @@
           {:started false :reason (.getMessage e)})))))
 
 (defn stop!
-  "Stop the periodic decay scheduler.
-
-   Shuts down the ScheduledExecutorService gracefully with a 5s timeout.
-   Safe to call when not running — returns {:stopped false}.
-
-   Returns:
-     {:stopped true :cycles-completed N} on success
-     {:stopped false :reason string} if not running"
+  "Stop the periodic decay scheduler."
   []
   (if-not (:running? @scheduler-state)
     {:stopped false :reason "not-running"}
@@ -274,9 +208,7 @@
         {:stopped true :error (.getMessage e)}))))
 
 (defn restart!
-  "Stop and restart the decay scheduler. Picks up new config.
-
-   Returns the result of start! after stopping."
+  "Stop and restart the decay scheduler."
   []
   (stop!)
   (start!))
@@ -286,14 +218,7 @@
 ;; =============================================================================
 
 (defn status
-  "Return current scheduler status for monitoring/debugging.
-
-   Returns:
-     {:running?       bool
-      :cycle-count    int
-      :last-run       Instant or nil
-      :last-result    map or nil
-      :config         map (current effective config)}"
+  "Return current scheduler status."
   []
   (let [state @scheduler-state
         cfg (get-scheduler-config)]

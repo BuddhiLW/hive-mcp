@@ -1,261 +1,100 @@
 (ns hive-mcp.workflows.catchup-ling
-  "Lightweight ling-specific catchup using KG + memory reconstruction.
+  "Lightweight ling-specific context preparation for spawn injection.
 
-   Produces a compact ~1-3K token context blob for ling spawn injection,
-   replacing the heavy coordinator /catchup (~10K+ tokens).
+   Delegates to extension layer for context reconstruction.
+   Falls back to nil when extension absent — lings run /catchup themselves.
+   When extension returns structured context, applies token budget allocation
+   via budget/allocate-ling-context for priority-based truncation.
 
-   Pipeline:
-   1. Resolve project scope from directory
-   2. Query axioms + priority conventions from Chroma
-   3. Cache entries in context-store (ephemeral, 5min TTL)
-   4. Extract KG seed nodes from kanban task
-   5. Reconstruct compressed context via KG pipeline
-   6. Append minimal git status + kanban task context
-
-   Key difference from coordinator catchup:
-   - NO maintenance (permeation, tree scan, disc decay)
-   - NO piggyback enqueuing
-   - NO full KG enrichment of all entries
-   - ONLY fetches axioms + priority conventions (not all categories)
-   - Uses KG reconstruction for ~750 token output
-
-   SOLID-S: Ling context generation only, no coordinator concerns.
-   CLARITY-Y: Graceful degradation — returns nil on any failure."
-  (:require [hive-mcp.chroma :as chroma]
-            [hive-mcp.tools.memory.scope :as scope]
-            [hive-mcp.tools.catchup.scope :as catchup-scope]
-            [hive-mcp.tools.catchup.git :as catchup-git]
-            [hive-mcp.agent.hints :as hints]
-            [hive-mcp.channel.context-store :as context-store]
-            [hive-mcp.context.reconstruction :as reconstruction]
-            [clojure.string :as str]
+  (:require [hive-mcp.context.budget :as budget]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;; =============================================================================
-;; Constants
-;; =============================================================================
+(def ^:const max-context-chars
+  "Hard cap for ling context output (safety net beyond budget)."
+  10000)
 
-(def ^:const ling-context-ttl-ms
-  "Context-store TTL for ling catchup entries (5 min).
-   Short-lived because ling sessions are ephemeral."
-  300000)
+(def ^:const default-ling-budget
+  "Default token budget for ling catchup context.
+   Lings get more context than drones (8000 vs 4000)."
+  8000)
 
-(def ^:const max-conventions
-  "Maximum priority conventions to include in ling context."
-  15)
+(defn- budget-truncate-string
+  "Apply token budget truncation to a plain string result.
+   Used when extension returns a string (not structured map)."
+  [text token-budget]
+  (let [{:keys [content tokens truncated?]} (budget/truncate-to-budget text token-budget)]
+    (when truncated?
+      (log/info "ling-catchup: budget-truncated string context"
+                {:original-tokens (budget/estimate-tokens text)
+                 :budget-tokens tokens
+                 :token-budget token-budget}))
+    content))
 
-;; =============================================================================
-;; Step 1: Targeted Memory Queries
-;; =============================================================================
-
-(defn fetch-ling-memory
-  "Fetch only what a ling needs: axioms + priority conventions.
-
-   Unlike coordinator catchup which queries ALL categories
-   (axioms, decisions, conventions, sessions, snippets, expiring),
-   this fetches only high-signal entries.
-
-   Arguments:
-     project-id - Project scope string
-
-   Returns:
-     {:axioms [...] :conventions [...]}"
-  [project-id]
-  (try
-    (let [axioms (catchup-scope/query-axioms project-id)
-          conventions (catchup-scope/query-scoped-entries
-                       "convention" ["catchup-priority"]
-                       project-id max-conventions)]
-      {:axioms (or axioms [])
-       :conventions (or conventions [])})
-    (catch Exception e
-      (log/debug "fetch-ling-memory failed:" (.getMessage e))
-      {:axioms [] :conventions []})))
-
-;; =============================================================================
-;; Step 2: Context-Store Caching
-;; =============================================================================
-
-(defn- cache-ling-entries!
-  "Cache ling memory entries in context-store for reconstruction pipeline.
-
-   The reconstruction pipeline reads from context-store via ctx-refs,
-   so we cache entries there with short TTL.
-
-   Arguments:
-     memory     - Map from fetch-ling-memory {:axioms [...] :conventions [...]}
-     project-id - Project scope string
-
-   Returns:
-     ctx-refs map {:axioms ctx-id, :conventions ctx-id} or empty map on failure."
-  [{:keys [axioms conventions]} project-id]
-  (try
-    (let [project-tag (or project-id "global")]
-      (cond-> {}
-        (seq axioms)
-        (assoc :axioms
-               (context-store/context-put!
-                axioms
-                :tags #{"ling-catchup" "axioms" project-tag}
-                :ttl-ms ling-context-ttl-ms))
-        (seq conventions)
-        (assoc :conventions
-               (context-store/context-put!
-                conventions
-                :tags #{"ling-catchup" "conventions" project-tag}
-                :ttl-ms ling-context-ttl-ms))))
-    (catch Exception e
-      (log/debug "cache-ling-entries! failed:" (.getMessage e))
-      {})))
-
-;; =============================================================================
-;; Step 3: KG Seed Extraction
-;; =============================================================================
-
-(defn extract-kg-seeds
-  "Extract KG seed node IDs from kanban task for targeted traversal.
-
-   Uses hints/generate-task-hints which traverses KG from the task node
-   and returns discovered node IDs (L1 IDs) as seeds for the
-   reconstruction pipeline's bounded KG traversal.
-
-   Arguments:
-     kanban-task-id - Kanban task memory ID
-
-   Returns:
-     Vector of KG node IDs, or empty vector on failure.
-     Returns nil when no kanban-task-id provided."
-  [kanban-task-id]
-  (when kanban-task-id
-    (try
-      (let [task-hints (hints/generate-task-hints
-                        {:task-id kanban-task-id :depth 2})]
-        (or (:l1-ids task-hints) []))
-      (catch Exception e
-        (log/debug "extract-kg-seeds failed:" (.getMessage e))
-        []))))
-
-;; =============================================================================
-;; Step 4: Git Status (minimal)
-;; =============================================================================
-
-(defn- render-git-section
-  "Render minimal git status section.
-
-   Arguments:
-     directory - Working directory
-
-   Returns:
-     Git status markdown string, or nil on failure."
-  [directory]
-  (try
-    (when-let [git-info (catchup-git/gather-git-info directory)]
-      (str "\n### Git Status\n"
-           "- **Branch**: " (or (:branch git-info) "unknown") "\n"
-           (when (:uncommitted git-info)
-             "- **Uncommitted changes**: yes\n")
-           "- **Last commit**: " (or (:last-commit git-info) "unknown") "\n"))
-    (catch Exception e
-      (log/debug "render-git-section failed:" (.getMessage e))
-      nil)))
-
-;; =============================================================================
-;; Step 5: Kanban Task Context
-;; =============================================================================
-
-(defn- render-task-section
-  "Render kanban task context section with preview and tags.
-
-   Arguments:
-     kanban-task-id - Kanban task memory ID
-
-   Returns:
-     Task context markdown string, or nil when not available."
-  [kanban-task-id]
-  (when kanban-task-id
-    (try
-      (when-let [entry (chroma/get-entry-by-id kanban-task-id)]
-        (let [content (or (:content entry) "")
-              preview (subs content 0 (min (count content) 300))
-              tags (->> (or (:tags entry) [])
-                        (remove #(or (str/starts-with? % "scope:")
-                                     (str/starts-with? % "agent:")))
-                        vec)]
-          (str "\n### Assigned Task\n"
-               preview
-               (when (> (count content) 300) "...")
-               "\n"
-               (when (seq tags)
-                 (str "**Tags**: " (str/join ", " tags) "\n")))))
-      (catch Exception e
-        (log/debug "render-task-section failed:" (.getMessage e))
-        nil))))
-
-;; =============================================================================
-;; Main Entry Point
-;; =============================================================================
+(defn- budget-allocate-structured
+  "Apply budget/allocate-ling-context to structured catchup result.
+   Used when extension returns a map with {:preset :axioms :context :history}."
+  [{:keys [preset axioms context history] :as _structured} token-budget]
+  (let [allocated (budget/allocate-ling-context
+                   {:total-budget token-budget
+                    :preset       (or preset "")
+                    :axioms       (or axioms "")
+                    :context      (or context "")
+                    :history      (or history "")})]
+    (log/info "ling-catchup: budget-allocated structured context"
+              {:total-budget (get-in allocated [:metadata :total-budget])
+               :total-tokens (get-in allocated [:metadata :total-tokens])
+               :remaining (get-in allocated [:metadata :remaining])})
+    ;; Reassemble as single string
+    (str (when (seq (:preset allocated))   (str (:preset allocated) "\n\n"))
+         (when (seq (:axioms allocated))   (str (:axioms allocated) "\n\n"))
+         (when (seq (:context allocated))  (str (:context allocated) "\n\n"))
+         (when (seq (:history allocated))  (:history allocated)))))
 
 (defn ling-catchup
-  "Produce compact context blob for ling spawn injection.
+  "Produce compact context for ling spawn injection.
 
-   Replaces the heavy coordinator /catchup with a targeted, compressed
-   context reconstruction (~1-3K tokens vs ~10K+).
+   Delegates to extension layer. Returns nil when extension absent.
+   When extension returns a string, applies token budget truncation.
+   When extension returns a structured map, applies budget/allocate-ling-context
+   for priority-based allocation across preset/axioms/context/history layers.
 
    Arguments:
      opts - Map with:
             :directory      - Working directory for project scoping (required)
-            :task           - Task description string (optional, unused currently)
-            :kanban-task-id - Kanban task memory ID (optional, enables context targeting)
+            :task           - Task description string (optional)
+            :kanban-task-id - Kanban task ID for context targeting (optional)
+            :token-budget   - Token budget override (default: 8000)
 
    Returns:
-     Compact context markdown string (~1-3K tokens), or nil on failure.
+     Compact context string (budget-managed, hard-capped at 10K chars), or nil."
+  [{:keys [_directory token-budget] :as opts}]
+  (try
+    (when-let [f (requiring-resolve 'hive-mcp.extensions.context/ling-catchup)]
+      (let [result (f opts)
+            effective-budget (or token-budget default-ling-budget)]
+        (cond
+          ;; Structured result: apply layered budget allocation
+          (and (map? result) (or (:preset result) (:axioms result)
+                                 (:context result) (:history result)))
+          (let [budgeted (budget-allocate-structured result effective-budget)]
+            (when (and budgeted (seq budgeted))
+              (if (> (count budgeted) max-context-chars)
+                (subs budgeted 0 max-context-chars)
+                budgeted)))
 
-   Pipeline:
-     1. Check prerequisites (Chroma configured)
-     2. Resolve project scope
-     3. Fetch axioms + priority conventions
-     4. Cache in context-store for reconstruction pipeline
-     5. Extract context seeds from kanban task (if provided)
-     6. Run compressed reconstruction
-     7. Append git status + task context
+          ;; String result: apply token budget truncation
+          (and (string? result) (pos? (count result)))
+          (let [budgeted (budget-truncate-string result effective-budget)]
+            (if (> (count budgeted) max-context-chars)
+              (do (log/info "ling-catchup: hard-capped post-budget" {:chars (count budgeted)})
+                  (subs budgeted 0 max-context-chars))
+              budgeted))
 
-   CLARITY-Y: Never throws — returns nil on failure."
-  [{:keys [directory kanban-task-id] :as _opts}]
-  (when (chroma/embedding-configured?)
-    (try
-      (let [project-id (scope/get-current-project-id directory)
-
-            ;; Step 1: Fetch targeted memory
-            memory (fetch-ling-memory project-id)
-
-            ;; Step 2: Cache in context-store
-            ctx-refs (cache-ling-entries! memory project-id)
-
-            ;; Step 3: context seeds from kanban task
-            kg-seeds (or (extract-kg-seeds kanban-task-id) [])
-
-            ;; Step 4: Reconstruct compressed context
-            reconstructed (reconstruction/reconstruct-context
-                           ctx-refs kg-seeds project-id)
-
-            ;; Step 5: Append supplementary sections
-            git-section (render-git-section directory)
-            task-section (render-task-section kanban-task-id)]
-
-        (log/info "ling-catchup: produced context"
-                  {:project-id project-id
-                   :axioms (count (:axioms memory))
-                   :conventions (count (:conventions memory))
-                   :kg-seeds (count kg-seeds)
-                   :chars (count (or reconstructed ""))})
-
-        (str (or reconstructed "")
-             (or git-section "")
-             (or task-section "")))
-
-      (catch Exception e
-        (log/warn "ling-catchup failed (graceful degradation):" (.getMessage e))
-        nil))))
+          ;; Nil or empty
+          :else nil)))
+    (catch Exception e
+      (log/debug "ling-catchup: extension not available:" (.getMessage e))
+      nil)))

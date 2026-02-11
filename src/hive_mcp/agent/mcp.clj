@@ -1,13 +1,5 @@
 (ns hive-mcp.agent.mcp
-  "MCP tool definitions for agent delegation.
-
-   Defines the MCP tools exposed for agent-related operations:
-   - delegate_drone - delegate to token-optimized drones
-   - openrouter_* - model configuration
-   - preset_* - preset configuration
-
-   CLARITY-T: Telemetry first - all MCP handlers emit structured logs
-   for Loki ingestion and Prometheus metrics for monitoring."
+  "MCP tool definitions for agent delegation."
   (:require [hive-mcp.agent.config :as config]
             [hive-mcp.tools.core :refer [mcp-error mcp-json]]
             [hive-mcp.telemetry.prometheus :as prom]
@@ -17,38 +9,21 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;;; ============================================================
-;;; Tool Handlers
-;;; ============================================================
-
 (defn handle-delegate-drone
-  "MCP tool handler for delegate_drone.
-   Requires delegate-drone-fn to be passed in to avoid circular dependency.
-
-   CLARITY-Y: Graceful error handling - never silently fail.
-   CLARITY-T: Telemetry first - structured logging, Prometheus metrics, trace IDs.
-
-   Telemetry emitted:
-   - Prometheus: hive_mcp_mcp_requests_total{tool=\"delegate_drone\"}
-   - Prometheus: hive_mcp_request_duration_seconds{tool=\"delegate_drone\"}
-   - Loki: JSON logs with trace-id for request correlation
-   - Error categorization: :conflict, :validation, :execution, :unexpected"
+  "Handle delegate_drone MCP tool call, delegating to the provided function."
   [delegate-drone-fn {:keys [task files preset trace parent_id cwd]}]
   ;; DEPRECATION WARNING: Prefer unified 'delegate' tool
   (log/warn {:event :deprecation-warning
              :tool "delegate_drone"
              :message "DEPRECATED: Use 'delegate' tool instead. delegate({task: \"...\", files: [...]})"})
 
-  ;; CLARITY-T: Generate trace ID for request correlation across logs
   (let [trace-id (str "mcp-" (java.util.UUID/randomUUID))
         start-time-ns (System/nanoTime)
         file-count (count (or files []))
         task-preview (when task (subs task 0 (min 100 (count task))))]
 
-    ;; CLARITY-T: Increment MCP request counter (Prometheus)
     (prom/inc-mcp-requests! "delegate_drone")
 
-    ;; CLARITY-T: Structured entry log for Loki ingestion
     (log/info {:event :delegate-drone/request-start
                :trace-id trace-id
                :file-count file-count
@@ -59,7 +34,6 @@
 
     (if (str/blank? task)
       (do
-        ;; CLARITY-T: Log validation failure
         (log/warn {:event :delegate-drone/validation-failed
                    :trace-id trace-id
                    :error-type :validation
@@ -76,13 +50,11 @@
                                          :cwd cwd})
               duration-sec (/ (- (System/nanoTime) start-time-ns) 1e9)]
 
-          ;; CLARITY-T: Record request duration to Prometheus
           (prom/observe-request-duration! "delegate_drone" duration-sec)
 
           ;; Ensure we always return a structured response
           (if (nil? result)
             (do
-              ;; CLARITY-T: Log nil result as warning
               (log/warn {:event :delegate-drone/nil-result
                          :trace-id trace-id
                          :duration-sec duration-sec
@@ -92,7 +64,6 @@
 
             (let [status (or (:status result) :unknown)
                   success? (= :completed status)]
-              ;; CLARITY-T: Structured exit log for Loki ingestion
               (log/info {:event :delegate-drone/request-end
                          :trace-id trace-id
                          :status status
@@ -115,7 +86,6 @@
           (let [data (ex-data e)
                 error-type (or (:error-type data) :delegation-error)
                 duration-sec (/ (- (System/nanoTime) start-time-ns) 1e9)
-                ;; CLARITY-T: Categorize error for Prometheus labeling
                 error-category (case error-type
                                  :conflict :conflict
                                  :validation :validation
@@ -123,11 +93,9 @@
                                  :rate-limit :rate-limit
                                  :execution)]
 
-            ;; CLARITY-T: Record request duration even on failure
             (prom/observe-request-duration! "delegate_drone" duration-sec)
             (prom/inc-errors-total! error-category (not= error-category :execution))
 
-            ;; CLARITY-T: Structured JSON logging for Loki ingestion
             (log/error {:event :delegate-drone/failed
                         :trace-id trace-id
                         :error-type error-type
@@ -152,11 +120,9 @@
           (let [duration-sec (/ (- (System/nanoTime) start-time-ns) 1e9)
                 stacktrace-str (pr-str (.getStackTrace e))]
 
-            ;; CLARITY-T: Record request duration even on unexpected failure
             (prom/observe-request-duration! "delegate_drone" duration-sec)
             (prom/inc-errors-total! :unexpected false)
 
-            ;; CLARITY-T: Structured JSON logging for Loki ingestion
             (log/error {:event :delegate-drone/unexpected-error
                         :trace-id trace-id
                         :error (ex-message e)
@@ -172,15 +138,8 @@
                        :trace-id trace-id
                        :exception-class (.getName (class e))})))))))
 
-;;; ============================================================
-;;; Tool Definitions
-;;; ============================================================
-
 (defn make-tools
-  "Create MCP tool definitions with injected handler functions.
-
-   This avoids circular dependencies by receiving the actual delegate
-   functions as parameters rather than requiring them."
+  "Create MCP tool definitions with injected handler functions."
   [delegate-drone-fn]
   [{:name "delegate_drone"
     :description "Delegate a task to a drone (token-optimized leaf agent). Drones use OpenRouter free-tier models and receive catchup context automatically. Use for file mutations to save coordinator tokens."

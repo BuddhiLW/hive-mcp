@@ -1,7 +1,6 @@
 (ns hive-mcp.telemetry.health
   "Centralized catastrophic event handling.
 
-   CLARITY-T: All failures flow through here for:
    - Structured logging
    - WebSocket emission (Emacs visibility)
    - DataScript persistence (post-mortem)
@@ -18,9 +17,6 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;;; =============================================================================
-;;; Constants (Value Objects)
-;;; =============================================================================
 
 (def severities
   "Valid severity levels for health events.
@@ -42,16 +38,13 @@
     :restart-collision        ; Attempted restart while previous in progress
     :hot-reload-failed        ; Hot reload of namespace failed
     :wrap-crystallize-failed  ; Session crystallization failed
-    ;; Drone nREPL error types (CLARITY-T: structured error telemetry)
+    ;; Drone nREPL error types
     :nrepl-connection         ; Failed to connect to nREPL server
     :nrepl-timeout            ; nREPL evaluation timed out
     :nrepl-eval-error         ; nREPL evaluation failed (syntax, runtime, compiler)
     :validation-failed        ; Input validation failed
     })
 
-;;; =============================================================================
-;;; DataScript Schema Extension
-;;; =============================================================================
 
 (def health-event-schema
   "DataScript schema for health events.
@@ -78,9 +71,6 @@
    :health-event/recoverable?
    {:db/doc "Whether the error is recoverable"}})
 
-;;; =============================================================================
-;;; Private Helpers
-;;; =============================================================================
 
 (defn- validate-event!
   "Validate event structure. Throws ExceptionInfo on invalid input."
@@ -140,9 +130,6 @@
                  base-entity)]
     (d/transact! db-conn [entity])))
 
-;;; =============================================================================
-;;; Public API
-;;; =============================================================================
 
 (defn emit-health-event!
   "Central function for ALL catastrophic events.
@@ -155,7 +142,7 @@
 
    Actions:
    1. Validate event structure
-   2. Record Prometheus metric (CLARITY-T: Telemetry first)
+   2. Record Prometheus metric
    3. Enrich with ID and timestamp
    4. Log with appropriate level
    5. Emit to WebSocket (if connected)
@@ -166,7 +153,7 @@
   ;; 1. Validate
   (validate-event! event)
 
-  ;; 2. Record Prometheus metric (CLARITY-T: Telemetry first)
+  ;; 2. Record Prometheus metric
   (prom/inc-errors-total! type recoverable?)
 
   ;; 3. Enrich with ID and timestamp

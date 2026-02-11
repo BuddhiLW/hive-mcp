@@ -28,9 +28,6 @@
    Channel: {\"type\" \"task-complete\" \"data\" {...}}
    → Events: [:task/complete {...}]
    
-   SOLID: Single Responsibility - channel→event bridging only
-   SOLID: DRY - Uses bridge.clj multimethod for transformations
-   CLARITY: Y - Yield safe failure (errors logged, not thrown)"
   (:require [hive-mcp.channel.core :as channel]
             [hive-mcp.events.core :as ev]
             [hive-mcp.events.bridge :as bridge]

@@ -1,15 +1,5 @@
 (ns hive-mcp.tools.catchup.format
-  "Formatting and rendering functions for catchup workflow.
-
-   SOLID: SRP - Single responsibility for output formatting.
-   Extracted from hive-mcp.tools.catchup (Sprint 1 refactoring).
-
-   Contains:
-   - Entry metadata transforms (entry->*-meta)
-   - Scope display builders
-   - Response structure builders (JSON)
-   - Spawn context markdown formatters
-   - Error response helpers"
+  "Formatting and rendering functions for catchup workflow."
   (:require [hive-mcp.knowledge-graph.scope :as kg-scope]
             [clojure.data.json :as json]
             [clojure.string :as str]
@@ -18,13 +8,8 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;; =============================================================================
-;; Entry Metadata Transforms
-;; =============================================================================
-
 (defn entry->catchup-meta
-  "Convert a Chroma entry to catchup metadata format.
-   Returns map with :id, :type, :preview, :tags."
+  "Convert a Chroma entry to catchup metadata format."
   [entry preview-len]
   (let [content (:content entry)
         content-str (if (string? content)
@@ -53,47 +38,30 @@
    :tags (vec (or (:tags entry) []))
    :content (:content entry)})
 
-;; =============================================================================
-;; Scope Display
-;; =============================================================================
-
 (defn build-scopes
-  "Build scope list for display.
-   HCR Wave 4: Includes descendant scope info for visibility.
-   FIX: Only includes scope:global when actually in global context,
-   not when in a project context (prevents misleading scope display)."
+  "Build scope list for display, including descendant scope info."
   [project-name project-id]
   (let [in-project? (and project-id (not= project-id "global"))
         base (cond-> (if in-project? [] ["scope:global"])
                project-name (conj (str "scope:project:" project-name))
                (and project-id (not= project-id project-name) (not= project-id "global"))
                (conj (str "scope:project:" project-id)))
-        ;; HCR Wave 4: Show descendant scopes in display
         descendants (when (and project-id in-project?)
                       (kg-scope/descendant-scopes project-id))]
     (if (seq descendants)
       (into base (map #(str "scope:project:" %) descendants))
       base)))
 
-;; =============================================================================
-;; Content Budget Constants
-;; =============================================================================
-
 (def axiom-content-cap
-  "Max chars per axiom entry content. Long axioms get truncated with retrieval hint."
+  "Max chars per axiom entry content."
   600)
 
 (def block-warn-threshold
-  "Log warning if a single block exceeds this char count (logging only)."
+  "Log warning if a single block exceeds this char count."
   40000)
 
-;; =============================================================================
-;; Content Budget Helpers
-;; =============================================================================
-
 (defn cap-axiom-content
-  "Cap axiom entry content at `axiom-content-cap` chars.
-   If truncated, appends retrieval hint suffix."
+  "Cap axiom entry content at `axiom-content-cap` chars with retrieval hint."
   [axiom-entry]
   (let [content (str (:content axiom-entry))
         cap axiom-content-cap]
@@ -104,9 +72,7 @@
                   " [TRUNCATED - use mcp_memory_get_full " (:id axiom-entry) "]")))))
 
 (defn trim-kg-insights
-  "Trim KG insight lists to bounded sizes.
-   Caps: stale-files 5, grounding-warnings.stale-entries 10,
-   contradictions 5, superseded 5."
+  "Trim KG insight lists to bounded sizes."
   [insights]
   (when insights
     (cond-> insights
@@ -136,20 +102,8 @@
     (warn-if-oversized block-name text)
     {:type "text" :text text}))
 
-;; =============================================================================
-;; Response Builders
-;; =============================================================================
-
 (defn build-catchup-response
-  "Build the final catchup response as a vector of 4 content blocks.
-   Each block is {:type \"text\" :text \"<JSON>\"} with a :_block key in the JSON.
-
-   Axioms and priority conventions are delivered incrementally via the memory
-   piggyback channel (---MEMORY--- blocks on subsequent tool calls). The header
-   includes a memory-piggyback status so the LLM knows entries are coming.
-
-   Returns a vector (sequential?) so routes.clj normalize-content passes through.
-   The last block (meta) is intentionally small for clean hivemind piggyback."
+  "Build the final catchup response as a vector of 4 content blocks."
   [{:keys [project-name project-id scopes git-info permeation
            axioms-meta priority-meta sessions-meta decisions-meta
            conventions-meta snippets-meta expiring-meta kg-insights
@@ -208,10 +162,6 @@
    :text (json/write-str {:success false :error (.getMessage e)})
    :isError true})
 
-;; =============================================================================
-;; Spawn Context Markdown Formatters
-;; =============================================================================
-
 (defn format-spawn-axioms
   "Format axioms section for spawn context markdown."
   [axioms]
@@ -256,8 +206,7 @@
          (format "- **Last commit**: %s\n" (or (:last-commit git-info) "unknown")))))
 
 (defn format-spawn-stale-files
-  "Format stale files section for spawn context markdown.
-   Surfaces top-N most stale disc entities as files needing re-grounding."
+  "Format stale files section for spawn context markdown."
   [stale-files]
   (when (seq stale-files)
     (let [lines (map (fn [{:keys [path score days-since-read hash-mismatch?]}]
@@ -271,21 +220,16 @@
                                  ", content changed"
                                  "")))
                      stale-files)]
-      (str "### Files Needing Re-Grounding (L1 Disc)\n\n"
+      (str "### Files Needing Re-Grounding (file-level)\n\n"
            (str/join "\n" lines)
            "\n\n"))))
 
-;; =============================================================================
-;; Spawn Context Serialization
-;; =============================================================================
-
 (def max-spawn-context-chars
-  "Maximum characters for spawn context injection (~3K tokens)."
+  "Maximum characters for spawn context injection."
   12000)
 
 (defn serialize-spawn-context
-  "Serialize spawn context data to markdown string.
-   Formats as a '## Project Context (Auto-Injected)' section."
+  "Serialize spawn context data to markdown string."
   [{:keys [axioms priority-conventions decisions git-info project-name stale-files]}]
   (str "## Project Context (Auto-Injected)\n\n"
        (format "**Project**: %s\n\n" (or project-name "unknown"))

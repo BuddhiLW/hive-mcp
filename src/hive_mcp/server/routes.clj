@@ -1,7 +1,6 @@
 (ns hive-mcp.server.routes
   "MCP server route definitions and tool dispatch.
 
-   CLARITY-L: Layers stay pure - routing logic separated from server lifecycle.
    SRP: Single responsibility for tool route construction and dispatch.
 
    This module handles:
@@ -165,7 +164,6 @@
 (defn- hot-reload-error?
   "Check if exception indicates stale var references from hot-reload.
    
-   CLARITY-Y: Identify transient errors that can be recovered via retry."
   [^Throwable e]
   (let [msg (str (.getMessage e))]
     (or (re-find #"(?i)var.*not.*found" msg)
@@ -176,7 +174,6 @@
 (defn wrap-handler-retry
   "Wrap handler with retry logic for hot-reload resilience.
    
-   CLARITY-Y: Yield safe failure via automatic retry on transient errors.
    
    When hot-reload occurs, in-flight tool calls may fail because:
    - Var references point to old, unloaded namespaces
@@ -213,7 +210,7 @@
    Extracts agent-id, project-id, directory from args and binds
    them via hive-mcp.agent.context/with-request-context.
 
-   Directory fallback chain (CLARITY-R: explicit context flow):
+   Directory fallback chain:
    1. Explicit :directory in args
    2. Server's working directory (System/getProperty user.dir)
 
@@ -436,7 +433,7 @@
    Wraps handler to attach pending hivemind messages via content embedding.
 
    Uses composable handler wrappers (SRP: each wrapper single responsibility):
-   - wrap-handler-retry: auto-retry on hot-reload transient errors (CLARITY-Y)
+   - wrap-handler-retry: auto-retry on hot-reload transient errors
    - wrap-handler-async: intercept async:true calls, return ack, spawn future
    - wrap-handler-normalize: converts result to content array
    - wrap-handler-async-piggyback: drains async results (completed futures)
@@ -454,7 +451,6 @@
    Memory/async/hivemind piggybacks all run in parallel, each appending
    their own delimited blocks to content independently.
 
-   CLARITY-Y: wrap-handler-retry is innermost to catch handler exceptions
    before context/normalize processing.
 
    CRITICAL: context must wrap all piggybacks so ctx/current-directory is bound
@@ -464,7 +460,7 @@
            :description description
            :inputSchema inputSchema
            :handler (-> handler
-                        wrap-handler-retry              ; CLARITY-Y: Hot-reload resilience
+                        wrap-handler-retry              ; Hot-reload resilience
                         (wrap-handler-async name)       ; async:true → ack + future
                         wrap-handler-normalize
                         wrap-handler-async-piggyback    ; async results channel
@@ -517,7 +513,6 @@
 
 (defn refresh-tools!
   "Hot-reload all tools in the running server.
-   CLARITY: Open for extension - allows runtime tool updates without restart.
 
    Uses capability-based filtering - re-checks Chroma availability
    to dynamically switch between mem-kanban and org-kanban-native tools.

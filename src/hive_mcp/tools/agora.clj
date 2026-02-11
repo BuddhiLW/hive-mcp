@@ -10,8 +10,6 @@
    - agora_join_dialogue: Add participant to dialogue
    - agora_debate_status: Get drone debate status (new!)
 
-   SOLID: SRP - MCP tool interface for Agora domain.
-   CLARITY: L - Layer separation from domain logic (agora.*)."
   (:require [hive-mcp.agora.dialogue :as dialogue]
             [hive-mcp.agora.debate :as debate]
             [hive-mcp.agora.consensus :as consensus]

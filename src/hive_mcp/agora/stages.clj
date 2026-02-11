@@ -16,8 +16,6 @@
    :agora/stage-transition -> Collect evidence, spawn Stage 2 participants
    Stage 2 runs via normal event chain until consensus/timeout.
 
-   SOLID-S: Single responsibility - stage transitions only.
-   CLARITY-L: Layer separation from debate.clj execution."
   (:require [hive-mcp.agora.schema :as schema]
             [hive-mcp.channel.websocket :as ws]
             [hive-mcp.events.core :as ev]

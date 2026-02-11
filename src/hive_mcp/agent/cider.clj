@@ -1,17 +1,5 @@
 (ns hive-mcp.agent.cider
-  "CIDER session backend for agent delegation.
-   
-   Provides an alternative to Ollama HTTP backend using CIDER nREPL sessions.
-   Benefits:
-   - Session isolation per agent
-   - Emacs-native timeout handling
-   - Hot-reload and debugging capabilities
-   - Runtime introspection via REPL buffers
-   
-   Architecture:
-   - SessionPool: manages pool of pre-spawned CIDER sessions
-   - CiderBackend: implements LLMBackend protocol via nREPL eval
-   - Integrates with existing agent delegation flow"
+  "CIDER session backend for agent delegation via nREPL."
   (:require [hive-mcp.agent.protocol :as proto]
             [hive-mcp.agent.ollama :as ollama]
             [hive-mcp.agent.openrouter :as openrouter]
@@ -23,18 +11,12 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;;; ============================================================
-;;; Session Pool
-;;; ============================================================
-
-;; Pool of available CIDER sessions.
-;; Each session: {:name str :port int :status :idle|:busy}
 (defonce ^:private session-pool
   (atom {:sessions {}
          :available (ArrayBlockingQueue. 10)}))
 
 (defn- spawn-session!
-  "Spawn a new CIDER session via Emacs. Returns session map or nil."
+  "Spawn a new CIDER session via Emacs."
   [session-name]
   (let [elisp (format "(json-encode (hive-mcp-cider-spawn-session \"%s\" nil nil))"
                       session-name)
@@ -80,7 +62,7 @@
   (reset! session-pool {:sessions {} :available (ArrayBlockingQueue. 10)}))
 
 (defn acquire-session!
-  "Acquire an available session from pool. Blocks up to timeout-ms."
+  "Acquire an available session from pool, blocking up to timeout-ms."
   [timeout-ms]
   (when-let [name (.poll (:available @session-pool) timeout-ms TimeUnit/MILLISECONDS)]
     (swap! session-pool assoc-in [:sessions name :status] :busy)
@@ -98,10 +80,6 @@
   {:total (count (:sessions @session-pool))
    :available (.size (:available @session-pool))
    :sessions (vals (:sessions @session-pool))})
-
-;;; ============================================================
-;;; nREPL Communication
-;;; ============================================================
 
 (defn- nrepl-eval
   "Evaluate code on an nREPL port with timeout."
@@ -125,17 +103,10 @@
     (catch Exception e
       {:value nil :err (ex-message e) :out ""})))
 
-;;; ============================================================
-;;; CiderBackend Implementation
-;;; ============================================================
-
 (defrecord CiderBackend [session-name port timeout-ms]
   proto/LLMBackend
 
   (chat [_ messages _tools]
-    ;; For CiderBackend, we don't call an LLM - we execute Clojure code directly
-    ;; The "task" in messages becomes code to evaluate
-    ;; This is useful for pure Clojure execution without LLM reasoning
     (let [user-msg (last (filter #(= "user" (:role %)) messages))
           code (:content user-msg)
           result (nrepl-eval port code timeout-ms)]
@@ -147,11 +118,7 @@
     (str "cider:" session-name)))
 
 (defn cider-backend
-  "Create a CiderBackend using a pooled session.
-   
-   Options:
-     :timeout-ms - nREPL eval timeout (default: 60000)
-     :session - specific session name (acquires from pool if nil)"
+  "Create a CiderBackend using a pooled session."
   ([] (cider-backend {}))
   ([{:keys [timeout-ms session] :or {timeout-ms 60000}}]
    (if-let [sess (if session
@@ -160,37 +127,16 @@
      (->CiderBackend (:name sess) (:port sess) timeout-ms)
      (throw (ex-info "No CIDER session available" {:pool (pool-status)})))))
 
-;;; ============================================================
-;;; Hybrid Backend: Ollama + CIDER
-;;; ============================================================
-
 (defn hybrid-backend
-  "Create a hybrid backend: Ollama for reasoning, CIDER for execution.
-   
-   The Ollama model plans what to do, CIDER executes Clojure code.
-   Useful for tasks requiring both LLM reasoning and Clojure runtime."
+  "Create a hybrid backend: Ollama for reasoning, CIDER for execution."
   [{:keys [ollama-model cider-session timeout-ms]
     :or {ollama-model "devstral-small-2:latest"
          timeout-ms 60000}}]
   {:ollama (ollama/->OllamaBackend "http://localhost:11434" ollama-model)
    :cider (cider-backend {:timeout-ms timeout-ms :session cider-session})})
 
-;;; ============================================================
-;;; Backend Factory (OCP compliant)
-;;; ============================================================
-
 (defn make-backend
-  "Factory function for creating LLM backends.
-   
-   Supports:
-     :ollama     - HTTP backend to Ollama (default)
-     :cider      - nREPL session backend via CIDER pool
-     :openrouter - OpenRouter API (100+ models via unified API)
-   
-   Examples:
-     (make-backend :ollama {:model \"devstral-small:24b\"})
-     (make-backend :cider {:timeout-ms 60000})
-     (make-backend :openrouter {:api-key \"sk-or-...\" :model \"anthropic/claude-3-haiku\"})"
+  "Factory function for creating LLM backends (:ollama, :cider, :openrouter)."
   ([type] (make-backend type {}))
   ([type opts]
    (case type

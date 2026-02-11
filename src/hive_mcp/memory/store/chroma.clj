@@ -5,8 +5,6 @@
    This is Phase 1 of vectordb abstraction - enabling pluggable backends
    later (e.g., Milvus, DataScript-for-testing).
 
-   SOLID-D: Consumers depend on IMemoryStore abstraction, not chroma directly.
-   CLARITY-Y: All methods yield safe failure via try/catch.
    DDD: Repository pattern - ChromaMemoryStore is the Chroma aggregate adapter."
   (:require [hive-mcp.protocols.memory :as proto]
             [hive-mcp.chroma :as chroma]
@@ -16,9 +14,6 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;;; ============================================================================
-;;; ChromaMemoryStore Record
-;;; ============================================================================
 
 (defrecord ChromaMemoryStore [config-atom]
   ;; =========================================================================
@@ -211,9 +206,6 @@
               (log/debug "Failed to propagate staleness to" dep-id ":" (.getMessage e)))))
         @updated-count))))
 
-;;; ============================================================================
-;;; Factory Function
-;;; ============================================================================
 
 (defn create-store
   "Create a new Chroma-backed memory store.

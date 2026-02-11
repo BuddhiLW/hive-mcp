@@ -3,13 +3,13 @@
 
    Replaces polling (collect) with event-driven callbacks:
    1. Ling dispatches task to drone → registers callback
-   2. Channel event fires on completion/failure
+   2. Channel event OR NATS event fires on completion/failure
    3. Result is auto-dispatched back to originating ling as new turn
 
-   This eliminates the busy-wait in collect and frees the ling
-   to do other work while the drone executes.
+   Dual-source architecture:
+   - Channel events (Emacs/vterm lings via core.async)
+   - NATS events (headless drones via NATS pub/sub)
 
-   CLARITY: Composition — bridges channel/subscribe! to proto/dispatch!
    without modifying either system."
   (:require [clojure.core.async :as async]
             [taoensso.timbre :as log]
@@ -32,6 +32,7 @@
 
 (defonce ^:private listener-active? (atom false))
 (defonce ^:private listener-channels (atom []))
+(defonce ^:private nats-subs (atom []))
 
 ;; =============================================================================
 ;; Default Result Formatter
@@ -126,6 +127,20 @@
         ))))
 
 ;; =============================================================================
+;; Public Entry Point (for external event sources like NATS bridge)
+;; =============================================================================
+
+(defn notify-completion!
+  "Public entry point for external event sources (e.g., NATS bridge).
+   Fires callback if task-id is registered, no-op otherwise.
+   Returns true if callback was fired, nil otherwise."
+  [task-id event-data]
+  (let [tid (str task-id)]
+    (when (registered? tid)
+      (fire-callback! tid event-data)
+      true)))
+
+;; =============================================================================
 ;; Channel Listener (background event loop)
 ;; =============================================================================
 
@@ -139,8 +154,10 @@
       (fire-callback! (str task-id) event))))
 
 (defn start-listener!
-  "Start background listener on channel events for callback dispatch.
-   Subscribes to :task-completed and :task-failed events.
+  "Start background listener on channel AND NATS events for callback dispatch.
+   Subscribes to :task-completed and :task-failed channel events.
+   When NATS is connected, also subscribes to drone completion/failure subjects.
+   Dual-source: channel events (Emacs/vterm) + NATS events (headless drones).
    Idempotent — no-ops if already running."
   []
   (when-not @listener-active?
@@ -160,13 +177,39 @@
                 (log/debug "Callback listener error:" (.getMessage e))))
             (when @listener-active?
               (recur)))))
-      (log/info "Callback listener started (subscribed to :task-completed, :task-failed)"))))
+      ;; NATS subscription path — dual-source for headless drones
+      (try
+        (when-let [connected-fn (requiring-resolve 'hive-mcp.nats.client/connected?)]
+          (when (connected-fn)
+            (let [wildcard-fn (requiring-resolve 'hive-mcp.nats.bridge/wildcard-subject)
+                  subscribe-fn (requiring-resolve 'hive-mcp.nats.client/subscribe!)
+                  completed-sub (subscribe-fn (wildcard-fn :completed)
+                                              (fn [msg] (handle-event! (assoc msg :status "completed"))))
+                  failed-sub (subscribe-fn (wildcard-fn :failed)
+                                           (fn [msg] (handle-event! (assoc msg :status "failed"))))]
+              (reset! nats-subs (filterv some? [completed-sub failed-sub]))
+              (log/info "Callback NATS subscriptions active (dual-source)"))))
+        (catch Exception e
+          (log/debug "NATS callback subscriptions skipped:" (.getMessage e))))
+      (log/info "Callback listener started" {:channels [:task-completed :task-failed]
+                                             :nats-active? (boolean (seq @nats-subs))}))))
 
 (defn stop-listener!
-  "Stop the background callback listener."
+  "Stop the background callback listener and NATS subscriptions."
   []
   (when @listener-active?
     (reset! listener-active? false)
+    ;; NATS cleanup
+    (when (seq @nats-subs)
+      (try
+        (when-let [unsubscribe-fn (requiring-resolve 'hive-mcp.nats.client/unsubscribe!)]
+          (when-let [wildcard-fn (requiring-resolve 'hive-mcp.nats.bridge/wildcard-subject)]
+            (unsubscribe-fn (wildcard-fn :completed))
+            (unsubscribe-fn (wildcard-fn :failed))))
+        (catch Exception e
+          (log/debug "NATS callback unsubscribe error:" (.getMessage e))))
+      (reset! nats-subs []))
+    ;; Channel cleanup
     (doseq [[event-type ch] @listener-channels]
       (try
         (channel/unsubscribe! event-type ch)
@@ -235,6 +278,7 @@
   []
   {:listener-active? @listener-active?
    :registered-count (count @callbacks)
+   :nats-subscriptions (count @nats-subs)
    :registrations (mapv (fn [[tid {:keys [ling-id registered-at]}]]
                           {:task-id tid :ling-id ling-id :registered-at registered-at})
                         @callbacks)})

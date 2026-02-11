@@ -4,8 +4,6 @@
    Handles:
    - :system/error - Structured error telemetry
 
-   CLARITY: Telemetry first - observable system behavior.
-   SOLID: SRP - System-level event handling only."
   (:require [hive-mcp.events.core :as ev]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>

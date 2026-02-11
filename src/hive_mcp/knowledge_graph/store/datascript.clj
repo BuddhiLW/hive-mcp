@@ -4,7 +4,6 @@
    In-memory Datalog store. Fast, no persistence, ideal for tests
    and the default backend.
 
-   CLARITY-T: Logs backend selection on initialization."
   (:require [datascript.core :as d]
             [hive-mcp.protocols.kg :as kg]
             [hive-mcp.knowledge-graph.schema :as schema]

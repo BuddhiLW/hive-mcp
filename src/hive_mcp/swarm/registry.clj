@@ -18,8 +18,6 @@
    - Which files currently use this pattern
    - ISwarmRegistry protocol method it will delegate to (Phase 2)
 
-   SOLID: DIP - Consumers depend on abstractions (these wrappers), not concretions.
-   CLARITY: L - Layers stay pure (registry layer separate from implementation)."
   (:require [hive-mcp.swarm.datascript :as ds]
             [hive-mcp.swarm.datascript.connection :as conn]
             [hive-mcp.swarm.datascript.queries :as queries]

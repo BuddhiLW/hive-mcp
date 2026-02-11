@@ -16,7 +16,6 @@
    - stop! called on shutdown
    - Emits snapshot on each new client connection
 
-   CLARITY: Composition over modification - reuses Aleph patterns from channel/websocket.clj"
   (:require [aleph.http :as http]
             [aleph.netty :as netty]
             [manifold.stream :as s]

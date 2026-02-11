@@ -1,36 +1,17 @@
 (ns hive-mcp.crystal.recall
-  "Recall tracking with context-aware weighting.
-   
-   Tracks when and how memories are accessed, distinguishing between:
-   - Mechanical recalls (catchup/wrap structural queries)
-   - Meaningful recalls (LLM explicitly references)
-   - Cross-boundary recalls (different session/project)
-   - User endorsements (human feedback)
-   
-   SOLID: Single responsibility - recall tracking only.
-   DDD: Bounded context for access patterns."
+  "Recall tracking with context-aware weighting."
   (:require [hive-mcp.crystal.core :as crystal]
             [clojure.string :as str]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-
 ;; =============================================================================
 ;; Recall Context Detection
 ;; =============================================================================
 
 (defn detect-recall-context
-  "Detect the context type of a recall event.
-   
-   params: {:source :string        ; 'catchup', 'wrap', 'agent', 'user'
-            :session :string       ; current session id
-            :project :string       ; current project
-            :entry-session :string ; session that created the entry
-            :entry-project :string ; project the entry belongs to
-            :explicit? :boolean}   ; LLM explicitly cited this
-   
-   Returns: keyword from crystal/recall-weights"
+  "Detect the context type of a recall event."
   [{:keys [source session project entry-session entry-project explicit?]}]
   (cond
     ;; User explicitly marked as helpful
@@ -68,12 +49,7 @@
 ;; =============================================================================
 
 (defn create-recall-event
-  "Create a recall event record.
-   
-   Returns: {:context :keyword
-             :timestamp :string
-             :source :string
-             :session :string}"
+  "Create a recall event record."
   [context-params]
   (let [context (detect-recall-context context-params)]
     {:context context
@@ -82,12 +58,7 @@
      :session (or (:session context-params) (crystal/session-id))}))
 
 (defn batch-recall-events
-  "Create recall events for multiple entries queried together.
-   
-   entry-ids: seq of memory entry IDs
-   context-params: shared context for all entries
-   
-   Returns: map of {entry-id [recall-event]}"
+  "Create recall events for multiple entries queried together."
   [entry-ids context-params]
   (let [event (create-recall-event context-params)]
     (into {} (map (fn [id] [id [event]]) entry-ids))))
@@ -97,11 +68,7 @@
 ;; =============================================================================
 
 (defn aggregate-recalls
-  "Aggregate recall events by context type.
-   
-   recalls: seq of {:context :keyword ...}
-   
-   Returns: seq of {:context :keyword :count int}"
+  "Aggregate recall events by context type."
   [recalls]
   (->> recalls
        (group-by :context)
@@ -111,12 +78,7 @@
        (sort-by :count >)))
 
 (defn merge-recall-histories
-  "Merge new recalls with existing recall history.
-   
-   existing: seq of {:context :count}
-   new-recalls: seq of {:context ...}
-   
-   Returns: merged and re-aggregated recalls"
+  "Merge new recalls with existing recall history."
   [existing new-recalls]
   (let [new-aggregated (aggregate-recalls new-recalls)
         ;; Convert existing to map for merging
@@ -133,13 +95,7 @@
 ;; =============================================================================
 
 (defn classify-query-intent
-  "Classify a memory query to determine recall context.
-   
-   query-type: 'note', 'decision', 'convention', 'snippet'
-   tags: seq of query tags
-   caller: which system made the query
-   
-   Returns: :catchup-structural | :wrap-structural | :explicit-reference"
+  "Classify a memory query to determine recall context."
   [query-type tags caller]
   (cond
     ;; Catchup workflow queries
@@ -191,10 +147,7 @@
   (atom {}))
 
 (defn buffer-recall!
-  "Buffer a recall event for later persistence.
-   
-   entry-id: memory entry ID
-   event: recall event map"
+  "Buffer a recall event for later persistence."
   [entry-id event]
   (swap! recall-buffer update entry-id (fnil conj []) event))
 

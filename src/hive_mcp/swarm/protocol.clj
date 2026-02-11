@@ -8,7 +8,6 @@
    - XTDB (bitemporality, document-centric)
    - Atom (simple in-memory for testing)
 
-   SOLID: Interface Segregation - focused swarm registry operations only.
    DDD: Repository pattern for swarm entity lifecycle management.")
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;

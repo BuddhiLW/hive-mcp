@@ -1,9 +1,6 @@
 (ns hive-mcp.embeddings.service
   "EmbeddingService - Collection-aware embedding domain service.
 
-   SOLID: SRP - Routes embeddings to appropriate providers per collection.
-   SOLID: OCP - New collections via configuration, not code changes.
-   CLARITY: Y - Yield safe failure with graceful fallback chain.
 
    Architecture:
    ```
@@ -13,7 +10,7 @@
                          collection)       └─→ OpenRouterProvider (4096)
    ```
 
-   Fallback Chain (CLARITY-Y):
+   Fallback Chain:
    1. Collection-specific config (if configured)
    2. Global fallback provider (if set)
    3. Default Ollama (if available)
@@ -41,18 +38,12 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;;; ============================================================
-;;; Service State
-;;; ============================================================
 
 ;; Map of collection-name -> EmbeddingConfig
 (defonce ^:private collection-configs (atom {}))
 
 (defonce ^:private initialized? (atom false))
 
-;;; ============================================================
-;;; Initialization
-;;; ============================================================
 
 (defn init!
   "Initialize the EmbeddingService.
@@ -70,9 +61,6 @@
   []
   @initialized?)
 
-;;; ============================================================
-;;; Collection Configuration
-;;; ============================================================
 
 (defn configure-collection!
   "Configure embedding for a specific collection.
@@ -116,9 +104,6 @@
   (into {} (for [[k v] @collection-configs]
              [k (config/describe v)])))
 
-;;; ============================================================
-;;; Provider Resolution (with Fallback Chain)
-;;; ============================================================
 
 (defn- resolve-provider-for
   "Resolve embedding provider for a collection.
@@ -155,9 +140,6 @@
                        :has-global-fallback? (chroma/embedding-configured?)})))
     provider))
 
-;;; ============================================================
-;;; Embedding API (Collection-Aware)
-;;; ============================================================
 
 (defn embed-for-collection
   "Embed text using the provider configured for the collection.
@@ -194,9 +176,6 @@
   (let [provider (get-provider-for collection-name)]
     (chroma/embedding-dimension provider)))
 
-;;; ============================================================
-;;; Provider Availability Checking
-;;; ============================================================
 
 (defn provider-available-for?
   "Check if an embedding provider is available for a collection.
@@ -220,9 +199,6 @@
      :has-global-fallback? (some? global)
      :provider-available? (provider-available-for? collection-name)}))
 
-;;; ============================================================
-;;; Service Status
-;;; ============================================================
 
 (defn status
   "Get overall EmbeddingService status."
@@ -241,9 +217,6 @@
   (clojure.core/reset! initialized? false)
   (log/info "EmbeddingService reset"))
 
-;;; ============================================================
-;;; Convenience Functions
-;;; ============================================================
 
 (defn configure-defaults!
   "Configure default providers for well-known collections.

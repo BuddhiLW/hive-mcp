@@ -1,49 +1,31 @@
 (ns hive-mcp.tools.memory.duration
-  "Duration management for memory entries.
-   
-   SOLID: SRP - Single responsibility for duration calculations.
-   CLARITY: R - Represented intent with clear duration semantics."
+  "Duration management for memory entries."
   (:import [java.time ZonedDateTime]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 
-;; ============================================================
-;; Constants
-;; ============================================================
-
 (def duration-order
-  "Duration categories in order from shortest to longest.
-   Used for promote/demote operations."
+  "Duration categories ordered from shortest to longest."
   ["ephemeral" "short" "medium" "long" "permanent"])
 
 (def duration-days
-  "Duration category to days mapping. nil = permanent (never expires)."
+  "Duration category to days mapping; nil means permanent."
   {"ephemeral" 1
    "short" 7
    "medium" 30
    "long" 90
    "permanent" nil})
 
-;; ============================================================
-;; Functions
-;; ============================================================
-
 (defn calculate-expires
-  "Calculate expiration timestamp for given duration.
-   Returns nil for 'permanent' duration."
+  "Calculate expiration timestamp for given duration."
   [duration]
   (when-let [days (get duration-days (or duration "long"))]
     (str (.plusDays (ZonedDateTime/now) days))))
 
 (defn shift-duration
-  "Shift duration by delta steps (+1 = promote, -1 = demote).
-   Returns {:new-duration str :changed? bool :at-boundary? bool}
-   
-   Examples:
-     (shift-duration \"short\" +1) => {:new-duration \"medium\" :changed? true}
-     (shift-duration \"permanent\" +1) => {:new-duration \"permanent\" :changed? false :at-boundary? true}"
+  "Shift duration by delta steps (+1 = promote, -1 = demote)."
   [current-duration delta]
   (let [current (or current-duration "long")
         idx (.indexOf duration-order current)

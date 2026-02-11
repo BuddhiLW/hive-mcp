@@ -1,18 +1,11 @@
 (ns hive-mcp.chroma.helpers
-  "Shared utility functions for Chroma operations.
-
-   Provides serialization, metadata conversion, ID generation,
-   timestamp handling, and content hashing used across CRUD and search."
+  "Shared utility functions for Chroma operations."
   (:require [clojure.data.json :as json]
             [clojure.string :as str]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
-
-;;; ============================================================
-;;; Serialization Helpers
-;;; ============================================================
 
 (defn parse-zoned-datetime
   "Parse ISO string to ZonedDateTime, returns nil on failure."
@@ -50,10 +43,6 @@
   [tags]
   (when (seq tags) (str/join "," tags)))
 
-;;; ============================================================
-;;; Duration Handling
-;;; ============================================================
-
 (def ^:private duration-aliases
   "Map of invalid/legacy duration strings to canonical values."
   {"long-term"  "long"
@@ -62,18 +51,12 @@
    "project"    "medium"})
 
 (defn normalize-duration
-  "Normalize duration string to canonical value.
-   Maps legacy aliases to valid durations. Returns input unchanged if already valid."
+  "Normalize duration string to canonical value."
   [duration]
   (or (get duration-aliases duration) duration))
 
-;;; ============================================================
-;;; Metadata Conversion
-;;; ============================================================
-
 (defn metadata->entry
-  "Convert Chroma metadata format to domain entry map.
-   Single conversion point for all entry retrieval."
+  "Convert Chroma metadata format to domain entry map."
   [{:keys [id document metadata]}]
   {:id id
    :type (:type metadata)
@@ -88,27 +71,20 @@
    :helpful-count (:helpful-count metadata)
    :unhelpful-count (:unhelpful-count metadata)
    :project-id (:project-id metadata)
-   ;; Knowledge Graph edge references for bidirectional lookup
    :kg-outgoing (split-tags (:kg-outgoing metadata))
    :kg-incoming (split-tags (:kg-incoming metadata))
-   ;; Knowledge abstraction and grounding fields
    :abstraction-level (:abstraction-level metadata)
    :grounded-at (:grounded-at metadata)
    :grounded-from (:grounded-from metadata)
    :knowledge-gaps (split-tags (:knowledge-gaps metadata))
    :source-hash (:source-hash metadata)
    :source-file (:source-file metadata)
-   ;; Staleness tracking (Bayesian Beta model)
    :staleness-alpha (:staleness-alpha metadata)
    :staleness-beta (:staleness-beta metadata)
    :staleness-source (when-let [s (:staleness-source metadata)]
                        (if (string? s) (keyword s) s))
    :staleness-depth (:staleness-depth metadata)
    :document document})
-
-;;; ============================================================
-;;; ID & Timestamp Generation
-;;; ============================================================
 
 (defn generate-id
   "Generate a unique ID for memory entries (timestamp + random hex)."
@@ -123,10 +99,6 @@
   []
   (str (java.time.ZonedDateTime/now
         (java.time.ZoneId/systemDefault))))
-
-;;; ============================================================
-;;; Expiration & Content Hashing
-;;; ============================================================
 
 (defn expired?
   "Check if an entry has expired based on :expires metadata."
@@ -145,17 +117,12 @@
   (-> s str/trim (str/replace #"[ \t]+" " ") (str/replace #"\n+" "\n")))
 
 (defn content-hash
-  "Compute SHA-256 hash of content for deduplication.
-   Normalizes content (trim, collapse whitespace) before hashing."
+  "Compute SHA-256 hash of content for deduplication."
   [content]
   (let [normalized (normalize-whitespace (serialize-content content))
         md (java.security.MessageDigest/getInstance "SHA-256")
         hash-bytes (.digest md (.getBytes normalized "UTF-8"))]
     (apply str (map #(format "%02x" %) hash-bytes))))
-
-;;; ============================================================
-;;; Document & Metadata Templates
-;;; ============================================================
 
 (defn memory-to-document
   "Convert memory entry to searchable document string."
@@ -169,16 +136,13 @@
   {:type "note" :tags "" :content-hash "" :duration "long"
    :expires "" :access-count 0 :helpful-count 0 :unhelpful-count 0
    :project-id "global"
-   ;; Knowledge Graph edge references (empty = no edges)
    :kg-outgoing "" :kg-incoming ""
-   ;; Knowledge abstraction and grounding fields
    :abstraction-level nil
    :grounded-at ""
    :grounded-from ""
    :knowledge-gaps ""
    :source-hash ""
    :source-file ""
-   ;; Staleness tracking (Bayesian Beta model)
    :staleness-alpha 1
    :staleness-beta 1
    :staleness-source nil

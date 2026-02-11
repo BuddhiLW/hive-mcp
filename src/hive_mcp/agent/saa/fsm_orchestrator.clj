@@ -1,26 +1,5 @@
 (ns hive-mcp.agent.saa.fsm-orchestrator
-  "FSM-backed ISAAOrchestrator implementation.
-
-   Bridges the SAA workflow FSM engine to the ISAAOrchestrator protocol,
-   enabling the three-phase SAA cycle to be driven by the deterministic
-   state machine in hive-mcp.workflows.saa-workflow.
-
-   Architecture:
-   - Implements ISAAOrchestrator by delegating to FSM handler functions
-   - Individual phases (run-silence!, run-abstract!, run-act!) call handlers directly
-   - Full cycle (run-full-saa!) uses saa/run-full-saa for complete FSM execution
-   - Resources map built from config, with shout-fn wired to output channel
-   - Returns core.async channels per ISAAOrchestrator protocol contract
-   - Uses async/thread (not go) since FSM handlers are blocking operations
-
-   Comparison with SAAOrchestrator (agent/saa/orchestrator.clj):
-   - SAAOrchestrator: Delegates to IAgentSession.query! (LLM-powered phases)
-   - FSMSAAOrchestrator: Delegates to FSM handlers (deterministic, resource-injected)
-
-   SOLID-S: Bridge layer only — no business logic, no state management.
-   SOLID-D: Depends on ISAAOrchestrator abstraction and FSM handler fns.
-   CLARITY-L: Pure delegation from protocol to FSM engine.
-   CLARITY-Y: Returns error maps via channel, never throws."
+  "FSM-backed ISAAOrchestrator implementation."
   (:require [clojure.core.async :as async]
             [hive-mcp.protocols.agent-bridge :as bridge]
             [hive-mcp.workflows.saa-workflow :as saa]
@@ -30,22 +9,14 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;; =============================================================================
-;; Resource Building
-;; =============================================================================
-
 (defn- build-resources
-  "Build FSM resources map from config, wiring shout-fn to output channel.
-
-   The config map may contain any resource function key from
-   saa-workflow (scope-fn, catchup-fn, explore-fn, etc.).
-   The shout-fn is augmented to also put! progress messages to out-ch."
+  "Build FSM resources map from config, wiring shout-fn to output channel."
   [config out-ch]
   (let [user-shout (:shout-fn config)]
     (merge
      {:clock-fn (or (:clock-fn config) #(java.time.Instant/now))
       :error-response-fn (or (:error-response-fn config)
-                              (fn [err-ctx] err-ctx))}
+                             (fn [err-ctx] err-ctx))}
      (dissoc config :shout-fn :clock-fn :error-response-fn)
      {:shout-fn (fn [agent-id phase message]
                   (when out-ch
@@ -63,10 +34,6 @@
   (or (:agent-id opts)
       (try (bridge/session-id session) (catch Exception _ nil))
       "unknown"))
-
-;; =============================================================================
-;; FSMSAAOrchestrator
-;; =============================================================================
 
 (defrecord FSMSAAOrchestrator [config]
   bridge/ISAAOrchestrator
@@ -202,31 +169,7 @@
           (finally (async/close! out-ch))))
       out-ch)))
 
-;; =============================================================================
-;; Factory
-;; =============================================================================
-
 (defn ->fsm-saa-orchestrator
-  "Create an FSMSAAOrchestrator instance.
-
-   Arguments:
-     config - Map of FSM resource functions and configuration:
-              ;; Resource functions (see saa-workflow.clj for signatures)
-              :scope-fn            - (directory) -> project-id
-              :catchup-fn          - (agent-id, directory) -> context-map
-              :explore-fn          - (task, agent-id, observations) -> result
-              :score-grounding-fn  - (observations, files-read) -> float
-              :synthesize-fn       - (task, observations, context) -> plan
-              :validate-plan-fn    - (plan) -> {:valid? :errors}
-              :store-plan-fn       - (plan, agent-id, directory) -> {:memory-id ...}
-              :dispatch-fn         - (plan, mode, agent-id) -> {:wave-id :result}
-              :verify-fn           - (result, plan) -> {:passed? :details}
-              :shout-fn            - (agent-id, phase, message) -> nil
-              ;; Configuration
-              :grounding-threshold - Min grounding score (default: 0.6)
-              :directory           - Default working directory
-
-   Returns:
-     FSMSAAOrchestrator implementing ISAAOrchestrator protocol."
+  "Create an FSMSAAOrchestrator instance from a config map."
   ([] (->fsm-saa-orchestrator {}))
   ([config] (->FSMSAAOrchestrator config)))

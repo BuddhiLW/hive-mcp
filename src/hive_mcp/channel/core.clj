@@ -1,19 +1,5 @@
 (ns hive-mcp.channel.core
-  "Bidirectional communication channel between Clojure and Emacs.
-
-   Built on transport abstraction for robust async networking.
-
-   Architecture:
-   - Transport layer (Unix sockets or TCP) accepts Emacs connections
-   - Bencode message format (compatible with nREPL/Emacs)
-   - core.async pub/sub for internal event routing
-
-   Usage:
-     (start-server! {:type :unix})  ; default - Unix domain socket
-     (start-server! {:type :tcp :port 9998})  ; TCP alternative
-     (broadcast! {:type :hivemind-progress :data {...}})
-     (subscribe! :hivemind-progress) ; => core.async channel
-   "
+  "Bidirectional communication channel between Clojure and Emacs via transport abstraction."
   (:require [hive-mcp.transport.core :as t]
             [clojure.core.async :as async :refer [chan pub sub unsub close!]]
             [taoensso.timbre :as log]))
@@ -21,9 +7,7 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;; =============================================================================
 ;; Event Bus (core.async pub/sub for internal routing)
-;; =============================================================================
 
 (defonce ^:private event-chan (chan 1024))
 (defonce ^:private event-pub (pub event-chan :type))
@@ -50,26 +34,14 @@
   (unsub event-pub event-type ch)
   (close! ch))
 
-;; =============================================================================
 ;; Server State
-;; =============================================================================
 
 (defonce ^:private server-state (atom nil))
 
-;; =============================================================================
 ;; Public API
-;; =============================================================================
 
 (defn start-server!
-  "Start the channel server.
-   Emacs will connect to this server.
-
-   Options:
-     :type - :unix (default) or :tcp
-     :path - Unix socket path (default: /tmp/hive-mcp-channel.sock)
-     :port - TCP port (default: 9998) - only used for :tcp type
-
-   Returns server state map."
+  "Start the channel server for Emacs connections."
   [{:keys [type path port] :or {type :unix} :as opts}]
   (if @server-state
     (do
@@ -77,7 +49,6 @@
       @server-state)
     (let [on-message (fn [msg client-id]
                        (log/debug "Received from" client-id ":" msg)
-                       ;; Route to internal pub/sub
                        (when-let [type-str (get msg "type")]
                          (publish! (assoc msg :type (keyword type-str) :client-id client-id))))
           on-connect (fn [client-id]
@@ -97,12 +68,7 @@
       @server-state)))
 
 (defn stop-server!
-  "Stop the channel server.
-
-   CLARITY-Y: Yield safe failure - guards against stopping coordinator's server.
-   Checks local :coordinator-running? state. Logs warning and returns nil
-   instead of stopping if coordinator is active. This prevents test fixtures from
-   killing the production server when tests run in the same JVM (e.g., via embedded nREPL)."
+  "Stop the channel server. No-op if coordinator is running."
   []
   (when-let [{:keys [server]} @server-state]
     (if (:coordinator-running? @server-state)
@@ -113,8 +79,7 @@
         (log/info "Server stopped")))))
 
 (defn force-stop-server!
-  "Force stop the channel server, bypassing coordinator guard.
-   Use only for JVM shutdown or explicit coordinator termination."
+  "Force stop the channel server, bypassing coordinator guard."
   []
   (when-let [{:keys [server]} @server-state]
     (t/stop-server! server)
@@ -122,14 +87,10 @@
     (log/info "Server force-stopped")))
 
 (defn mark-coordinator-running!
-  "Mark that the coordinator is running, protecting the server from test fixture cleanup.
-   Called from server.clj during startup.
-
-   Sets :coordinator-running? in local server-state atom."
+  "Mark coordinator as running, protecting server from test fixture cleanup."
   []
-  ;; Local state update for backward compat (some code may check @server-state)
   (swap! server-state assoc :coordinator-running? true)
-  (log/info "Channel server marked as coordinator-owned (protected from test fixtures)"))
+  (log/info "Channel server marked as coordinator-owned"))
 
 (defn broadcast!
   "Send message to all connected clients."
@@ -150,24 +111,17 @@
   (when-let [{:keys [server]} @server-state]
     (t/client-count server)))
 
-;; =============================================================================
 ;; Convenience Functions
-;; =============================================================================
 
 (defn emit-event!
-  "Emit an event to all connected clients and local subscribers.
-
-   Example:
-     (emit-event! :task-completed {:task-id \"123\" :result \"done\"})"
+  "Emit an event to all connected clients and local subscribers."
   [event-type data]
   (let [string-data (into {} (map (fn [[k v]] [(name k) v]) data))
         event (assoc string-data
                      "type" (name event-type)
                      "timestamp" (System/currentTimeMillis)
                      :type event-type)]
-    ;; Local pub/sub
     (publish! event)
-    ;; Broadcast to Emacs clients
     (broadcast! event)))
 
 (comment
@@ -191,11 +145,6 @@
   ;; Stop server
   (stop-server!))
 
-;; =============================================================================
 ;; MCP Tool Definitions
-;; =============================================================================
 
-(def channel-tools
-  "Channel-related MCP tools - currently empty as channel operations
-   are handled internally and not exposed as user-facing tools."
-  [])
+(def channel-tools "Channel MCP tools (currently empty)." [])

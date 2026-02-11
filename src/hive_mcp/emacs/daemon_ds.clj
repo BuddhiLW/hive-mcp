@@ -7,8 +7,6 @@
    Uses the shared swarm connection via ensure-conn to colocate daemon
    entities with slave, task, and coordinator entities.
 
-   SOLID-S: Single Responsibility - daemon CRUD only.
-   SOLID-D: Depends on IEmacsDaemon protocol abstraction.
    DDD: Repository pattern for daemon entity persistence."
   (:require [datascript.core :as d]
             [taoensso.timbre :as log]
@@ -19,18 +17,12 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;;; =============================================================================
-;;; Constants
-;;; =============================================================================
 
 (def ^:private stale-threshold-ms
   "Daemon is considered stale after this many milliseconds without heartbeat.
    Default: 2 minutes (coordinated with heartbeat interval of ~30s)"
   (* 2 60 1000))
 
-;;; =============================================================================
-;;; Internal Helpers
-;;; =============================================================================
 
 (defn- daemon-entity->map
   "Convert a DataScript entity to a plain map, stripping :db/id."
@@ -48,9 +40,6 @@
   [db daemon-id]
   (:db/id (d/entity db [:emacs-daemon/id daemon-id])))
 
-;;; =============================================================================
-;;; DataScript Implementation
-;;; =============================================================================
 
 (defrecord DataScriptDaemonStore []
   proto/IEmacsDaemon
@@ -184,9 +173,6 @@
           (d/transact! c [{:db/id eid :emacs-daemon/status :stale}]))
         (mapv second stale-pairs)))))
 
-;;; =============================================================================
-;;; Factory
-;;; =============================================================================
 
 (defn create-store
   "Create a new DataScriptDaemonStore instance.

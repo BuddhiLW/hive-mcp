@@ -16,8 +16,6 @@
    (cofx-effects/register-coeffects!)
    ```
 
-   SOLID: Single Responsibility - coeffect registration only
-   CLARITY: Y - Yield safe failure (coeffects provide safe defaults)"
   (:require [hive-mcp.events.core :as ev]
             [hive-mcp.swarm.datascript :as ds]
             [hive-mcp.agent.context :as ctx]

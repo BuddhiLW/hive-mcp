@@ -4,9 +4,6 @@
    Decides WHERE a workflow executes (native Clojure vs elisp).
    No side effects - just routing decisions.
    
-   SOLID: Single Responsibility - routing logic only
-   CLARITY: L - Layers stay pure (domain logic separate from I/O)
-   CLARITY: R - Represented intent (clear naming)")
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later

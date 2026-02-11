@@ -1,23 +1,10 @@
 (ns hive-mcp.agent.drone.execution
-  "Phase-based drone execution orchestration.
-
-   Extracted from drone.clj delegate! function to reduce complexity
-   (SOLID-S: Single Responsibility, cc < 15 per phase).
-
-   Phases:
-   1. prepare    - Infer task type, select model, create sandbox
-   2. register   - Register drone in DataScript, claim files
-   3. validate   - Pre-execution file validation
-   4. execute    - Run task with sandbox constraints
-   5. finalize   - Apply diffs, validate, record metrics
-   6. cleanup    - Release locks, remove registration (always runs)
-
-   Each phase is a pure function or has clear side-effect boundaries.
-   The orchestrator (run-execution!) composes them with proper error handling."
+  "Phase-based drone execution orchestration."
   (:require [hive-mcp.agent.drone.domain :as domain]
             [hive-mcp.agent.drone.diff-mgmt :as diff-mgmt]
             [hive-mcp.agent.drone.augment :as augment]
             [hive-mcp.agent.drone.backend :as backend]
+            [hive-mcp.agent.drone.ext-router :as ext-router]
             [hive-mcp.agent.drone.kg-factory :as kg-factory]
             [hive-mcp.agent.drone.session-kg :as session-kg]
             [hive-mcp.agent.drone.sandbox :as sandbox]
@@ -37,41 +24,17 @@
             [hive-mcp.tools.diff :as diff]
             [taoensso.timbre :as log]))
 
-;;; ============================================================
-;;; Phase 1: Prepare - Configuration & Tool Selection
-;;; ============================================================
-
 (defn phase:prepare
-  "Phase 1: Prepare execution configuration.
-
-   Pure function that computes:
-   - Effective task type (inferred or explicit)
-   - Minimal tool set for task
-   - Preset selection
-   - Model routing
-   - Step budget
-
-   Arguments:
-     task-spec - TaskSpec record
-
-   Returns:
-     Map with :task-type, :tools, :preset, :model, :step-budget, etc."
+  "Prepare execution configuration including task type, tools, preset, and model."
   [task-spec]
   (let [{:keys [task files task-type preset cwd options]} task-spec
-        ;; Check for model override from wave/dispatch caller
         model-override (:model options)
-        ;; Infer task-type if not explicitly provided
         effective-task-type (or task-type (preset/get-task-type task files))
-        ;; Select minimal tools for this task type
         minimal-tools (drone-tools/get-tools-for-drone effective-task-type files)
-        ;; Auto-select preset based on task type
         effective-preset (or preset (preset/select-drone-preset task files))
-        ;; Smart model routing (skipped when override provided)
         model-selection (when-not model-override
                           (routing/route-and-select task files {:directory cwd}))
-        ;; Effective model: override wins over smart routing
         effective-model (or model-override (:model model-selection))
-        ;; Calculate step budget based on task complexity
         step-budget (decompose/get-step-budget task files)]
 
     (log/info "Drone configuration prepared:"
@@ -91,30 +54,12 @@
      :step-budget step-budget
      :model-selection model-selection}))
 
-;;; ============================================================
-;;; Phase 2: Register - DataScript & File Claims
-;;; ============================================================
-
 (defn phase:register!
-  "Phase 2: Register drone and acquire file locks.
-
-   Side effects:
-   - Creates drone entity in DataScript
-   - Atomically claims files via coordinator
-
-   Arguments:
-     ctx       - ExecutionContext
-     task-spec - TaskSpec record
-
-   Returns:
-     Updated ctx or throws on failure.
-
-   CLARITY-I: Validates registration before claiming."
+  "Register drone in DataScript and acquire file locks."
   [ctx task-spec]
   (let [{:keys [drone-id task-id parent-id]} ctx
         {:keys [files]} task-spec]
 
-    ;; 1. Register drone in DataScript (non-namespaced keys — add-slave! destructures :keys [depth status ...])
     (let [tx-result (ds/add-slave! drone-id {:status :spawning
                                              :name "drone"
                                              :depth 2
@@ -126,11 +71,9 @@
         (throw (ex-info "Failed to register drone in DataScript"
                         {:drone-id drone-id}))))
 
-    ;; 2. Atomic file claim acquisition
     (when (seq files)
       (let [result (coordinator/atomic-claim-files! task-id drone-id files)]
         (when-not (:acquired? result)
-          ;; Cleanup registration on failure
           (try (ds/remove-slave! drone-id) (catch Exception _ nil))
 
           (log/error {:event :drone/error
@@ -155,26 +98,8 @@
 
     ctx))
 
-;;; ============================================================
-;;; Phase 3: Validate - Pre-Execution Checks
-;;; ============================================================
-
 (defn phase:validate
-  "Phase 3: Pre-execution file validation.
-
-   Validates files before mutation:
-   - File exists
-   - Not binary
-   - Size limits
-
-   Arguments:
-     ctx       - ExecutionContext
-     task-spec - TaskSpec record
-
-   Returns:
-     Updated ctx with :pre-validation and :file-contents-before.
-
-   CLARITY-I: Inputs are guarded."
+  "Pre-execution file validation."
   [ctx task-spec]
   (let [{:keys [drone-id task-id]} ctx
         {:keys [files]} task-spec]
@@ -189,7 +114,6 @@
                   (log/warn {:event :drone/pre-validation-failed
                              :drone-id drone-id
                              :invalid-files invalid-files})))
-            ;; Capture file contents for post-validation diff
             file-contents-before (into {}
                                        (for [f files]
                                          [f (try (slurp f) (catch Exception _ nil))]))]
@@ -198,43 +122,23 @@
             (domain/with-pre-validation pre-validation)
             (domain/with-file-contents-before file-contents-before))))))
 
-;;; ============================================================
-;;; Phase 4: Execute - Shared Pre-Execution & Backend Dispatch
-;;; ============================================================
-
 (defn- prepare-execution-env
-  "Prepare execution environment: augment task, create sandbox, security check.
-
-   Shared pre-execution logic used by both phase:execute! and
-   phase:execute-agentic!. Extracts the common setup that was
-   previously duplicated across both phases.
-
-   Arguments:
-     ctx       - ExecutionContext
-     task-spec - TaskSpec record
-     config    - Prepared config from phase:prepare
-
-   Returns:
-     Map with :augmented-task, :drone-sandbox, :cwd.
-
-   Throws:
-     ex-info if file paths escape project directory (CLARITY-I)."
+  "Prepare execution environment: augment task, create sandbox, security check."
   [ctx task-spec config]
   (let [{:keys [drone-id project-root]} ctx
         {:keys [task files options]} task-spec
         {:keys [model step-budget]} config
         cwd (or (:cwd task-spec) project-root)
 
-        ;; Augment task with context (pass seeds for domain priming)
         augmented-task (augment/augment-task task files
                                              (cond-> {:project-root cwd}
-                                               (seq (:seeds options)) (assoc :seeds (:seeds options))))
+                                               (seq (:seeds options))        (assoc :seeds (:seeds options))
+                                               (seq (:ctx-refs options))     (assoc :ctx-refs (:ctx-refs options))
+                                               (seq (:kg-node-ids options))  (assoc :kg-node-ids (:kg-node-ids options))))
 
-        ;; Create sandbox
         effective-root (or cwd (diff/get-project-root))
         drone-sandbox (sandbox/create-sandbox (or files []) effective-root)]
 
-    ;; Security check: Reject path escape attempts
     (when (seq (:rejected-files drone-sandbox))
       (log/error {:event :drone/path-escape-blocked
                   :drone-id drone-id
@@ -255,20 +159,12 @@
      :cwd cwd}))
 
 (defn- emit-execution-started!
-  "Emit :drone/started event and shout to parent ling.
-
-   Shared side-effect logic for both execution paths.
-
-   Arguments:
-     ctx       - ExecutionContext
-     task-spec - TaskSpec record
-     mode      - Keyword :delegate or :agentic (for event metadata)"
+  "Emit :drone/started event and shout to parent ling."
   [ctx task-spec mode]
   (let [{:keys [drone-id task-id parent-id pre-validation]} ctx
         {:keys [task files]} task-spec
         mode-prefix (if (= mode :agentic) "Agentic drone" "Drone")]
 
-    ;; Emit started event
     (ev/dispatch [:drone/started (cond-> {:drone-id drone-id
                                           :task-id task-id
                                           :parent-id parent-id
@@ -277,27 +173,13 @@
                                           :pre-validation (validation/summarize-validation (or pre-validation {}))}
                                    (= mode :agentic) (assoc :mode :agentic))])
 
-    ;; Shout to parent ling
     (when parent-id
       (hivemind/shout! parent-id :started
                        {:task (str mode-prefix ": " (subs task 0 (min 80 (count task))))
                         :message (format "%s %s working" mode-prefix drone-id)}))))
 
 (defn- build-task-context
-  "Build the task-context map for IDroneExecutionBackend dispatch.
-
-   Extracts and normalizes parameters from ExecutionContext, TaskSpec,
-   and config into the flat map expected by execute-drone.
-
-   Arguments:
-     ctx            - ExecutionContext
-     task-spec      - TaskSpec record
-     config         - Prepared config from phase:prepare
-     augmented-task - Task string with injected file contents
-     drone-sandbox  - Sandbox configuration from prepare-execution-env
-
-   Returns:
-     task-context map conforming to IDroneExecutionBackend/execute-drone contract."
+  "Build the task-context map for IDroneExecutionBackend dispatch."
   [ctx task-spec config augmented-task drone-sandbox]
   (let [{:keys [drone-id]} ctx
         {:keys [tools preset model step-budget]} config
@@ -316,133 +198,57 @@
                   :blocked-tools    (:blocked-tools drone-sandbox)}}))
 
 (defn- resolve-backend
-  "Resolve the IDroneExecutionBackend for execution.
-
-   When an explicit backend is provided (from TaskSpec :options :backend),
-   uses that directly via backend/resolve-backend. Otherwise falls back to the
-   default strategy: :hive-agent first, :legacy-loop if unavailable.
-
-   Arguments:
-     task-context     - task-context map with :model key
-     explicit-backend - Keyword backend override from TaskSpec options, or nil
-
-   Returns:
-     IDroneExecutionBackend implementation."
+  "Resolve the IDroneExecutionBackend for execution."
   [task-context explicit-backend]
-  ;; Require backend implementations to ensure defmethod registrations are loaded
-  (try (require 'hive-mcp.agent.drone.backend.hive-agent) (catch Exception _))
-  (try (require 'hive-mcp.agent.drone.backend.legacy-loop) (catch Exception _))
-  (try (require 'hive-mcp.agent.drone.backend.sdk-drone) (catch Exception _))
-  (try (require 'hive-mcp.agent.drone.backend.fsm-agentic) (catch Exception _))
+  (ext-router/load-available-backends!)
   (if explicit-backend
-    ;; Explicit backend requested — use it directly (no fallback)
     (do
       (log/info {:event   :drone/explicit-backend-requested
                  :backend explicit-backend})
       (backend/resolve-backend (assoc task-context :backend explicit-backend)))
-    ;; Default: try :hive-agent, fallback to :legacy-loop
-    (try
-      (backend/resolve-backend (assoc task-context :backend :hive-agent))
-      (catch Exception e
-        (log/warn {:event   :drone/hive-agent-backend-unavailable
-                   :error   (ex-message e)
-                   :message "Falling back to :legacy-loop backend"})
-        (backend/resolve-backend (assoc task-context :backend :legacy-loop))))))
+    (let [best (ext-router/best-backend)]
+      (try
+        (backend/resolve-backend (assoc task-context :backend best))
+        (catch Exception e
+          (log/warn {:event   :drone/preferred-backend-unavailable
+                     :preferred best
+                     :error   (ex-message e)
+                     :message "Falling back to :legacy-loop backend"})
+          (backend/resolve-backend (assoc task-context :backend :legacy-loop)))))))
 
 (defn- dispatch-to-backend!
-  "Dispatch task-context to a resolved IDroneExecutionBackend.
-
-   Binds per-drone KG isolation and delegates to the backend's execute-drone.
-
-   Arguments:
-     ctx              - ExecutionContext (for KG store binding)
-     task-context     - Map conforming to IDroneExecutionBackend/execute-drone contract
-     resolved-backend - IDroneExecutionBackend implementation
-
-   Returns:
-     Result map from backend/execute-drone."
+  "Dispatch task-context to a resolved IDroneExecutionBackend."
   [ctx task-context resolved-backend]
   (let [{:keys [drone-id]} ctx]
     (log/info {:event    :drone/backend-resolved
                :drone-id drone-id
                :backend  (backend/backend-type resolved-backend)})
 
-    ;; Execute with per-drone KG isolation
     (binding [domain/*drone-kg-store* (:kg-store ctx)]
       (backend/execute-drone resolved-backend task-context))))
 
 (defn phase:execute!
-  "Phase 4: Execute task via delegate-fn wrapped as IDroneExecutionBackend.
-
-   For backward compatibility with callers that pass a delegate-fn.
-   Wraps the delegate-fn as an ad-hoc IDroneExecutionBackend and
-   routes through the same pre-execution pipeline as phase:execute-agentic!.
-
-   Side effects:
-   - Emits :drone/started event
-   - Shouts to parent ling
-   - Calls delegate-fn via backend dispatch
-
-   Arguments:
-     ctx         - ExecutionContext
-     task-spec   - TaskSpec record
-     config      - Prepared config from phase:prepare
-     delegate-fn - Legacy execution function (receives task-context map)
-
-   Returns:
-     Raw execution result from delegate-fn."
+  "Execute task via delegate-fn wrapped as IDroneExecutionBackend."
   [ctx task-spec config delegate-fn]
   (let [{:keys [options]} task-spec
-        ;; Shared pre-execution: augment, sandbox, security
         {:keys [augmented-task drone-sandbox]} (prepare-execution-env ctx task-spec config)]
 
-    ;; Shared side effects: event + shout
     (emit-execution-started! ctx task-spec :delegate)
 
-    ;; Build task-context and dispatch via delegate-fn wrapped as backend
     (let [task-context (-> (build-task-context ctx task-spec config augmented-task drone-sandbox)
                            (assoc :trace (:trace options true)))]
 
-      ;; Execute with per-drone KG isolation
       (binding [domain/*drone-kg-store* (:kg-store ctx)]
         (delegate-fn task-context)))))
 
-;;; ============================================================
-;;; Phase 4b: Execute Agentic - IDroneExecutionBackend Dispatch
-;;; ============================================================
-
 (defn phase:execute-agentic!
-  "Phase 4b: Execute task via IDroneExecutionBackend dispatch.
-
-   Delegates to the resolved backend (hive-agent primary, legacy-loop fallback)
-   via the IDroneExecutionBackend protocol. This decouples execution.clj from
-   specific backend implementations (SOLID-D, SOLID-O).
-
-   Uses shared pre-execution logic (prepare-execution-env, emit-execution-started!)
-   to eliminate duplication with phase:execute!.
-
-   Side effects:
-   - Emits :drone/started event
-   - Shouts to parent ling
-   - Delegates execution to resolved backend
-
-   Arguments:
-     ctx       - ExecutionContext (must have :kg-store for session store)
-     task-spec - TaskSpec record
-     config    - Prepared config from phase:prepare
-
-   Returns:
-     Result map with :status, :result, :steps, :tokens, etc.
-     (per IDroneExecutionBackend/execute-drone contract)."
+  "Execute task via IDroneExecutionBackend dispatch."
   [ctx task-spec config]
   (let [{:keys [options]} task-spec
-        ;; Shared pre-execution: augment, sandbox, security
         {:keys [augmented-task drone-sandbox]} (prepare-execution-env ctx task-spec config)]
 
-    ;; Shared side effects: event + shout
     (emit-execution-started! ctx task-spec :agentic)
 
-    ;; Build task-context and dispatch via IDroneExecutionBackend
     (let [task-context (build-task-context ctx task-spec config
                                            augmented-task drone-sandbox)
           explicit-backend (:backend options)
@@ -450,41 +256,17 @@
 
       (dispatch-to-backend! ctx task-context resolved-backend))))
 
-;;; ============================================================
-;;; Phase 5: Finalize - Diffs, Validation, Metrics
-;;; ============================================================
-
 (defn phase:finalize!
-  "Phase 5: Handle diffs, validate, record metrics.
-
-   Side effects:
-   - Applies or tags diffs
-   - Post-validates files
-   - Records Prometheus metrics
-   - Reports to routing
-   - Records result to hivemind
-   - Shouts completion to parent
-
-   Arguments:
-     ctx         - ExecutionContext
-     task-spec   - TaskSpec record
-     config      - Prepared config
-     raw-result  - Result from execute phase
-     diffs-before - Diff IDs before execution
-
-   Returns:
-     ExecutionResult record."
+  "Handle diffs, validate, record metrics, and build execution result."
   [ctx task-spec config raw-result diffs-before]
   (let [{:keys [drone-id task-id parent-id pre-validation file-contents-before]} ctx
         {:keys [task files options]} task-spec
         {:keys [task-type model]} config
         {:keys [wave-id skip-auto-apply]} options
 
-        ;; Calculate new diffs
         diffs-after (diff-mgmt/capture-diffs-before)
         new-diff-ids (diff-mgmt/get-new-diff-ids diffs-before diffs-after)
 
-        ;; CLARITY-T: Warn if drone completed with 0 diffs (likely text-only response)
         _ (when (and (= :completed (:status raw-result))
                      (empty? new-diff-ids)
                      (seq files))
@@ -501,14 +283,12 @@
                                        (when has-code-blocks?
                                          " CODE BLOCKS DETECTED in text response."))})))
 
-        ;; Handle diffs
         diff-results (diff-mgmt/handle-diff-results!
                       drone-id new-diff-ids
                       {:wave-id wave-id :skip-auto-apply skip-auto-apply})
 
         duration-ms (domain/elapsed-ms ctx)
 
-        ;; Post-validation
         post-validation (when (and (seq files)
                                    (= :completed (:status raw-result))
                                    (not skip-auto-apply))
@@ -521,13 +301,11 @@
         validation-summary (validation/summarize-validation
                             (merge (or pre-validation {}) (or post-validation {})))]
 
-    ;; Log validation warnings
     (when (and post-validation (not (validation/all-valid? post-validation :post)))
       (log/warn {:event :drone/post-validation-warnings
                  :drone-id drone-id
                  :summary validation-summary}))
 
-    ;; Shout completion to parent
     (when parent-id
       (if (= :completed (:status raw-result))
         (hivemind/shout! parent-id :completed
@@ -539,7 +317,6 @@
                          {:task (str "Drone: " (subs task 0 (min 80 (count task))))
                           :message (format "Drone %s failed: %s" drone-id (:result raw-result))})))
 
-    ;; Emit completion/failure event
     (if (= :completed (:status raw-result))
       (ev/dispatch [:drone/completed {:drone-id drone-id
                                       :task-id task-id
@@ -556,7 +333,6 @@
                                    :error-type :execution
                                    :files files}]))
 
-    ;; Record model metrics
     (let [model-name (or (:model raw-result) model)
           tokens (:tokens raw-result)
           input-tokens (or (:input-tokens tokens)
@@ -581,7 +357,6 @@
                                   :directory (:cwd task-spec)
                                   :agent-id drone-id}))
 
-    ;; Record to hivemind
     (hivemind/record-ling-result! drone-id
                                   {:task task
                                    :files files
@@ -591,7 +366,6 @@
                                    :parent-id parent-id
                                    :timestamp (System/currentTimeMillis)})
 
-    ;; Merge drone KG edges into global store (per-drone KG isolation)
     (when-let [drone-store (:kg-store ctx)]
       (try
         (when (kg/store-set?)
@@ -605,33 +379,18 @@
                      :drone-id drone-id
                      :error (.getMessage e)}))))
 
-    ;; Build result
     (domain/success-result ctx {:result raw-result
                                 :diff-results diff-results
                                 :validation validation-summary})))
 
-;;; ============================================================
-;;; Phase 6: Cleanup - Always Runs
-;;; ============================================================
-
 (defn phase:cleanup!
-  "Phase 6: Release resources (always runs).
-
-   Side effects:
-   - Releases file claims
-   - Closes per-drone KG store (deregisters from factory)
-   - Removes drone from DataScript
-
-   Arguments:
-     ctx       - ExecutionContext
-     task-spec - TaskSpec record"
+  "Release resources: file claims, KG store, DataScript registration."
   [ctx task-spec]
   (let [{:keys [drone-id task-id]} ctx
         {:keys [files]} task-spec]
     (when (seq files)
       (coordinator/release-task-claims! task-id)
       (log/info "Drone released file locks:" drone-id))
-    ;; Close per-drone KG store if one was created
     (when (:kg-store ctx)
       (try
         (kg-factory/close-drone-store! drone-id)
@@ -642,21 +401,8 @@
                      :error (.getMessage e)}))))
     (ds/remove-slave! drone-id)))
 
-;;; ============================================================
-;;; Phase: Handle Error
-;;; ============================================================
-
 (defn phase:handle-error!
-  "Handle execution error with proper logging and metrics.
-
-   Arguments:
-     ctx       - ExecutionContext
-     task-spec - TaskSpec record
-     config    - Prepared config
-     exception - The caught exception
-
-   Returns:
-     nil (re-throws after handling)."
+  "Handle execution error with proper logging and metrics."
   [ctx task-spec config exception]
   (let [{:keys [drone-id task-id parent-id]} ctx
         {:keys [files]} task-spec
@@ -697,22 +443,8 @@
                                 :directory (:cwd task-spec)
                                 :agent-id drone-id})))
 
-;;; ============================================================
-;;; Orchestrator - Compose Phases
-;;; ============================================================
-
 (defn run-execution!
-  "Orchestrate drone execution through all phases.
-
-   This is the main entry point that composes all phases with
-   proper error handling and cleanup.
-
-   Arguments:
-     task-spec   - TaskSpec record
-     delegate-fn - Function to execute the task
-
-   Returns:
-     ExecutionResult record."
+  "Orchestrate drone execution through all phases with proper error handling and cleanup."
   [task-spec delegate-fn]
   (let [drone-id (domain/generate-drone-id)
         task-id (domain/generate-task-id drone-id)
@@ -720,7 +452,6 @@
                       (System/getenv "CLAUDE_SWARM_SLAVE_ID"))
         cwd (or (:cwd task-spec) (diff/get-project-root))
 
-        ;; Create per-drone isolated KG store
         drone-kg-store (try
                          (kg-factory/create-drone-store drone-id)
                          (catch Exception e
@@ -729,7 +460,6 @@
                                       :error (.getMessage e)})
                            nil))
 
-        ;; Create execution context with per-drone KG store
         ctx (domain/->execution-context
              {:drone-id drone-id
               :task-id task-id
@@ -737,24 +467,18 @@
               :project-root cwd
               :kg-store drone-kg-store})
 
-        ;; Phase 1: Prepare (pure)
         config (phase:prepare task-spec)
         ctx (assoc ctx :model (:model config))]
 
     (try
-      ;; Phase 2: Register
       (let [ctx (phase:register! ctx task-spec)
-            ;; Capture diffs before execution
             diffs-before (diff-mgmt/capture-diffs-before)]
 
-        ;; Phase 3: Validate
         (let [ctx (phase:validate ctx task-spec)]
 
           (try
-            ;; Phase 4: Execute
             (let [raw-result (phase:execute! ctx task-spec config delegate-fn)]
 
-              ;; Phase 5: Finalize
               (phase:finalize! ctx task-spec config raw-result diffs-before))
 
             (catch Throwable e
@@ -762,30 +486,10 @@
               (throw e)))))
 
       (finally
-        ;; Phase 6: Cleanup (always)
         (phase:cleanup! ctx task-spec)))))
 
-;;; ============================================================
-;;; Agentic Orchestrator - In-Process Multi-Turn Execution
-;;; ============================================================
-
 (defn run-agentic-execution!
-  "Orchestrate agentic drone execution through all phases.
-
-   Like run-execution! but uses the in-process agentic loop (phase:execute-agentic!)
-   instead of delegating to an external function. The agentic loop provides:
-   - Multi-turn think-act-observe with session store (Datalevin)
-   - Context compression via KG reconstruction (~5-10x vs raw history)
-   - Termination heuristics (completion language, max turns, failures)
-   - Per-drone KG isolation with merge-back to global
-
-   This is the primary entry point for in-process drone execution.
-
-   Arguments:
-     task-spec - TaskSpec record (or map coercible to one)
-
-   Returns:
-     ExecutionResult record."
+  "Orchestrate agentic drone execution through all phases."
   [task-spec]
   (let [drone-id (domain/generate-drone-id)
         task-id (domain/generate-task-id drone-id)
@@ -793,14 +497,12 @@
                       (System/getenv "CLAUDE_SWARM_SLAVE_ID"))
         cwd (or (:cwd task-spec) (diff/get-project-root))
 
-        ;; Create per-drone isolated session store (Datalevin-backed)
         session-kg-store (try
                            (session-kg/create-session-kg! drone-id)
                            (catch Exception e
                              (log/warn {:event :drone/session-kg-creation-failed
                                         :drone-id drone-id
                                         :error (.getMessage e)})
-                             ;; Fall back to DataScript in-memory KG
                              (try
                                (kg-factory/create-drone-store drone-id)
                                (catch Exception e2
@@ -809,7 +511,6 @@
                                             :error (.getMessage e2)})
                                  nil))))
 
-        ;; Create execution context with session store store
         ctx (domain/->execution-context
              {:drone-id drone-id
               :task-id task-id
@@ -817,24 +518,18 @@
               :project-root cwd
               :kg-store session-kg-store})
 
-        ;; Phase 1: Prepare (pure)
         config (phase:prepare task-spec)
         ctx (assoc ctx :model (:model config))]
 
     (try
-      ;; Phase 2: Register
       (let [ctx (phase:register! ctx task-spec)
-            ;; Capture diffs before execution
             diffs-before (diff-mgmt/capture-diffs-before)]
 
-        ;; Phase 3: Validate
         (let [ctx (phase:validate ctx task-spec)]
 
           (try
-            ;; Phase 4b: Execute Agentic (in-process multi-turn loop)
             (let [raw-result (phase:execute-agentic! ctx task-spec config)]
 
-              ;; Phase 5: Finalize
               (phase:finalize! ctx task-spec config raw-result diffs-before))
 
             (catch Throwable e
@@ -842,8 +537,6 @@
               (throw e)))))
 
       (finally
-        ;; Phase 6: Cleanup (always)
-        ;; Close session store and clean up temp directory
         (when session-kg-store
           (try
             (session-kg/close-session-kg! session-kg-store drone-id)

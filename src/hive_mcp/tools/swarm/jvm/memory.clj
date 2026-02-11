@@ -1,29 +1,12 @@
 (ns hive-mcp.tools.swarm.jvm.memory
-  "Memory usage monitoring for resource guard.
-
-   Pattern: Pure functions for memory reading and threshold checking.
-   Separates I/O (shell calls) from policy (threshold logic).
-
-   CLARITY: Layers stay pure - memory logic separated from orchestration."
+  "Memory usage monitoring and threshold checking for resource guard."
   (:require [clojure.java.shell :as shell]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-
-;;; ============================================================
-;;; Memory Reading
-;;; ============================================================
-
 (defn get-memory-usage
-  "Get current RAM usage from /proc/meminfo.
-
-   Returns:
-     {:total-mb :used-mb :available-mb :percent-used}
-   or
-     {:error \"message\"}
-
-   Uses shell command instead of slurp due to JVM issues with procfs."
+  "Get current RAM usage from /proc/meminfo."
   []
   (try
     (let [{:keys [exit out]} (shell/sh "cat" "/proc/meminfo")]
@@ -44,44 +27,24 @@
     (catch Exception e
       {:error (.getMessage e)})))
 
-;;; ============================================================
-;;; Threshold Checking (Pure Functions)
-;;; ============================================================
-
 (defn memory-high?
-  "Check if memory usage exceeds thresholds.
-
-   Parameters:
-     mem-info - Result from get-memory-usage
-     threshold-percent - Max allowed percent used (e.g., 80)
-     min-available-mb - Min required available MB (e.g., 2048)
-
-   Returns true if EITHER condition is violated."
+  "Check if memory usage exceeds either percent threshold or minimum available MB."
   [mem-info threshold-percent min-available-mb]
   (or (>= (:percent-used mem-info) threshold-percent)
       (< (:available-mb mem-info) min-available-mb)))
 
 (defn memory-status
-  "Determine memory status keyword based on thresholds.
-
-   Returns :healthy, :warning, or :critical"
+  "Determine memory status keyword: :healthy, :warning, or :critical."
   [mem-info threshold-percent min-available-mb]
   (let [percent (:percent-used mem-info)
-        warning-threshold (* threshold-percent 0.9)] ;; 90% of threshold
+        warning-threshold (* threshold-percent 0.9)]
     (cond
       (< percent warning-threshold) :healthy
       (memory-high? mem-info threshold-percent min-available-mb) :critical
       :else :warning)))
 
 (defn spawn-recommendation
-  "Generate human-readable recommendation for spawn decision.
-
-   Parameters:
-     can-spawn - Boolean from spawn decision
-     auto-cleanup - Whether auto cleanup is enabled
-     cleanup-dry - Whether cleanup was dry-run only
-
-   Returns recommendation string."
+  "Generate human-readable recommendation for spawn decision."
   [can-spawn auto-cleanup cleanup-dry]
   (cond
     can-spawn "Safe to spawn new processes"

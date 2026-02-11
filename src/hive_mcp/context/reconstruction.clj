@@ -1,26 +1,5 @@
 (ns hive-mcp.context.reconstruction
-  "Compressed context reconstruction for agent communication.
-
-   Transforms context-store references + KG node IDs + scope into
-   bounded compressed context markdown. Bridges:
-     context-store (refs) -> KG subgraph (structural edges) -> rendered prompt
-
-   Core pipeline:
-     1. fetch-ref-data      - resolve context-store entries by category->ctx-id
-     2. gather-kg-context   - traverse KG from node IDs (bounded depth, structural only)
-     3. compress-kg-subgraph - render KG subgraph as compact edge-list (~200 tokens)
-     4. render-compressed-context - combine ref summaries + KG subgraph (3000 char budget)
-     5. reconstruct-context - top-level fn matching RefContext reconstruct-fn signature
-
-   Design principles:
-   - STRUCTURAL edges only: implements, supersedes, depends-on, refines, contradicts, derived-from
-   - Co-access edges are noise for reconstruction
-   - Bounded: max depth 2, max 10 KG nodes, 3000 char output
-   - Graceful degradation: missing refs, empty KG, expired entries all produce partial output
-
-   SOLID-S: Single responsibility - context reconstruction only.
-   SOLID-O: Open for extension - new renderers can be added.
-   CLARITY-Y: Yield safe failure - never throws, degrades gracefully."
+  "Compressed context reconstruction from refs and KG traversal."
   (:require [hive-mcp.channel.context-store :as context-store]
             [hive-mcp.knowledge-graph.queries :as kg-queries]
             [clojure.string :as str]
@@ -46,8 +25,7 @@
   2)
 
 (def structural-relations
-  "Structural KG relations that carry semantic meaning for context reconstruction.
-   Co-access edges (:co-access) are noise - they indicate file proximity, not conceptual links."
+  "Structural KG relations for context reconstruction."
   #{:implements :supersedes :depends-on :refines :contradicts :derived-from :applies-to})
 
 ;; =============================================================================
@@ -55,19 +33,7 @@
 ;; =============================================================================
 
 (defn fetch-ref-data
-  "Resolve context-store entries by category->ctx-id map.
-
-   Arguments:
-     ctx-refs - Map of category (keyword) to context-store ID (string)
-                e.g. {:axioms \"ctx-123\" :conventions \"ctx-456\"}
-
-   Returns:
-     Map of category -> data (the :data field from context-store entries).
-     Missing/expired entries are omitted silently (graceful degradation).
-
-   Example:
-     (fetch-ref-data {:axioms \"ctx-123\" :decisions \"ctx-456\"})
-     => {:axioms [...] :decisions [...]}"
+  "Resolve context-store entries by category->ctx-id map."
   [ctx-refs]
   (when (seq ctx-refs)
     (reduce-kv
@@ -90,18 +56,7 @@
 ;; =============================================================================
 
 (defn gather-kg-context
-  "Traverse KG from seed node IDs, collecting structural edges.
-
-   Arguments:
-     kg-node-ids - Vector of KG node IDs to start traversal from
-     scope       - Project scope string (e.g. \"hive-mcp\") for filtering
-
-   Returns:
-     {:nodes #{<unique node IDs>}
-      :edges [{:from <id> :to <id> :relation <kw> :confidence <float>} ...]}
-
-   Bounded: max-kg-depth traversal, max-kg-nodes total.
-   Only follows structural-relations (not co-access noise)."
+  "Traverse KG from seed node IDs, collecting structural edges."
   [kg-node-ids scope]
   (when (seq kg-node-ids)
     (let [all-edges (atom [])
@@ -161,20 +116,7 @@
     (str id)))
 
 (defn compress-kg-subgraph
-  "Render KG subgraph as compact edge-list representation.
-
-   Arguments:
-     kg-context - Output from gather-kg-context:
-                  {:nodes #{...} :edges [{:from :to :relation :confidence}]}
-
-   Returns:
-     String with compact edge-list format (~200 tokens for 10 edges).
-     Returns nil when no edges.
-
-   Example output:
-     KG Subgraph (5 nodes, 4 edges):
-       20260207 -impl-> 20260206 [0.9]
-       20260206 -dep-> 20260205 [1.0]"
+  "Render KG subgraph as compact edge-list representation."
   [kg-context]
   (when (and kg-context (seq (:edges kg-context)))
     (let [{:keys [nodes edges]} kg-context
@@ -257,19 +199,7 @@
     @sections))
 
 (defn render-compressed-context
-  "Combine ref data summaries + KG subgraph into bounded markdown.
-
-   Arguments:
-     ref-data   - Output from fetch-ref-data (category -> data)
-     kg-context - Output from gather-kg-context ({:nodes :edges})
-
-   Returns:
-     String, bounded to max-output-chars.
-
-   Structure:
-     ## Reconstructed Context (Compressed)
-     [ref summaries with key content]
-     [KG subgraph edge-list]"
+  "Combine ref data summaries and KG subgraph into bounded markdown."
   [ref-data kg-context]
   (let [parts (atom ["## Reconstructed Context (Compressed)" ""])
         kg-str (compress-kg-subgraph kg-context)
@@ -312,28 +242,7 @@
 ;; =============================================================================
 
 (defn reconstruct-context
-  "Top-level context reconstruction function.
-
-   Matches RefContext reconstruct-fn signature:
-     (fn [ctx-refs kg-node-ids scope] -> string)
-
-   Pipeline:
-     1. Fetch ref data from context-store
-     2. Gather KG context via bounded traversal
-     3. Render compressed context markdown
-
-   Arguments:
-     ctx-refs    - Map of category->ctx-id (from catchup dual-write)
-     kg-node-ids - Vector of KG node IDs for graph traversal
-     scope       - Project scope string
-
-   Returns:
-     Compressed context markdown string (max 3000 chars).
-     Never throws - returns partial/empty context on failure.
-
-   Usage:
-     (->ref-context prompt {:reconstruct-fn reconstruct-context
-                            :ctx-refs {...} :kg-node-ids [...] :scope \"hive-mcp\"})"
+  "Top-level context reconstruction from refs and KG traversal."
   [ctx-refs kg-node-ids scope]
   (try
     (let [ref-data  (fetch-ref-data ctx-refs)
@@ -356,20 +265,7 @@
 ;; =============================================================================
 
 (defn catchup-refs->ref-context-opts
-  "Convert catchup workflow output to RefContext factory options.
-
-   Takes the context-refs map from catchup response and converts to
-   opts suitable for ->ref-context. Also extracts KG node IDs from
-   decisions/conventions in the context-store if available.
-
-   Arguments:
-     catchup-response - Map with :context-refs from catchup workflow
-                        e.g. {:context-refs {:axioms \"ctx-1\" :decisions \"ctx-2\"}}
-     scope            - Project scope string
-
-   Returns:
-     Map suitable as opts to ->ref-context:
-     {:ctx-refs {...} :kg-node-ids [...] :scope \"...\" :reconstruct-fn <fn>}"
+  "Convert catchup workflow output to RefContext factory options."
   [catchup-response scope]
   (let [ctx-refs (or (:context-refs catchup-response) {})
         ;; Try to extract KG node IDs from decision entries

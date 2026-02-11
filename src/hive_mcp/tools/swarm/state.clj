@@ -1,67 +1,27 @@
 (ns hive-mcp.tools.swarm.state
-  "Hivemind state integration for swarm status.
-
-   Maps DataScript slave status to swarm working status.
-   Provides unified view merging DataScript state with lings registry.
-
-   ADR-002 COMPLIANCE: DataScript is source of truth for slave status.
-   SOLID: SRP - Single responsibility for state mapping/merging.
-   CLARITY: R - Represented intent with clear status mapping."
+  "Hivemind state integration for swarm status, mapping DataScript slave status to working status."
   (:require [hive-mcp.tools.swarm.registry :as registry]
             [hive-mcp.swarm.datascript :as ds]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;; ============================================================
-;; Hivemind Status Mapping
-;; ============================================================
-
 (defn get-slave-working-status
-  "Get the working status of a slave based on DataScript state.
-
-   ADR-002 COMPLIANCE: Queries DataScript (source of truth), not hivemind atom.
-
-   Maps DataScript slave status to swarm working status:
-   - :working -> \"working\"
-   - :idle, :error -> \"idle\"
-   - :blocked -> \"blocked\"
-   - nil (not registered) -> nil
-
-   BACKWARDS COMPAT: Also handles legacy statuses that may exist in DataScript
-   from before the hivemind.clj fix (event-type->slave-status):
-   - :started, :progress -> \"working\" (legacy: should now be :working)
-   - :completed -> \"idle\" (legacy: should now be :idle)
-
-   agent-id: The slave/agent ID to query
-
-   CLARITY: R - Clear mapping from DataScript to swarm status"
+  "Get the working status of a slave from DataScript."
   [agent-id]
   (when-let [slave (ds/get-slave agent-id)]
     (let [status (:slave/status slave)]
       (case status
-        ;; Valid slave statuses (primary)
         :working "working"
         :idle "idle"
         :error "idle"
         :blocked "blocked"
-        ;; Legacy statuses (backwards compat - from before hivemind.clj fix)
         (:started :progress) "working"
         :completed "idle"
-        ;; Default to idle for unknown/transitional states
         "idle"))))
 
-;; ============================================================
-;; Unified Status
-;; ============================================================
-
 (defn get-unified-swarm-status
-  "Get unified swarm status merging hivemind state with lings registry.
-
-   Returns a map of slave-id -> {:name, :presets, :cwd, :working-status, ...}
-   The :working-status field reflects the current state from hivemind events.
-
-   SOLID: DIP - Depends on abstractions (registry/hivemind), not implementations."
+  "Get unified swarm status merging hivemind state with lings registry."
   []
   (let [lings (registry/get-available-lings)]
     (into {}
@@ -71,12 +31,7 @@
                lings))))
 
 (defn merge-hivemind-into-slaves
-  "Merge hivemind working status into slaves-detail list.
-
-   Takes elisp slaves-detail vector and enriches with hivemind status.
-   Returns updated vector preserving all entries.
-
-   CLARITY: R - Clear transformation of slaves data"
+  "Merge hivemind working status into slaves-detail list."
   [slaves-detail]
   (when (seq slaves-detail)
     (mapv (fn [slave]

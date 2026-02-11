@@ -577,3 +577,106 @@
       ;; Should succeed despite audit-fn failure
       (is (= "ok" (:observation result)))
       (is (false? (:denied? result))))))
+
+;; =============================================================================
+;; 9. FSM Spec Structure
+;; =============================================================================
+
+(deftest test-tool-execution-spec-structure
+  (testing "tool-execution-spec has correct shape"
+    (let [spec te/tool-execution-spec]
+      (is (map? (:fsm spec)) "Has :fsm key")
+      (is (map? (:opts spec)) "Has :opts key")
+      (is (= 10 (get-in spec [:opts :max-trace])) "max-trace is 10")
+      (is (contains? (:fsm spec) ::fsm/start) "Has ::fsm/start")
+      (is (contains? (:fsm spec) ::fsm/end) "Has ::fsm/end")
+      (is (contains? (:fsm spec) ::fsm/error) "Has ::fsm/error")
+      (is (contains? (:fsm spec) :hive-mcp.workflows.sub-fsms.tool-execution/execute)
+          "Has ::execute state")
+      (is (contains? (:fsm spec) :hive-mcp.workflows.sub-fsms.tool-execution/capture-result)
+          "Has ::capture-result state"))))
+
+(deftest test-tool-execution-spec-dispatch-structure
+  (testing "Each non-terminal state has :handler and :dispatches"
+    (let [fsm-map (:fsm te/tool-execution-spec)
+          user-states [::fsm/start
+                       :hive-mcp.workflows.sub-fsms.tool-execution/execute
+                       :hive-mcp.workflows.sub-fsms.tool-execution/capture-result]]
+      (doseq [state user-states]
+        (let [state-def (get fsm-map state)]
+          (is (fn? (:handler state-def))
+              (str state " has a handler function"))
+          (is (vector? (:dispatches state-def))
+              (str state " has dispatches vector")))))))
+
+;; =============================================================================
+;; 10. Clean Internal Fields
+;; =============================================================================
+
+(deftest test-clean-internal-fields
+  (testing "run-tool-execution removes internal fields from result"
+    (let [resources (mock-resources {:execute-result "clean test"})
+          data      (base-data)
+          result    (te/run-tool-execution data resources)]
+      (is (not (contains? result :permission-result)) ":permission-result removed")
+      (is (not (contains? result :observation-map)) ":observation-map removed")
+      (is (contains? result :observation) ":observation preserved")
+      (is (contains? result :tool-result) ":tool-result preserved")
+      (is (contains? result :denied?) ":denied? preserved")
+      (is (contains? result :execution-time-ms) ":execution-time-ms preserved")
+      (is (contains? result :tool-call-id) ":tool-call-id preserved"))))
+
+;; =============================================================================
+;; 11. FSM Integration — Exception Path
+;; =============================================================================
+
+(deftest test-fsm-full-exception-execution
+  (testing "full FSM run: exception produces error observation"
+    (let [resources (mock-resources {:execute-throws? true})
+          data      (base-data)
+          result    (te/run-tool-execution data resources)]
+      (is (false? (:denied? result)) "Not denied — exception is different from denial")
+      (is (some? (:error result)) "Error field populated")
+      (is (clojure.string/includes? (:error result) "Execution error") "Error contains execution error prefix")
+      (is (clojure.string/includes? (:observation result) "Tool execution error") "Observation contains error message")
+      (is (number? (:execution-time-ms result)) "Execution time tracked even on error"))))
+
+;; =============================================================================
+;; 12. Default Sandbox Fallback (no sandbox-allows-fn)
+;; =============================================================================
+
+(deftest test-default-sandbox-without-allows-fn
+  (testing "falls back to direct blocked-tools check when no sandbox-allows-fn"
+    (let [resources {:sandbox sample-sandbox
+                     :execute-tool-fn (constantly "direct-check-result")
+                     :timeout-ms 5000}
+          data-ok (base-data sample-tool-call)
+          result-ok (te/run-tool-execution data-ok resources)]
+      (is (false? (:denied? result-ok)) "read_file allowed via direct blocked-tools check")
+      (is (= "direct-check-result" (:observation result-ok))))
+    (let [resources {:sandbox sample-sandbox
+                     :execute-tool-fn (constantly "should-not-run")
+                     :timeout-ms 5000}
+          data-blocked (base-data sample-blocked-tool-call)
+          result-blocked (te/run-tool-execution data-blocked resources)]
+      (is (true? (:denied? result-blocked)) "bash blocked via direct blocked-tools check")
+      (is (clojure.string/includes? (:observation result-blocked) "SANDBOX VIOLATION")))))
+
+;; =============================================================================
+;; 13. Observation Error Flag
+;; =============================================================================
+
+(deftest test-observation-map-is-error-flag
+  (testing "observation-map :is-error? reflects error state correctly"
+    (let [record-calls (atom [])
+          resources-ok (mock-resources {:record-calls record-calls :execute-result "success"})
+          data-ok (base-data)
+          _  (te/run-tool-execution data-ok resources-ok)
+          obs-ok (first @record-calls)]
+      (is (false? (:is-error? obs-ok)) "Successful execution has is-error? false"))
+    (let [record-calls (atom [])
+          resources-err (mock-resources {:record-calls record-calls :execute-throws? true})
+          data-err (base-data)
+          _ (te/run-tool-execution data-err resources-err)
+          obs-err (first @record-calls)]
+      (is (true? (:is-error? obs-err)) "Failed execution has is-error? true"))))

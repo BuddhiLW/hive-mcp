@@ -3,7 +3,6 @@
 
    Handles progressive crystallization of session data into long-term memory.
 
-   SOLID: Single Responsibility - crystal/wrap logic in dedicated module.
    DDD: Application service layer exposing crystal domain functionality."
   (:require [hive-mcp.emacs.client :as ec]
             [hive-mcp.crystal.hooks :as crystal-hooks]

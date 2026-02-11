@@ -14,7 +14,6 @@
      Implementation details...
      ## Write tests [depends: t1] [estimate: small]
 
-   SOLID-S: Single responsibility — markdown plan parsing only."
   (:require [clojure.string :as str]
             [hive-mcp.plan.schema :as schema]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>

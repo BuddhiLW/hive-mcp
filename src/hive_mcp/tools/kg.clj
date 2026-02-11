@@ -8,9 +8,12 @@
    Also hosts versioning (Yggdrasil) and migration handlers directly,
    as these are smaller domains not yet warranting separate namespaces.
 
-   SOLID-S: Facade delegates to domain modules.
-   CQRS:    Queries and commands cleanly separated."
-  (:require [hive-mcp.tools.core :refer [mcp-json mcp-error]]
+   CQRS:    Queries and commands cleanly separated.
+
+   Result DSL: Internal logic returns Result maps ({:ok val} or {:error category}).
+   Single try-result boundary at each handler level. Zero nested try-catch."
+  (:require [hive-mcp.dns.result :as result]
+            [hive-mcp.tools.core :refer [mcp-json mcp-error]]
             [hive-mcp.tools.kg.queries :as kg-queries]
             [hive-mcp.tools.kg.commands :as kg-commands]
             [hive-mcp.knowledge-graph.versioning :as versioning]
@@ -47,7 +50,132 @@
   (into kg-queries/query-tools kg-commands/command-tools))
 
 ;;; =============================================================================
-;;; Versioning Tool Handlers (Yggdrasil Integration)
+;;; Result DSL Helpers (boundary pattern)
+;;; =============================================================================
+
+(defn- require-versioning
+  "Validate versioning is available. Returns Result."
+  []
+  (if (versioning/versioning-available?)
+    (result/ok true)
+    (result/err :kg/versioning-unavailable
+                {:message "Versioning not available. Ensure Datahike backend is configured and Yggdrasil is on classpath."})))
+
+(defn- require-non-empty
+  "Validate a string parameter is non-nil and non-empty. Returns Result."
+  [value param-name]
+  (if (or (nil? value) (and (string? value) (empty? value)))
+    (result/err :kg/validation-failed
+                {:message (str param-name " is required")})
+    (result/ok value)))
+
+(defn- try-result
+  "Execute thunk f returning Result; catch unexpected exceptions as error Result.
+   Unlike try-effect, expects f to return a Result map directly."
+  [category f]
+  (try
+    (f)
+    (catch Exception e
+      (log/error e (str (name category) " failed"))
+      (result/err category {:message (.getMessage e)}))))
+
+(defn- result->mcp
+  "Convert Result to MCP response.
+   {:ok data} -> (mcp-json data), {:error ...} -> (mcp-error message)."
+  [r]
+  (if (result/ok? r)
+    (mcp-json (:ok r))
+    (mcp-error (or (:message r) (:cause r) (str (:error r))))))
+
+;;; =============================================================================
+;;; Versioning Logic (pure Result-returning functions)
+;;; =============================================================================
+
+(defn- branch* [{:keys [name from]}]
+  (result/let-ok [_ (require-versioning)
+                  _ (require-non-empty name "name")]
+    (let [branch-kw (keyword name)
+          r (if from
+              (versioning/branch! branch-kw from)
+              (versioning/branch! branch-kw))]
+      (if r
+        (result/ok {:success true
+                    :branch (clojure.core/name branch-kw)
+                    :from (or from "current")
+                    :message (str "Created branch " name)})
+        (result/err :kg/branch-failed
+                    {:message (str "Failed to create branch " name)})))))
+
+(defn- checkout* [{:keys [name]}]
+  (result/let-ok [_ (require-versioning)
+                  _ (require-non-empty name "name")]
+    (let [branch-kw (keyword name)
+          r (versioning/checkout branch-kw)]
+      (if r
+        (result/ok {:success true
+                    :branch (clojure.core/name branch-kw)
+                    :snapshot-id (versioning/snapshot-id)
+                    :message (str "Switched to branch " name)})
+        (result/err :kg/checkout-failed
+                    {:message (str "Failed to checkout branch " name ". Branch may not exist.")})))))
+
+(defn- branches* [_]
+  (result/let-ok [_ (require-versioning)]
+    (let [branches (versioning/branches)
+          current (versioning/current-branch)]
+      (result/ok {:success true
+                  :current-branch (when current (clojure.core/name current))
+                  :branches (if branches (mapv clojure.core/name branches) [])
+                  :count (count (or branches []))}))))
+
+(defn- snapshot-id* [_]
+  (result/let-ok [_ (require-versioning)]
+    (let [snap-id (versioning/snapshot-id)
+          parent-ids (versioning/parent-ids)
+          branch (versioning/current-branch)]
+      (result/ok {:success true
+                  :snapshot-id snap-id
+                  :parent-ids (vec (or parent-ids []))
+                  :branch (when branch (clojure.core/name branch))}))))
+
+(defn- history* [{:keys [limit]}]
+  (result/let-ok [_ (require-versioning)]
+    (let [opts (when limit {:limit limit})
+          history (versioning/history opts)
+          branch (versioning/current-branch)]
+      (result/ok {:success true
+                  :branch (when branch (clojure.core/name branch))
+                  :count (count history)
+                  :commits (vec history)}))))
+
+(defn- merge* [{:keys [source]}]
+  (result/let-ok [_ (require-versioning)
+                  _ (require-non-empty source "source")]
+    (let [source-val (if (and (string? source)
+                              (not (re-matches #"^[0-9a-f-]{36}$" source)))
+                       (keyword source)
+                       source)
+          r (versioning/merge! source-val)]
+      (if r
+        (result/ok {:success true
+                    :source (str source)
+                    :snapshot-id (versioning/snapshot-id)
+                    :message (str "Merged " source " into current branch")})
+        (result/err :kg/merge-failed
+                    {:message (str "Failed to merge " source)})))))
+
+(defn- versioning-status* [_]
+  (let [status (versioning/status)]
+    (result/ok {:success true
+                :available (:available status)
+                :system-id (:system-id status)
+                :branch (when (:branch status) (clojure.core/name (:branch status)))
+                :snapshot-id (:snapshot-id status)
+                :branches (when (:branches status)
+                            (mapv clojure.core/name (:branches status)))})))
+
+;;; =============================================================================
+;;; Versioning Tool Handlers (boundary layer)
 ;;; =============================================================================
 
 (defn handle-kg-branch
@@ -56,165 +184,54 @@
    Arguments:
      name - Branch name (required, e.g., 'experiment', 'agent-1-exploration')
      from - Optional source branch or snapshot-id to branch from"
-  [{:keys [name from]}]
-  (log/info "kg_branch" {:name name :from from})
-  (try
-    (cond
-      (not (versioning/versioning-available?))
-      (mcp-error "Versioning not available. Ensure Datahike backend is configured and Yggdrasil is on classpath.")
-
-      (or (nil? name) (empty? name))
-      (mcp-error "name is required")
-
-      :else
-      (let [branch-kw (keyword name)
-            result (if from
-                     (versioning/branch! branch-kw from)
-                     (versioning/branch! branch-kw))]
-        (if result
-          (mcp-json {:success true
-                     :branch (clojure.core/name branch-kw)
-                     :from (or from "current")
-                     :message (str "Created branch " name)})
-          (mcp-error (str "Failed to create branch " name)))))
-    (catch Exception e
-      (log/error e "kg_branch failed")
-      (mcp-error (str "Branch creation failed: " (.getMessage e))))))
+  [params]
+  (log/info "kg_branch" {:name (:name params) :from (:from params)})
+  (result->mcp (try-result :kg/branch-failed #(branch* params))))
 
 (defn handle-kg-checkout
   "Switch to a different branch in the versioned Knowledge Graph.
 
    Arguments:
      name - Branch name to switch to (required)"
-  [{:keys [name]}]
-  (log/info "kg_checkout" {:name name})
-  (try
-    (cond
-      (not (versioning/versioning-available?))
-      (mcp-error "Versioning not available. Ensure Datahike backend is configured and Yggdrasil is on classpath.")
-
-      (or (nil? name) (empty? name))
-      (mcp-error "name is required")
-
-      :else
-      (let [branch-kw (keyword name)
-            result (versioning/checkout branch-kw)]
-        (if result
-          (mcp-json {:success true
-                     :branch (clojure.core/name branch-kw)
-                     :snapshot-id (versioning/snapshot-id)
-                     :message (str "Switched to branch " name)})
-          (mcp-error (str "Failed to checkout branch " name ". Branch may not exist.")))))
-    (catch Exception e
-      (log/error e "kg_checkout failed")
-      (mcp-error (str "Checkout failed: " (.getMessage e))))))
+  [params]
+  (log/info "kg_checkout" {:name (:name params)})
+  (result->mcp (try-result :kg/checkout-failed #(checkout* params))))
 
 (defn handle-kg-branches
   "List all branches in the versioned Knowledge Graph."
-  [_]
+  [params]
   (log/info "kg_branches")
-  (try
-    (if-not (versioning/versioning-available?)
-      (mcp-error "Versioning not available. Ensure Datahike backend is configured and Yggdrasil is on classpath.")
-      (let [branches (versioning/branches)
-            current (versioning/current-branch)]
-        (mcp-json {:success true
-                   :current-branch (when current (clojure.core/name current))
-                   :branches (if branches
-                               (mapv clojure.core/name branches)
-                               [])
-                   :count (count (or branches []))})))
-    (catch Exception e
-      (log/error e "kg_branches failed")
-      (mcp-error (str "Failed to list branches: " (.getMessage e))))))
+  (result->mcp (try-result :kg/branches-failed #(branches* params))))
 
 (defn handle-kg-snapshot-id
   "Get the current commit/snapshot ID of the versioned Knowledge Graph."
-  [_]
+  [params]
   (log/info "kg_snapshot_id")
-  (try
-    (if-not (versioning/versioning-available?)
-      (mcp-error "Versioning not available. Ensure Datahike backend is configured and Yggdrasil is on classpath.")
-      (let [snap-id (versioning/snapshot-id)
-            parent-ids (versioning/parent-ids)
-            branch (versioning/current-branch)]
-        (mcp-json {:success true
-                   :snapshot-id snap-id
-                   :parent-ids (vec (or parent-ids []))
-                   :branch (when branch (clojure.core/name branch))})))
-    (catch Exception e
-      (log/error e "kg_snapshot_id failed")
-      (mcp-error (str "Failed to get snapshot ID: " (.getMessage e))))))
+  (result->mcp (try-result :kg/snapshot-failed #(snapshot-id* params))))
 
 (defn handle-kg-history
   "Get commit history for the current branch.
 
    Arguments:
      limit - Maximum number of commits to return (optional, default: 100)"
-  [{:keys [limit]}]
-  (log/info "kg_history" {:limit limit})
-  (try
-    (if-not (versioning/versioning-available?)
-      (mcp-error "Versioning not available. Ensure Datahike backend is configured and Yggdrasil is on classpath.")
-      (let [opts (when limit {:limit limit})
-            history (versioning/history opts)
-            branch (versioning/current-branch)]
-        (mcp-json {:success true
-                   :branch (when branch (clojure.core/name branch))
-                   :count (count history)
-                   :commits (vec history)})))
-    (catch Exception e
-      (log/error e "kg_history failed")
-      (mcp-error (str "Failed to get history: " (.getMessage e))))))
+  [params]
+  (log/info "kg_history" {:limit (:limit params)})
+  (result->mcp (try-result :kg/history-failed #(history* params))))
 
 (defn handle-kg-merge
   "Merge a source branch or snapshot into the current branch.
 
    Arguments:
      source - Source branch name or snapshot-id to merge (required)"
-  [{:keys [source]}]
-  (log/info "kg_merge" {:source source})
-  (try
-    (cond
-      (not (versioning/versioning-available?))
-      (mcp-error "Versioning not available. Ensure Datahike backend is configured and Yggdrasil is on classpath.")
-
-      (or (nil? source) (empty? source))
-      (mcp-error "source is required")
-
-      :else
-      (let [;; Try as branch keyword first, fall back to snapshot-id string
-            source-val (if (and (string? source)
-                                (not (re-matches #"^[0-9a-f-]{36}$" source)))
-                         (keyword source)
-                         source)
-            result (versioning/merge! source-val)]
-        (if result
-          (mcp-json {:success true
-                     :source (str source)
-                     :snapshot-id (versioning/snapshot-id)
-                     :message (str "Merged " source " into current branch")})
-          (mcp-error (str "Failed to merge " source)))))
-    (catch Exception e
-      (log/error e "kg_merge failed")
-      (mcp-error (str "Merge failed: " (.getMessage e))))))
+  [params]
+  (log/info "kg_merge" {:source (:source params)})
+  (result->mcp (try-result :kg/merge-failed #(merge* params))))
 
 (defn handle-kg-versioning-status
   "Get the current versioning status of the Knowledge Graph."
-  [_]
+  [params]
   (log/info "kg_versioning_status")
-  (try
-    (let [status (versioning/status)]
-      (mcp-json {:success true
-                 :available (:available status)
-                 :system-id (:system-id status)
-                 :branch (when (:branch status) (clojure.core/name (:branch status)))
-                 :snapshot-id (:snapshot-id status)
-                 :branches (when (:branches status)
-                             (mapv clojure.core/name (:branches status)))}))
-    (catch Exception e
-      (log/error e "kg_versioning_status failed")
-      (mcp-error (str "Failed to get versioning status: " (.getMessage e))))))
+  (result->mcp (try-result :kg/status-failed #(versioning-status* params))))
 
 ;;; =============================================================================
 ;;; Versioning Tool Definitions
@@ -277,107 +294,89 @@
     :handler handle-kg-versioning-status}])
 
 ;;; =============================================================================
-;;; Migration Tool Handlers
+;;; Migration Logic (pure Result-returning functions)
+;;; =============================================================================
+
+(defn- migrate* [{:keys [source_backend target_backend dry_run export_path target_db_path]}]
+  (require 'hive-mcp.knowledge-graph.migration)
+  (let [migrate-fn (resolve 'hive-mcp.knowledge-graph.migration/migrate-store!)
+        source-kw (keyword source_backend)
+        target-kw (keyword target_backend)
+        target-opts (when target_db_path {:db-path target_db_path})
+        r (migrate-fn source-kw target-kw
+                       {:target-opts target-opts
+                        :dry-run (boolean dry_run)
+                        :export-path export_path})]
+    (result/ok {:success true
+                :source-backend (name source-kw)
+                :target-backend (name target-kw)
+                :dry-run (:dry-run r)
+                :exported (:exported r)
+                :imported (:imported r)
+                :validation (:validation r)
+                :errors (when (seq (:errors r))
+                          (count (:errors r)))})))
+
+(defn- export* [{:keys [path]}]
+  (require 'hive-mcp.knowledge-graph.migration)
+  (let [export-fn (resolve 'hive-mcp.knowledge-graph.migration/export-to-file!)
+        r (export-fn path)]
+    (result/ok {:success true
+                :path path
+                :counts (:counts r)
+                :exported-at (str (:exported-at r))})))
+
+(defn- import* [{:keys [path]}]
+  (require 'hive-mcp.knowledge-graph.migration)
+  (let [import-fn (resolve 'hive-mcp.knowledge-graph.migration/import-from-file!)
+        r (import-fn path)]
+    (result/ok {:success true
+                :path path
+                :imported (:imported r)
+                :errors (when (seq (:errors r))
+                          {:count (count (:errors r))
+                           :first-error (first (:errors r))})})))
+
+(defn- validate-migration* [{:keys [expected_edges expected_disc expected_synthetic]}]
+  (require 'hive-mcp.knowledge-graph.migration)
+  (let [validate-fn (resolve 'hive-mcp.knowledge-graph.migration/validate-migration)
+        expected {:edges (or expected_edges 0)
+                  :disc (or expected_disc 0)
+                  :synthetic (or expected_synthetic 0)}
+        r (validate-fn expected)]
+    (result/ok {:success true
+                :valid (:valid? r)
+                :expected (:expected r)
+                :actual (:actual r)
+                :missing (:missing r)})))
+
+;;; =============================================================================
+;;; Migration Tool Handlers (boundary layer)
 ;;; =============================================================================
 
 (defn handle-kg-migrate
-  "Migrate KG data from one backend to another.
-
-   Arguments:
-     source_backend - Current backend (:datascript, :datalevin, or :datahike)
-     target_backend - Target backend to migrate to
-     dry_run        - If true, show what would be migrated without doing it
-     export_path    - Optional path to save EDN backup during migration
-     target_db_path - Optional path for target backend storage (Datahike/Datalevin)"
-  [{:keys [source_backend target_backend dry_run export_path target_db_path]}]
-  (log/info "kg_migrate" {:source source_backend :target target_backend :dry-run dry_run})
-  (try
-    (require 'hive-mcp.knowledge-graph.migration)
-    (let [migrate-fn (resolve 'hive-mcp.knowledge-graph.migration/migrate-store!)
-          source-kw (keyword source_backend)
-          target-kw (keyword target_backend)
-          target-opts (when target_db_path {:db-path target_db_path})
-          result (migrate-fn source-kw target-kw
-                             {:target-opts target-opts
-                              :dry-run (boolean dry_run)
-                              :export-path export_path})]
-      (mcp-json {:success true
-                 :source-backend (name source-kw)
-                 :target-backend (name target-kw)
-                 :dry-run (:dry-run result)
-                 :exported (:exported result)
-                 :imported (:imported result)
-                 :validation (:validation result)
-                 :errors (when (seq (:errors result))
-                           (count (:errors result)))}))
-    (catch Exception e
-      (log/error e "kg_migrate failed")
-      (mcp-error (str "Migration failed: " (.getMessage e))))))
+  "Migrate KG data from one backend to another."
+  [params]
+  (log/info "kg_migrate" {:source (:source_backend params) :target (:target_backend params) :dry-run (:dry_run params)})
+  (result->mcp (try-result :kg/migrate-failed #(migrate* params))))
 
 (defn handle-kg-export
-  "Export KG data to EDN file for backup or migration.
-
-   Arguments:
-     path - File path to save the EDN export"
-  [{:keys [path]}]
-  (log/info "kg_export" {:path path})
-  (try
-    (require 'hive-mcp.knowledge-graph.migration)
-    (let [export-fn (resolve 'hive-mcp.knowledge-graph.migration/export-to-file!)
-          result (export-fn path)]
-      (mcp-json {:success true
-                 :path path
-                 :counts (:counts result)
-                 :exported-at (str (:exported-at result))}))
-    (catch Exception e
-      (log/error e "kg_export failed")
-      (mcp-error (str "Export failed: " (.getMessage e))))))
+  "Export KG data to EDN file for backup or migration."
+  [params]
+  (log/info "kg_export" {:path (:path params)})
+  (result->mcp (try-result :kg/export-failed #(export* params))))
 
 (defn handle-kg-import
-  "Import KG data from EDN file.
-
-   Arguments:
-     path - File path to the EDN export file"
-  [{:keys [path]}]
-  (log/info "kg_import" {:path path})
-  (try
-    (require 'hive-mcp.knowledge-graph.migration)
-    (let [import-fn (resolve 'hive-mcp.knowledge-graph.migration/import-from-file!)
-          result (import-fn path)]
-      (mcp-json {:success true
-                 :path path
-                 :imported (:imported result)
-                 :errors (when (seq (:errors result))
-                           {:count (count (:errors result))
-                            :first-error (first (:errors result))})}))
-    (catch Exception e
-      (log/error e "kg_import failed")
-      (mcp-error (str "Import failed: " (.getMessage e))))))
+  "Import KG data from EDN file."
+  [params]
+  (log/info "kg_import" {:path (:path params)})
+  (result->mcp (try-result :kg/import-failed #(import* params))))
 
 (defn handle-kg-validate-migration
-  "Validate migration by comparing expected vs actual entity counts.
-
-   Arguments:
-     expected_edges     - Expected number of edges
-     expected_disc      - Expected number of disc entities
-     expected_synthetic - Expected number of synthetic nodes"
-  [{:keys [expected_edges expected_disc expected_synthetic]}]
-  (log/info "kg_validate_migration" {:edges expected_edges :disc expected_disc :synthetic expected_synthetic})
-  (try
-    (require 'hive-mcp.knowledge-graph.migration)
-    (let [validate-fn (resolve 'hive-mcp.knowledge-graph.migration/validate-migration)
-          expected {:edges (or expected_edges 0)
-                    :disc (or expected_disc 0)
-                    :synthetic (or expected_synthetic 0)}
-          result (validate-fn expected)]
-      (mcp-json {:success true
-                 :valid (:valid? result)
-                 :expected (:expected result)
-                 :actual (:actual result)
-                 :missing (:missing result)}))
-    (catch Exception e
-      (log/error e "kg_validate_migration failed")
-      (mcp-error (str "Validation failed: " (.getMessage e))))))
+  "Validate migration by comparing expected vs actual entity counts."
+  [params]
+  (log/info "kg_validate_migration" {:edges (:expected_edges params) :disc (:expected_disc params) :synthetic (:expected_synthetic params)})
+  (result->mcp (try-result :kg/validate-migration-failed #(validate-migration* params))))
 
 ;;; =============================================================================
 ;;; Migration Tool Definitions

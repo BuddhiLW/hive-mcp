@@ -1,13 +1,5 @@
 (ns hive-mcp.tools.swarm.jvm.classifier
-  "JVM process discovery and classification.
-
-   Provides:
-   - Process discovery via ps command
-   - Parent process mapping
-   - Swarm environment detection
-   - Process type classification
-
-   CLARITY: Layers stay pure - classification logic separated from handlers."
+  "JVM process discovery, classification, and swarm environment detection."
   (:require [clojure.java.shell :as shell]
             [clojure.string :as str]
             [taoensso.timbre :as log]
@@ -16,16 +8,8 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-
-;;; ============================================================
-;;; Process Discovery
-;;; ============================================================
-
 (defn find-jvm-processes
-  "Find all JVM processes with their details including parent info.
-
-   Returns seq of maps with keys:
-     :pid :ppid :cpu :mem :etime :cmd"
+  "Find all JVM processes with their details including parent info."
   []
   (try
     (let [result (shell/sh "ps" "-eo" "pid,ppid,pcpu,pmem,etime,args" "--no-headers")
@@ -37,9 +21,7 @@
       [])))
 
 (defn get-all-process-parents
-  "Get pid->{:ppid :comm} map for all processes in ONE ps call.
-
-   Efficient: O(1) lookups for any PID after single shell call."
+  "Get pid-to-parent map for all processes in a single ps call."
   []
   (try
     (let [result (shell/sh "ps" "-eo" "pid,ppid,comm" "--no-headers")
@@ -52,22 +34,12 @@
                   lines)))
     (catch Exception _ {})))
 
-;;; ============================================================
-;;; Swarm Environment Detection
-;;; ============================================================
-
 (defn get-process-swarm-info
-  "Get swarm environment variables from /proc/<pid>/environ.
-
-   Returns nil if not a swarm-spawned process, or a map with:
-     :swarm-slave-id
-     :swarm-master-id
-     :swarm-depth"
+  "Get swarm environment variables from /proc/<pid>/environ."
   [pid]
   (try
     (let [environ-file (str "/proc/" pid "/environ")
           content (slurp environ-file)
-          ;; environ file has null-separated entries
           entries (str/split content #"\x00")
           env-map (into {} (keep #(let [parts (str/split % #"=" 2)]
                                     (when (= 2 (count parts))
@@ -81,17 +53,10 @@
          :swarm-master-id master-id
          :swarm-depth (when depth (try (Integer/parseInt depth) (catch Exception _ nil)))}))
     (catch Exception _
-      ;; Can't read environ (permission denied or process gone)
       nil)))
 
-;;; ============================================================
-;;; Process Type Classification
-;;; ============================================================
-
 (def ^:private type-patterns
-  "Regex patterns for JVM process type classification.
-
-   Order matters - first match wins."
+  "Regex patterns for JVM process type classification."
   [[:shadow-cljs #"shadow-cljs|shadow\.cljs"]
    [:hive-mcp #"hive-mcp|hive_mcp"]
    [:clojure-mcp #"clojure-mcp|clj-mcp"]
@@ -99,9 +64,7 @@
    [:leiningen #"leiningen"]])
 
 (defn classify-type
-  "Classify a JVM process type based on command line.
-
-   Returns keyword: :shadow-cljs, :hive-mcp, :clojure-mcp, :nrepl, :leiningen, or :other"
+  "Classify a JVM process type based on command line."
   [cmd]
   (or (some (fn [[type pattern]]
               (when (re-find pattern cmd) type))
@@ -109,12 +72,7 @@
       :other))
 
 (defn classify-jvm-process
-  "Classify a JVM process by type and swarm status.
-
-   Adds keys to process map:
-     :type - Process type keyword
-     :swarm-spawned - Boolean
-     :swarm-slave-id, :swarm-master-id, :swarm-depth (if swarm-spawned)"
+  "Classify a JVM process by type and swarm status."
   [{:keys [cmd pid] :as proc}]
   (let [swarm-info (get-process-swarm-info pid)
         proc-type (classify-type cmd)]
@@ -123,16 +81,8 @@
         (assoc :swarm-spawned (boolean swarm-info))
         (merge swarm-info))))
 
-;;; ============================================================
-;;; Batch Operations
-;;; ============================================================
-
 (defn discover-and-classify
-  "Find all JVM processes and classify them.
-
-   Returns {:processes [...] :by-type {...} :parents {...}}
-
-   Convenience function for common workflow."
+  "Find all JVM processes, classify them, and return grouped results."
   []
   (let [all-procs (find-jvm-processes)
         all-parents (get-all-process-parents)

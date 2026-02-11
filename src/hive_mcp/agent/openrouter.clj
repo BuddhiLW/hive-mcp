@@ -1,11 +1,5 @@
 (ns hive-mcp.agent.openrouter
-  "OpenRouter backend for agent delegation.
-
-   Provides access to 100+ models via OpenRouter API.
-   Uses OpenAI-compatible format with tool calling support.
-
-   CLARITY-T: Full telemetry with timing, metrics, and error tracking.
-   CLARITY-Y: Validates responses to yield safe failures on empty content."
+  "OpenRouter backend for agent delegation via OpenAI-compatible API."
   (:require [hive-mcp.agent.protocol :as proto]
             [hive-mcp.config :as global-config]
             [clj-http.client :as http]
@@ -19,15 +13,9 @@
 (def ^:private api-url "https://openrouter.ai/api/v1/chat/completions")
 
 (def ^:private timeout-ms
-  "HTTP timeout in milliseconds (5 minutes, matching Ollama's 300s)."
+  "HTTP timeout in milliseconds (5 minutes)."
   300000)
 
-;;; =============================================================================
-;;; Metrics (CLARITY-T: Telemetry First)
-;;; =============================================================================
-
-;; Runtime metrics for OpenRouter requests.
-;; Thread-safe via atom. Reset with reset-metrics!
 (defonce metrics
   (atom {:request-count 0
          :success-count 0
@@ -97,49 +85,33 @@
         tool-calls))
 
 (defn parse-response
-  "Parse OpenRouter/OpenAI response message into internal format.
-
-   CLARITY-Y: Validates response content to yield safe failures.
-   Returns:
-     {:type :tool_calls :calls [...]} - if tool calls present
-     {:type :text :content \"...\"} - if valid text content
-     {:type :error :error \"...\"}  - if empty/nil/whitespace content
-
-   This prevents silent 0-byte file writes when models return empty responses."
+  "Parse OpenRouter/OpenAI response message into internal format."
   [choice]
   (if (nil? choice)
     {:type :error :error "OpenRouter returned nil message"}
     (let [tool-calls (:tool_calls choice)
           content (:content choice)]
       (cond
-        ;; Tool calls present - process normally
         (seq tool-calls)
         {:type :tool_calls
          :calls (parse-tool-calls tool-calls)}
 
-        ;; Validate text content is non-empty
         (str/blank? content)
         {:type :error
          :error (str "OpenRouter returned empty response"
                      (when content " (whitespace-only)"))}
 
-        ;; Valid text response
         :else
         {:type :text
          :content content}))))
 
 (defn- chat-request
-  "Make chat completion request to OpenRouter.
-
-   CLARITY-T: Full telemetry with timing and error tracking.
-   Includes timeout and error handling to prevent silent failures
-   in async contexts (core.async go blocks swallow exceptions)."
+  "Make chat completion request to OpenRouter with timeout and error handling."
   [api-key model messages tools]
   (let [start-ms (System/currentTimeMillis)
         msg-count (count messages)
         tool-count (count tools)]
 
-    ;; Telemetry: Log request start
     (log/debug "OpenRouter request starting"
                {:model model :messages msg-count :tools tool-count})
     (record-request!)
@@ -161,7 +133,6 @@
             status (:status response)]
 
         (cond
-          ;; No response (network failure, timeout)
           (nil? status)
           (do
             (record-timeout! elapsed-ms)
@@ -170,7 +141,6 @@
             (throw (ex-info "OpenRouter request failed: no response"
                             {:model model :elapsed-ms elapsed-ms})))
 
-          ;; HTTP error
           (not (<= 200 status 299))
           (let [error-body (try (json/read-str (or (:body response) "{}") :key-fn keyword)
                                 (catch Exception _ {}))]
@@ -181,7 +151,6 @@
                                  (or (:message (:error error-body)) "unknown error"))
                             {:status status :error error-body :model model :elapsed-ms elapsed-ms})))
 
-          ;; Success
           :else
           (do
             (record-success! elapsed-ms)
@@ -209,15 +178,13 @@
   proto/LLMBackend
 
   (chat [_ messages tools]
-    ;; Telemetry is handled by chat-request
     (let [response (chat-request api-key model messages tools)
           choice (get-in response [:choices 0 :message])
-          usage (:usage response)  ;; OpenRouter includes usage in response
+          usage (:usage response)
           result (parse-response choice)]
       (log/debug "OpenRouter response parsed" {:model model :type (:type result)})
       (when (= :error (:type result))
         (log/warn "OpenRouter empty response detected" {:model model :error (:error result)}))
-      ;; Include usage info in result for metrics tracking
       (cond-> result
         usage (assoc :usage {:input (:prompt_tokens usage)
                              :output (:completion_tokens usage)
@@ -226,17 +193,7 @@
   (model-name [_] model))
 
 (defn openrouter-backend
-  "Create an OpenRouterBackend.
-   
-   Options:
-     :api-key - OpenRouter API key (required, or set OPENROUTER_API_KEY env)
-     :model   - Model to use (default: anthropic/claude-3-haiku)
-   
-   Popular models:
-     anthropic/claude-3-opus, anthropic/claude-3-sonnet, anthropic/claude-3-haiku
-     openai/gpt-4-turbo, openai/gpt-3.5-turbo
-     mistralai/mistral-large, mistralai/mixtral-8x7b
-     meta-llama/llama-3-70b-instruct"
+  "Create an OpenRouterBackend with the given API key and model."
   [{:keys [api-key model] :or {model "anthropic/claude-3-haiku"}}]
   (let [key (or api-key (global-config/get-secret :openrouter-api-key))]
     (when-not key

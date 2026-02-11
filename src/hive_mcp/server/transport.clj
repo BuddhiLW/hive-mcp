@@ -106,7 +106,6 @@
 (defn start-ws-channel-with-healing!
   "Start WebSocket channel server with auto-healing.
 
-   CLARITY: Yield safe failure - if server dies, restart it automatically.
    Runs a background async loop that monitors and restarts if needed.
 
    Parameters:
@@ -197,7 +196,6 @@
     (try
       (channel/start-server! {:type :tcp :port channel-port})
       ;; Mark coordinator as running to protect from test fixture cleanup
-      ;; CLARITY-Y: This prevents ch/stop-server! in test fixtures from killing
       ;; the production server when tests run in the same JVM
       (channel/mark-coordinator-running!)
       (log/info "Legacy channel server started on TCP port" channel-port)

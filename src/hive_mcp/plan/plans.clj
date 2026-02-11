@@ -48,9 +48,6 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;;; ============================================================
-;;; Configuration
-;;; ============================================================
 
 (def ^:private collection-name "hive-mcp-plans")
 
@@ -58,9 +55,6 @@
   "Valid plan-status values."
   #{"draft" "active" "completed" "superseded"})
 
-;;; ============================================================
-;;; Collection Management
-;;; ============================================================
 
 (defonce ^:private collection-cache (atom nil))
 
@@ -151,9 +145,6 @@
   []
   (reset! collection-cache nil))
 
-;;; ============================================================
-;;; Document Formatting
-;;; ============================================================
 
 (defn- plan-to-document
   "Convert plan entry to searchable document string.
@@ -167,9 +158,6 @@
        "Tags: " (if (sequential? tags) (str/join ", " tags) (or tags "")) "\n\n"
        content))
 
-;;; ============================================================
-;;; Metadata Extraction
-;;; ============================================================
 
 (defn- count-plan-steps
   "Heuristic to count steps in plan content.
@@ -204,9 +192,6 @@
                                  (str/join "|" knowledge-gaps)
                                  (or knowledge-gaps ""))))))
 
-;;; ============================================================
-;;; Indexing
-;;; ============================================================
 
 (defn index-plan!
   "Index a plan entry in the plans Chroma collection.
@@ -251,9 +236,6 @@
                       {:type :plan-index-error
                        :content-length (count (str content))})))))
 
-;;; ============================================================
-;;; Semantic Search
-;;; ============================================================
 
 (defn search-plans
   "Search plans using semantic similarity.
@@ -295,9 +277,6 @@
                         (subs document 0 (min 300 (count document))))})
           results)))
 
-;;; ============================================================
-;;; Retrieval
-;;; ============================================================
 
 (defn get-plan
   "Get a specific plan by ID from the plans collection.
@@ -329,9 +308,6 @@
       (log/debug "Failed to get plan from Chroma:" plan-id (.getMessage e))
       nil)))
 
-;;; ============================================================
-;;; Query (Filtered Retrieval)
-;;; ============================================================
 
 (defn query-plans
   "Query plans with metadata filtering.
@@ -380,9 +356,6 @@
       (log/warn "Failed to query plans:" (.getMessage e))
       [])))
 
-;;; ============================================================
-;;; Update
-;;; ============================================================
 
 (defn update-plan-status!
   "Update the status of a plan.
@@ -403,9 +376,6 @@
       (log/error "Failed to update plan status:" (.getMessage e))
       nil)))
 
-;;; ============================================================
-;;; Delete
-;;; ============================================================
 
 (defn delete-plan!
   "Delete a plan from the plans collection."
@@ -415,9 +385,6 @@
     (log/debug "Deleted plan from Chroma:" plan-id)
     plan-id))
 
-;;; ============================================================
-;;; Status
-;;; ============================================================
 
 (defn status
   "Get plans collection integration status."

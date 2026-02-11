@@ -1,12 +1,5 @@
 (ns hive-mcp.agent.drone.kg-priming
-  "Domain context priming for drone task augmentation.
-
-   Resolves seed topics into relevant domain knowledge and injects
-   it into drone prompts. Delegates to extension if available.
-   Noop fallback: returns empty string (no priming).
-
-   CLARITY-Y: Auto-initializes KG store if needed. Never throws
-   on missing store — graceful degradation to noop."
+  "Domain context priming for drone task augmentation via extension delegation."
   (:require [hive-mcp.extensions.registry :as ext]
             [hive-mcp.knowledge-graph.connection :as kg-conn]
             [hive-mcp.protocols.kg :as kg-proto]
@@ -16,13 +9,8 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;; =============================================================================
-;; KG Store Auto-Initialization
-;; =============================================================================
-
 (defn- ensure-kg-store!
-  "Ensure KG store is initialized. Auto-initializes via connection if needed.
-   CLARITY-Y: Returns true if store available, false on failure (never throws)."
+  "Ensure KG store is initialized, auto-initializing via connection if needed."
   []
   (try
     (if (kg-proto/store-set?)
@@ -37,19 +25,12 @@
       false)))
 
 (defn kg-store-available?
-  "Check if the KG store is currently initialized (without auto-init).
-   Lightweight check for callers that want to know store status."
+  "Check if the KG store is currently initialized."
   []
   (kg-proto/store-set?))
 
-;; =============================================================================
-;; Extension Delegation Helpers
-;; =============================================================================
-
 (defn- delegate-or-noop
-  "Try to delegate to extension fn, fall back to default value.
-   Guards against missing KG store with auto-initialization.
-   CLARITY-Y: Never throws — returns default-val on any failure."
+  "Try to delegate to extension fn, fall back to default value."
   [ext-key default-val args]
   (if-let [f (ext/get-extension ext-key)]
     (if (ensure-kg-store!)
@@ -66,35 +47,20 @@
       (log/debug "Extension not available, noop for" ext-key)
       default-val)))
 
-;; =============================================================================
-;; Public API
-;; =============================================================================
-
 (defn prime-context
-  "Returns a markdown block with domain knowledge relevant to the task, or empty string if none found."
+  "Returns a markdown block with domain knowledge relevant to the task, or empty string."
   [{:keys [seeds] :as opts}]
   (if (seq seeds)
     (delegate-or-noop :pm/prime "" [opts])
     ""))
 
 (defn resolve-seeds
-  "Resolve seed topic strings into concrete references.
-   Delegates to extension if available. Returns empty vector otherwise.
-
-   Arguments (map):
-     :tags       - Vector of topic tag strings
-     :ids        - Explicit reference IDs to pass through
-     :task       - Task string for relevance-based resolution
-     :project-id - Project ID for scoping
-
-   Returns:
-     Vector of reference ID strings, or [] if noop."
+  "Resolve seed topic strings into concrete references."
   [opts]
   (delegate-or-noop :pm/seeds [] [opts]))
 
 (defn priming-available?
-  "Check if the priming extension is available and KG store is accessible.
-   Returns true only when both extension AND store are ready."
+  "Check if the priming extension is available and KG store is accessible."
   []
   (and (ext/extension-available? :pm/prime)
        (kg-store-available?)))

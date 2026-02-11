@@ -1,17 +1,5 @@
 (ns hive-mcp.tools.kg.queries
-  "KG query (read-only) tool handlers.
-
-   Handlers for read operations on the Knowledge Graph:
-   - traverse: Walk graph via BFS from a starting node
-   - impact:   Find all nodes that depend on a given node
-   - path:     Find shortest path between two nodes
-   - subgraph: Extract visible subgraph for a scope
-   - contradictions: Find conflicting knowledge edges
-   - context:  Get full context (in/out edges, confidence) for a node
-   - stats:    Get edge counts by relation and scope
-
-   SOLID-S: Single Responsibility - read-only KG operations.
-   CQRS:    Query side of KG tool decomposition."
+  "KG read-only query handlers for traversal, impact analysis, and graph stats."
   (:require [hive-mcp.tools.core :refer [mcp-json mcp-error]]
             [hive-mcp.knowledge-graph.edges :as edges]
             [hive-mcp.knowledge-graph.queries :as queries]
@@ -20,10 +8,6 @@
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
-
-;;; =============================================================================
-;;; Validation Helpers (shared, read-only)
-;;; =============================================================================
 
 (defn validate-node-id
   "Validate node ID is a non-empty string."
@@ -41,19 +25,8 @@
     (string? relations) #{(keyword relations)}
     :else nil))
 
-;;; =============================================================================
-;;; Query Handlers
-;;; =============================================================================
-
 (defn handle-kg-traverse
-  "Walk graph from a starting node.
-
-   Arguments:
-     start_node - Node ID to start traversal from (required)
-     direction  - 'outgoing' (default), 'incoming', or 'both'
-     relations  - List of relation types to follow (optional, default: all)
-     max_depth  - Maximum traversal depth (optional, default: 3)
-     scope      - Limit to edges visible from this scope (optional)"
+  "Walk graph from a starting node via BFS."
   [{:keys [start_node direction relations max_depth scope]}]
   (log/info "kg_traverse" {:start start_node :direction direction})
   (try
@@ -83,13 +56,7 @@
       (mcp-error (str "Traversal failed: " (.getMessage e))))))
 
 (defn handle-kg-impact-analysis
-  "Find all nodes that depend on given node.
-   Useful before modifying or deleting an entry.
-
-   Arguments:
-     node_id   - Node to analyze (required)
-     max_depth - Maximum depth for transitive dependencies (optional, default: 5)
-     scope     - Limit to visible scopes (optional)"
+  "Find all nodes that depend on a given node."
   [{:keys [node_id max_depth scope]}]
   (log/info "kg_impact_analysis" {:node node_id})
   (try
@@ -111,15 +78,7 @@
       (mcp-error (str "Impact analysis failed: " (.getMessage e))))))
 
 (defn handle-kg-find-path
-  "Find shortest path between two nodes.
-
-   Arguments:
-     from_node - Source node ID (required)
-     to_node   - Target node ID (required)
-     direction - 'outgoing', 'incoming', or 'both' (default: 'both')
-     relations - List of relations to follow (optional)
-     max_depth - Maximum search depth (optional, default: 10)
-     scope     - Limit to visible scopes (optional)"
+  "Find shortest path between two nodes."
   [{:keys [from_node to_node direction relations max_depth scope]}]
   (log/info "kg_find_path" {:from from_node :to to_node})
   (try
@@ -151,10 +110,7 @@
       (mcp-error (str "Path finding failed: " (.getMessage e))))))
 
 (defn handle-kg-subgraph
-  "Extract subgraph visible from a scope.
-
-   Arguments:
-     scope - Scope string (required, e.g., 'hive-mcp:agora')"
+  "Extract subgraph visible from a scope."
   [{:keys [scope]}]
   (log/info "kg_subgraph" {:scope scope})
   (try
@@ -176,10 +132,7 @@
       (mcp-error (str "Subgraph extraction failed: " (.getMessage e))))))
 
 (defn handle-kg-contradictions
-  "Find edges with :contradicts relation in scope.
-
-   Arguments:
-     scope - Optional scope to limit search"
+  "Find edges with :contradicts relation in scope."
   [{:keys [scope]}]
   (log/info "kg_contradictions" {:scope scope})
   (try
@@ -193,10 +146,7 @@
       (mcp-error (str "Contradiction search failed: " (.getMessage e))))))
 
 (defn handle-kg-node-context
-  "Get full context for a node: incoming, outgoing, confidence stats.
-
-   Arguments:
-     node_id - Node to get context for (required)"
+  "Get full context for a node: incoming, outgoing, confidence stats."
   [{:keys [node_id]}]
   (log/info "kg_node_context" {:node node_id})
   (try
@@ -225,9 +175,7 @@
       (mcp-error (str "Context retrieval failed: " (.getMessage e))))))
 
 (defn handle-kg-stats
-  "Get statistics about the Knowledge Graph.
-
-   Returns edge counts by relation type and scope."
+  "Get statistics about the Knowledge Graph."
   [_]
   (log/info "kg_stats")
   (try
@@ -239,10 +187,6 @@
     (catch Exception e
       (log/error e "kg_stats failed")
       (mcp-error (str "Stats retrieval failed: " (.getMessage e))))))
-
-;;; =============================================================================
-;;; Query Tool Definitions
-;;; =============================================================================
 
 (def query-tools
   "Tool definitions for KG read-only operations."

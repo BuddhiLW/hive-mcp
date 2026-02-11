@@ -1,6 +1,6 @@
 (ns hive-mcp.telemetry.core
   "Telemetry and logging utilities for evaluation operations.
-   Follows CLARITY principle: 'Telemetry first' - observability is essential.
+   Observability is essential.
 
    Sub-modules:
    - hive-mcp.telemetry.health - Centralized catastrophic event handling"
@@ -202,9 +202,6 @@
   ;; Configure logging
   (configure-logging! {:level :debug}))
 
-;;; =============================================================================
-;;; Health Module Re-exports
-;;; =============================================================================
 ;;
 ;; For convenience, key health module functions are re-exported here.
 ;; New code should import from hive-mcp.telemetry.health directly.

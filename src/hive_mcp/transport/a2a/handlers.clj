@@ -5,8 +5,6 @@
    SendStreamingMessage) to existing IAgent protocol calls.
    No new domain logic — reuses dispatch, query, and kill patterns.
 
-   SOLID-D: Depends on IAgent abstractions, not concrete implementations.
-   CLARITY-I: Validates all inputs before delegation."
   (:require [hive-mcp.transport.a2a.schema :as schema]
             [hive-mcp.agent.protocol :as proto]
             [hive-mcp.agent.ling :as ling]

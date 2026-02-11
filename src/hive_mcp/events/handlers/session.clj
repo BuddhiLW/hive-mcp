@@ -5,8 +5,6 @@
    - :session/end  - Session ending, trigger auto-wrap
    - :session/wrap - Trigger wrap workflow
 
-   SOLID: SRP - Session lifecycle only
-   CLARITY: R - Represented intent through session domain"
   (:require [hive-mcp.events.core :as ev]
             [hive-mcp.events.interceptors :as interceptors]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>

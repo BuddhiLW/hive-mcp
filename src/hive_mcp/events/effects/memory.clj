@@ -16,9 +16,6 @@
    (mem-effects/register-memory-effects!)
    ```
 
-   SOLID: Single Responsibility - memory/wrap effect execution only
-   SOLID: D - Dependency Inversion via injected handlers
-   CLARITY: Y - Yield safe failure (effects catch and log errors)"
   (:require [hive-mcp.events.core :as ev]
             [hive-mcp.swarm.datascript :as ds]
             [taoensso.timbre :as log]))

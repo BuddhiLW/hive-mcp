@@ -27,9 +27,6 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;;; ============================================================
-;;; Configuration
-;;; ============================================================
 
 (def ^:private models
   "Supported OpenAI embedding models with their dimensions."
@@ -40,9 +37,6 @@
 (def ^:private default-model "text-embedding-3-small")
 (def ^:private api-url "https://api.openai.com/v1/embeddings")
 
-;;; ============================================================
-;;; HTTP Client
-;;; ============================================================
 
 (defonce ^:private http-client
   (delay
@@ -69,9 +63,6 @@
                       {:status status
                        :body body-str})))))
 
-;;; ============================================================
-;;; Embedding Functions
-;;; ============================================================
 
 (defn- get-embeddings
   "Get embeddings for one or more texts from OpenAI API."
@@ -85,9 +76,6 @@
          (sort-by :index)
          (mapv :embedding))))
 
-;;; ============================================================
-;;; Provider Implementation
-;;; ============================================================
 
 (defrecord OpenAIEmbedder [api-key model dimension]
   chroma/EmbeddingProvider
@@ -100,9 +88,6 @@
       (vec (mapcat #(get-embeddings api-key model (vec %)) batches))))
   (embedding-dimension [_] dimension))
 
-;;; ============================================================
-;;; Provider Factory
-;;; ============================================================
 
 (defn ->provider
   "Create an OpenAI embedding provider.

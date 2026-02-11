@@ -36,8 +36,6 @@
       :message \"[SIGNAL: propose] Here's my implementation...\"})
    ```
 
-   SOLID: SRP - Single responsibility for dialogue dispatch
-   CLARITY: L - Layer separation from core dispatch"
   (:require [hive-mcp.agora.schema :as schema]
             [hive-mcp.agora.signal :as signal]
             [hive-mcp.tools.swarm.dispatch :as dispatch]

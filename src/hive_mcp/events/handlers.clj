@@ -43,9 +43,9 @@
    - :validated-wave/success - Validated wave completed successfully
    - :validated-wave/partial - Max retries reached, partial success
    - :validated-wave/retry  - Validation failed, retrying
-   - :drone/started         - Drone spawned and began task (CLARITY-T)
-   - :drone/completed       - Drone finished successfully (CLARITY-T)
-   - :drone/failed          - Drone execution failed (CLARITY-T)
+   - :drone/started         - Drone spawned and began task
+   - :drone/completed       - Drone finished successfully
+   - :drone/failed          - Drone execution failed
    - :claim/file-released   - File claim released, notify waiting lings
    - :claim/notify-waiting  - Send targeted shout to waiting ling
    - :system/error          - Structured error telemetry (Telemetry Phase 1)
@@ -69,8 +69,6 @@
    - :saa/completed           - SAA workflow finished successfully
    - :saa/failed              - SAA workflow error
 
-   SOLID: SRP - Facade delegates to domain-specific modules
-   CLARITY: R - Represented intent through clear module structure"
   (:require [hive-mcp.events.handlers.task :as task]
             [hive-mcp.events.handlers.ling :as ling]
             [hive-mcp.events.handlers.session :as session]
@@ -108,7 +106,7 @@
    - crystal/register-handlers! - Wrap/crystallize
    - wave/register-handlers!    - Drone waves
    - validated-wave/register-handlers! - Validated waves
-   - drone/register-handlers!   - Drone lifecycle (CLARITY-T)
+   - drone/register-handlers!   - Drone lifecycle
    - claim/register-handlers!   - File claims
    - system/register-handlers!  - System telemetry (Phase 1)
    - hot-reload/register-handlers! - Hot reload lifecycle

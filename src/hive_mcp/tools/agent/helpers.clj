@@ -1,11 +1,5 @@
 (ns hive-mcp.tools.agent.helpers
-  "Shared helper functions for agent tool handlers.
-
-   Contains formatting, ID generation, and elisp integration utilities
-   used across multiple agent handler modules.
-
-   SOLID-S: Single responsibility - shared utilities only.
-   CLARITY-Y: Safe failure on elisp queries."
+  "Shared helper functions for agent tool handlers."
   (:require [hive-mcp.tools.swarm.core :as swarm-core]
             [hive-mcp.emacs.client :as ec]
             [taoensso.timbre :as log]
@@ -14,18 +8,10 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;; =============================================================================
-;; ID Generation
-;; =============================================================================
-
 (defn generate-agent-id
   "Generate unique agent ID with type prefix."
   [agent-type]
   (str (name agent-type) "-" (java.util.UUID/randomUUID)))
-
-;; =============================================================================
-;; Agent Formatting
-;; =============================================================================
 
 (defn format-agent
   "Format agent data for response."
@@ -56,15 +42,8 @@
      :by-type (frequencies (map :type formatted))
      :by-status (frequencies (map :status formatted))}))
 
-;; =============================================================================
-;; Elisp Fallback for Lings (FIX: swarm_status only returning coordinator)
-;; =============================================================================
-
 (defn query-elisp-lings
-  "Query elisp for list of lings that may not be in DataScript.
-   Lings spawned directly via elisp won't be in DataScript.
-
-   Returns a seq of slave maps in DataScript format, or empty seq on failure."
+  "Query elisp for lings that may not be in DataScript."
   []
   (when (swarm-core/swarm-addon-available?)
     (let [{:keys [success result timed-out]}
@@ -74,7 +53,6 @@
         (try
           (let [parsed (json/read-str result :key-fn keyword)]
             (when (sequential? parsed)
-              ;; Convert elisp format to DataScript format
               (->> parsed
                    (map (fn [ling]
                           {:slave/id (or (:slave-id ling) (:slave_id ling))
@@ -90,17 +68,11 @@
             []))))))
 
 (defn merge-with-elisp-lings
-  "Merge DataScript agents with elisp lings.
-   DataScript entries take precedence for duplicates (by ID).
-
-   CLARITY: Y - Yield safe failure - returns at least DataScript data on error."
+  "Merge DataScript agents with elisp lings, DataScript taking precedence."
   [ds-agents]
   (try
-    (let [;; Get elisp lings
-          elisp-lings (or (query-elisp-lings) [])
-          ;; Create set of IDs already in DataScript
+    (let [elisp-lings (or (query-elisp-lings) [])
           ds-ids (set (map :slave/id ds-agents))
-          ;; Filter elisp lings to only those NOT in DataScript
           new-lings (remove #(ds-ids (:slave/id %)) elisp-lings)]
       (log/debug "Merging agents: DataScript=" (count ds-agents)
                  "elisp-only=" (count new-lings))

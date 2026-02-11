@@ -1,19 +1,5 @@
 (ns hive-mcp.tools.swarm.wave.retry
-  "Unified retry logic for wave execution.
-
-   CLARITY-Y (Yield Safe Failure): Graceful degradation through smart retries.
-   CLARITY-T (Telemetry First): All retries are logged for observability.
-
-   Error Categories:
-     :nrepl     - nREPL connection issues (short delays, 2 retries)
-     :conflict  - File conflicts (long delays, 5 retries - waiting for lock)
-     :openrouter - API errors (model fallback, exponential backoff)
-     :permanent - Auth errors, invalid requests (fail fast)
-     :unknown   - Unclassified (cautious retry with limit)
-
-   Based on:
-     - Wave File Conflict Retry decision (memory: 20260204224320-176de548)
-     - drone/retry.clj patterns"
+  "Unified retry logic for wave execution with error classification and strategy selection."
   (:require [hive-mcp.tools.swarm.wave.domain :as domain]
             [hive-mcp.telemetry.health :as health]
             [taoensso.timbre :as log]))
@@ -22,14 +8,8 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;;; ============================================================
-;;; Error Classification Patterns
-;;; ============================================================
-
 (def ^:private nrepl-error-patterns
-  "Patterns that indicate an nREPL transient failure (worth retrying).
-
-   CLARITY-Y: Yield safe failure - distinguish transient from permanent errors."
+  "Patterns indicating nREPL transient failures."
   [#"(?i)connection.*refused"
    #"(?i)socket.*closed"
    #"(?i)nrepl.*not.*available"
@@ -39,13 +19,7 @@
    #"(?i)connection.*reset"])
 
 (def ^:private file-conflict-pattern
-  "Pattern that indicates a file conflict error (worth retrying after wait).
-
-   RACE CONDITION FIX: When drone A holds a claim and drone B gets conflict,
-   drone B should wait and retry instead of failing immediately. Drone A may
-   complete and release the claim, allowing drone B to proceed.
-
-   CLARITY-Y: Transient conflicts become success with patience."
+  "Pattern indicating a file conflict error."
   #"(?i)file.*conflict.*detected|files.*locked.*by.*another.*drone")
 
 (def ^:private openrouter-error-patterns
@@ -67,26 +41,14 @@
    #"(?i)invalid.*request"
    #"(?i)malformed"])
 
-;;; ============================================================
-;;; Error Classification Functions
-;;; ============================================================
-
 (defn transient-nrepl-error?
-  "Check if error message indicates a transient nREPL failure.
-
-   Returns true if the error matches known transient patterns."
+  "Check if error message indicates a transient nREPL failure."
   [error-msg]
   (when error-msg
     (some #(re-find % error-msg) nrepl-error-patterns)))
 
 (defn file-conflict-error?
-  "Check if error message indicates a file conflict (another drone holds the claim).
-
-   File conflicts are transient - they clear when the holding drone completes.
-   Worth retrying with backoff.
-
-   RACE CONDITION FIX: Prevents misleading 'conflict' failures when the actual
-   work completes successfully by another drone."
+  "Check if error message indicates a file conflict."
   [error-msg]
   (when error-msg
     (re-find file-conflict-pattern error-msg)))
@@ -98,20 +60,13 @@
     (some #(re-find % error-msg) openrouter-error-patterns)))
 
 (defn permanent-error?
-  "Check if error indicates a permanent failure (don't retry)."
+  "Check if error indicates a permanent failure."
   [error-msg]
   (when error-msg
     (some #(re-find % error-msg) permanent-error-patterns)))
 
 (defn classify-wave-error
-  "Classify an error message into categories.
-
-   Returns:
-     :nrepl     - nREPL connection issues
-     :conflict  - File lock conflicts
-     :openrouter - OpenRouter API issues
-     :permanent - Authentication/validation errors
-     :unknown   - Unclassified errors"
+  "Classify an error message into :nrepl, :conflict, :openrouter, :permanent, or :unknown."
   [error-msg]
   (cond
     (permanent-error? error-msg) :permanent
@@ -120,39 +75,21 @@
     (openrouter-error? error-msg) :openrouter
     :else :unknown))
 
-;;; ============================================================
-;;; Retry Strategy Selection
-;;; ============================================================
-
 (defn select-retry-config
-  "Select appropriate retry configuration based on error type.
-
-   Arguments:
-     error-type - Keyword from classify-wave-error
-
-   Returns:
-     Retry config map with :max-retries, :initial-delay-ms, etc."
+  "Select appropriate retry configuration based on error type."
   [error-type]
   (case error-type
     :nrepl domain/nrepl-retry-config
     :conflict domain/conflict-retry-config
     :openrouter domain/openrouter-retry-config
     :permanent {:max-retries 0}
-    ;; :unknown - cautious retry
     {:max-retries 1
      :initial-delay-ms 1000
      :backoff-multiplier 2
      :max-delay-ms 5000}))
 
 (defn calculate-delay
-  "Calculate delay for retry attempt with exponential backoff.
-
-   Arguments:
-     attempt - Current retry attempt (0-indexed)
-     config  - Retry config map
-
-   Returns:
-     Delay in milliseconds."
+  "Calculate delay for retry attempt with exponential backoff."
   [attempt {:keys [initial-delay-ms max-delay-ms backoff-multiplier jitter-factor]
             :or {initial-delay-ms 1000
                  max-delay-ms 30000
@@ -171,21 +108,7 @@
   (not= error-type :permanent))
 
 (defn select-retry-strategy
-  "Determine recovery strategy based on error classification.
-
-   Arguments:
-     error-msg - Error message string
-     attempt   - Current attempt number
-     opts      - Options map with :item-id, :file, etc.
-
-   Returns:
-     Map with:
-       :error-type  - Classified error type
-       :config      - Retry config
-       :recoverable? - Whether retry is worthwhile
-       :delay-ms    - Calculated delay (if recoverable)
-       :action      - :retry | :fail
-       :reason      - Human-readable explanation"
+  "Determine recovery strategy based on error classification."
   [error-msg attempt _opts]
   (let [error-type (classify-wave-error error-msg)
         config (select-retry-config error-type)
@@ -211,14 +134,8 @@
                (format "%s error - retry %d/%d"
                        (name error-type) (inc attempt) max-retries))}))
 
-;;; ============================================================
-;;; Health Event Emission
-;;; ============================================================
-
 (defn emit-retry-health-event!
-  "Emit health event for retry telemetry.
-
-   CLARITY-T: All retries are observable."
+  "Emit health event for retry telemetry."
   [{:keys [error-type item-id file attempt delay-ms]}]
   (try
     (health/emit-health-event!
@@ -237,32 +154,8 @@
       :recoverable? true})
     (catch Exception _)))
 
-;;; ============================================================
-;;; Core Retry Wrapper
-;;; ============================================================
-
 (defn with-wave-retry
-  "Execute function f with unified retry logic.
-
-   Selects retry strategy based on error classification:
-   - :nrepl     → short delays, 2 retries
-   - :conflict  → long delays, 5 retries (wait for lock release)
-   - :openrouter → model fallback, exponential backoff
-   - :permanent → fail fast
-   - :unknown   → cautious 1 retry
-
-   Arguments:
-     f    - Function to execute (no args)
-     opts - Options map:
-            :item-id     - Item identifier for logging
-            :file        - File being processed
-            :on-retry    - Callback fn [attempt error strategy]
-
-   Returns:
-     Result from f on success.
-
-   Throws:
-     Original exception after all retries exhausted."
+  "Execute function f with unified retry logic based on error classification."
   [f {:keys [item-id file on-retry] :as opts}]
   (loop [attempt 0
          _last-error nil]
@@ -274,11 +167,9 @@
       (if (= :success (:status result))
         (:value result)
 
-        ;; Error occurred - check retry strategy
         (let [error-msg (:message result)
               strategy (select-retry-strategy error-msg attempt opts)]
 
-          ;; Log retry attempt
           (log/warn {:event :wave/retry-check
                      :item-id item-id
                      :file file
@@ -290,7 +181,6 @@
 
           (if (= :retry (:action strategy))
             (do
-              ;; Emit health event for telemetry
               (emit-retry-health-event!
                {:error-type (:error-type strategy)
                 :item-id item-id
@@ -298,15 +188,12 @@
                 :attempt attempt
                 :delay-ms (:delay-ms strategy)})
 
-              ;; Call on-retry callback if provided
               (when on-retry
                 (on-retry attempt (:exception result) strategy))
 
-              ;; Wait and retry
               (Thread/sleep (:delay-ms strategy))
               (recur (inc attempt) (:exception result)))
 
-            ;; Fail
             (do
               (log/error {:event :wave/retry-exhausted
                           :item-id item-id
@@ -316,20 +203,8 @@
                           :error-message error-msg})
               (throw (:exception result)))))))))
 
-;;; ============================================================
-;;; Convenience Functions
-;;; ============================================================
-
 (defn retry-task-execution
-  "Wrap drone task execution with retry logic.
-
-   Arguments:
-     execute-fn - Task execution function (no args)
-     item       - Change item map
-     opts       - Additional options
-
-   Returns:
-     TaskResult with retry info on success/failure."
+  "Wrap drone task execution with retry logic, returning TaskResult with retry info."
   [execute-fn item opts]
   (let [{:keys [change-item/id change-item/file]} item
         retry-count (atom 0)

@@ -1,18 +1,6 @@
 (ns hive-mcp.schema.tools
-  "Malli schemas for MCP tool parameters.
+  "Malli schemas for MCP tool parameters."
 
-   Defines input/output schemas for all MCP tools, enabling:
-   - Runtime validation at tool boundaries (CLARITY-I)
-   - Documentation generation
-   - Test data generation with malli.generator
-
-   Tool Categories:
-   - Agent tools: spawn, dispatch, kill, status
-   - Memory tools: add, query, query-metadata, get-full
-   - KG tools: add-edge, traverse, impact-analysis
-
-   SOLID: SRP - Schema definitions only.
-   CLARITY: I - Inputs validated at tool boundary."
   (:require [malli.core :as m]
             [hive-mcp.schema.memory :as mem]))
 
@@ -49,9 +37,7 @@
 ;; =============================================================================
 
 (def AgentType
-  "Agent type for spawning.
-   - ling: Worker agent in the swarm
-   - drone: Autonomous long-running agent"
+  "Agent type for spawning."
   [:enum "ling" "drone"])
 
 (def TerminalType
@@ -59,12 +45,7 @@
   [:enum "vterm" "eat"])
 
 (def AgentSpawnParams
-  "Parameters for swarm_spawn tool.
-
-   Spawns a new Claude agent (ling) in the swarm.
-
-   Required: name
-   Optional: presets, cwd, role, terminal, kanban_task_id"
+  "Parameters for agent spawn."
   [:map
    [:name NonEmptyString]
    [:presets {:optional true} [:maybe [:vector NonEmptyString]]]
@@ -74,12 +55,7 @@
    [:kanban_task_id {:optional true} OptionalString]])
 
 (def AgentDispatchParams
-  "Parameters for swarm_dispatch tool.
-
-   Dispatches a task to an available ling.
-
-   Required: task
-   Optional: ling_id (specific target), priority, context"
+  "Parameters for agent dispatch."
   [:map
    [:task NonEmptyString]
    [:ling_id {:optional true} OptionalString]
@@ -87,42 +63,26 @@
    [:context {:optional true} OptionalString]])
 
 (def AgentKillParams
-  "Parameters for swarm_kill tool.
-
-   Terminates a running agent.
-
-   Required: slave_id (or 'all' for batch kill)
-   Optional: force (bypass kill guard), directory (for project-scoped kill)"
+  "Parameters for agent kill."
   [:map
    [:slave_id NonEmptyString]
    [:force {:optional true} [:maybe :boolean]]
    [:directory {:optional true} OptionalString]])
 
 (def AgentStatusParams
-  "Parameters for swarm_status tool.
-
-   Gets swarm status - no required params."
+  "Parameters for agent status."
   [:map
    [:directory {:optional true} OptionalString]
    [:include_details {:optional true} [:maybe :boolean]]])
 
 (def AgentCollectParams
-  "Parameters for swarm_collect tool.
-
-   Collects results from completed agents.
-
-   Optional: ling_id (specific agent), timeout_ms"
+  "Parameters for agent collect."
   [:map
    [:ling_id {:optional true} OptionalString]
    [:timeout_ms {:optional true} PositiveInt]])
 
 (def AgentBroadcastParams
-  "Parameters for swarm_broadcast tool.
-
-   Broadcasts a message to all lings.
-
-   Required: message
-   Optional: scope (project scope)"
+  "Parameters for agent broadcast."
   [:map
    [:message NonEmptyString]
    [:scope {:optional true} OptionalString]])
@@ -132,12 +92,7 @@
 ;; =============================================================================
 
 (def MemoryAddParams
-  "Parameters for mcp_memory_add tool.
-
-   Creates a new memory entry in the knowledge base.
-
-   Required: type, content
-   Optional: tags, duration, directory, agent_id, kg_* relationships, abstraction_level"
+  "Parameters for memory add."
   [:map
    [:type mem/MemoryType]
    [:content [:string {:min 1}]]
@@ -153,12 +108,7 @@
    [:abstraction_level {:optional true} [:maybe mem/AbstractionLevel]]])
 
 (def MemoryQueryParams
-  "Parameters for mcp_memory_query tool.
-
-   Queries memory entries with filtering.
-
-   Required: type
-   Optional: tags, limit, duration, scope, directory"
+  "Parameters for memory query."
   [:map
    [:type {:optional true} [:maybe mem/MemoryType]]
    [:tags {:optional true} [:maybe [:or mem/MemoryTags :string]]]
@@ -168,50 +118,29 @@
    [:directory {:optional true} OptionalString]])
 
 (def MemoryQueryMetadataParams
-  "Parameters for mcp_memory_query_metadata tool.
-
-   Queries memory entries returning only metadata (token-efficient).
-   Same params as MemoryQueryParams."
+  "Parameters for memory metadata query."
   MemoryQueryParams)
 
 (def MemoryGetFullParams
-  "Parameters for mcp_memory_get_full tool.
-
-   Gets complete entry by ID.
-
-   Required: id"
+  "Parameters for memory get by ID."
   [:map
    [:id NonEmptyString]])
 
 (def MemoryUpdateTagsParams
-  "Parameters for mcp_memory_update_tags tool.
-
-   Updates tags on an existing entry.
-
-   Required: id, tags"
+  "Parameters for memory tag update."
   [:map
    [:id NonEmptyString]
    [:tags mem/MemoryTags]])
 
 (def MemoryCheckDuplicateParams
-  "Parameters for mcp_memory_check_duplicate tool.
-
-   Checks if content already exists.
-
-   Required: type, content
-   Optional: directory"
+  "Parameters for memory duplicate check."
   [:map
    [:type mem/MemoryType]
    [:content NonEmptyString]
    [:directory {:optional true} OptionalString]])
 
 (def MemorySearchSemanticParams
-  "Parameters for mcp_memory_search_semantic tool.
-
-   Semantic similarity search.
-
-   Required: query
-   Optional: type, limit, threshold, scope"
+  "Parameters for memory semantic search."
   [:map
    [:query NonEmptyString]
    [:type {:optional true} [:maybe mem/MemoryType]]
@@ -239,12 +168,7 @@
   [:enum "outgoing" "incoming" "both"])
 
 (def KGAddEdgeParams
-  "Parameters for kg_add_edge tool.
-
-   Creates a relationship between two knowledge nodes.
-
-   Required: from, to, relation
-   Optional: scope, confidence, created_by, source_type"
+  "Parameters for KG edge creation."
   [:map
    [:from NonEmptyString]
    [:to NonEmptyString]
@@ -255,12 +179,7 @@
    [:source_type {:optional true} [:maybe KGSourceType]]])
 
 (def KGTraverseParams
-  "Parameters for kg_traverse tool.
-
-   Walks the graph from a starting node.
-
-   Required: start_node
-   Optional: direction, relations, max_depth, scope"
+  "Parameters for KG traversal."
   [:map
    [:start_node NonEmptyString]
    [:direction {:optional true} [:maybe KGDirection]]
@@ -269,34 +188,20 @@
    [:scope {:optional true} OptionalString]])
 
 (def KGImpactAnalysisParams
-  "Parameters for kg_impact_analysis tool.
-
-   Finds all nodes that depend on a given node.
-
-   Required: node_id
-   Optional: max_depth, scope"
+  "Parameters for KG impact analysis."
   [:map
    [:node_id NonEmptyString]
    [:max_depth {:optional true} [:maybe PositiveInt]]
    [:scope {:optional true} OptionalString]])
 
 (def KGPromoteParams
-  "Parameters for kg_promote tool.
-
-   Promotes knowledge to a broader scope.
-
-   Required: edge_id, to_scope"
+  "Parameters for KG promotion."
   [:map
    [:edge_id NonEmptyString]
    [:to_scope NonEmptyString]])
 
 (def KGFindPathParams
-  "Parameters for kg_find_path tool.
-
-   Finds shortest path between two nodes.
-
-   Required: from_node, to_node
-   Optional: max_depth, relations"
+  "Parameters for KG path finding."
   [:map
    [:from_node NonEmptyString]
    [:to_node NonEmptyString]
@@ -304,51 +209,30 @@
    [:relations {:optional true} [:maybe [:vector KGRelationType]]]])
 
 (def KGSubgraphParams
-  "Parameters for kg_subgraph tool.
-
-   Extracts subgraph visible from a scope.
-
-   Required: scope
-   Optional: include_global"
+  "Parameters for KG subgraph extraction."
   [:map
    [:scope NonEmptyString]
    [:include_global {:optional true} [:maybe :boolean]]])
 
 (def KGNodeContextParams
-  "Parameters for kg_node_context tool.
-
-   Gets full context for a node.
-
-   Required: node_id
-   Optional: depth"
+  "Parameters for KG node context."
   [:map
    [:node_id NonEmptyString]
    [:depth {:optional true} [:maybe PositiveInt]]])
 
 (def KGRegroundParams
-  "Parameters for kg_reground tool.
-
-   Re-verifies an entry against source.
-
-   Required: entry_id
-   Optional: source_path"
+  "Parameters for KG reground."
   [:map
    [:entry_id NonEmptyString]
    [:source_path {:optional true} OptionalString]])
 
 (def KGContradictionsParams
-  "Parameters for kg_contradictions tool.
-
-   Finds conflicting knowledge in a scope.
-
-   Required: scope"
+  "Parameters for KG contradiction detection."
   [:map
    [:scope NonEmptyString]])
 
 (def KGStatsParams
-  "Parameters for kg_stats tool.
-
-   Gets KG statistics - no required params."
+  "Parameters for KG stats."
   [:map
    [:scope {:optional true} OptionalString]])
 
@@ -379,15 +263,7 @@
 ;; =============================================================================
 
 (def registry
-  "Schema registry entries for tool parameters.
-
-   Usage:
-   ```clojure
-   (mr/set-default-registry!
-     (mr/composite-registry
-       (m/default-schemas)
-       hive-mcp.schema.tools/registry))
-   ```"
+  "Schema registry entries for tool parameters."
   {;; Agent tools
    :tools/agent-spawn-params AgentSpawnParams
    :tools/agent-dispatch-params AgentDispatchParams
@@ -424,9 +300,7 @@
 ;; =============================================================================
 
 (defn validate-params
-  "Validate tool parameters against a schema.
-
-   Returns {:valid true} or {:valid false :errors explanation}."
+  "Validate tool parameters against a schema."
   [schema params]
   (if (m/validate schema params)
     {:valid true}
@@ -434,10 +308,7 @@
      :errors (m/explain schema params)}))
 
 (defn coerce-and-validate
-  "Coerce and validate parameters with schema transformers.
-
-   Handles common MCP coercions (string→int, string→array).
-   Returns {:valid true :params coerced} or {:valid false :errors ...}."
+  "Coerce and validate parameters."
   [schema params]
   ;; For now, just validate - coercion can be added with malli.transform
   (validate-params schema params))

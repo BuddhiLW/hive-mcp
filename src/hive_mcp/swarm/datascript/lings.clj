@@ -8,7 +8,6 @@
    - Critical operations guard (kill protection)
    - Claim TTL (stale detection, auto-expiration)
 
-   SOLID-S: Single Responsibility - entity lifecycle only.
    DDD: Repository pattern for swarm entities."
   (:require [datascript.core :as d]
             [taoensso.timbre :as log]
@@ -179,7 +178,6 @@
      (with-critical-op slave-id :wrap
        (do-wrap-stuff))
 
-   CLARITY: Y - Yield safe failure with proper cleanup"
   [slave-id op-type & body]
   `(do
      (enter-critical-op! ~slave-id ~op-type)

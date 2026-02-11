@@ -10,8 +10,6 @@
    3. :kg-backend in .hive-project.edn
    4. Default: :datalevin (persistent — compounding axiom)
 
-   CLARITY-T: Logs backend selection on initialization.
-   CLARITY-Y: Auto-initializes Datalevin if no store configured."
   (:require [hive-mcp.knowledge-graph.protocol :as proto]
             [hive-mcp.knowledge-graph.store.datascript :as ds-store]
             [hive-mcp.config :as config]
@@ -53,7 +51,6 @@
 
 (defn- ensure-store!
   "Ensure a store is configured. Auto-detects backend from config.
-   CLARITY-Y: Falls back to DataScript on any failure."
   []
   (when-not (proto/store-set?)
     (let [backend (detect-backend)]
@@ -177,7 +174,6 @@
                :datalevin {:db-path \"data/kg/datalevin\"}
                :datahike  {:db-path \"data/kg/datahike\" :backend :file}
 
-   CLARITY-T: Logs backend selection."
   [backend & [opts]]
   (log/info "Setting KG backend" {:backend backend :opts opts})
   (case backend
@@ -191,7 +187,6 @@
           store (create-fn opts)]
       (if store
         (proto/set-store! store)
-        ;; CLARITY-Y: Fall back to DataScript if Datalevin fails
         (do
           (log/warn "Datalevin store creation failed, falling back to DataScript")
           (proto/set-store! (ds-store/create-store)))))
@@ -203,7 +198,6 @@
           store (create-fn opts)]
       (if store
         (proto/set-store! store)
-        ;; CLARITY-Y: Fall back to DataScript if Datahike fails
         (do
           (log/warn "Datahike store creation failed, falling back to DataScript")
           (proto/set-store! (ds-store/create-store)))))

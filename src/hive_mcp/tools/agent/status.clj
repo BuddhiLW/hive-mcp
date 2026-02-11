@@ -1,11 +1,5 @@
 (ns hive-mcp.tools.agent.status
-  "Agent status query handler.
-
-   Queries agent state from DataScript with elisp fallback for lings
-   spawned directly via Emacs (not tracked in DataScript).
-
-   SOLID-S: Single responsibility - agent status queries only.
-   CLARITY-R: Returns formatted agent info with type inference."
+  "Agent status query handler with DataScript and elisp fallback."
   (:require [hive-mcp.tools.core :refer [mcp-error mcp-json]]
             [hive-mcp.tools.agent.helpers :as helpers]
             [hive-mcp.swarm.datascript.queries :as queries]
@@ -14,30 +8,9 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;; =============================================================================
-;; Status Handler
-;; =============================================================================
-
 (defn handle-status
-  "Get agent status.
-
-   Parameters:
-     agent_id   - Specific agent ID to query (optional)
-     type       - Filter by type: 'ling' or 'drone' (optional)
-     project_id - Filter by project (optional)
-
-   Returns all agents if no filters provided.
-
-   FIX: Now merges elisp lings with DataScript agents.
-   Lings spawned directly via elisp may not be in DataScript, so we
-   query both sources and merge (DataScript takes precedence for duplicates).
-
-   FIX: bb-mcp injects agent_id:'coordinator' for piggyback tracking.
-   Ignore agent_id when it equals 'coordinator' to avoid false filtering.
-
-   CLARITY: R - Returns formatted agent info with type inference."
+  "Get agent status, optionally filtered by agent_id, type, or project_id."
   [{:keys [agent_id type project_id]}]
-  ;; FIX: bb-mcp injects agent_id:"coordinator" on all calls - ignore it as a filter
   (let [eid (when (and agent_id (not= agent_id "coordinator")) agent_id)]
     (try
       (cond

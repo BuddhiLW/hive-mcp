@@ -161,22 +161,16 @@
    Results sorted by priority DESC (high > medium > low), then creation-date ASC.
    When directory is provided, scopes query to that project.
 
-   HCR Wave 5: Automatically aggregates descendant project tasks when
-   querying from a parent project. Adds :project field to entries when
-   results span multiple projects.
-
-   CTX Migration: Uses request context for directory extraction.
-   Fallback chain: explicit param → ctx binding.
-
-   Queries Chroma directly (bypasses elisp roundtrip) to be consistent
-   with handle-mem-kanban-create which stores directly in Chroma."
-  [{:keys [status directory]}]
+   HCR Wave 4: Pass include_descendants=true to aggregate child project tasks.
+   Adds :project field to entries when results span multiple projects."
+  [{:keys [status directory include_descendants]}]
   (try
     (let [effective-dir (or directory (ctx/current-directory))]
       (with-chroma
         (let [project-id (scope/get-current-project-id effective-dir)
-              ;; HCR Wave 5: Check for descendant projects
-              all-project-ids (resolve-project-ids-with-descendants project-id)
+              ;; HCR Wave 4: Only aggregate descendants when explicitly requested
+              all-project-ids (when include_descendants
+                                (resolve-project-ids-with-descendants project-id))
               multi-project? (boolean all-project-ids)
               ;; Normalize status enum to actual tag value
               status-tag (when status (get status-enum->tag status status))
@@ -266,22 +260,16 @@
   "Get kanban statistics by status.
    When directory is provided, scopes query to that project.
 
-   HCR Wave 5: Automatically aggregates descendant project stats when
-   querying from a parent project. Returns per-project breakdown in
-   :by-project field when results span multiple projects.
-
-   CTX Migration: Uses request context for directory extraction.
-   Fallback chain: explicit param → ctx binding.
-
-   Queries Chroma directly (bypasses elisp roundtrip) to be consistent
-   with handle-mem-kanban-create which stores directly in Chroma."
-  [{:keys [directory]}]
+   HCR Wave 4: Pass include_descendants=true to aggregate child project stats.
+   Returns per-project breakdown in :by-project field when multi-project."
+  [{:keys [directory include_descendants]}]
   (try
     (let [effective-dir (or directory (ctx/current-directory))]
       (with-chroma
         (let [project-id (scope/get-current-project-id effective-dir)
-              ;; HCR Wave 5: Check for descendant projects
-              all-project-ids (resolve-project-ids-with-descendants project-id)
+              ;; HCR Wave 4: Only aggregate descendants when explicitly requested
+              all-project-ids (when include_descendants
+                                (resolve-project-ids-with-descendants project-id))
               multi-project? (boolean all-project-ids)
               ;; Query all kanban tasks - use :project-ids when aggregating
               entries (if all-project-ids
@@ -346,7 +334,8 @@
     :description "List kanban tasks with minimal data (id, title, status, priority only). Use for token-efficient overviews (~10x fewer tokens than full list)."
     :inputSchema {:type "object"
                   :properties {:status {:type "string" :enum ["todo" "doing" "review"] :description "Filter by status"}
-                               :directory {:type "string" :description "Working directory to determine project scope (auto-extracted from context if not provided)"}}}
+                               :directory {:type "string" :description "Working directory to determine project scope (auto-extracted from context if not provided)"}
+                               :include_descendants {:type "boolean" :description "Include child project tasks (HCR Wave 4). Default false."}}}
     :handler handle-mem-kanban-list-slim}
 
    {:name "mcp_mem_kanban_move"
@@ -361,7 +350,8 @@
    {:name "mcp_mem_kanban_stats"
     :description "Get kanban statistics (counts by status)"
     :inputSchema {:type "object"
-                  :properties {:directory {:type "string" :description "Working directory to determine project scope (auto-extracted from context if not provided)"}}}
+                  :properties {:directory {:type "string" :description "Working directory to determine project scope (auto-extracted from context if not provided)"}
+                               :include_descendants {:type "boolean" :description "Include child project stats (HCR Wave 4). Default false."}}}
     :handler handle-mem-kanban-stats}
 
    {:name "mcp_mem_kanban_quick"

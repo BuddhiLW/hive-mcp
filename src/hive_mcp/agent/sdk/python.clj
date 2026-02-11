@@ -1,25 +1,12 @@
 (ns hive-mcp.agent.sdk.python
-  "Python bridge helpers for libpython-clj interop.
-
-   Provides safe wrappers around libpython-clj2 functions for:
-   - Module import (py-import)
-   - Method calls (py-call)
-   - Attribute access (py-attr)
-   - Keyword argument calls (py-call-kw)
-   - Type conversion (py->clj)
-   - Script execution (py-run)
-   - Global variable management (py-set-global!, py-get-global)
-
-   All functions use requiring-resolve for graceful degradation
-   when libpython-clj is not on the classpath."
+  "Python bridge helpers for libpython-clj interop."
   (:require [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 (defn py-import
-  "Safely import a Python module via libpython-clj.
-   Returns the module object or nil if unavailable."
+  "Safely import a Python module via libpython-clj."
   [module-name]
   (try
     (let [import-fn (requiring-resolve 'libpython-clj2.python/import-module)]
@@ -30,8 +17,7 @@
       nil)))
 
 (defn py-call
-  "Call a Python method/attribute with args.
-   Wraps libpython-clj2.python.fn/call-attr [item att-name arglist]."
+  "Call a Python method/attribute with args."
   [obj method & args]
   (try
     (let [call-fn (requiring-resolve 'libpython-clj2.python.fn/call-attr)]
@@ -44,8 +30,7 @@
                       e)))))
 
 (defn py-attr
-  "Get a Python object attribute.
-   Wraps libpython-clj2.python/get-attr [obj attr-name]."
+  "Get a Python object attribute."
   [obj attr]
   (try
     (let [attr-fn (requiring-resolve 'libpython-clj2.python/get-attr)]
@@ -56,8 +41,7 @@
       nil)))
 
 (defn py-call-kw
-  "Call a Python callable with positional and keyword arguments.
-   Wraps libpython-clj2.python.fn/call-kw [callable arglist kw-args]."
+  "Call a Python callable with positional and keyword arguments."
   [callable positional-args kw-args]
   (try
     (let [call-kw-fn (requiring-resolve 'libpython-clj2.python.fn/call-kw)]
@@ -78,15 +62,13 @@
       py-obj)))
 
 (defn py-run
-  "Run a Python string and return the last value.
-   Wraps libpython-clj2.python/run-simple-string."
+  "Run a Python string and return the last value."
   [code]
   (let [run-fn (requiring-resolve 'libpython-clj2.python/run-simple-string)]
     (run-fn code)))
 
 (defn py-set-global!
-  "Set a variable in Python's __main__ namespace.
-   Used to inject Clojure-constructed Python objects into scripts."
+  "Set a variable in Python's __main__ namespace."
   [var-name value]
   (try
     (let [set-fn (requiring-resolve 'libpython-clj2.python/set-attr!)
@@ -99,8 +81,7 @@
                       {:var-name var-name :error (ex-message e)} e)))))
 
 (defn py-get-global
-  "Get a variable from Python's __main__ namespace.
-   Used to extract results from async bridge scripts."
+  "Get a variable from Python's __main__ namespace."
   [var-name]
   (try
     (let [main-mod (py-import "__main__")]

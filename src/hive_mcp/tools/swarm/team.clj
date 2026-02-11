@@ -1,32 +1,13 @@
 (ns hive-mcp.tools.swarm.team
-  "Team selection handler for automated swarm composition.
-
-   ADR: Memory ID 20260116131527-5222f530
-   Convention: Memory ID 20260116131031-76b1a490 (team compositions)
-
-   Provides preset team patterns for common task types:
-   - :implementation - Explorer → Implementers
-   - :refactoring - Analyzer → Refactorer → Verifier
-   - :greenfield - Architect → Scaffolder → Implementers
-   - :simplification - Metrics → Simplifier → Validator
-   - :quality-review - Multi-Specialist Review Panel
-   - :documentation - Reader → Documenter
-
-   SOLID: SRP - Single responsibility for team composition
-   CLARITY: R - Represented intent via typed task selection"
+  "Team selection handler for automated swarm composition with preset team patterns."
   (:require [hive-mcp.tools.swarm.core :as core]
             [clojure.string :as str]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;; ============================================================
-;; Team Composition Data
-;; ============================================================
-
 (def ^:private team-compositions
-  "Pre-cooked team patterns by task type.
-   Source: Memory convention 20260116131031-76b1a490"
+  "Pre-cooked team patterns by task type."
   {:implementation
    {:team-pattern "Explorer → Implementers"
     :lings [{:name "explore-{context}" :presets ["planner-nih" "clarity"] :sequence 1}
@@ -96,10 +77,6 @@
     :coordinator-checklist ["Reader identifies undocumented areas"
                             "Documenter writes docstrings/ADRs"]}})
 
-;; ============================================================
-;; Context Interpolation
-;; ============================================================
-
 (defn- interpolate-context
   "Replace {context} placeholders with actual context value."
   [s context]
@@ -127,44 +104,19 @@
       (update :lings #(mapv (fn [l] (interpolate-ling l context)) %))
       (update :parallelization interpolate-parallelization context)))
 
-;; ============================================================
-;; Handler
-;; ============================================================
-
 (defn handle-team-select
-  "Select team composition for a task type.
-
-   Returns spawn instructions based on pre-defined team patterns
-   from memory convention (ID: 20260116131031-76b1a490).
-
-   Parameters:
-   - task_type: Enum - :implementation, :refactoring, :greenfield,
-                       :simplification, :quality-review, :documentation
-   - context: String for name interpolation (e.g., 'auth-feature')
-   - auto_spawn: Boolean, execute spawns immediately (default false)
-
-   Returns map with:
-   - :task-type - The selected task type
-   - :team-pattern - Human-readable pattern name
-   - :lings - List of ling specs with name, presets, sequence
-   - :parallelization - Which lings can run in parallel
-   - :coordinator-checklist - Steps for coordinator to follow
-
-   CLARITY: I - Input validated via spec
-   CLARITY: R - Represented intent via typed selection"
+  "Select team composition for a task type."
   [{:keys [task_type context auto_spawn]}]
   (core/with-swarm
     (let [task-kw (if (string? task_type)
                     (keyword task_type)
                     task_type)]
       (cond
-        ;; Validate task type
         (not (#{:implementation :refactoring :greenfield :simplification :quality-review :documentation} task-kw))
         (core/mcp-error
          (format "Invalid task_type '%s'. Valid types: implementation, refactoring, greenfield, simplification, quality-review, documentation"
                  task_type))
 
-        ;; Auto-spawn not yet implemented
         auto_spawn
         (core/mcp-error "auto_spawn not yet implemented. Use returned ling specs with swarm_spawn manually.")
 

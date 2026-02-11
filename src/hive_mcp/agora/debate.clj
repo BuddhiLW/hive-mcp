@@ -3,7 +3,7 @@
 
    Implements ADR 20260124224722-51e4fad6: Drone-Based Agora Automation.
 
-   Architecture (SOLID):
+   Architecture:
    - IDebateParticipant protocol: Open for extension (O)
    - DroneParticipant: Default implementation using OpenRouter drones
    - LingParticipant: Alternative using Claude lings (future)
@@ -14,9 +14,6 @@
    - Structured JSON output parsing (no NLP)
    - Auto-consensus detection and termination
 
-   SOLID-O: Open for extension via IDebateParticipant protocol
-   SOLID-S: SRP - Debate orchestration only
-   CLARITY-L: Layer separation from dialogue.clj"
   (:require [hive-mcp.agora.schema :as schema]
             [hive-mcp.agora.signal :as signal]
             [hive-mcp.agora.consensus :as consensus]
@@ -30,7 +27,7 @@
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 ;; =============================================================================
-;; IDebateParticipant Protocol (SOLID-O: Open for Extension)
+;; IDebateParticipant Protocol
 ;; =============================================================================
 
 (defprotocol IDebateParticipant

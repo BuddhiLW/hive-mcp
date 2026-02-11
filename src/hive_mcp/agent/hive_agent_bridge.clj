@@ -1,71 +1,36 @@
 (ns hive-mcp.agent.hive-agent-bridge
-  "Bridge to external agent loop extension.
-
-   Uses extension registry for optional agent capabilities.
-   When the agent extension is not registered, returns nil and
-   callers fall back to the built-in path.
-
-   SOLID-O: Open for extension (new bridge fns), closed for modification.
-   CLARITY-Y: Graceful degradation when extension absent."
+  "Bridge to external agent loop extension. Returns nil when extension unavailable."
   (:require [hive-mcp.config :as config]
             [hive-mcp.extensions.registry :as ext]
             [taoensso.timbre :as log]))
 
-;; =============================================================================
-;; Config-Driven Defaults
-;; =============================================================================
-
 (defn- default-model
-  "Resolve the default model from config.edn :models.default-model.
-   CLARITY-Y: Falls back to hardcoded default when config unavailable."
+  "Resolve the default drone model from config."
   []
-  (or (config/get-config-value "models.default-model")
-      "x-ai/grok-code-fast-1"))
-
-;; =============================================================================
-;; Extension Lookup
-;; =============================================================================
+  (config/default-drone-model))
 
 (defn resolve-run-agent
-  "Look up the agent loop extension.
-   Returns the function or nil if not registered."
+  "Look up the agent loop extension."
   []
   (ext/get-extension :ag/run))
 
 (defn resolve-build-context
-  "Look up the context builder extension.
-   Returns the function or nil if not registered."
+  "Look up the context builder extension."
   []
   (ext/get-extension :ag/context))
 
 (defn resolve-tool-definitions
-  "Look up the tool definitions extension.
-   Returns the function or nil if not registered."
+  "Look up the tool definitions extension."
   []
   (ext/get-extension :ag/tools))
-
-;; =============================================================================
-;; Availability Check
-;; =============================================================================
 
 (defn hive-agent-available?
   "Check if the agent loop extension is registered."
   []
   (ext/extension-available? :ag/run))
 
-;; =============================================================================
-;; Result Adaptation
-;; =============================================================================
-
 (defn adapt-hive-agent-result
-  "Adapt agent extension result to hive-mcp's expected format.
-
-   Arguments:
-     ha-result - Result map from agent extension
-     model     - Model name used
-
-   Returns:
-     Map in hive-mcp format."
+  "Adapt agent extension result to hive-mcp format."
   [ha-result model]
   (let [error? (:error ha-result)
         status (if error? :error :completed)]
@@ -79,31 +44,8 @@
                            :kg-path (:kg-path ha-result)
                            :source :hive-agent}}))
 
-;; =============================================================================
-;; High-Level Bridge Function
-;; =============================================================================
-
 (defn run-agent-via-bridge
-  "Run a task through the agent loop extension if available.
-
-   Arguments:
-     opts - Map with:
-       :task           - Task description (required)
-       :model          - OpenRouter model ID
-       :max-turns      - Maximum loop iterations
-       :preset-content - System prompt preset string
-       :project-id     - Project ID for memory scoping
-       :files          - Vector of file paths relevant to task (optional)
-       :cwd            - Working directory (optional)
-       :compress?      - Enable context compression (default: true)
-
-   Returns:
-     Adapted result map in hive-mcp format, or nil if extension unavailable.
-
-   Usage:
-     (if-let [result (run-agent-via-bridge {...})]
-       result
-       (fallback-to-built-in-path ...))"
+  "Run a task through the agent loop extension if available, or return nil."
   [{:keys [task model max-turns preset-content project-id files cwd compress?] :as opts}]
   (if-let [run-agent-fn (resolve-run-agent)]
     (do
@@ -134,7 +76,6 @@
            :tool_calls_made 0
            :tokens {:input 0 :output 0 :total 0}
            :model (or model "unknown")})))
-    ;; Extension not available — return nil for fallback
     (do
       (log/debug "Agent extension not available, caller should use fallback path")
       nil)))

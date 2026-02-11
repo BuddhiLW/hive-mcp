@@ -1,11 +1,5 @@
 (ns hive-mcp.tools.swarm.wave.handlers
-  "MCP handlers for wave operations.
-
-   Thin adapter layer that parses MCP parameters and delegates
-   to domain functions.
-
-   SOLID-S: Single responsibility - MCP parameter handling only.
-   CLARITY-L: Thin adapter, no business logic."
+  "MCP handlers for wave operations, delegating to domain functions."
   (:require [hive-mcp.tools.swarm.wave.execution :as execution]
             [hive-mcp.tools.swarm.wave.validation :as validation]
             [hive-mcp.tools.swarm.wave.status :as status]
@@ -18,85 +12,78 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;;; ============================================================
-;;; Plan Creation
-;;; ============================================================
-
 (defn create-plan!
-  "Create a change plan with multiple tasks.
-
-   Arguments:
-     tasks  - Collection of {:file \"path\" :task \"description\"}
-     preset - Optional drone preset (default: \"drone-worker\")
-
-   Returns:
-     The generated plan-id"
+  "Create a change plan with multiple tasks."
   [tasks & [preset]]
   (ds/create-plan! tasks (or preset "drone-worker")))
 
-;;; ============================================================
-;;; MCP Handlers
-;;; ============================================================
+(defn- try-validated-wave-status
+  "Fallback lookup for validated wave sessions (vw-* / rw-* prefixes)."
+  [wave-id]
+  (try
+    (when-let [get-session (requiring-resolve
+                            'hive-mcp.tools.swarm.validated-wave/get-validated-wave-session)]
+      (when-let [session (get-session wave-id)]
+        (let [running? (= :running (:status session))]
+          {:type "text"
+           :text (json/write-str
+                  (cond-> {:wave_id wave-id
+                           :type "validated-wave"
+                           :status (if running? "running" (name (:status session)))
+                           :task_count (:task-count session)
+                           :started_at (:started-at session)}
+                    (:completed-at session) (assoc :completed_at (:completed-at session))
+                    (:iterations session)  (assoc :iterations (:iterations session))
+                    (:final-wave-id session) (assoc :final_wave_id (:final-wave-id session))
+                    (:final-plan-id session) (assoc :final_plan_id (:final-plan-id session))
+                    (seq (:modified-files session)) (assoc :modified_files (:modified-files session))
+                    (:execution-failures session) (assoc :execution_failures (:execution-failures session))
+                    (:error session) (assoc :error (:error session))
+                    (:message session) (assoc :message (:message session))
+                    (:wave-id session) (assoc :inner_wave_id (:wave-id session))
+                    (:plan-id session) (assoc :plan_id (:plan-id session))
+                    (:completed-tasks session) (assoc :completed_tasks (:completed-tasks session))
+                    (:failed-tasks session) (assoc :failed_tasks (:failed-tasks session))
+                    (seq (:next-steps session)) (assoc :next_steps (:next-steps session))
+                    (seq (:history session))
+                    (assoc :iteration_history
+                           (mapv #(select-keys % [:iteration :wave-id :finding-count :execution-failures])
+                                 (:history session)))))})))
+    (catch Exception e
+      (log/debug "Validated wave session lookup failed" {:wave-id wave-id :error (ex-message e)})
+      nil)))
 
 (defn handle-get-wave-status
-  "Handle get_wave_status MCP tool call.
-
-   Parameters:
-     wave_id - Wave ID to get status for (required)
-
-   Returns:
-     JSON with wave status including counts and item details."
+  "Handle get_wave_status MCP tool call, checking both DataScript and validated wave sessions."
   [{:keys [wave_id]}]
   (try
     (when-not wave_id
       (throw (ex-info "wave_id is required" {})))
 
     (if-let [wave-status (status/get-wave-status wave_id)]
-      ;; Also get failed item details
       (let [failed-items (status/get-failed-items wave_id)]
         {:type "text"
          :text (json/write-str (merge wave-status
                                       {:failed_items failed-items}))})
-      {:type "text"
-       :text (json/write-str {:error "Wave not found"
-                              :wave_id wave_id})})
+      (or (try-validated-wave-status wave_id)
+          {:type "text"
+           :text (json/write-str {:error "Wave not found"
+                                  :wave_id wave_id})}))
     (catch Exception e
       (log/error e "get_wave_status failed")
       {:type "text"
        :text (json/write-str {:error (.getMessage e)})})))
 
 (defn- normalize-backend
-  "Normalize backend string/keyword from MCP into a keyword.
-   Returns nil if not provided (let downstream default)."
+  "Normalize backend string/keyword from MCP into a keyword."
   [backend]
   (when backend
     (keyword (some-> backend name))))
 
 (defn handle-dispatch-drone-wave
-  "Handle dispatch_drone_wave MCP tool call.
-
-   Parameters:
-     tasks          - Array of {:file :task} objects (required)
-     preset         - Drone preset (default: \"drone-worker\")
-     trace          - Emit progress events (default: true)
-     cwd            - Working directory override (optional)
-     ensure_dirs    - Create parent directories before dispatch (default: true)
-     validate_paths - Fail fast if paths are invalid (default: true)
-     mode           - Execution mode: \"delegate\" (default) or \"agentic\"
-                      When \"agentic\", uses in-process agentic loop with session store
-     backend        - Drone execution backend (optional)
-                      One of: \"openrouter\", \"hive-agent\", \"legacy-loop\", \"sdk-drone\"
-                      Defaults to :openrouter for delegate mode, :hive-agent for agentic mode
-     model          - Override model for all drones in this wave (optional)
-                      Bypasses smart routing when provided
-     seeds          - Domain topic seeds for context priming (optional)
-                      e.g. [\"fp\" \"ddd\"]. Injects relevant domain knowledge.
-
-   Returns:
-     JSON with wave-id for immediate response.
-     Actual execution happens asynchronously."
-  [{:keys [tasks preset trace cwd ensure_dirs validate_paths mode backend model seeds]}]
-  ;; DEPRECATION WARNING: Prefer unified 'delegate' tool
+  "Handle dispatch_drone_wave MCP tool call."
+  [{:keys [tasks preset trace cwd ensure_dirs validate_paths mode backend model seeds
+           ctx_refs kg_node_ids]}]
   (log/warn {:event :deprecation-warning
              :tool "dispatch_drone_wave"
              :message "DEPRECATED: Use 'wave' consolidated tool instead."})
@@ -105,39 +92,34 @@
     (when (empty? tasks)
       (throw (ex-info "tasks array is required and must not be empty" {})))
 
-    ;; CTX Migration: Use request context fallback for cwd
     (let [effective-cwd (or cwd (ctx/current-directory))
-          ;; Normalize mode: string from MCP → keyword
           effective-mode (if (= "agentic" (some-> mode name))
                            :agentic
                            :delegate)
-          ;; Normalize backend: string from MCP → keyword (nil = let downstream default)
           effective-backend (normalize-backend backend)
-          ;; Normalize task keys (MCP sends string keys)
           normalized-tasks (mapv (fn [t]
                                    {:file (or (get t "file") (:file t))
                                     :task (or (get t "task") (:task t))})
                                  tasks)
-          ;; Pre-flight defaults
           do-validate (if (false? validate_paths) false true)
           do-ensure (if (false? ensure_dirs) false true)]
 
-      ;; Pre-flight validation
       (when do-ensure
         (validation/ensure-parent-dirs! normalized-tasks))
       (when do-validate
         (validation/validate-task-paths normalized-tasks))
 
-      ;; Create plan and execute async
       (let [plan-id (create-plan! normalized-tasks preset)
             {:keys [wave-id item-count]} (execution/execute-wave-async!
                                           plan-id
                                           (cond-> {:trace (if (nil? trace) true trace)
                                                    :cwd effective-cwd
                                                    :mode effective-mode}
-                                            effective-backend (assoc :backend effective-backend)
-                                            model (assoc :model model)
-                                            (seq seeds) (assoc :seeds (vec seeds))))]
+                                            effective-backend  (assoc :backend effective-backend)
+                                            model              (assoc :model model)
+                                            (seq seeds)        (assoc :seeds (vec seeds))
+                                            (seq ctx_refs)     (assoc :ctx-refs ctx_refs)
+                                            (seq kg_node_ids)  (assoc :kg-node-ids (vec kg_node_ids))))]
         {:type "text"
          :text (json/write-str (cond-> {:status "dispatched"
                                         :plan_id plan-id
@@ -165,29 +147,14 @@
        :text (json/write-str {:error (.getMessage e)})})))
 
 (defn handle-dispatch-validated-wave
-  "Handle dispatch_drone_wave with post-execution validation.
-
-   Same as dispatch_drone_wave but runs lint and compile checks
-   after applying diffs.
-
-   Parameters:
-     tasks      - Array of {:file :task} objects (required)
-     preset     - Drone preset (default: \"drone-worker\")
-     lint_level - Lint severity (:error :warning :info)
-     trace      - Emit progress events (default: true)
-     cwd        - Working directory override
-
-   Returns:
-     JSON with wave-id and validation results."
+  "Handle dispatch_drone_wave with post-execution validation."
   [{:keys [lint_level] :as params}]
   (try
-    ;; Dispatch wave first
     (let [dispatch-result (handle-dispatch-drone-wave params)
           dispatch-data (json/read-str (:text dispatch-result) :key-fn keyword)]
 
       (if (:error dispatch-data)
         dispatch-result
-        ;; Add validation info to response
         {:type "text"
          :text (json/write-str (assoc dispatch-data
                                       :validation_mode true
@@ -200,19 +167,8 @@
       {:type "text"
        :text (json/write-str {:error (.getMessage e)})})))
 
-;;; ============================================================
-;;; Wave Cancellation
-;;; ============================================================
-
 (defn handle-cancel-wave
-  "Handle wave cancellation request.
-
-   Parameters:
-     wave_id - Wave ID to cancel
-     reason  - Cancellation reason
-
-   Returns:
-     JSON with cancellation result."
+  "Handle wave cancellation request."
   [{:keys [wave_id reason]}]
   (try
     (when-not wave_id

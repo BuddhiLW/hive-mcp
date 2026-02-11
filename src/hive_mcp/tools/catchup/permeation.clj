@@ -1,11 +1,5 @@
 (ns hive-mcp.tools.catchup.permeation
-  "Auto-permeation of ling wraps during catchup.
-
-   SOLID: SRP - Single responsibility for wrap permeation.
-   Extracted from hive-mcp.tools.catchup (Sprint 2 refactoring).
-
-   Architecture > LLM behavior: catchup guarantees permeation,
-   no LLM action required. Coordinator always gets ling learnings."
+  "Auto-permeation of ling wraps during catchup."
   (:require [hive-mcp.tools.memory.scope :as scope]
             [hive-mcp.swarm.datascript :as ds]
             [taoensso.timbre :as log]))
@@ -14,12 +8,7 @@
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 (defn auto-permeate-wraps
-  "Automatically permeate pending ling wraps during catchup.
-
-   This ensures coordinator always gets ling learnings without explicit call.
-   Architecture-driven: catchup guarantees permeation, no LLM action required.
-
-   Returns map with :permeated count and :agents list."
+  "Automatically permeate pending ling wraps during catchup."
   [directory]
   (try
     (let [project-id (scope/get-current-project-id directory)

@@ -1,15 +1,5 @@
 (ns hive-mcp.agent.sdk.phase-compress
-  "Phase-boundary compression for SAA lifecycle.
-
-   At each SAA phase transition (silence->abstract, abstract->act),
-   observations are compressed into a compact context string that gets
-   injected into the next phase's prompt.
-
-   Extension point:
-   - NoOpPhaseCompressor (default): Returns observations as-is, relies on
-     Claude's native context compaction. Zero external dependencies.
-   - Custom compressors can be provided via hive-agent-bridge, resolved
-     at runtime via requiring-resolve."
+  "Phase-boundary compression for SAA lifecycle transitions."
   (:require [clojure.string :as str]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -17,13 +7,7 @@
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 (defprotocol IPhaseCompressor
-  "Protocol for compressing observations at SAA phase boundaries.
-
-   Implementations receive the phase name, collected observations, and
-   an options map. They return a map with:
-     :compressed-context  string  — compact context for the next phase
-     :entries-created     int     — entries created (0 for NoOp)
-     :compressor          keyword — :noop or implementation-specific"
+  "Protocol for compressing observations at SAA phase boundaries."
   (compress-phase [this phase-name observations opts]))
 
 (defrecord NoOpPhaseCompressor []
@@ -40,12 +24,7 @@
        :compressor :noop})))
 
 (defn resolve-compressor
-  "Resolve the best available phase compressor.
-
-   Attempts to load a custom compressor from hive-agent-bridge.
-   Falls back to NoOpPhaseCompressor if unavailable.
-
-   Returns an IPhaseCompressor instance."
+  "Resolve the best available phase compressor, falling back to NoOp."
   []
   (or (try
         (let [ctor (requiring-resolve

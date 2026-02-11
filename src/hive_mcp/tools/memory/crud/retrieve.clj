@@ -1,18 +1,5 @@
 (ns hive-mcp.tools.memory.crud.retrieve
-  "Retrieval operations for memory: get-full, batch-get, check-duplicate, update-tags.
-
-   SOLID: SRP - Handles only single-entry and batch retrieval operations.
-   CLARITY: L - Layers stay pure with clear domain separation.
-
-   Handlers:
-   - handle-get-full: Get full entry by ID (with optional KG edges)
-   - handle-batch-get: Get multiple entries by IDs
-   - handle-check-duplicate: Check for existing content
-   - handle-update-tags: Update tags on existing entry
-
-   Knowledge Graph Integration:
-   - get-full returns kg_outgoing and kg_incoming edges when present
-   - batch-get includes KG edges per entry"
+  "Retrieval operations for memory: get-full, batch-get, check-duplicate, update-tags."
   (:require [hive-mcp.tools.memory.core :refer [with-chroma]]
             [hive-mcp.tools.memory.scope :as scope]
             [hive-mcp.tools.memory.format :as fmt]
@@ -24,10 +11,6 @@
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
-
-;; ============================================================
-;; KG Edge Formatting
-;; ============================================================
 
 (defn- edge->json-map
   "Convert KG edge to JSON-safe map format."
@@ -44,38 +27,21 @@
     (:kg-edge/source-type edge) (assoc :source_type (name (:kg-edge/source-type edge)))))
 
 (defn- get-kg-edges-for-entry
-  "Get KG edges for a memory entry.
-   Returns map with :outgoing and :incoming edge lists."
+  "Get KG edges for a memory entry, returning outgoing and incoming lists."
   [entry-id]
   (let [outgoing (kg-edges/get-edges-from entry-id)
         incoming (kg-edges/get-edges-to entry-id)]
     {:outgoing (mapv edge->json-map outgoing)
      :incoming (mapv edge->json-map incoming)}))
 
-;; ============================================================
-;; Get Full Handler (with KG Edge Inclusion)
-;; ============================================================
-
 (defn handle-get-full
-  "Get full content of a memory entry by ID.
-   Searches both hive-mcp-memory and hive-mcp-plans collections.
-   Use after mcp_memory_query_metadata to fetch specific entries.
-
-   Transparent fallback: If not found in memory collection, tries plans collection.
-   This allows get-full to work regardless of which collection stores the entry.
-
-   Knowledge Graph Integration:
-   Automatically includes KG edges when present:
-     - kg_outgoing: Edges where this entry is the source
-     - kg_incoming: Edges where this entry is the target"
+  "Get full content of a memory entry by ID with KG edges."
   [{:keys [id]}]
   (log/info "mcp-memory-get-full:" id)
   (with-chroma
-    ;; Try memory collection first, then fall back to plans collection
     (if-let [entry (or (chroma/get-entry-by-id id)
                        (plans/get-plan id))]
       (let [base-result (fmt/entry->json-alist entry)
-            ;; Include KG edges (graceful degradation if KG backend is broken)
             {:keys [outgoing incoming]}
             (try (get-kg-edges-for-entry id)
                  (catch Exception e
@@ -87,13 +53,8 @@
         (mcp-json result))
       (mcp-json {:error "Entry not found" :id id}))))
 
-;; ============================================================
-;; Batch Get Handler
-;; ============================================================
-
 (defn handle-batch-get
-  "Get full content of multiple memory entries by IDs in a single call.
-   Returns all found entries with KG edges. Missing IDs reported in :missing."
+  "Get multiple memory entries by IDs in a single call with KG edges."
   [{:keys [ids]}]
   (if (or (nil? ids) (empty? ids))
     (mcp-error "ids is required (array of memory entry ID strings)")
@@ -117,15 +78,8 @@
         (mcp-json (cond-> {:entries found :count (count found)}
                     (seq missing) (assoc :missing (mapv :id missing))))))))
 
-;; ============================================================
-;; Check Duplicate Handler
-;; ============================================================
-
 (defn handle-check-duplicate
-  "Check if content already exists in memory (Chroma-only).
-
-   When directory is provided, uses that path to determine project scope
-   instead of relying on Emacs's current buffer."
+  "Check if content already exists in memory."
   [{:keys [type content directory]}]
   (log/info "mcp-memory-check-duplicate:" type "directory:" directory)
   (with-chroma
@@ -136,14 +90,8 @@
                  :entry (when existing (fmt/entry->json-alist existing))
                  :content_hash hash}))))
 
-;; ============================================================
-;; Update Tags Handler
-;; ============================================================
-
 (defn handle-update-tags
-  "Update tags on an existing memory entry (Chroma-only).
-   Replaces existing tags with the new tags list.
-   Returns the updated entry or error if not found."
+  "Replace tags on an existing memory entry."
   [{:keys [id tags]}]
   (log/info "mcp-memory-update-tags:" id "tags:" tags)
   (with-chroma

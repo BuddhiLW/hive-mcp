@@ -10,7 +10,6 @@
 
    Spec: https://google.github.io/A2A/
 
-   CLARITY: Composition over modification — reuses Aleph patterns
    from transport/olympus.clj, dispatch patterns from tools/agent/dispatch.clj."
   (:require [aleph.http :as http]
             [aleph.netty :as netty]

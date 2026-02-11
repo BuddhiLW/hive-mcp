@@ -29,18 +29,15 @@
 (defonce ^:private nrepl-server-atom (atom nil))
 
 ;; Store MCP server context for hot-reload capability
-;; CLARITY: Telemetry first - expose state for debugging and updates
 (defonce ^:private server-context-atom (atom nil))
 
 ;; Global hooks registry for event-driven workflows
-;; CLARITY: Open for extension - allows runtime hook registration
 (defonce ^:private hooks-registry-atom (atom nil))
 
 ;; Track if shutdown hook is registered
 (defonce ^:private shutdown-hook-registered? (atom false))
 
 ;; Store coordinator-id for graceful shutdown
-;; CLARITY-Y: Yield safe failure - enables coordinator cleanup on JVM exit
 (defonce ^:private coordinator-id-atom (atom nil))
 
 ;; WebSocket channel monitor for auto-healing
@@ -96,6 +93,11 @@
     (init/wire-memory-store!)
     (routes/register-tools-for-delegation!)
 
+    ;; Phase 4.5: Extension loading (hive-knowledge, hive-agent capabilities)
+    ;; Must run AFTER embedding/memory (extensions may use Chroma).
+    ;; Must run BEFORE workflow engine (handlers may use extensions).
+    (init/load-extensions!)
+
     ;; Phase 5: Channels + Sync
     (transport/start-ws-channel-with-healing! ws-channel-monitor)
     (transport/start-olympus-ws!)
@@ -125,7 +127,7 @@
     (init/init-hot-reload-watcher! server-context-atom (lifecycle/read-project-config))
     (init/start-registry-sync!)
 
-    ;; Phase 6.5: L2 Decay Scheduler (periodic memory/edge/disc decay)
+    ;; Phase 6.5: Decay Scheduler (periodic memory/edge/disc decay)
     ;; Must run after config loaded (Phase 5.5) and embedding provider (Phase 4).
     ;; Daemon thread — dies with JVM, no explicit shutdown needed.
     (init/start-decay-scheduler!)

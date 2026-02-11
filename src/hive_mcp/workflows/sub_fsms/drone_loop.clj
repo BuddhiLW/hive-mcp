@@ -46,16 +46,12 @@
      :session-store    — IKGStore for session store (optional)
      :agent-id         — agent ID for executor/tracking
      :execute-tools-fn — (fn [agent-id calls permissions] -> [result-msgs])
-     :record-obs-fn    — (fn [store turn tool-name result opts] -> count)
-     :record-reason-fn — (fn [store turn action detail] -> nil)
      :reconstruct-fn   — (fn [store task turn] -> context-string)
-     :seed-kg-fn       — (fn [store global-store seed-opts] -> nil)
-     :emit-fn          — (fn [event-type data] -> nil)
 
-   SOLID-S: Orchestration only — delegates to sub-FSMs and resource fns.
-   SOLID-D: Depends on resource fns, not concrete implementations.
-   CLARITY-Y: Graceful degradation — nil resources produce safe defaults.
-   CLARITY-T: Logs turn, model, token usage, termination reason."
+   Fire-and-forget effects (seed, emit, record) are declared as FX data
+   by handlers and executed by registered FX handlers in
+   hive-mcp.events.effects.drone-loop.
+
   (:require [hive.events.fsm :as fsm]
             [hive-mcp.workflows.sub-fsms.llm-call :as llm-call]
             [clojure.string :as str]
@@ -131,7 +127,7 @@
       {:terminate? false :reason "Continuing"})))
 
 ;; =============================================================================
-;; Handlers (Pure: resources, data -> data')
+;; Handlers (Pure: resources, data -> {:data data', :fx [...]})
 ;; =============================================================================
 
 (defn handle-init
@@ -140,12 +136,12 @@
    Sets up:
    - Turn counter, token accumulators, step history
    - System prompt from task spec
-   - Session store seeding (if store available)
 
-   Resources used: :seed-kg-fn, :emit-fn"
+   FX declared: :drone/seed-session, :drone/emit
+   Resources used: :session-store (passed to FX)"
   [resources data]
   (let [{:keys [task files drone-id max-turns model trace?]} data
-        {:keys [seed-kg-fn emit-fn session-store]} resources
+        {:keys [session-store]} resources
         max-turns (or max-turns default-max-turns)]
 
     (log/info "Drone loop FSM init"
@@ -155,33 +151,30 @@
                :files (count (or files []))
                :has-session-store? (some? session-store)})
 
-    ;; Seed session store from global context (side effect via resource fn)
-    (when (and seed-kg-fn session-store)
-      (try
-        (seed-kg-fn session-store {:task task :files files})
-        (catch Exception e
-          (log/debug "Session store seeding failed (non-fatal)" {:error (.getMessage e)}))))
-
-    ;; Emit started event
-    (when emit-fn
-      (emit-fn :agentic-loop-started {:drone-id drone-id
+    {:data (assoc data
+                  :turn 0
+                  :steps []
+                  :tool-calls-made 0
+                  :total-tokens {:input 0 :output 0 :total 0}
+                  :consecutive-failures 0
+                  :last-response-type nil
+                  :last-text nil
+                  :completion? false
+                  :obs-count 0
+                  :reason-count 0
+                  :max-turns max-turns
+                  :system-prompt (llm-call/default-system-prompt
+                                  {:files (or files [])}))
+     :fx (cond-> []
+           session-store
+           (conj [:drone/seed-session {:store session-store
+                                       :task task
+                                       :files files}])
+           trace?
+           (conj [:drone/emit {:event-type :agentic-loop-started
+                               :data {:drone-id drone-id
                                       :max-turns max-turns
-                                      :model model}))
-
-    (assoc data
-           :turn 0
-           :steps []
-           :tool-calls-made 0
-           :total-tokens {:input 0 :output 0 :total 0}
-           :consecutive-failures 0
-           :last-response-type nil
-           :last-text nil
-           :completion? false
-           :obs-count 0
-           :reason-count 0
-           :max-turns max-turns
-           :system-prompt (llm-call/default-system-prompt
-                           {:files (or files [])}))))
+                                      :model model}}]))}))
 
 (defn handle-reconstruct-context
   "Reconstruct compressed context from session store for current turn.
@@ -227,7 +220,6 @@
                      (llm-call/run-llm-call llm-input
                                             {:backend backend
                                              :tool-schemas tool-schemas})
-                     ;; CLARITY-Y: no backend = error
                      {:response-type :error
                       :error "No LLM backend provided"
                       :tool-calls nil
@@ -272,28 +264,27 @@
    Delegates to execute-tools-fn resource for actual execution.
    Collects results and tracks success/failure metrics.
 
-   Resources used: :execute-tools-fn, :emit-fn"
+   FX declared: :drone/emit (when trace?)
+   Resources used: :execute-tools-fn, :agent-id"
   [resources data]
-  (let [{:keys [tool-calls turn drone-id permissions]} data
-        {:keys [execute-tools-fn agent-id emit-fn]} resources
+  (let [{:keys [tool-calls turn drone-id permissions trace?]} data
+        {:keys [execute-tools-fn agent-id]} resources
         agent-id (or agent-id drone-id)]
 
     (if-not (and execute-tools-fn (seq tool-calls))
       ;; No tools to execute or no executor
-      (assoc data
-             :tool-results []
-             :all-failed? false
-             :last-response-type :tool_calls
-             :last-text "No tools executed")
+      {:data (assoc data
+                    :tool-results []
+                    :all-failed? false
+                    :last-response-type :tool_calls
+                    :last-text "No tools executed")
+       :fx []}
 
       (let [tool-names (mapv :name tool-calls)
             _ (log/info "Executing tools"
                         {:drone-id drone-id :turn turn :tools tool-names})
-            _ (when emit-fn
-                (emit-fn :agentic-loop-turn {:drone-id drone-id :turn turn
-                                             :phase :executing-tools :tools tool-names}))
 
-            ;; Execute via resource fn
+            ;; Execute via resource fn (value-producing — stays inline)
             tool-results (try
                            (execute-tools-fn agent-id tool-calls (or permissions #{}))
                            (catch Exception e
@@ -312,68 +303,72 @@
                              (= batch-failures (count tool-results)))
             result-summary (str/join "; " (map :content tool-results))]
 
-        (assoc data
-               :tool-results (vec (map vector tool-calls tool-results))
-               :all-failed? all-failed?
-               :last-response-type :tool_calls
-               :last-text result-summary
-               :tool-calls-made (+ (or (:tool-calls-made data) 0)
-                                   (count tool-calls))
-               :consecutive-failures (if all-failed?
-                                       (inc (or (:consecutive-failures data) 0))
-                                       0))))))
+        {:data (assoc data
+                      :tool-results (vec (map vector tool-calls tool-results))
+                      :all-failed? all-failed?
+                      :last-response-type :tool_calls
+                      :last-text result-summary
+                      :tool-calls-made (+ (or (:tool-calls-made data) 0)
+                                          (count tool-calls))
+                      :consecutive-failures (if all-failed?
+                                              (inc (or (:consecutive-failures data) 0))
+                                              0))
+         :fx (cond-> []
+               trace?
+               (conj [:drone/emit {:event-type :agentic-loop-turn
+                                   :data {:drone-id drone-id :turn turn
+                                          :phase :executing-tools
+                                          :tools tool-names}}]))}))))
 
 (defn handle-compress
-  "Record tool results and reasoning as observations in session store.
+  "Declare FX for recording tool results and reasoning in session store.
 
-   Each tool call result becomes an observation node. The LLM's reasoning
-   (tool selection rationale) is recorded separately.
+   Each tool call result becomes an observation FX. The LLM's reasoning
+   (tool selection rationale) is recorded separately via FX.
 
-   Resources used: :record-obs-fn, :record-reason-fn, :session-store"
+   FX declared: :drone/record-obs (per tool result), :drone/record-reason
+   Resources used: :session-store (passed to FX)"
   [resources data]
-  (let [{:keys [turn tool-results tool-calls files]} data
-        {:keys [record-obs-fn record-reason-fn session-store]} resources]
+  (let [{:keys [turn tool-results files]} data
+        {:keys [session-store]} resources
+        new-obs-count (+ (or (:obs-count data) 0)
+                         (count (or tool-results [])))
+        tool-names (mapv (comp :name first) tool-results)
 
-    ;; Record observations
-    (let [new-obs-count
-          (if (and record-obs-fn session-store (seq tool-results))
-            (reduce
-             (fn [cnt [call result-msg]]
-               (let [tool-name (:name call)
-                     success? (not (str/starts-with?
-                                    (or (:content result-msg) "") "Error:"))]
-                 (try
-                   (record-obs-fn session-store turn tool-name
-                                  {:success success?
-                                   :result {:text (:content result-msg)}
-                                   :error (when-not success? (:content result-msg))}
-                                  {:file (first files)})
-                   (catch Exception e
-                     (log/debug "Record observation failed" {:error (.getMessage e)})))
-                 (inc cnt)))
-             (or (:obs-count data) 0)
-             tool-results)
-            (or (:obs-count data) 0))]
+        ;; Build observation FX — one per tool result
+        obs-fx (when (and session-store (seq tool-results))
+                 (mapv (fn [[call result-msg]]
+                         (let [tool-name (:name call)
+                               content (or (:content result-msg) "")
+                               success? (not (str/starts-with? content "Error:"))]
+                           [:drone/record-obs
+                            {:store     session-store
+                             :turn      turn
+                             :tool-name tool-name
+                             :result    {:success success?
+                                         :result  {:text content}
+                                         :error   (when-not success? content)}
+                             :opts      {:file (first files)}}]))
+                       tool-results))
 
-      ;; Record reasoning
-      (when (and record-reason-fn session-store)
-        (let [tool-names (mapv (comp :name first) tool-results)]
-          (try
-            (record-reason-fn session-store turn
-                              (str "Execute tools: " (str/join ", " tool-names))
-                              "LLM requested tool execution")
-            (catch Exception e
-              (log/debug "Record reasoning failed" {:error (.getMessage e)})))))
+        ;; Build reasoning FX
+        reason-fx (when session-store
+                    [[:drone/record-reason
+                      {:store  session-store
+                       :turn   turn
+                       :action (str "Execute tools: " (str/join ", " tool-names))
+                       :detail "LLM requested tool execution"}]])]
 
-      ;; Increment turn and record step
-      (-> data
-          (assoc :obs-count new-obs-count
-                 :reason-count (inc (or (:reason-count data) 0))
-                 :turn (inc (or turn 0)))
-          (update :steps conj {:turn turn
-                               :response-type (:response-type data)
-                               :tool-calls-count (count tool-results)
-                               :all-failed? (:all-failed? data)})))))
+    ;; Increment turn and record step (pure data transform)
+    {:data (-> data
+               (assoc :obs-count new-obs-count
+                      :reason-count (inc (or (:reason-count data) 0))
+                      :turn (inc (or turn 0)))
+               (update :steps conj {:turn turn
+                                    :response-type (:response-type data)
+                                    :tool-calls-count (count tool-results)
+                                    :all-failed? (:all-failed? data)}))
+     :fx (into (or obs-fx []) reason-fx)}))
 
 (defn handle-check-done
   "Evaluate termination heuristics to decide: loop or finalize.
@@ -381,48 +376,51 @@
    For text/error responses (no tool execution path), also increments
    turn counter and records the step before checking termination.
 
+   FX declared: :drone/record-reason (for text responses), :drone/emit
+   Resources used: :session-store (passed to FX)
    The dispatch predicates (done? / continue?) determine the next state."
   [resources data]
-  (let [{:keys [turn response-type text-content error]} data
-        {:keys [record-reason-fn session-store emit-fn]} resources
+  (let [{:keys [turn response-type text-content error trace?]} data
+        {:keys [session-store]} resources
 
-        ;; For text/error responses, we need to record + advance turn here
+        ;; For text/error responses, we need to advance turn here
         ;; (tool responses go through ::execute-tools → ::compress first)
-        data (if (#{:text :error} response-type)
-               (let [content (or text-content error "")]
-                 ;; Record reasoning for text responses
-                 (when (and record-reason-fn session-store (= :text response-type))
-                   (try
-                     (record-reason-fn session-store turn
-                                       "Final response (text-only)"
-                                       (subs content 0 (min 200 (count content))))
-                     (catch Exception e
-                       (log/debug "Record reasoning failed" {:error (.getMessage e)}))))
+        [data text-fx]
+        (if (#{:text :error} response-type)
+          (let [content (or text-content error "")
+                reason-fx (when (and session-store (= :text response-type))
+                            [[:drone/record-reason
+                              {:store  session-store
+                               :turn   turn
+                               :action "Final response (text-only)"
+                               :detail (subs content 0 (min 200 (count content)))}]])]
+            [(-> data
+                 (assoc :turn (inc (or turn 0))
+                        :last-text content
+                        :last-response-type response-type
+                        :consecutive-failures
+                        (if (= :error response-type)
+                          (inc (or (:consecutive-failures data) 0))
+                          0))
+                 (update :steps conj {:turn turn
+                                      :response-type response-type
+                                      :all-failed? (= :error response-type)}))
+             (or reason-fx [])])
+          [data []])
 
-                 (-> data
-                     (assoc :turn (inc (or turn 0))
-                            :last-text content
-                            :last-response-type response-type
-                            :consecutive-failures
-                            (if (= :error response-type)
-                              (inc (or (:consecutive-failures data) 0))
-                              0))
-                     (update :steps conj {:turn turn
-                                          :response-type response-type
-                                          :all-failed? (= :error response-type)})))
-               data)
+        term-result (should-terminate? data)
 
-        term-result (should-terminate? data)]
-
-    (when emit-fn
-      (emit-fn :agentic-loop-turn {:drone-id (:drone-id data)
-                                   :turn (:turn data)
-                                   :phase :check-done
-                                   :terminate? (:terminate? term-result)
-                                   :reason (:reason term-result)}))
+        emit-fx (when trace?
+                  [[:drone/emit {:event-type :agentic-loop-turn
+                                 :data {:drone-id (:drone-id data)
+                                        :turn (:turn data)
+                                        :phase :check-done
+                                        :terminate? (:terminate? term-result)
+                                        :reason (:reason term-result)}}]])]
 
     ;; Store termination result for dispatch predicates
-    (assoc data :termination term-result)))
+    {:data (assoc data :termination term-result)
+     :fx (into text-fx (or emit-fx []))}))
 
 (defn handle-finalize
   "Build the final execution result.
@@ -430,12 +428,11 @@
    Computes status from termination state and assembles the result map
    matching the contract of run-agentic-loop in drone/loop.clj.
 
-   Resources used: :emit-fn"
-  [resources data]
+   FX declared: :drone/emit (when trace?)"
+  [_resources data]
   (let [{:keys [turn max-turns last-response-type last-text
                 steps tool-calls-made total-tokens model
-                obs-count reason-count drone-id termination]} data
-        {:keys [emit-fn]} resources
+                obs-count reason-count drone-id termination trace?]} data
 
         status (cond
                  (>= (or turn 0) (or max-turns default-max-turns)) :max_steps
@@ -453,25 +450,26 @@
                :reason (:reason termination)
                :tool-calls tool-calls-made})
 
-    (when emit-fn
-      (emit-fn :agentic-loop-completed {:drone-id drone-id
-                                        :status status
-                                        :turns turn
-                                        :tool-calls tool-calls-made}))
-
     ;; Return the result in the same shape as drone/loop.clj
-    (assoc data
-           :fsm-result
-           {:status          status
-            :result          final-result
-            :steps           (or steps [])
-            :tool_calls_made (or tool-calls-made 0)
-            :tokens          (or total-tokens {:input 0 :output 0 :total 0})
-            :turns           (or turn 0)
-            :model           (or model "unknown")
-            :kg-stats        {:observations (or obs-count 0)
-                              :reasoning    (or reason-count 0)
-                              :facts        0}})))
+    {:data (assoc data
+                  :fsm-result
+                  {:status          status
+                   :result          final-result
+                   :steps           (or steps [])
+                   :tool_calls_made (or tool-calls-made 0)
+                   :tokens          (or total-tokens {:input 0 :output 0 :total 0})
+                   :turns           (or turn 0)
+                   :model           (or model "unknown")
+                   :kg-stats        {:observations (or obs-count 0)
+                                     :reasoning    (or reason-count 0)
+                                     :facts        0}})
+     :fx (cond-> []
+           trace?
+           (conj [:drone/emit {:event-type :agentic-loop-completed
+                               :data {:drone-id drone-id
+                                      :status status
+                                      :turns turn
+                                      :tool-calls tool-calls-made}}]))}))
 
 ;; =============================================================================
 ;; Dispatch Predicates
@@ -660,7 +658,6 @@
       :kg-stats {...}}"
   [data resources]
   (if-not (:backend resources)
-    ;; CLARITY-Y: No backend = noop
     {:status          :noop
      :result          "No LLM backend provided"
      :steps           []
@@ -701,7 +698,7 @@
   "Create resources map wired to production dependencies.
 
    Lazily resolves implementations via requiring-resolve to avoid
-   hard namespace dependencies (SOLID-D, CLARITY-Y).
+   hard namespace dependencies.
 
    Args:
      backend       - LLMBackend instance
@@ -710,12 +707,14 @@
        :tools          - tool name allowlist
        :permissions    - tool permission set
        :agent-id       - agent ID string
-       :trace?         - emit events
+
+   Note: :trace? is now read from FSM data (not resources).
+   Fire-and-forget effects use registered FX handlers.
 
    Returns:
      Resources map for run-drone-loop."
   [backend & [opts]]
-  (let [{:keys [session-store tools permissions agent-id trace?]} opts
+  (let [{:keys [session-store tools permissions agent-id]} opts
         resolve-fn (fn [sym]
                      (try (requiring-resolve sym)
                           (catch Exception _ nil)))
@@ -723,6 +722,9 @@
                        (get-schemas-fn tools))
         execute-fn (when-let [exec-fn (resolve-fn 'hive-mcp.agent.executor/execute-tool-calls)]
                      exec-fn)]
+    ;; Fire-and-forget effects (seed, emit, record-obs, record-reason)
+    ;; are now declared as FX data by handlers and executed by registered
+    ;; FX handlers in hive-mcp.events.effects.drone-loop.
     {:backend          backend
      :tool-schemas     tool-schemas
      :session-store    session-store
@@ -739,18 +741,5 @@
                                  (finally
                                    (when clear-fn (clear-fn)))))
                              (execute-fn aid calls perms))))
-     :record-obs-fn    (when-let [f (resolve-fn 'hive-mcp.agent.drone.session-kg/record-observation!)]
-                         f)
-     :record-reason-fn (when-let [f (resolve-fn 'hive-mcp.agent.drone.session-kg/record-reasoning!)]
-                         f)
      :reconstruct-fn   (when-let [f (resolve-fn 'hive-mcp.agent.drone.session-kg/reconstruct-context)]
-                         f)
-     :seed-kg-fn       (when-let [seed-fn (resolve-fn 'hive-mcp.agent.drone.session-kg/seed-from-global!)]
-                         (fn [store seed-opts]
-                           (when-let [global-store-fn (resolve-fn 'hive-mcp.protocols.kg/get-store)]
-                             (when (some-> (resolve-fn 'hive-mcp.protocols.kg/store-set?) deref)
-                               (seed-fn store (global-store-fn) seed-opts)))))
-     :emit-fn          (when trace?
-                         (when-let [emit-fn (resolve-fn 'hive-mcp.channel.core/emit-event!)]
-                           (fn [event-type event-data]
-                             (emit-fn event-type (assoc event-data :agent-id agent-id)))))}))
+                         f)}))

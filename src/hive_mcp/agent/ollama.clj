@@ -1,10 +1,5 @@
 (ns hive-mcp.agent.ollama
-  "Ollama backend for agent delegation.
-
-   Provides local LLM access via Ollama HTTP API.
-   Uses OpenAI-compatible tool calling format.
-
-   Use ->OllamaBackend directly to construct instances."
+  "Ollama backend for local LLM access via HTTP API."
   (:require [hive-mcp.agent.protocol :as proto]
             [clojure.data.json :as json]
             [taoensso.timbre :as log])
@@ -14,10 +9,6 @@
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
-
-;;; ============================================================
-;;; HTTP Client
-;;; ============================================================
 
 (defonce ^:private http-client
   (delay
@@ -42,12 +33,8 @@
       (throw (ex-info "HTTP request failed"
                       {:status status :body body-str :url url})))))
 
-;;; ============================================================
-;;; Ollama Backend
-;;; ============================================================
-
 (defn- tools->openai-format
-  "Convert hive-mcp tool schemas to OpenAI function format for Ollama."
+  "Convert tool schemas to OpenAI function format for Ollama."
   [tools]
   (mapv (fn [{:keys [name description inputSchema]}]
           {:type "function"
@@ -63,7 +50,6 @@
         content (:content message)
         tool-calls (:tool_calls message)]
     (cond
-      ;; Tool calls present
       (seq tool-calls)
       {:type :tool_calls
        :calls (mapv (fn [tc]
@@ -75,11 +61,9 @@
                                       args))})
                     tool-calls)}
 
-      ;; Text response
       content
       {:type :text :content content}
 
-      ;; Empty response
       :else
       {:type :text :content ""})))
 

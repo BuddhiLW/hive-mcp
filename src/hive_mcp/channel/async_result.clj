@@ -1,54 +1,24 @@
 (ns hive-mcp.channel.async-result
-  "Async tool result buffer for piggyback delivery.
-
-   Problem: MCP tool calls block the JSON-RPC thread. Slow operations
-   (Chroma search, KG traversal, Ollama embeddings) block the LLM for 2-30s.
-
-   Solution: When a tool call includes `async: true`, the handler middleware
-   returns an immediate ack, spawns a future for the real work, and results
-   drain via piggyback on subsequent tool calls.
-
-   Buffer keyed by [agent-id project-id] so each agent+project gets independent
-   delivery. Uses cursor+budget pattern mirroring memory_piggyback.clj.
-
-   Design:
-   - enqueue-result! appends completed results with content-hash dedup
-   - drain! returns results within 32K char budget, advances cursor
-   - 5-min TTL GC prevents memory leaks from abandoned async tasks
-   - poll-task returns specific task status for explicit polling"
+  "Async tool result buffer for piggyback delivery with cursor+budget drain."
   (:require [taoensso.timbre :as log])
   (:import [java.time Instant]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;; =============================================================================
 ;; Constants
-;; =============================================================================
 
-(def ^:const drain-char-budget
-  "Max chars per drain batch. ~32K chars = ~8K tokens.
-   Matches memory_piggyback.clj budget for consistency."
-  32000)
+(def ^:const drain-char-budget "Max chars per drain batch (~8K tokens)." 32000)
 
-(def ^:const ttl-seconds
-  "Time-to-live for async results in seconds.
-   Results older than this are garbage collected to prevent memory leaks
-   from abandoned tasks (e.g., client disconnected before draining)."
-  300) ;; 5 minutes
+(def ^:const ttl-seconds "TTL for async results in seconds." 300)
 
-;; =============================================================================
 ;; Buffer State
-;; =============================================================================
 
-(defonce ^{:doc "Map of [agent-id project-id] -> {:entries [...] :cursor 0}
-                 Each entry: {:task-id :tool :status :result :timestamp :content-hash}"}
+(defonce ^{:doc "Map of [agent-id project-id] -> {:entries [...] :cursor 0}."}
   buffers
   (atom {}))
 
-;; =============================================================================
 ;; Internal Helpers
-;; =============================================================================
 
 (defn- now-epoch-seconds
   "Current epoch seconds for TTL comparison."
@@ -65,15 +35,10 @@
   [entry now-secs]
   (> (- now-secs (:timestamp entry 0)) ttl-seconds))
 
-;; =============================================================================
 ;; Garbage Collection
-;; =============================================================================
 
 (defn gc-expired!
-  "Remove expired entries from all buffers.
-   Adjusts cursors when entries before cursor are removed.
-   Removes empty buffers entirely.
-   Returns count of entries removed."
+  "Remove expired entries from all buffers, returns count removed."
   []
   (let [now-secs (now-epoch-seconds)
         removed (atom 0)]
@@ -103,21 +68,10 @@
         (log/info "async-result: GC removed" total "expired entries"))
       total)))
 
-;; =============================================================================
 ;; Public API
-;; =============================================================================
 
 (defn enqueue-result!
-  "Enqueue a completed async result into the buffer.
-
-   Result-map should contain:
-   - :task-id  - unique task identifier (e.g. \"atask-<uuid>\")
-   - :tool     - tool name that produced the result
-   - :status   - :completed or :error
-   - :result   - the actual result data (for :completed)
-   - :error    - error message (for :error)
-
-   Idempotent: content-hash dedup prevents re-enqueue of identical results."
+  "Enqueue a completed async result into the buffer with content-hash dedup."
   [agent-id project-id result-map]
   (let [buffer-key [(or agent-id "coordinator") (or project-id "global")]
         entry (assoc result-map
@@ -138,17 +92,7 @@
               "buffer:" buffer-key)))
 
 (defn drain!
-  "Drain next batch of async results within char budget for an agent+project.
-
-   Returns map:
-   {:results [...entries...]
-    :remaining N    ;; entries still pending after cursor
-    :total M        ;; total entries in buffer
-    :delivered D    ;; entries delivered so far (including this batch)
-    :done true}     ;; present only when all entries drained
-
-   Returns nil if no pending entries past cursor.
-   Cleans up buffer when all entries are drained and expired entries GC'd."
+  "Drain next batch of async results within char budget for an agent+project."
   [agent-id project-id]
   (let [buffer-key [(or agent-id "coordinator") (or project-id "global")]
         buf (get @buffers buffer-key)]
@@ -200,13 +144,7 @@
          (< (:cursor buf) (count (:entries buf))))))
 
 (defn poll-task
-  "Get status of a specific async task.
-
-   Returns the entry map if found, nil otherwise.
-   Useful for explicit polling by task-id when client wants
-   to check a specific async operation.
-
-   Searches across all buffers (task-id is globally unique)."
+  "Get status of a specific async task by task-id across all buffers."
   [task-id]
   (some (fn [[_buffer-key {:keys [entries]}]]
           (some #(when (= task-id (:task-id %))

@@ -1,8 +1,5 @@
 (ns hive-mcp.chroma.maintenance
-  "Cleanup, repair, and expiration management for Chroma entries.
-
-   Provides expired entry cleanup, duration repair, and
-   soon-to-expire entry queries."
+  "Cleanup, repair, and expiration management for Chroma entries."
   (:require [clojure-chroma-client.api :as chroma]
             [hive-mcp.chroma.connection :as conn]
             [hive-mcp.chroma.crud :as crud]
@@ -15,9 +12,7 @@
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 (defn- repair-missing-expires!
-  "Repair entries that have a non-permanent duration but no expires timestamp.
-   Also normalizes legacy duration strings (long-term -> long, etc.).
-   Returns count of entries repaired."
+  "Repair entries with missing duration or expires timestamps."
   [all-entries]
   (let [needs-repair (->> all-entries
                           (filter (fn [e]
@@ -25,9 +20,7 @@
                                           exp (get-in e [:metadata :expires])
                                           canonical (h/normalize-duration dur)]
                                       (or
-                                       ;; Invalid duration string
                                        (not= dur canonical)
-                                       ;; Valid non-permanent duration with no expires
                                        (and (contains? #{"ephemeral" "short" "medium" "long"} canonical)
                                             (empty? (str exp))))))))]
     (doseq [entry needs-repair]
@@ -45,7 +38,6 @@
                   updates (cond-> {}
                             (not= raw-dur canonical) (assoc :duration canonical)
                             expires (assoc :expires expires))]
-              ;; Direct metadata update via get+upsert to avoid full re-embedding
               (when-let [existing (first @(chroma/get coll :ids [id]
                                                       :include #{:documents :metadatas :embeddings}))]
                 @(chroma/add coll [{:id id
@@ -60,20 +52,15 @@
     (count needs-repair)))
 
 (defn cleanup-expired!
-  "Delete all expired entries from Chroma, and repair entries with missing expires.
-   Returns map with :count, :deleted-ids, and :repaired for KG edge cleanup."
+  "Delete expired entries and repair entries with missing expires."
   []
   (emb/require-embedding!)
   (let [coll (conn/get-or-create-collection)
-        ;; Get all entries including expired
         all-entries @(chroma/get coll :include #{:metadatas} :limit 10000)
-        ;; Phase 1: repair entries with invalid/missing duration+expires
         repaired (try (repair-missing-expires! all-entries)
                       (catch Exception e
                         (log/warn "Repair phase failed (non-blocking):" (.getMessage e))
                         0))
-        ;; Phase 2: delete expired entries (re-fetch if we repaired any,
-        ;; since repaired entries now have proper expires and may be newly expired)
         entries-to-check (if (pos? repaired)
                            @(chroma/get coll :include #{:metadatas} :limit 10000)
                            all-entries)
@@ -91,8 +78,7 @@
      :repaired repaired}))
 
 (defn entries-expiring-soon
-  "Get entries expiring within the given number of days.
-   Returns seq of entry maps."
+  "Get entries expiring within the given number of days."
   [days & {:keys [project-id]}]
   (emb/require-embedding!)
   (let [now (java.time.ZonedDateTime/now)

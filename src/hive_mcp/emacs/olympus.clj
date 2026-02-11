@@ -1,8 +1,6 @@
 (ns hive-mcp.emacs.olympus
   "Pure Clojure core for Olympus grid view layout calculation.
 
-   SOLID-S: Single Responsibility - only layout calculation, no I/O.
-   CLARITY-L: Pure domain logic, no side effects.
 
    Layout algorithm:
    n=1: {:rows 1 :cols 1}           ; full screen
@@ -12,9 +10,6 @@
    n=5+: {:tabs (ceil n/4) :per-tab 4}  ; tabbed"
   (:require [clojure.spec.alpha :as s]))
 
-;;; =============================================================================
-;;; Specs (Domain Contracts)
-;;; =============================================================================
 
 (s/def ::rows nat-int?)
 (s/def ::cols nat-int?)
@@ -42,9 +37,6 @@
   (s/keys :req [:slave/id]
           :opt [:slave/name]))
 
-;;; =============================================================================
-;;; Layout Calculation (Pure Functions)
-;;; =============================================================================
 
 (defn calculate-layout
   "Calculate optimal grid layout for n lings.
@@ -123,9 +115,6 @@
                      lings
                      all-cells)))))))
 
-;;; =============================================================================
-;;; Layout Queries (Pure Functions)
-;;; =============================================================================
 
 (defn grid-capacity
   "Calculate total capacity of a layout.

@@ -1,11 +1,5 @@
 (ns hive-mcp.tools.catchup.git
-  "Git context gathering for catchup workflow.
-
-   SOLID: SRP - Single responsibility for git status via Emacs.
-   Extracted from hive-mcp.tools.catchup (Sprint 2 refactoring).
-
-   Contains:
-   - gather-git-info (Emacs/shell integration for branch, uncommitted, last commit)"
+  "Git context gathering for catchup workflow."
   (:require [hive-mcp.emacs.client :as ec]
             [clojure.data.json :as json]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -13,9 +7,7 @@
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 (defn gather-git-info
-  "Gather git information from Emacs for the given directory.
-   Returns map with :branch, :uncommitted, :last-commit.
-   Falls back to {:branch \"unknown\"} on error."
+  "Gather git information from Emacs for the given directory."
   [directory]
   (try
     (let [git-elisp (if directory

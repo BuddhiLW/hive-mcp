@@ -38,10 +38,6 @@
      :timeout-ms        — Max execution time per tool (default 30000)
      :audit-fn          — (fn [tool-name args allowed?] nil) audit logger (optional)
 
-   SOLID-S: Tool execution only — no LLM calls, no context gathering.
-   SOLID-D: Depends on resource fns, not sandbox.clj directly.
-   CLARITY-Y: Graceful degradation on denied tools, execution errors.
-   CLARITY-T: Logs tool name, permission result, execution time."
   (:require [hive.events.fsm :as fsm]
             [taoensso.timbre :as log]))
 

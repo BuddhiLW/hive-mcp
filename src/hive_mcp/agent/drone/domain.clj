@@ -1,62 +1,15 @@
 (ns hive-mcp.agent.drone.domain
-  "Domain value objects for drone execution.
-
-   Extracted from drone.clj to provide type-safe, immutable data structures
-   with validated constructors (SOLID-O, CLARITY-I, CLARITY-R).
-
-   Records:
-   - TaskSpec: Immutable task configuration
-   - ExecutionContext: Runtime execution state
-   - ExecutionResult: Execution outcome with metrics
-
-   All constructors validate inputs (CLARITY-I: Inputs guarded)."
+  "Domain value objects for drone execution: TaskSpec, ExecutionContext, ExecutionResult."
   (:require [clojure.string :as str]
             [hive-mcp.protocols.kg :as kg]))
 
-;;; ============================================================
-;;; TaskSpec - Immutable Task Configuration
-;;; ============================================================
-
 (defrecord TaskSpec
-           [task files task-type preset cwd parent-id wave-id options]
-  ;; task      - Task description string (required)
-  ;; files     - Vector of file paths to modify
-  ;; task-type - Keyword (:testing, :refactoring, :bugfix, :documentation, :general)
-  ;; preset    - Drone preset name
-  ;; cwd       - Working directory (project root)
-  ;; parent-id - Parent ling's slave-id
-  ;; wave-id   - Wave identifier for batch operations
-  ;; options   - Additional options map (:trace, :skip-auto-apply, etc.)
-  )
+           [task files task-type preset cwd parent-id wave-id options])
 
 (defn ->task-spec
-  "Create a validated TaskSpec.
-
-   Arguments:
-     opts - Map with:
-       :task      - Task description (required, non-blank string)
-       :files     - File paths (default: [])
-       :task-type - Task type keyword (default: :general)
-       :preset    - Preset name (optional)
-       :cwd       - Working directory (optional)
-       :parent-id - Parent ling ID (optional)
-       :wave-id   - Wave ID (optional)
-       :trace     - Enable tracing (default: true)
-       :skip-auto-apply - Don't auto-apply diffs (default: false)
-       :backend   - Drone execution backend keyword (optional)
-                    One of: :openrouter, :hive-agent, :legacy-loop, :sdk-drone
-                    nil = default backend selection
-       :model     - Override model (optional, bypasses smart routing)
-       :seeds     - Domain topic seeds for context priming (optional)
-                    e.g. [\"fp\" \"ddd\" \"concurrency\"]
-
-   Returns:
-     TaskSpec record
-
-   Throws:
-     ex-info if :task is missing or blank (CLARITY-I)"
+  "Create a validated TaskSpec from an options map."
   [{:keys [task files task-type preset cwd parent-id wave-id
-           trace skip-auto-apply backend model seeds]
+           trace skip-auto-apply backend model seeds ctx-refs kg-node-ids]
     :or {files []
          task-type :general
          trace true
@@ -75,60 +28,27 @@
                   :wave-id wave-id
                   :options (cond-> {:trace trace
                                     :skip-auto-apply skip-auto-apply}
-                             backend     (assoc :backend backend)
-                             model       (assoc :model model)
-                             (seq seeds) (assoc :seeds (vec seeds)))}))
+                             backend          (assoc :backend backend)
+                             model            (assoc :model model)
+                             (seq seeds)      (assoc :seeds (vec seeds))
+                             (seq ctx-refs)   (assoc :ctx-refs ctx-refs)
+                             (seq kg-node-ids) (assoc :kg-node-ids (vec kg-node-ids)))}))
 
 (defn task-spec?
   "Check if value is a TaskSpec."
   [x]
   (instance? TaskSpec x))
 
-;;; ============================================================
-;;; ExecutionContext - Runtime Execution State
-;;; ============================================================
-
 (def ^:dynamic *drone-kg-store*
-  "Dynamic var for per-drone KG store binding.
-   Alternative to threading kg-store through ExecutionContext.
-   Bind via (binding [*drone-kg-store* my-store] ...) in code paths
-   that don't have access to the execution context.
-   nil = use global store."
+  "Dynamic var for per-drone KG store binding (nil = use global store)."
   nil)
 
 (defrecord ExecutionContext
            [drone-id task-id parent-id model sandbox start-time
-            pre-validation file-contents-before project-root kg-store]
-  ;; drone-id             - Unique drone identifier
-  ;; task-id              - Task identifier for claims
-  ;; parent-id            - Parent ling ID
-  ;; model                - Selected model for execution
-  ;; sandbox              - Sandbox configuration map
-  ;; start-time           - Execution start timestamp (millis)
-  ;; pre-validation       - Pre-execution validation results
-  ;; file-contents-before - File contents snapshot for post-validation
-  ;; project-root         - Resolved project root path
-  ;; kg-store             - Optional IKGStore instance for per-drone KG isolation (nil = use global)
-  )
+            pre-validation file-contents-before project-root kg-store])
 
 (defn ->execution-context
-  "Create an ExecutionContext.
-
-   Arguments:
-     opts - Map with:
-       :drone-id     - Drone identifier (required)
-       :task-id      - Task identifier (default: \"task-{drone-id}\")
-       :parent-id    - Parent ling ID
-       :model        - Selected model
-       :sandbox      - Sandbox config map
-       :project-root - Project root path
-       :kg-store     - Optional IKGStore for per-drone KG isolation (nil = use global)
-
-   Returns:
-     ExecutionContext record
-
-   Throws:
-     ex-info if :drone-id is missing"
+  "Create an ExecutionContext from an options map."
   [{:keys [drone-id task-id parent-id model sandbox project-root kg-store]}]
   (when (str/blank? drone-id)
     (throw (ex-info "ExecutionContext requires :drone-id"
@@ -167,58 +87,19 @@
   (- (System/currentTimeMillis) (:start-time ctx)))
 
 (defn get-kg-store
-  "Get the KG store for a drone execution context.
-
-   Resolution order:
-   1. :kg-store from ExecutionContext (explicit per-drone store)
-   2. *drone-kg-store* dynamic var (bound in current thread)
-   3. Global store via kg/get-store (singleton fallback)
-
-   This allows per-drone KG isolation when needed while
-   maintaining backward compatibility (nil = global behavior).
-
-   Arguments:
-     ctx - ExecutionContext (or nil for dynamic/global fallback)
-
-   Returns:
-     IKGStore instance"
+  "Get the KG store for a drone, resolving ctx > dynamic > global."
   [ctx]
   (or (:kg-store ctx)
       *drone-kg-store*
       (kg/get-store)))
 
-;;; ============================================================
-;;; ExecutionResult - Execution Outcome
-;;; ============================================================
-
 (defrecord ExecutionResult
            [status agent-id task-id parent-id
             files-modified files-failed proposed-diff-ids
-            duration-ms validation result error-info]
-  ;; status           - :completed | :failed | :timeout | :cancelled
-  ;; agent-id         - Drone ID that executed
-  ;; task-id          - Task identifier
-  ;; parent-id        - Parent ling ID
-  ;; files-modified   - Vector of successfully modified files
-  ;; files-failed     - Vector of {:file :error} for failures
-  ;; proposed-diff-ids - Vector of diff IDs for review mode
-  ;; duration-ms      - Execution duration
-  ;; validation       - Validation summary map
-  ;; result           - Raw execution result
-  ;; error-info       - Error details if failed
-  )
+            duration-ms validation result error-info])
 
 (defn ->execution-result
-  "Create an ExecutionResult.
-
-   Arguments:
-     ctx    - ExecutionContext
-     status - :completed or :failed
-     opts   - Additional result data:
-       :result         - Raw execution result
-       :diff-results   - DiffResults record
-       :validation     - Validation summary
-       :error-info     - Error details (for failures)"
+  "Create an ExecutionResult from context, status, and options."
   [ctx status {:keys [result diff-results validation error-info]}]
   (map->ExecutionResult
    {:status status
@@ -258,25 +139,12 @@
   [result]
   (= :failed (:status result)))
 
-;;; ============================================================
-;;; Utility Functions
-;;; ============================================================
-
 (defn generate-drone-id
-  "Generate a unique drone ID using UUID.
-
-   Returns:
-     String in format \"drone-{uuid}\""
+  "Generate a unique drone ID using UUID."
   []
   (str "drone-" (java.util.UUID/randomUUID)))
 
 (defn generate-task-id
-  "Generate a task ID from drone ID.
-
-   Arguments:
-     drone-id - The drone identifier
-
-   Returns:
-     String in format \"task-{drone-id}\""
+  "Generate a task ID from drone ID."
   [drone-id]
   (str "task-" drone-id))

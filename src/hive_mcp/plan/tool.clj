@@ -8,9 +8,6 @@
    4. Create KG edges: plan --depends-on--> tasks
    5. Create KG edges: task --depends-on--> task (from step dependencies)
 
-   SOLID: SRP - Single responsibility for plan-to-kanban conversion.
-   CLARITY: L - Layers stay pure with clear domain separation.
-   CLARITY: I - Inputs validated at tool boundary."
   (:require [hive-mcp.tools.core :refer [mcp-json mcp-error]]
             [hive-mcp.tools.memory-kanban :as mem-kanban]
             [hive-mcp.plan.schema :as schema]
@@ -27,9 +24,6 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;;; =============================================================================
-;;; Topological Sort / Wave Computation
-;;; =============================================================================
 
 (defn compute-waves
   "Compute DAG wave numbers for plan steps based on dependencies.
@@ -77,9 +71,6 @@
                              (recur new-assigned new-remaining)))))]
     (assign-waves {} (map :id steps))))
 
-;;; =============================================================================
-;;; Kanban Task Creation
-;;; =============================================================================
 
 (defn- create-kanban-task!
   "Create a kanban task for a plan step.
@@ -102,9 +93,6 @@
     (catch Exception e
       {:error (str "Failed to create kanban task: " (.getMessage e))})))
 
-;;; =============================================================================
-;;; KG Edge Creation
-;;; =============================================================================
 
 (defn- create-plan-decision-edge!
   "Create KG edge: Plan --derived-from--> Decision.
@@ -180,9 +168,6 @@
          :source-type :automated
          :created-by (str "plan_to_kanban" (when agent-id (str ":" agent-id)))})))))
 
-;;; =============================================================================
-;;; FSM Execute Function Builder
-;;; =============================================================================
 
 (defn- build-execute-fn
   "Build the execute function for the Plan FSM.
@@ -244,9 +229,6 @@
          :step-mapping step-id-to-task-id
          :decision-id decision-id}))))
 
-;;; =============================================================================
-;;; Main Tool Handler
-;;; =============================================================================
 
 (defn plan-to-kanban
   "Convert a plan memory entry (or file) to kanban tasks with KG edges.
@@ -339,9 +321,6 @@
                     :plan-path plan_path
                     :auto-assign? auto_assign)))
 
-;;; =============================================================================
-;;; Tool Definition
-;;; =============================================================================
 
 (def tools
   [{:name "plan_to_kanban"

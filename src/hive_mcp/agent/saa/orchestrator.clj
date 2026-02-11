@@ -1,27 +1,5 @@
 (ns hive-mcp.agent.saa.orchestrator
-  "SAA (Silence-Abstract-Act) orchestrator implementing ISAAOrchestrator protocol.
-
-   Manages the three-phase exploration strategy for agent-driven work:
-   1. Silence: Observe with read-only tools, collect context
-   2. Abstract: Synthesize observations into a structured plan
-   3. Act: Execute the plan with full tool access
-
-   Architecture:
-   - Uses IAgentSession.query! for phase execution (protocol-based, not SDK-private)
-   - Tracks per-agent state (phase, observations, plan, timestamps)
-   - Integrates with hivemind shouts for phase progress reporting
-   - Uses extension registry for optional enhanced scoring/planning
-   - References headless-sdk for SAA phase definitions and scoring (public API only)
-
-   Philosophy:
-   Korzybski's structural differential — ground in territory (Silence),
-   build the map (Abstract), then navigate by the map (Act).
-
-   SOLID-S: Single responsibility — SAA phase orchestration only.
-   SOLID-D: Depends on ISAAOrchestrator/IAgentSession abstractions, not concretions.
-   CLARITY-L: Pure orchestration layer, delegates execution to session query!.
-   CLARITY-T: Telemetry via hivemind shouts at every phase transition.
-   CLARITY-Y: Returns error maps on failure, never throws."
+  "SAA (Silence-Abstract-Act) orchestrator implementing ISAAOrchestrator protocol."
   (:require [clojure.core.async :as async :refer [go go-loop chan >! <! >!! <!! close! put!]]
             [clojure.string :as str]
             [hive-mcp.protocols.agent-bridge :as bridge]
@@ -33,20 +11,6 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;;; =============================================================================
-;;; Per-Agent Phase State
-;;; =============================================================================
-
-;; Tracks SAA state per agent-id.
-;; Key: agent-id (string)
-;; Value: {:phase        keyword (:idle :silence :abstract :act :complete :error)
-;;         :task         string  (original task description)
-;;         :observations vector  (collected during silence)
-;;         :plan         string  (produced during abstract)
-;;         :result       map     (produced during act)
-;;         :phase-history [{:phase kw :started-at ms :ended-at ms}]
-;;         :started-at   long
-;;         :error        string  (if :error phase)}
 (defonce ^:private agent-states (atom {}))
 
 (defn- init-agent-state!
@@ -64,8 +28,7 @@
           :error nil}))
 
 (defn- transition-phase!
-  "Transition an agent to a new SAA phase.
-   Records the transition in phase-history."
+  "Transition an agent to a new SAA phase, recording in history."
   [agent-id new-phase]
   (swap! agent-states update agent-id
          (fn [state]
@@ -91,17 +54,12 @@
   (get @agent-states agent-id))
 
 (defn- clear-agent-state!
-  "Remove SAA state for an agent. For cleanup."
+  "Remove SAA state for an agent."
   [agent-id]
   (swap! agent-states dissoc agent-id))
 
-;;; =============================================================================
-;;; Hivemind Integration
-;;; =============================================================================
-
 (defn- shout-phase!
-  "Broadcast phase transition to hivemind.
-   Uses requiring-resolve to avoid circular dependency."
+  "Broadcast phase transition to hivemind via requiring-resolve."
   [agent-id phase message]
   (try
     (when-let [shout-fn (requiring-resolve 'hive-mcp.hivemind/shout!)]
@@ -114,43 +72,31 @@
       (log/debug "[saa] Hivemind shout failed (non-critical)" {:error (ex-message e)}))))
 
 (defn- maybe-shout!
-  "Broadcast phase transition only if :shout? is enabled in config.
-   Respects the SAAOrchestrator configuration."
+  "Broadcast phase transition only if :shout? is enabled in config."
   [config agent-id phase message]
   (when (:shout? config)
     (shout-phase! agent-id phase message)))
 
-;;; =============================================================================
-;;; Extension Stubs (optional enhanced capabilities)
-;;; =============================================================================
-
 (defn- score-observations-enhanced
-  "Score observations using enhanced extension.
-   Falls back to built-in heuristic scoring if unavailable."
+  "Score observations using extension, falling back to built-in heuristic."
   [observations]
   (if-let [score-fn (ext/get-extension :es/score)]
     (score-fn observations)
     (sdk/score-observations observations)))
 
 (defn- plan-from-observations-enhanced
-  "Generate a plan using enhanced extension.
-   Falls back to nil (let Abstract phase LLM do planning)."
+  "Generate a plan using extension, falling back to nil."
   [observations task]
   (if-let [plan-fn (ext/get-extension :ep/generate)]
     (plan-fn observations task)
     nil))
 
 (defn- enrich-silence-context
-  "Enrich Silence phase with additional context from extension.
-   Falls back to nil (no enrichment)."
+  "Enrich Silence phase with additional context from extension."
   [task]
   (if-let [enrich-fn (ext/get-extension :ec/enrich)]
     (enrich-fn task)
     nil))
-
-;;; =============================================================================
-;;; Phase Execution via IAgentSession.query!
-;;; =============================================================================
 
 (defn- build-phase-prompt
   "Build the full prompt for a given SAA phase."
@@ -198,18 +144,12 @@
       (assoc :max-turns (:max-turns user-opts)))))
 
 (defn- execute-phase-via-session!
-  "Execute a SAA phase by querying the agent session.
-   Returns a channel that yields phase messages then closes.
-
-   This is the core execution path — delegates to IAgentSession.query!
-   which is backend-agnostic (works with ClaudeSDKBackend, Noop, etc.)."
+  "Execute a SAA phase by querying the agent session."
   [session prompt phase-opts]
   (bridge/query! session prompt phase-opts))
 
 (defn- collect-phase-messages!
-  "Drain a phase channel, collecting messages and forwarding to output channel.
-   Returns a core.async channel that yields the collected messages vector.
-   Uses parking ops (<!, >!) — safe to call from go blocks without thread starvation."
+  "Drain a phase channel, collecting messages and forwarding to output channel."
   [phase-ch out-ch saa-phase]
   (go-loop [messages []]
     (if-let [msg (<! phase-ch)]
@@ -226,10 +166,6 @@
        (filter #(contains? #{:message :complete :result} (:type %)))
        (mapv #(or (:content %) (:data %) (str %)))))
 
-;;; =============================================================================
-;;; ISAAOrchestrator Implementation
-;;; =============================================================================
-
 (defrecord SAAOrchestrator [config]
   bridge/ISAAOrchestrator
 
@@ -241,21 +177,15 @@
       (maybe-shout! config agent-id :silence "Starting observation phase")
       (go
         (try
-          (let [;; Extension enrichment (nil fallback)
-                enrichment (enrich-silence-context task)
-                ;; Build prompt and opts
+          (let [enrichment (enrich-silence-context task)
                 prompt (build-phase-prompt :silence task enrichment)
                 phase-opts (build-phase-opts :silence opts)
-                ;; Execute via session query
                 phase-ch (execute-phase-via-session! session prompt phase-opts)
-                ;; Collect all messages (parking ops — safe in go block)
                 messages (<! (collect-phase-messages! phase-ch out-ch :silence))
                 observations (extract-content messages)]
-            ;; Store observations in agent state
             (update-agent-state! agent-id {:observations observations})
             (maybe-shout! config agent-id :silence
                           (str "Completed. Collected " (count observations) " observations"))
-            ;; Final phase-complete message
             (>! out-ch {:type :phase-complete
                         :saa-phase :silence
                         :observations observations
@@ -278,25 +208,17 @@
                     (str "Starting synthesis with " (count observations) " observations"))
       (go
         (try
-          (let [;; Extension scoring (heuristic fallback)
-                scored (score-observations-enhanced observations)
-                ;; Extension pre-planning (nil fallback)
+          (let [scored (score-observations-enhanced observations)
                 task (:task (get-agent-state agent-id))
                 ext-plan (plan-from-observations-enhanced scored task)
-                ;; Build prompt — pass scored observations + task as context
                 prompt (build-phase-prompt :abstract scored task)
                 phase-opts (build-phase-opts :abstract opts)
-                ;; Execute via session query
                 phase-ch (execute-phase-via-session! session prompt phase-opts)
-                ;; Collect all messages (parking ops — safe in go block)
                 messages (<! (collect-phase-messages! phase-ch out-ch :abstract))
                 plan-content (extract-content messages)
-                ;; Prefer extension plan if available, else use LLM-generated plan
                 final-plan (or ext-plan (str/join "\n" plan-content))]
-            ;; Store plan in agent state
             (update-agent-state! agent-id {:plan final-plan})
             (maybe-shout! config agent-id :abstract "Completed. Plan ready for execution.")
-            ;; Final phase-complete message
             (>! out-ch {:type :phase-complete
                         :saa-phase :abstract
                         :plan final-plan}))
@@ -318,21 +240,16 @@
       (go
         (try
           (let [task (:task (get-agent-state agent-id))
-                ;; Build prompt — pass plan + task as context
                 prompt (build-phase-prompt :act plan task)
                 phase-opts (build-phase-opts :act opts)
-                ;; Execute via session query
                 phase-ch (execute-phase-via-session! session prompt phase-opts)
-                ;; Collect all messages (parking ops — safe in go block)
                 messages (<! (collect-phase-messages! phase-ch out-ch :act))
                 result-content (extract-content messages)]
-            ;; Store result in agent state
             (update-agent-state! agent-id {:result {:messages result-content
                                                     :message-count (count messages)}})
             (transition-phase! agent-id :complete)
             (maybe-shout! config agent-id :act
                           (str "Completed. " (count messages) " messages processed."))
-            ;; Final phase-complete message
             (>! out-ch {:type :phase-complete
                         :saa-phase :act
                         :result {:messages result-content
@@ -361,21 +278,16 @@
                          (when skip-abstract? " (skipping Abstract)")))
       (go
         (try
-          ;; === SILENCE PHASE ===
           (let [observations
                 (if-not skip-silence?
                   (let [silence-ch (bridge/run-silence! this session task silence-opts)]
-                    ;; Forward messages to out-ch, collect internally
                     (loop []
                       (when-let [msg (<! silence-ch)]
                         (>! out-ch msg)
                         (recur)))
-                    ;; Get observations from state (populated by run-silence!)
                     (:observations (get-agent-state agent-id)))
-                  ;; Skip silence: empty observations
                   [])]
 
-            ;; === ABSTRACT PHASE ===
             (let [plan
                   (if-not skip-abstract?
                     (let [abstract-ch (bridge/run-abstract! this session observations abstract-opts)]
@@ -384,17 +296,14 @@
                           (>! out-ch msg)
                           (recur)))
                       (:plan (get-agent-state agent-id)))
-                    ;; Skip abstract: no plan
                     nil)]
 
-              ;; === ACT PHASE ===
               (let [act-ch (bridge/run-act! this session (or plan task) act-opts)]
                 (loop []
                   (when-let [msg (<! act-ch)]
                     (>! out-ch msg)
                     (recur)))
 
-                ;; SAA cycle complete
                 (let [final-state (get-agent-state agent-id)]
                   (maybe-shout! config agent-id :complete
                                 (str "SAA cycle complete. "
@@ -419,23 +328,8 @@
             (close! out-ch))))
       out-ch)))
 
-;;; =============================================================================
-;;; Factory & Public API
-;;; =============================================================================
-
 (defn ->saa-orchestrator
-  "Create an SAAOrchestrator instance.
-
-   Arguments:
-     config - Optional configuration map:
-              :shout?             - Enable hivemind shouts (default: true)
-              :score-threshold    - Min score for observation inclusion (default: 0.0)
-              :max-silence-turns  - Max turns in Silence phase (default: 50)
-              :max-abstract-turns - Max turns in Abstract phase (default: 20)
-              :max-act-turns      - Max turns in Act phase (default: 100)
-
-   Returns:
-     SAAOrchestrator implementing ISAAOrchestrator protocol."
+  "Create an SAAOrchestrator instance with optional config."
   ([] (->saa-orchestrator {}))
   ([config]
    (->SAAOrchestrator (merge {:shout? true
@@ -445,33 +339,18 @@
                               :max-act-turns 100}
                              config))))
 
-;;; =============================================================================
-;;; State Inspection (Read-Only)
-;;; =============================================================================
-
 (defn agent-saa-state
-  "Get the current SAA state for an agent. Read-only inspection.
-
-   Returns:
-     Map with :phase :task :observations :plan :result :phase-history :error
-     or nil if agent has no SAA state."
+  "Get the current SAA state for an agent (read-only)."
   [agent-id]
   (get-agent-state agent-id))
 
 (defn agent-saa-phase
-  "Get just the current SAA phase for an agent.
-
-   Returns:
-     Keyword (:idle :silence :abstract :act :complete :error)
-     or nil if agent has no SAA state."
+  "Get just the current SAA phase keyword for an agent."
   [agent-id]
   (:phase (get-agent-state agent-id)))
 
 (defn list-active-saa
-  "List all agents currently in SAA phases (not :idle or :complete).
-
-   Returns:
-     Vector of {:agent-id :phase :task :started-at :elapsed-ms} maps."
+  "List all agents currently in active SAA phases."
   []
   (->> @agent-states
        (filter (fn [[_ state]]
@@ -484,7 +363,7 @@
                 :elapsed-ms (- (System/currentTimeMillis) (:started-at state))}))))
 
 (defn clear-completed-states!
-  "Remove SAA state for all completed or errored agents. Cleanup."
+  "Remove SAA state for all completed or errored agents."
   []
   (let [to-clear (->> @agent-states
                       (filter (fn [[_ state]]
@@ -495,39 +374,7 @@
     {:cleared (count to-clear)}))
 
 (defn clear-all-states!
-  "Remove all SAA states. For testing."
+  "Remove all SAA states."
   []
   (reset! agent-states {})
   nil)
-
-(comment
-  ;; Usage examples
-
-  ;; Create orchestrator
-  ;; (def orch (->saa-orchestrator))
-
-  ;; Run individual phases via IAgentSession
-  ;; (let [session (bridge/->noop-session "test-1")
-  ;;       ch (bridge/run-silence! orch session "Fix auth bug" {})]
-  ;;   (go-loop []
-  ;;     (when-let [msg (<! ch)]
-  ;;       (println "SAA:" (:type msg) (:saa-phase msg))
-  ;;       (recur))))
-
-  ;; Run full SAA cycle
-  ;; (let [session (bridge/->noop-session "test-2")
-  ;;       ch (bridge/run-full-saa! orch session "Fix auth bug" {})]
-  ;;   (go-loop []
-  ;;     (when-let [msg (<! ch)]
-  ;;       (println "SAA:" (:type msg) (:saa-phase msg))
-  ;;       (recur))))
-
-  ;; Check state
-  ;; (agent-saa-state "test-1")
-  ;; (agent-saa-phase "test-1")
-  ;; (list-active-saa)
-
-  ;; Cleanup
-  ;; (clear-completed-states!)
-  ;; (clear-all-states!)
-  )

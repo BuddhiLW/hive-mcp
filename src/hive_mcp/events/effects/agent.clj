@@ -19,8 +19,6 @@
    (agent-effects/register-agent-effects!)
    ```
 
-   SOLID: Single Responsibility - agent/swarm effect execution only
-   CLARITY: Y - Yield safe failure (effects catch and log errors)"
   (:require [hive-mcp.events.core :as ev]
             [hive-mcp.events.handlers.saa-fx :as saa-fx]
             [hive-mcp.swarm.coordinator :as coordinator]

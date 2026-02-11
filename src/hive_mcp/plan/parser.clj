@@ -12,7 +12,6 @@
    - plan->task-specs: Convert plan to kanban task specs
    - validate-dependencies: Check dependency graph integrity
 
-   CLARITY: Facade pattern - coordinates EDN, markdown, and utility strategies.
 
    Sub-modules:
    - hive-mcp.plan.parser.edn      — EDN extraction, normalization, phase parsing

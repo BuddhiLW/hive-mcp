@@ -1,17 +1,8 @@
 (ns hive-mcp.agent.protocol
-  "Unified agent lifecycle protocol for lings and drones.
-
-   Enables polymorphic dispatch - same tools work for both agent types.
-   Drones are ephemeral (stateless API calls), lings are persistent (Claude Code instances).
-
-   Also contains LLMBackend protocol for agent delegation.")
+  "Protocols for agent lifecycle, registry, and LLM backends.")
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
-
-;;; =============================================================================
-;;; IAgent Protocol (Unified Agent Lifecycle)
-;;; =============================================================================
 
 (defprotocol IAgent
   "Unified agent lifecycle protocol for lings and drones"
@@ -36,12 +27,8 @@
   (upgrade! [this]
     "Upgrade drone to ling when task requires tool chaining. No-op for lings."))
 
-;;; =============================================================================
-;;; IAgentRegistry Protocol (Agent Tracking)
-;;; =============================================================================
-
 (defprotocol IAgentRegistry
-  "Registry for tracking all active agents (lings + drones)"
+  "Registry for tracking all active agents."
   (register! [this agent]
     "Add agent to registry")
   (unregister! [this agent-id]
@@ -52,10 +39,6 @@
     "List all agents")
   (list-agents-by-type [this agent-type]
     "List agents filtered by :ling or :drone"))
-
-;;; =============================================================================
-;;; LLMBackend Protocol (Agent Delegation)
-;;; =============================================================================
 
 (defprotocol LLMBackend
   "Protocol for LLM backends that support tool calling."

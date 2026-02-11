@@ -30,7 +30,7 @@
     :branch-switched}) ; Git branch change
 
 ;; =============================================================================
-;; Input Validation (CLARITY: Guard inputs)
+;; Input Validation
 ;; =============================================================================
 
 (defn- validate-event-type!
@@ -92,7 +92,7 @@
   nil)
 
 ;; =============================================================================
-;; Hook Triggering (CLARITY: Yield safe failure)
+;; Hook Triggering
 ;; =============================================================================
 
 (defn- safe-call-handler

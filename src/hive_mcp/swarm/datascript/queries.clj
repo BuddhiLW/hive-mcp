@@ -7,8 +7,6 @@
    - Claim queries (get, list, conflict detection)
    - Statistics and debugging
 
-   SOLID-S: Single Responsibility - queries only (no mutations).
-   SOLID-I: Interface Segregation - read operations separated from writes."
   (:require [datascript.core :as d]
             [clojure.set]
             [clojure.string :as str]

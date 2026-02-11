@@ -13,9 +13,6 @@
    - get-status:        atom tracking {workflow-id -> status-map}
    - cancel-workflow:   mark :cancelled in status tracking (+ assoc :quenched? for forge-belt)
 
-   SOLID-D: Depends on IWorkflowEngine abstraction, not concretions.
-   SOLID-O: Open for extension via registry workflow addition.
-   CLARITY-L: Pure bridge layer between protocol and FSM engine."
   (:require [clojure.string]
             [hive-mcp.protocols.workflow :as proto]
             [hive-mcp.workflows.registry :as registry]

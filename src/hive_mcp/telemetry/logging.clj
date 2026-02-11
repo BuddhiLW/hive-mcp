@@ -1,7 +1,6 @@
 (ns hive-mcp.telemetry.logging
   "Structured logging with MDC context for Loki labels.
 
-   CLARITY-T: Telemetry first - all requests get correlation IDs,
    all logs carry context for distributed tracing.
 
    MDC (Mapped Diagnostic Context) fields appear as:
@@ -21,9 +20,6 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;;; =============================================================================
-;;; MDC Context Management
-;;; =============================================================================
 
 (defn set-context!
   "Set MDC context values. Keys should be keywords, values converted to strings.
@@ -74,9 +70,6 @@
        (finally
          (clear-context! keys#)))))
 
-;;; =============================================================================
-;;; Correlation IDs
-;;; =============================================================================
 
 (defn generate-correlation-id
   "Generate a new UUID for request correlation.
@@ -122,9 +115,6 @@
      (with-context ctx#
        ~@body)))
 
-;;; =============================================================================
-;;; Structured Logging Helpers
-;;; =============================================================================
 
 (defn log-tool-call
   "Log an MCP tool call with standard structure.
@@ -183,9 +173,6 @@
                                   :count count
                                   :duration-ms duration-ms})))
 
-;;; =============================================================================
-;;; Error Logging with Context
-;;; =============================================================================
 
 (defn log-error-with-context
   "Log an error with full MDC context preserved.
@@ -204,9 +191,6 @@
                           context)]
     (log/error error "Error with context" error-data)))
 
-;;; =============================================================================
-;;; Initialization
-;;; =============================================================================
 
 (defn init!
   "Initialize logging module. Sets up default MDC values.

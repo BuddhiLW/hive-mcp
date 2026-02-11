@@ -10,9 +10,6 @@
    These events integrate the FSM-driven SAA workflow (saa_workflow.clj)
    with the hive-events system for observability and composition.
 
-   SOLID: SRP - SAA lifecycle only
-   CLARITY: T - Telemetry first (all SAA phases emit events)
-   CLARITY: R - Represented intent through SAA domain"
   (:require [hive-mcp.events.core :as ev]
             [hive-mcp.events.interceptors :as interceptors]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>

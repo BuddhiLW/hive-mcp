@@ -9,8 +9,6 @@
    - :wave/complete   - Wave execution finished
    - :wave/reconcile  - Reconcile wave status with filesystem reality
 
-   SOLID: SRP - Wave lifecycle only
-   CLARITY: R - Represented intent through wave domain"
   (:require [hive-mcp.events.core :as ev]
             [hive-mcp.events.interceptors :as interceptors]
             [hive-mcp.swarm.datascript.coordination :as ds]))

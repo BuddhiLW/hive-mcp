@@ -7,39 +7,23 @@
    Capability-based tool switching:
    - When Chroma is available: exposes mcp_mem_kanban_* tools (memory-based)
    - When Chroma is unavailable: exposes org_kanban_native_* tools (fallback)"
-  (:require ;; Domain-specific tool modules (SOLID refactoring)
+  (:require ;; Domain-specific tool modules
    [hive-mcp.tools.buffer :as buffer]
-   ;; memory/tools REMOVED - compat shims delegate to consolidated
    [hive-mcp.tools.memory-kanban :as mem-kanban]
    [hive-mcp.tools.cider :as cider]
-   ;; magit/tools REMOVED - compat shims delegate to consolidated
    [hive-mcp.tools.projectile :as projectile]
    [hive-mcp.tools.kanban :as kanban]
-   ;; swarm require removed - tools now via compat shims
    [hive-mcp.tools.swarm.claim :as claim]
-   ;; org/tools REMOVED - org_clj module deleted (dead code W1)
-   ;; prompt/tools REMOVED - prompt subsystem deleted (dead code, deps on deleted prompt/)
-
    [hive-mcp.tools.presets :as presets-tools]
    [hive-mcp.tools.diff :as diff]
-   ;; kondo and scc - now in consolidated/analysis, requires removed
-   ;; kg/tools REMOVED - compat shims delegate to consolidated
    [hive-mcp.tools.crystal :as crystal]
-   [hive-mcp.tools.hot :as hot]
-   [hive-mcp.tools.health :as health]
-   [hive-mcp.tools.drone-feedback :as drone-feedback]
    [hive-mcp.tools.session-complete :as session-complete]
    [hive-mcp.tools.hive-project :as hive-project]
-   [hive-mcp.tools.telemetry :as telemetry]
    [hive-mcp.tools.olympus :as olympus]
    [hive-mcp.tools.agora :as agora]
-   [hive-mcp.tools.seeds :as seeds]
    [hive-mcp.tools.cost :as cost]
-   [hive-mcp.tools.routing :as routing]
    [hive-mcp.tools.delegate :as delegate]
-   [hive-mcp.tools.overarch :as overarch]
    [hive-mcp.plan.tool :as plan]
-   ;; hivemind/tools REMOVED - compat shims delegate to consolidated
    [hive-mcp.channel.core :as channel]
    [hive-mcp.agent.core :as agent]
    [hive-mcp.chroma :as chroma]
@@ -94,37 +78,20 @@
   []
   (vec (concat buffer/tools
                crystal/tools
-               ;; memory/tools REMOVED - compat/tools provides shims → consolidated
                cider/tools
-               ;; magit/tools REMOVED - compat/tools provides shims → consolidated
                projectile/tools
-               ;; kanban/tools removed - now conditional on Chroma availability
-               ;; swarm/tools removed - use compat/tools shims instead
-               claim/tools  ; File claim management (claim_list, claim_clear)
-               ;; prompt/tools REMOVED - dead code W1
+               claim/tools
                presets-tools/tools
                diff/tools
-               ;; kondo/tools and scc/tools REMOVED - now in consolidated/analysis
-               ;; kg/tools REMOVED - compat/tools provides shims → consolidated
-               hot/tools     ; hot reload coordination tools
-               health/tools  ; MCP health check
-               drone-feedback/tools
-               session-complete/tools  ; ling session lifecycle
-               hive-project/tools      ; .hive-project.edn generator
-               telemetry/tools         ; prometheus_query (CLARITY-T)
-               olympus/tools           ; grid layout for swarm visualization
-               agora/tools             ; Agora multi-ling dialogue (Nash equilibrium)
-               seeds/tools             ; Seed memory import from markdown files
-               cost/tools              ; Token cost tracking and budget management
-               routing/tools           ; Smart model routing for drones
-               delegate/tools          ; Unified delegate API (ADR-20260123161700)
-               plan/tools              ; plan_to_kanban workflow (exploration -> kanban)
-               overarch/tools          ; Overarch architecture diagram generation
-               ;; hivemind/tools REMOVED - compat/tools provides shims → consolidated
+               session-complete/tools
+               hive-project/tools
+               olympus/tools
+               agora/tools
+               cost/tools
+               delegate/tools
+               plan/tools
                channel/channel-tools
                agent/tools
-               ;; Consolidated CLI tools (new unified interface)
-               ;; Each exposes single tool with subcommands: agent spawn|status|kill
                c-agent/tools
                c-memory/tools
                c-kg/tools
@@ -156,7 +123,6 @@
 (defn get-all-tools
   "Get ALL tools including deprecated shims (for dispatch/calling).
 
-   CLARITY: Deprecated tools are still callable during grace period.
    This ensures backward compatibility for existing code that calls them directly.
 
    Parameters:
@@ -206,7 +172,6 @@
    - Include org tools WITH org_kanban_native_* (additional fallback)
    - Exclude mcp_mem_kanban_* tools
 
-   CLARITY: Open/Closed - new capabilities can be added without modifying base tools.
 
    HOT-RELOAD: Calls (get-base-tools) to get fresh handler references.
    This ensures hot-reload updates propagate to tool dispatch."
@@ -232,34 +197,20 @@
    These log deprecation warnings and delegate to consolidated handlers."
   (vec (concat buffer/tools
                crystal/tools
-               ;; memory/tools REMOVED - compat/tools provides shims → consolidated
                mem-kanban/tools
                cider/tools
-               ;; magit/tools REMOVED - compat/tools provides shims → consolidated
                projectile/tools
                kanban/tools
-               ;; swarm/tools removed - use compat/tools shims instead
-               claim/tools  ; File claim management (claim_list, claim_clear)
-               ;; org/tools REMOVED - org_clj module deleted (dead code W1)
-               ;; prompt/tools REMOVED - dead code W1
+               claim/tools
                presets-tools/tools
                diff/tools
-               ;; kondo/tools and scc/tools REMOVED - now in consolidated/analysis
-               ;; kg/tools REMOVED - compat/tools provides shims → consolidated
-               hot/tools     ; hot reload coordination tools
-               health/tools  ; MCP health check
-               drone-feedback/tools
-               session-complete/tools  ; ling session lifecycle
-               hive-project/tools      ; .hive-project.edn generator
-               telemetry/tools         ; prometheus_query (CLARITY-T)
-               olympus/tools           ; grid layout for swarm visualization
-               agora/tools             ; Agora multi-ling dialogue (Nash equilibrium)
-               seeds/tools             ; Seed memory import from markdown files
-               cost/tools              ; Token cost tracking and budget management
-               routing/tools           ; Smart model routing for drones
-               delegate/tools          ; Unified delegate API (ADR-20260123161700)
-               plan/tools              ; plan_to_kanban workflow (exploration -> kanban)
-               overarch/tools          ; Overarch architecture diagram generation
+               session-complete/tools
+               hive-project/tools
+               olympus/tools
+               agora/tools
+               cost/tools
+               delegate/tools
+               plan/tools
                ;; hivemind/tools REMOVED - compat/tools provides shims → consolidated
                channel/channel-tools
                agent/tools

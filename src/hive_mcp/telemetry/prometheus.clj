@@ -1,8 +1,6 @@
 (ns hive-mcp.telemetry.prometheus
   "Prometheus metrics registry and collectors.
 
-   CLARITY-T: Telemetry first - observable system.
-   CLARITY-C: Composition over modification - iapetos provides idiomatic Clojure wrapper.
 
    Metrics naming convention:
    - All metrics prefixed with 'hive_mcp_'
@@ -32,9 +30,6 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;;; =============================================================================
-;;; Metric Names (Keywords)
-;;; =============================================================================
 
 (def ^:private events-total-name :hive-mcp/events-total)
 (def ^:private errors-total-name :hive-mcp/errors-total)
@@ -47,27 +42,24 @@
 (def ^:private hivemind-shouts-total-name :hive-mcp/hivemind-shouts-total)
 (def ^:private chroma-query-seconds-name :hive-mcp/chroma-query-seconds)
 
-;; Drone-specific metrics (CLARITY-T: drone lifecycle telemetry)
+;; Drone-specific metrics
 (def ^:private drones-started-total-name :hive-mcp/drones-started-total)
 (def ^:private drones-completed-total-name :hive-mcp/drones-completed-total)
 (def ^:private drones-failed-total-name :hive-mcp/drones-failed-total)
 (def ^:private drone-duration-seconds-name :hive-mcp/drone-duration-seconds)
 
-;; Wave-specific metrics (CLARITY-T: wave orchestration observability)
+;; Wave-specific metrics
 (def ^:private wave-success-rate-name :hive-mcp/wave-success-rate)
 (def ^:private wave-items-total-name :hive-mcp/wave-items-total)
 (def ^:private wave-duration-seconds-name :hive-mcp/wave-duration-seconds)
 (def ^:private wave-failures-total-name :hive-mcp/wave-failures-total)
 
-;; Model-specific drone metrics (CLARITY-T: model performance tracking for OpenRouter selection)
+;; Model-specific drone metrics
 (def ^:private drone-model-execution-total-name :hive-mcp/drone-model-execution-total)
 (def ^:private drone-model-duration-seconds-name :hive-mcp/drone-model-duration-seconds)
 (def ^:private drone-model-retry-total-name :hive-mcp/drone-model-retry-total)
 (def ^:private drone-tokens-total-name :hive-mcp/drone-tokens-total)
 
-;;; =============================================================================
-;;; Collector Definitions
-;;; =============================================================================
 
 ;; Counter: Events processed (labels: :type, :severity)
 (def ^:private events-total-collector
@@ -153,7 +145,6 @@
     :labels [:parent]}))
 
 ;; Counter: Drones failed (labels: :parent :error-type :drone-id)
-;; CLARITY-T: Added drone-id label per metrics requirements
 (def ^:private drones-failed-total-collector
   (prometheus/counter
    drones-failed-total-name
@@ -161,7 +152,6 @@
     :labels [:parent :error-type :drone-id]}))
 
 ;; Histogram: Drone execution duration (labels: :parent :status)
-;; CLARITY-T: Added status label (success/failed) per metrics requirements
 (def ^:private drone-duration-seconds-collector
   (prometheus/histogram
    drone-duration-seconds-name
@@ -190,16 +180,12 @@
     :buckets [1.0 5.0 10.0 30.0 60.0 120.0 300.0 600.0 1800.0]}))
 
 ;; Counter: Wave failures (labels: :wave-id :reason)
-;; CLARITY-T: Track individual wave failures with reason for root cause analysis
 (def ^:private wave-failures-total-collector
   (prometheus/counter
    wave-failures-total-name
    {:description "Total wave failures by reason"
     :labels [:wave-id :reason]}))
 
-;;; =============================================================================
-;;; Model-Specific Drone Metrics Collectors (CLARITY-T: OpenRouter model optimization)
-;;; =============================================================================
 
 ;; Counter: Drone executions by model (labels: :model :status :task-type)
 ;; Use this to compare success rates across models and task types
@@ -234,9 +220,6 @@
    {:description "Total tokens used by model and direction (input/output)"
     :labels [:model :direction]}))
 
-;;; =============================================================================
-;;; Registry Initialization
-;;; =============================================================================
 
 ;; Global Prometheus collector registry.
 ;; Initialized lazily on first access to avoid startup ordering issues.
@@ -257,25 +240,22 @@
          memory-ops-total-collector
          hivemind-shouts-total-collector
          chroma-query-seconds-collector
-         ;; Drone lifecycle metrics (CLARITY-T)
+         ;; Drone lifecycle metrics
          drones-started-total-collector
          drones-completed-total-collector
          drones-failed-total-collector
          drone-duration-seconds-collector
-         ;; Wave orchestration metrics (CLARITY-T)
+         ;; Wave orchestration metrics
          wave-success-rate-collector
          wave-items-total-collector
          wave-duration-seconds-collector
          wave-failures-total-collector
-         ;; Model-specific drone metrics (CLARITY-T)
+         ;; Model-specific drone metrics
          drone-model-execution-total-collector
          drone-model-duration-seconds-collector
          drone-model-retry-total-collector
          drone-tokens-total-collector))))
 
-;;; =============================================================================
-;;; Convenience Functions (SRP: Each function handles one metric type)
-;;; =============================================================================
 
 (defn inc-events-total!
   "Increment events counter.
@@ -351,9 +331,6 @@
    (@registry chroma-query-seconds-name {:operation (name operation)})
    seconds))
 
-;;; =============================================================================
-;;; Drone Lifecycle Metrics (CLARITY-T: Telemetry first for drone observability)
-;;; =============================================================================
 
 (defn inc-drones-started!
   "Increment drones started counter.
@@ -396,9 +373,6 @@
                                               :status (name (or status :success))})
       seconds))))
 
-;;; =============================================================================
-;;; Wave Orchestration Metrics (CLARITY-T: Wave-level observability)
-;;; =============================================================================
 
 (defn set-wave-success-rate!
   "Set wave success rate gauge (0.0 to 1.0).
@@ -446,9 +420,6 @@
      (observe-wave-duration! duration#)
      result#))
 
-;;; =============================================================================
-;;; Model-Specific Drone Metrics (CLARITY-T: OpenRouter model performance tracking)
-;;; =============================================================================
 
 (defn inc-drone-model-execution!
   "Increment drone model execution counter.
@@ -509,7 +480,6 @@
    Records to Prometheus:
      - drone_model_retry_total (counter)
 
-   CLARITY-T: Retry telemetry for observability of recovery patterns."
   [{:keys [_drone-id _attempt error-category action model]}]
   (let [reason (or error-category :unknown)]
     (when model
@@ -562,9 +532,6 @@
   (when retry?
     (inc-drone-model-retry! model retry-reason)))
 
-;;; =============================================================================
-;;; Generic Effect Handler Support (CLARITY-T: Effect system integration)
-;;; =============================================================================
 
 (defn handle-prometheus-effect!
   "Handle a :prometheus effect from the event system.
@@ -583,7 +550,6 @@
    Known histograms:
    - :drone_duration_seconds (with :status label)
 
-   CLARITY-T: Telemetry effect handler for re-frame style event system."
   [{:keys [counter labels histogram]}]
   (let [parent (get labels :parent "none")
         error-type (get labels :error_type)
@@ -608,9 +574,6 @@
         ;; Fallback for unknown histograms
         (log/debug "Unknown prometheus histogram:" name)))))
 
-;;; =============================================================================
-;;; Timing Macro (CLARITY-C: Composition - reuse pattern from telemetry.clj)
-;;; =============================================================================
 
 (defmacro with-request-timing
   "Execute body and record duration in request-duration-seconds histogram.
@@ -640,9 +603,6 @@
      (observe-chroma-query! ~operation duration#)
      result#))
 
-;;; =============================================================================
-;;; Export Functions (/metrics endpoint)
-;;; =============================================================================
 
 (defn metrics-response
   "Export all metrics in Prometheus exposition format.
@@ -660,9 +620,6 @@
    :headers {"Content-Type" "text/plain; version=0.0.4; charset=utf-8"}
    :body (metrics-response)})
 
-;;; =============================================================================
-;;; Initialization
-;;; =============================================================================
 
 (defn init!
   "Initialize the Prometheus registry and all collectors.

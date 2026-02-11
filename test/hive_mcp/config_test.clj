@@ -185,7 +185,7 @@
     (let [path (write-temp-config!
                 {:defaults {:kg-backend :datahike :hot-reload false}
                  :project-overrides {"hive-mcp" {:hot-reload true
-                                                  :watch-dirs ["src"]}}})]
+                                                 :watch-dirs ["src"]}}})]
       (config/load-global-config! path)
       (let [cfg (config/get-project-config "hive-mcp")]
         (is (= true (:hot-reload cfg)))
@@ -263,3 +263,49 @@
       (config/reset-config!)
       (config/load-global-config! path2)
       (is (= ["/v2"] (config/get-project-roots))))))
+
+;; =============================================================================
+;; Test: default-drone-model / default-drone-backend
+;; =============================================================================
+
+(deftest test-default-drone-model-from-config
+  (testing "default-drone-model reads from :services :drone :default-model"
+    (let [path (write-temp-config!
+                {:services {:drone {:mode :local
+                                    :default-model "custom/test-model"
+                                    :default-backend :openrouter}}})]
+      (config/load-global-config! path)
+      (is (= "custom/test-model" (config/default-drone-model))))))
+
+(deftest test-default-drone-model-fallback
+  (testing "default-drone-model falls back to hardcoded default when :drone missing"
+    (let [path (write-temp-config! {:services {}})]
+      (config/load-global-config! path)
+      ;; deep-merge fills :drone from defaults
+      (is (= "devstral-small:24b" (config/default-drone-model))))))
+
+(deftest test-default-drone-model-returns-string
+  (testing "default-drone-model always returns a string"
+    (is (string? (config/default-drone-model)))))
+
+(deftest test-default-drone-backend-from-config
+  (testing "default-drone-backend reads from :services :drone :default-backend"
+    (let [path (write-temp-config!
+                {:services {:drone {:mode :local
+                                    :default-model "model"
+                                    :default-backend :custom-backend}}})]
+      (config/load-global-config! path)
+      (is (= :custom-backend (config/default-drone-backend))))))
+
+(deftest test-default-drone-backend-fallback
+  (testing "default-drone-backend falls back to :openrouter when :drone missing"
+    (let [path (write-temp-config! {:services {}})]
+      (config/load-global-config! path)
+      (is (= :openrouter (config/default-drone-backend))))))
+
+(deftest test-default-drone-model-config-override
+  (testing "User config.edn :drone :default-model overrides defaults"
+    (let [path (write-temp-config!
+                {:services {:drone {:default-model "my-org/my-model:latest"}}})]
+      (config/load-global-config! path)
+      (is (= "my-org/my-model:latest" (config/default-drone-model))))))

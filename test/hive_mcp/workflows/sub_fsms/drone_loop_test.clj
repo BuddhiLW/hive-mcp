@@ -65,35 +65,25 @@
    Opts:
      :backend    - LLMBackend (required)
      :tool-fn    - tool execution fn (default: always success)
-     :record?    - whether to record to session store"
+     :record?    - whether to record to session store
+
+   Note: Fire-and-forget effects (seed, emit, record-obs, record-reason)
+   are now declared as FX data by handlers and executed by registered
+   FX handlers. Resources only contain value-producing fns."
   [{:keys [backend tool-fn record?]}]
-  (let [obs-log (atom [])
-        reason-log (atom [])]
-    {:backend          backend
-     :tool-schemas     [{:name "read_file" :description "Read a file"}
-                        {:name "propose_diff" :description "Propose a diff"}]
-     :session-store    (when record? :mock-store)
-     :agent-id         "test-agent"
-     :execute-tools-fn (or tool-fn
-                           (fn [_agent-id calls _perms]
-                             (mapv (fn [call]
-                                     {:content (str "Success: " (:name call))})
-                                   calls)))
-     :record-obs-fn    (when record?
-                         (fn [_store turn tool-name result _opts]
-                           (swap! obs-log conj {:turn turn :tool tool-name :result result})
-                           (count @obs-log)))
-     :record-reason-fn (when record?
-                         (fn [_store turn action detail]
-                           (swap! reason-log conj {:turn turn :action action :detail detail})))
-     :reconstruct-fn   (when record?
-                         (fn [_store task turn]
-                           (str task " [context-turn-" turn "]")))
-     :seed-kg-fn       nil
-     :emit-fn          nil
-     ;; Expose logs for assertions
-     :_obs-log         obs-log
-     :_reason-log      reason-log}))
+  {:backend          backend
+   :tool-schemas     [{:name "read_file" :description "Read a file"}
+                      {:name "propose_diff" :description "Propose a diff"}]
+   :session-store    (when record? :mock-store)
+   :agent-id         "test-agent"
+   :execute-tools-fn (or tool-fn
+                         (fn [_agent-id calls _perms]
+                           (mapv (fn [call]
+                                   {:content (str "Success: " (:name call))})
+                                 calls)))
+   :reconstruct-fn   (when record?
+                       (fn [_store task turn]
+                         (str task " [context-turn-" turn "]")))})
 
 (defn- base-data
   "Build minimal input data for the drone-loop FSM."
@@ -175,29 +165,42 @@
 ;; =============================================================================
 
 (deftest test-handle-init
-  (testing "initializes all loop state fields"
-    (let [resources {:session-store nil :seed-kg-fn nil :emit-fn nil}
+  (testing "initializes all loop state fields (FX-enhanced return)"
+    (let [resources {:session-store nil}
+          data (base-data)
+          result (drone-loop/handle-init resources data)
+          d (:data result)]
+      (is (contains? result :data) "returns FX-enhanced shape")
+      (is (contains? result :fx) "returns FX-enhanced shape")
+      (is (= 0 (:turn d)))
+      (is (= [] (:steps d)))
+      (is (= 0 (:tool-calls-made d)))
+      (is (= {:input 0 :output 0 :total 0} (:total-tokens d)))
+      (is (= 0 (:consecutive-failures d)))
+      (is (nil? (:last-response-type d)))
+      (is (= 5 (:max-turns d)))
+      (is (string? (:system-prompt d))))))
+
+(deftest test-handle-init-declares-seed-fx
+  (testing "declares :drone/seed-session FX when session-store available"
+    (let [resources {:session-store :mock-store}
+          data (base-data)
+          result (drone-loop/handle-init resources data)
+          fx-types (mapv first (:fx result))]
+      (is (some #{:drone/seed-session} fx-types))))
+
+  (testing "declares :drone/emit FX when trace? is true"
+    (let [resources {:session-store :mock-store}
+          data (base-data {:trace? true})
+          result (drone-loop/handle-init resources data)
+          fx-types (mapv first (:fx result))]
+      (is (some #{:drone/emit} fx-types))))
+
+  (testing "no FX when session-store nil and no trace"
+    (let [resources {:session-store nil}
           data (base-data)
           result (drone-loop/handle-init resources data)]
-      (is (= 0 (:turn result)))
-      (is (= [] (:steps result)))
-      (is (= 0 (:tool-calls-made result)))
-      (is (= {:input 0 :output 0 :total 0} (:total-tokens result)))
-      (is (= 0 (:consecutive-failures result)))
-      (is (nil? (:last-response-type result)))
-      (is (= 5 (:max-turns result)))
-      (is (string? (:system-prompt result)))
-      (is (re-find #"propose_diff" (:system-prompt result))))))
-
-(deftest test-handle-init-seeds-kg
-  (testing "calls seed-kg-fn when session-store available"
-    (let [seeded? (atom false)
-          resources {:session-store :mock-store
-                     :seed-kg-fn (fn [_store _opts] (reset! seeded? true))
-                     :emit-fn nil}
-          data (base-data)]
-      (drone-loop/handle-init resources data)
-      (is (true? @seeded?)))))
+      (is (empty? (:fx result))))))
 
 (deftest test-handle-reconstruct-context-turn-0
   (testing "uses raw task on turn 0"
@@ -267,13 +270,12 @@
       (is (some? (:error result))))))
 
 (deftest test-handle-execute-tools
-  (testing "executes tool calls and tracks metrics"
+  (testing "executes tool calls and tracks metrics (FX-enhanced return)"
     (let [resources {:execute-tools-fn (fn [_aid calls _perms]
                                          (mapv (fn [c]
                                                  {:content (str "OK: " (:name c))})
                                                calls))
-                     :agent-id "test-agent"
-                     :emit-fn nil}
+                     :agent-id "test-agent"}
           data (assoc (base-data)
                       :tool-calls [{:id "c1" :name "read_file" :arguments {}}
                                    {:id "c2" :name "propose_diff" :arguments {}}]
@@ -281,39 +283,34 @@
                       :tool-calls-made 0
                       :consecutive-failures 0
                       :permissions #{})
-          result (drone-loop/handle-execute-tools resources data)]
-      (is (= 2 (count (:tool-results result))))
-      (is (false? (:all-failed? result)))
-      (is (= 2 (:tool-calls-made result)))
-      (is (= 0 (:consecutive-failures result))))))
+          result (drone-loop/handle-execute-tools resources data)
+          d (:data result)]
+      (is (contains? result :fx) "returns FX-enhanced shape")
+      (is (= 2 (count (:tool-results d))))
+      (is (false? (:all-failed? d)))
+      (is (= 2 (:tool-calls-made d)))
+      (is (= 0 (:consecutive-failures d))))))
 
 (deftest test-handle-execute-tools-all-fail
-  (testing "tracks consecutive failures when all tools fail"
+  (testing "tracks consecutive failures when all tools fail (FX-enhanced)"
     (let [resources {:execute-tools-fn (fn [_aid calls _perms]
                                          (mapv (fn [_] {:content "Error: boom"})
                                                calls))
-                     :agent-id "test-agent"
-                     :emit-fn nil}
+                     :agent-id "test-agent"}
           data (assoc (base-data)
                       :tool-calls [{:id "c1" :name "read_file" :arguments {}}]
                       :turn 0
                       :tool-calls-made 0
                       :consecutive-failures 1
                       :permissions #{})
-          result (drone-loop/handle-execute-tools resources data)]
-      (is (true? (:all-failed? result)))
-      (is (= 2 (:consecutive-failures result))))))
+          result (drone-loop/handle-execute-tools resources data)
+          d (:data result)]
+      (is (true? (:all-failed? d)))
+      (is (= 2 (:consecutive-failures d))))))
 
-(deftest test-handle-compress-to-kg
-  (testing "records observations and reasoning, increments turn"
-    (let [obs-log (atom [])
-          reason-log (atom [])
-          resources {:record-obs-fn (fn [_s turn tool _res _opts]
-                                      (swap! obs-log conj {:turn turn :tool tool})
-                                      (count @obs-log))
-                     :record-reason-fn (fn [_s turn action _detail]
-                                         (swap! reason-log conj {:turn turn :action action}))
-                     :session-store :mock}
+(deftest test-handle-compress
+  (testing "declares record FX and increments turn (FX-enhanced)"
+    (let [resources {:session-store :mock}
           data {:turn 1
                 :files ["src/auth.clj"]
                 :response-type :tool_calls
@@ -323,29 +320,45 @@
                 :obs-count 0
                 :reason-count 0
                 :steps []}
-          result (drone-loop/handle-compress-to-kg resources data)]
-      (is (= 2 (:obs-count result)))
-      (is (= 1 (:reason-count result)))
-      (is (= 2 (:turn result)))
-      (is (= 1 (count (:steps result))))
-      (is (= 2 (count @obs-log)))
-      (is (= 1 (count @reason-log))))))
+          result (drone-loop/handle-compress resources data)
+          d (:data result)
+          fx (:fx result)
+          fx-types (mapv first fx)]
+      ;; Data assertions
+      (is (= 2 (:obs-count d)))
+      (is (= 1 (:reason-count d)))
+      (is (= 2 (:turn d)))
+      (is (= 1 (count (:steps d))))
+      ;; FX assertions: 2 record-obs + 1 record-reason
+      (is (= 3 (count fx)))
+      (is (= 2 (count (filter #{:drone/record-obs} fx-types))))
+      (is (= 1 (count (filter #{:drone/record-reason} fx-types))))))
+
+  (testing "no FX when session-store nil"
+    (let [resources {:session-store nil}
+          data {:turn 0 :files [] :response-type :tool_calls
+                :tool-results [[{:name "read_file"} {:content "ok"}]]
+                :all-failed? false :obs-count 0 :reason-count 0 :steps []}
+          result (drone-loop/handle-compress resources data)]
+      (is (empty? (:fx result))))))
 
 (deftest test-handle-check-done-continue
-  (testing "marks continue when no termination condition met"
-    (let [resources {:record-reason-fn nil :session-store nil :emit-fn nil}
+  (testing "marks continue when no termination condition met (FX-enhanced)"
+    (let [resources {:session-store nil}
           data {:turn 1 :max-turns 10
                 :steps [{:response-type :tool_calls :all-failed? false}]
                 :consecutive-failures 0
                 :last-response-type :tool_calls
                 :completion? false
                 :response-type :tool_calls}
-          result (drone-loop/handle-check-done resources data)]
-      (is (false? (get-in result [:termination :terminate?]))))))
+          result (drone-loop/handle-check-done resources data)
+          d (:data result)]
+      (is (contains? result :fx) "returns FX-enhanced shape")
+      (is (false? (get-in d [:termination :terminate?]))))))
 
 (deftest test-handle-check-done-text-advances-turn
-  (testing "text responses advance turn counter in check-done"
-    (let [resources {:record-reason-fn nil :session-store nil :emit-fn nil}
+  (testing "text responses advance turn counter (FX-enhanced)"
+    (let [resources {:session-store :mock}
           data {:turn 1 :max-turns 10
                 :steps []
                 :consecutive-failures 0
@@ -353,15 +366,18 @@
                 :response-type :text
                 :text-content "All done"
                 :completion? false}
-          result (drone-loop/handle-check-done resources data)]
-      (is (= 2 (:turn result)))
-      (is (= :text (:last-response-type result)))
-      (is (= 1 (count (:steps result)))))))
+          result (drone-loop/handle-check-done resources data)
+          d (:data result)
+          fx-types (mapv first (:fx result))]
+      (is (= 2 (:turn d)))
+      (is (= :text (:last-response-type d)))
+      (is (= 1 (count (:steps d))))
+      ;; FX: record-reason for text response
+      (is (some #{:drone/record-reason} fx-types)))))
 
 (deftest test-handle-finalize
-  (testing "builds result in correct shape"
-    (let [resources {:emit-fn nil}
-          data {:turn 3 :max-turns 10
+  (testing "builds result in correct shape (FX-enhanced)"
+    (let [data {:turn 3 :max-turns 10
                 :last-response-type :text
                 :last-text "Task completed"
                 :steps [{:turn 0} {:turn 1} {:turn 2}]
@@ -372,8 +388,10 @@
                 :reason-count 3
                 :drone-id "drone-1"
                 :termination {:terminate? true :reason "Text-only"}}
-          result (drone-loop/handle-finalize resources data)
-          fsm-result (:fsm-result result)]
+          result (drone-loop/handle-finalize {} data)
+          d (:data result)
+          fsm-result (:fsm-result d)]
+      (is (contains? result :fx) "returns FX-enhanced shape")
       (is (= :completed (:status fsm-result)))
       (is (= "Task completed" (:result fsm-result)))
       (is (= 3 (count (:steps fsm-result))))
@@ -381,12 +399,21 @@
       (is (= 150 (:total (:tokens fsm-result))))
       (is (= 3 (:turns fsm-result)))
       (is (= "mock-model" (:model fsm-result)))
-      (is (= 4 (get-in fsm-result [:kg-stats :observations]))))))
+      (is (= 4 (get-in fsm-result [:kg-stats :observations])))))
+
+  (testing "declares :drone/emit FX when trace?"
+    (let [data {:turn 3 :max-turns 10 :last-response-type :text
+                :last-text "Done" :steps [] :tool-calls-made 0
+                :total-tokens {:input 0 :output 0 :total 0}
+                :model "m" :obs-count 0 :reason-count 0
+                :drone-id "d1" :trace? true
+                :termination {:terminate? true :reason "text"}}
+          result (drone-loop/handle-finalize {} data)]
+      (is (some #{:drone/emit} (mapv first (:fx result)))))))
 
 (deftest test-handle-finalize-max-steps
-  (testing "status is :max_steps when turn >= max-turns"
-    (let [resources {:emit-fn nil}
-          data {:turn 10 :max-turns 10
+  (testing "status is :max_steps when turn >= max-turns (FX-enhanced)"
+    (let [data {:turn 10 :max-turns 10
                 :last-response-type :tool_calls
                 :last-text "still working"
                 :steps (vec (repeat 10 {:turn 0}))
@@ -396,8 +423,9 @@
                 :obs-count 8 :reason-count 5
                 :drone-id "drone-1"
                 :termination {:terminate? true :reason "Max turns"}}
-          result (drone-loop/handle-finalize resources data)]
-      (is (= :max_steps (get-in result [:fsm-result :status]))))))
+          result (drone-loop/handle-finalize {} data)
+          d (:data result)]
+      (is (= :max_steps (get-in d [:fsm-result :status]))))))
 
 ;; =============================================================================
 ;; 3. Dispatch Predicate Tests
@@ -463,7 +491,7 @@
       (is (contains? states :hive-mcp.workflows.sub-fsms.drone-loop/llm-call))
       (is (contains? states :hive-mcp.workflows.sub-fsms.drone-loop/dispatch-response))
       (is (contains? states :hive-mcp.workflows.sub-fsms.drone-loop/execute-tools))
-      (is (contains? states :hive-mcp.workflows.sub-fsms.drone-loop/compress-to-kg))
+      (is (contains? states :hive-mcp.workflows.sub-fsms.drone-loop/compress))
       (is (contains? states :hive-mcp.workflows.sub-fsms.drone-loop/check-done))
       (is (contains? states :hive-mcp.workflows.sub-fsms.drone-loop/finalize))
       (is (contains? states :hive.events.fsm/end))
@@ -568,17 +596,18 @@
 ;; =============================================================================
 
 (deftest test-fsm-records-observations
-  (testing "observations are recorded to session store"
+  (testing "FSM tracks observation count via FX declarations"
     (let [backend (mock-backend [(tool-call-response "read_file")
                                  (text-response "All done")])
           resources (make-mock-resources {:backend backend :record? true})
           data (base-data)
           fsm-result (fsm/run @drone-loop/compiled resources {:data data})
-          result-data (:data fsm-result)
-          obs-log @(:_obs-log resources)]
+          result-data (:data fsm-result)]
       (is (= :completed (get-in result-data [:fsm-result :status])))
-      (is (pos? (count obs-log)))
-      (is (= "read_file" (:tool (first obs-log)))))))
+      ;; obs-count is tracked in data (1 tool = 1 observation)
+      (is (= 1 (get-in result-data [:fsm-result :kg-stats :observations])))
+      ;; reasoning count: 1 from compress (tool execution) + 1 from check-done (text)
+      (is (pos? (get-in result-data [:fsm-result :kg-stats :reasoning]))))))
 
 ;; =============================================================================
 ;; 8. Public API Tests

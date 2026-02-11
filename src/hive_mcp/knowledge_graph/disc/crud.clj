@@ -1,10 +1,5 @@
 (ns hive-mcp.knowledge-graph.disc.crud
-  "CRUD operations for disc entities in DataScript.
-
-   Manages disc entity lifecycle: create, read, update, delete, query.
-   Extracted from disc.clj (Sprint 2 decomposition).
-
-   CLARITY-Y: Graceful failure with status codes instead of exceptions."
+  "CRUD operations for disc entities in DataScript."
   (:require [hive-mcp.knowledge-graph.connection :as conn]
             [hive-mcp.knowledge-graph.disc.hash :as hash]
             [hive-mcp.knowledge-graph.disc.volatility :as vol]
@@ -14,27 +9,8 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;; =============================================================================
-;; Disc Entity CRUD
-;; =============================================================================
-
 (defn add-disc!
-  "Create or update a disc entity for a file path.
-
-   Initializes Bayesian certainty fields based on file volatility:
-   - Classifies volatility from path patterns (:stable/:moderate/:volatile)
-   - Sets initial alpha/beta priors (higher alpha for stable files)
-   - Sets last-observation to now
-
-   Arguments:
-     opts - Map with:
-       :path         - File path (required, unique identity)
-       :content-hash - SHA256 of file content
-       :analyzed-at  - Timestamp of analysis (defaults to now)
-       :git-commit   - Git commit hash when analyzed
-       :project-id   - Project scope
-
-   Returns the entity ID."
+  "Create or update a disc entity for a file path."
   [{:keys [path content-hash analyzed-at git-commit project-id]}]
   {:pre [(string? path) (seq path)]}
   (let [now (java.util.Date.)
@@ -45,7 +21,6 @@
                   :disc/analyzed-at (or analyzed-at now)
                   :disc/git-commit (or git-commit "")
                   :disc/project-id (or project-id "global")
-                  ;; Initialize Bayesian certainty fields
                   :disc/certainty-alpha initial-alpha
                   :disc/certainty-beta 2.0
                   :disc/volatility-class volatility
@@ -53,7 +28,6 @@
         result (conn/transact! tx-data)]
     (log/debug "Added/updated disc entity" {:path path :volatility volatility
                                             :initial-certainty (/ initial-alpha (+ initial-alpha 2.0))})
-    ;; Return the entity ID
     (-> result :tx-data first :e)))
 
 (defn get-disc
@@ -94,10 +68,6 @@
       (log/debug "Removed disc entity" {:path path})
       true)))
 
-;; =============================================================================
-;; Disc Queries
-;; =============================================================================
-
 (defn get-all-discs
   "Get all disc entities.
    Optional project-id filter."
@@ -113,29 +83,17 @@
                                 :where [?e :disc/path _]]))]
     (map first results)))
 
-;; =============================================================================
-;; Read Tracking
-;; =============================================================================
-
 (defn touch-disc!
-  "Record that a file was read by an agent.
-   Creates the disc entity if it doesn't exist, updates last-read-at and
-   increments read-count. Returns the updated disc entity.
-
-   Arguments:
-     path       - File path (required)
-     project-id - Project scope (optional, defaults to 'global')"
+  "Record a file read, creating the disc entity if needed."
   [path & {:keys [project-id]}]
   {:pre [(string? path) (seq path)]}
   (let [now (java.util.Date.)]
     (if (disc-exists? path)
-      ;; Update existing: bump last-read-at and read-count
       (let [existing (get-disc path)
             current-count (or (:disc/read-count existing) 0)]
         (update-disc! path {:disc/last-read-at now
                             :disc/read-count (inc current-count)})
         (get-disc path))
-      ;; Create new: also compute content hash for fresh tracking
       (let [{:keys [hash]} (hash/file-content-hash path)]
         (add-disc! {:path path
                     :content-hash (or hash "")

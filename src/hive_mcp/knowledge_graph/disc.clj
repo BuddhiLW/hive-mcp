@@ -1,5 +1,5 @@
 (ns hive-mcp.knowledge-graph.disc
-  "Disc entity management for L1 (file) abstraction level.
+  "Disc entity management for file abstraction level.
 
    Disc entities track the actual state of files on disk, enabling:
    - Grounding verification without re-reading files
@@ -14,7 +14,6 @@
    - disc.staleness  — Staleness surfacing + KG-first context
    - disc.propagation — Time decay + transitive staleness propagation
 
-   CLARITY-Y: Graceful failure with status codes instead of exceptions."
   (:require [hive-mcp.knowledge-graph.disc.hash :as hash]
             [hive-mcp.knowledge-graph.disc.volatility :as vol]
             [hive-mcp.knowledge-graph.disc.crud :as crud]

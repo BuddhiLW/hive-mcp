@@ -19,9 +19,6 @@
    (saa-fx/register-saa-fx!)
    ```
 
-   SOLID: SRP - All SAA side-effects in one module
-   CLARITY: Y - Safe failure via requiring-resolve (graceful degradation)
-   CLARITY: T - Telemetry/logging in each handler"
   (:require [hive-mcp.events.core :as ev]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>

@@ -35,7 +35,6 @@
   "Trigger session-end hooks for auto-wrap.
    Called by JVM shutdown hook.
 
-   CLARITY: Yield safe failure - errors logged but don't break shutdown."
   [hooks-registry-atom reason]
   (log/info "Triggering session-end hooks:" reason)
   (when-let [registry @hooks-registry-atom]
@@ -55,7 +54,6 @@
 
    Only registers once. Safe to call multiple times.
 
-   CLARITY: Yield safe failure - hook errors don't break JVM shutdown.
 
    Parameters:
      shutdown-hook-registered? - atom tracking registration state
@@ -69,7 +67,6 @@
       (fn []
         (log/info "JVM shutdown detected - running shutdown sequence")
         ;; Stop Olympus WebSocket server first (close client connections cleanly)
-        ;; CLARITY-Y: Yield safe failure - errors don't break shutdown sequence
         (try
           (olympus-ws/stop!)
           (log/info "Olympus WebSocket server stopped")

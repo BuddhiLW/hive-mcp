@@ -1,12 +1,5 @@
 (ns hive-mcp.agent.sdk.event-loop
-  "Persistent asyncio event loop management for SDK sessions (P3-T2).
-
-   Each SDK session gets a dedicated asyncio event loop running in a
-   background daemon thread. This enables multi-turn dispatch by keeping
-   the async context alive across query() calls.
-
-   Lifecycle: start-session-loop! -> connect-session-client! ->
-              [query() calls] -> disconnect-session-client! -> stop-session-loop!"
+  "Persistent asyncio event loop management for SDK sessions."
   (:require [hive-mcp.agent.sdk.python :as py]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -14,14 +7,7 @@
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 (defn start-session-loop!
-  "Start a persistent asyncio event loop in a background daemon thread.
-   The loop runs forever until explicitly stopped, enabling multi-turn
-   dispatch by keeping the async context alive across query() calls.
-
-   Arguments:
-     safe-id - Python-safe ling identifier (for naming globals)
-
-   Returns map with :loop-var and :thread-var (Python global variable names)."
+  "Start a persistent asyncio event loop in a background daemon thread."
   [safe-id]
   (let [loop-var (str "_hive_loop_" safe-id)
         thread-var (str "_hive_loop_thread_" safe-id)]
@@ -44,15 +30,7 @@
     {:loop-var loop-var :thread-var thread-var}))
 
 (defn connect-session-client!
-  "Connect a ClaudeSDKClient on the persistent event loop.
-   The client stays connected across dispatches (multi-turn).
-
-   Arguments:
-     safe-id     - Python-safe ling identifier
-     options-obj - Pre-built ClaudeAgentOptions Python object
-     loop-var    - Python global name for the event loop
-
-   Returns the Python global variable name holding the client reference."
+  "Connect a ClaudeSDKClient on the persistent event loop."
   [safe-id options-obj loop-var]
   (let [client-var (str "_hive_client_" safe-id)]
     (py/py-set-global! "_hive_spawn_options" options-obj)
@@ -70,7 +48,6 @@
                     "    " loop-var "\n"
                     ")\n"
                     "_hive_connect_future_" safe-id ".result(timeout=60)\n"))
-    ;; Cleanup temp globals
     (try (py/py-run (str "globals().pop('_hive_spawn_options', None)\n"
                          "globals().pop('_hive_connect_future_" safe-id "', None)\n"))
          (catch Exception _ nil))
@@ -78,13 +55,7 @@
     client-var))
 
 (defn disconnect-session-client!
-  "Disconnect the ClaudeSDKClient from the persistent event loop.
-   Called during kill to clean up the client before stopping the loop.
-
-   Arguments:
-     safe-id    - Python-safe ling identifier
-     loop-var   - Python global name for the event loop
-     client-var - Python global name for the client"
+  "Disconnect the ClaudeSDKClient from the persistent event loop."
   [safe-id loop-var client-var]
   (try
     (py/py-run (str "import asyncio\n"
@@ -101,7 +72,6 @@
                     "    " loop-var "\n"
                     ")\n"
                     "_hive_dc_future_" safe-id ".result(timeout=30)\n"))
-    ;; Cleanup temp globals
     (try (py/py-run (str "globals().pop('_hive_dc_future_" safe-id "', None)\n"))
          (catch Exception _ nil))
     (log/info "[sdk.event-loop] Client disconnected" {:safe-id safe-id})
@@ -110,18 +80,11 @@
                 {:safe-id safe-id :error (ex-message e)}))))
 
 (defn stop-session-loop!
-  "Stop the persistent event loop and join the background thread.
-   Called after disconnect-session-client! during kill.
-
-   Arguments:
-     safe-id  - Python-safe ling identifier
-     loop-var - Python global name for the event loop"
+  "Stop the persistent event loop and join the background thread."
   [safe-id loop-var]
   (try
     (py/py-run (str loop-var ".call_soon_threadsafe(" loop-var ".stop)\n"))
-    ;; Give the thread time to stop
     (Thread/sleep 100)
-    ;; Cleanup Python globals
     (py/py-run (str "globals().pop('" loop-var "', None)\n"
                     "globals().pop('_hive_loop_thread_" safe-id "', None)\n"))
     (log/info "[sdk.event-loop] Event loop stopped" {:safe-id safe-id})
@@ -130,9 +93,7 @@
                 {:safe-id safe-id :error (ex-message e)}))))
 
 (defn interrupt-session-client!
-  "Send client.interrupt() via asyncio.run_coroutine_threadsafe().
-   Uses libpython-clj direct interop (no string-eval).
-   Thread-safe. Returns {:success? bool} or {:success? false :error msg}."
+  "Send client.interrupt() via asyncio.run_coroutine_threadsafe."
   [client-var loop-var]
   (try
     (let [asyncio-mod (py/py-import "asyncio")

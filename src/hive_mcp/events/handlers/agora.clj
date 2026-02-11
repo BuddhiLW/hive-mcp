@@ -13,8 +13,6 @@
    Event chain: :agora/turn-completed -> :agora/dispatch-next
                 -> :agora/execute-drone (drones) or :swarm-send-prompt (lings)
 
-   SOLID: SRP - Agora dialogue lifecycle only
-   CLARITY: R - Represented intent through agora domain"
   (:require [hive-mcp.events.core :as ev]
             [hive-mcp.events.interceptors :as interceptors]
             [hive-mcp.agora.dialogue :as dialogue]

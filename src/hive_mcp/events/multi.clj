@@ -54,10 +54,6 @@
    (execute! [:forge/cycle-complete {:agent-id \"ling-1\" :results {...}}])
    ```
 
-   SOLID: OCP — Open for extension via defmethod, closed for modification
-   SOLID: SRP — Pure orchestration logic, no side effects
-   CLARITY: Composition over modification — wraps core dispatch
-   CLARITY: Represented intent — event-id drives orchestration selection"
   (:require [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;

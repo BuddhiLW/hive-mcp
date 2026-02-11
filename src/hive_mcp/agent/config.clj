@@ -1,17 +1,10 @@
 (ns hive-mcp.agent.config
-  "OpenRouter configuration for agent delegation.
-
-   Manages task-type to model mappings and preset configurations.
-   All state is held in atoms for runtime configurability via MCP."
+  "OpenRouter configuration for agent delegation. Manages task-type to model mappings and presets."
   (:require [hive-mcp.config :as config]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
-
-;;; ============================================================
-;;; Task-Type Model Configuration
-;;; ============================================================
 
 (def ^:private hardcoded-task-models
   "Fallback task-models when config.edn has no :models.task-models key."
@@ -21,22 +14,12 @@
    :docs "deepseek/deepseek-v3.2"})
 
 (defn- load-task-models
-  "Load task-models from config.edn :models.task-models, falling back to hardcoded defaults.
-   CLARITY-Y: Safe fallback when config not loaded or key missing."
+  "Load task-models from config.edn, falling back to hardcoded defaults."
   []
   (or (config/get-config-value "models.task-models")
       hardcoded-task-models))
 
 (defonce task-models
-  ;; Task-type to model mapping for OpenRouter paid tier.
-  ;; Initialized from config.edn :models.task-models, with hardcoded fallback.
-  ;; Configurable at runtime via MCP tools from Elisp.
-  ;;
-  ;; Default task types:
-  ;;   :coding      - Code generation, implementation, bug fixes
-  ;;   :coding-alt  - Fallback for coding tasks
-  ;;   :arch        - Architecture, design decisions, planning
-  ;;   :docs        - Documentation, explanations, comments
   (atom (load-task-models)))
 
 (defn list-models
@@ -45,9 +28,7 @@
   @task-models)
 
 (defn set-model!
-  "Set the model for a task type.
-   
-   Example: (set-model! :coding \"anthropic/claude-3-haiku\")"
+  "Set the model for a task type."
   [task-type model]
   (swap! task-models assoc task-type model)
   @task-models)
@@ -59,24 +40,12 @@
   @task-models)
 
 (defn get-model
-  "Get the model for a task type. Falls back to :coding if not found."
+  "Get the model for a task type, falling back to :coding."
   [task-type]
   (or (get @task-models task-type)
       (get @task-models :coding)))
 
-;;; ============================================================
-;;; Preset Configuration
-;;; ============================================================
-
 (defonce preset-task-types
-  ;; Mapping from swarm presets/roles to OpenRouter task types.
-  ;; Configurable via MCP tools from Elisp.
-  ;;
-  ;; Preset categories:
-  ;;   :coding     - Implementation, testing, bug fixing
-  ;;   :coding-alt - Alternative coding model (refactoring, exploration)
-  ;;   :arch       - Architecture, design, review, planning
-  ;;   :docs       - Documentation, explanations
   (atom {;; Implementation-focused
          "tdd" :coding
          "tester" :coding
@@ -87,7 +56,7 @@
          "ling-tdd" :coding
          "ling-fix" :coding
          "minimal" :coding
-         ;; Alternative coding (refactoring, exploration)
+         ;; Alternative coding
          "ling-refactor" :coding-alt
          ;; Architecture/design-focused
          "reviewer" :arch
@@ -106,7 +75,7 @@
          "ling-docs" :docs}))
 
 (defn preset->task-type
-  "Get the task type for a preset name. Returns :coding as default."
+  "Get the task type for a preset name, defaults to :coding."
   [preset]
   (get @preset-task-types (name preset) :coding))
 
@@ -116,35 +85,22 @@
   @preset-task-types)
 
 (defn set-preset-task-type!
-  "Set the task type for a preset.
-   
-   Example: (set-preset-task-type! \"my-preset\" :arch)"
+  "Set the task type for a preset."
   [preset task-type]
   (swap! preset-task-types assoc (name preset) (keyword task-type))
   @preset-task-types)
 
-;;; ============================================================
-;;; Backend Factory
-;;; ============================================================
-
 (defn resolve-model
-  "Resolve the model to use based on priority:
-   explicit model > preset-derived > task-type > :coding default
-
-   Returns the selected model string.
-
-   CLARITY-T: Debug logs the resolution path for traceability."
+  "Resolve the model to use: explicit model > preset-derived > task-type > :coding default."
   [{:keys [model preset task-type]}]
   (let [resolved-task-type (or (when preset (preset->task-type preset))
                                (keyword task-type)
                                :coding)
-        ;; Determine which source provided the model
         [resolved-model source] (cond
                                   model [model :explicit]
                                   (get-model resolved-task-type)
                                   [(get-model resolved-task-type) (keyword (str "task-type-" (name resolved-task-type)))]
                                   :else [(get-model :coding) :default-coding])]
-    ;; CLARITY-T: Trace the resolution path for debugging
     (log/debug "Model resolution:" {:preset preset
                                     :task-type task-type
                                     :resolved-task-type resolved-task-type
@@ -153,15 +109,7 @@
     resolved-model))
 
 (defn resolve-model-with-trace
-  "Like resolve-model but returns the resolution path for debugging.
-
-   Returns map with:
-   - :model       - The resolved model string
-   - :source      - Where the model came from (:explicit :task-type-* :default-coding)
-   - :preset      - Input preset
-   - :task-type   - Resolved task type
-
-   Useful for debugging model selection issues."
+  "Like resolve-model but returns the resolution path for debugging."
   [{:keys [model preset task-type] :as _opts}]
   (let [resolved-task-type (or (when preset (preset->task-type preset))
                                (keyword task-type)
@@ -176,4 +124,3 @@
      :preset preset
      :task-type task-type
      :resolved-task-type resolved-task-type}))
-

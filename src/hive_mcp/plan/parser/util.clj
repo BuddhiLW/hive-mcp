@@ -5,7 +5,6 @@
    - plan->task-specs:       Convert parsed plan to kanban task specifications
    - validate-dependencies:  Verify all depends-on references resolve
 
-   SOLID-S: Single responsibility — plan post-processing utilities only.")
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later

@@ -1,26 +1,14 @@
 (ns hive-mcp.agent.sdk.availability
-  "SDK availability detection with graceful degradation.
-
-   Checks for libpython-clj2 on classpath and claude-code-sdk
-   Python package availability. Results are cached after first check.
-
-   Status values:
-   - :available        - Both libpython-clj and claude-code-sdk ready
-   - :no-libpython     - libpython-clj not on classpath
-   - :no-sdk           - libpython-clj available but claude-code-sdk not installed
-   - :not-initialized  - libpython-clj available but Python not yet initialized"
+  "SDK availability detection with graceful degradation."
   (:require [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;; Cached availability of libpython-clj + claude-code-sdk.
-;; Checked once at first use, not at namespace load time.
 (defonce ^:private sdk-available? (atom nil))
 
 (defn- check-libpython-available?
-  "Check if libpython-clj2 is on the classpath.
-   Returns true if the namespace can be required."
+  "Check if libpython-clj2 is on the classpath."
   []
   (try
     (require 'libpython-clj2.python)
@@ -30,8 +18,7 @@
       false)))
 
 (defn- check-sdk-available?
-  "Check if claude-code-sdk Python package is importable.
-   Must be called AFTER libpython-clj is initialized."
+  "Check if claude-code-sdk Python package is importable."
   []
   (try
     (let [py-fn (requiring-resolve 'libpython-clj2.python/run-simple-string)]
@@ -42,11 +29,7 @@
       false)))
 
 (defn sdk-status
-  "Check SDK availability. Returns one of:
-   :available        - Both libpython-clj and claude-code-sdk ready
-   :no-libpython     - libpython-clj not on classpath
-   :no-sdk           - libpython-clj available but claude-code-sdk not installed
-   :not-initialized  - libpython-clj available but Python not yet initialized"
+  "Return SDK availability as a keyword status."
   []
   (if-let [cached @sdk-available?]
     cached
@@ -55,7 +38,6 @@
                    :no-libpython
 
                    :else
-                   ;; Try to initialize and check SDK
                    (try
                      (let [init! (requiring-resolve 'libpython-clj2.python/initialize!)]
                        (init!)
@@ -74,6 +56,6 @@
   (= :available (sdk-status)))
 
 (defn reset-availability!
-  "Reset cached availability check. For testing."
+  "Reset cached availability check."
   []
   (reset! sdk-available? nil))

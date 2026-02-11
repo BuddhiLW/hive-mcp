@@ -1,24 +1,6 @@
 (ns hive-mcp.schema.memory
-  "Malli schemas for memory entries and related types.
+  "Malli schemas for memory entries and related types."
 
-   Core domain schemas for the memory system, defining structure and
-   validation for memory entries, types, durations, and tags.
-
-   Usage:
-   ```clojure
-   (require '[malli.core :as m]
-            '[hive-mcp.schema.memory :as mem])
-
-   (m/validate mem/MemoryEntry
-     {:id \"20260131-abc123\"
-      :type \"decision\"
-      :content \"Use Malli for schema validation\"
-      :tags [\"architecture\" \"validation\"]
-      :duration \"long\"})
-   ```
-
-   SOLID: SRP - Schema definitions only, no behavior.
-   CLARITY: R - Represented intent through explicit types."
   (:require [malli.core :as m]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -30,27 +12,17 @@
 ;; =============================================================================
 
 (def MemoryType
-  "Valid memory entry types.
-
-   L2 (Semantic): snippet, note, doc, todo, question, answer, warning, error
-   L3 (Pattern):  convention, pattern, lesson, rule, guideline, workflow, recipe
-   L4 (Intent):   decision, axiom, principle"
+  "Valid memory entry types."
   [:enum
-   ;; L2 - Semantic level
+   ;; Semantic level
    "snippet" "note" "doc" "todo" "question" "answer" "warning" "error"
-   ;; L3 - Pattern level
+   ;; Pattern level
    "convention" "pattern" "lesson" "rule" "guideline" "workflow" "recipe"
-   ;; L4 - Intent level
+   ;; Intent level
    "decision" "axiom" "principle"])
 
 (def MemoryDuration
-  "Valid duration values for memory entries.
-
-   - session:   Expires at end of current session
-   - short:     Expires in 7 days
-   - medium:    Expires in 30 days
-   - long:      Expires in 1 year
-   - permanent: Never expires"
+  "Valid duration values for memory entries."
   [:enum "session" "short" "medium" "long" "permanent"])
 
 ;; =============================================================================
@@ -79,12 +51,7 @@
 ;; =============================================================================
 
 (def AbstractionLevel
-  "Knowledge abstraction level (1-4).
-
-   L1: Disc (files, code)
-   L2: Semantic (what things DO)
-   L3: Pattern (conventions, idioms)
-   L4: Intent (decisions, axioms)"
+  "Knowledge abstraction level (1-4)."
   [:int {:min 1 :max 4}])
 
 ;; =============================================================================
@@ -96,23 +63,7 @@
   [:string {:min 1}])
 
 (def MemoryEntry
-  "Complete memory entry schema.
-
-   Required fields:
-   - id: Unique identifier
-   - type: Entry type (decision, snippet, etc.)
-   - content: The actual content/knowledge
-
-   Optional fields:
-   - tags: Categorization tags
-   - duration: How long to retain
-   - project-id: Scope/project association
-   - created-at: Timestamp
-   - expires: Expiration timestamp (string)
-   - content-hash: SHA256 of content
-   - abstraction-level: Knowledge level (1-4)
-   - kg-outgoing: KG edge IDs where this is source
-   - kg-incoming: KG edge IDs where this is target"
+  "Complete memory entry schema."
   [:map
    [:id MemoryEntryId]
    [:type MemoryType]
@@ -134,9 +85,7 @@
    [:content [:string {:min 1}]]])
 
 (def MemoryMetadata
-  "Memory entry metadata (for lightweight queries).
-
-   Returned by mcp_memory_query_metadata for token efficiency."
+  "Memory entry metadata for lightweight queries."
   [:map
    [:id MemoryEntryId]
    [:type MemoryType]
@@ -185,15 +134,7 @@
 ;; =============================================================================
 
 (def registry
-  "Schema registry entries for memory types.
-
-   Usage with malli registry:
-   ```clojure
-   (mr/set-default-registry!
-     (mr/composite-registry
-       (m/default-schemas)
-       hive-mcp.schema.memory/registry))
-   ```"
+  "Schema registry entries for memory types."
   {:memory/type MemoryType
    :memory/duration MemoryDuration
    :memory/tag MemoryTag

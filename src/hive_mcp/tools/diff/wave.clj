@@ -1,13 +1,5 @@
 (ns hive-mcp.tools.diff.wave
-  "Wave batch operations for diff review and approval.
-
-   Operations on diffs grouped by wave-id:
-   - review: summary with auto-approve analysis
-   - approve: apply all/selected diffs
-   - reject: discard all diffs
-   - auto-approve: smart approval based on rules
-
-   SOLID: SRP - Wave-scoped batch operations."
+  "Wave-scoped batch operations for diff review and approval."
   (:require [hive-mcp.tools.core :refer [mcp-json]]
             [hive-mcp.tools.diff.state :as state :refer [mcp-error-json]]
             [hive-mcp.tools.diff.auto-approve :as auto-approve]
@@ -18,10 +10,6 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;; =============================================================================
-;; Wave Batch Operations
-;; =============================================================================
-
 (defn get-wave-diffs
   "Get all pending diffs for a specific wave-id."
   [wave-id]
@@ -30,19 +18,9 @@
        (vec)))
 
 (defn review-wave-diffs
-  "Get a summary of all diffs proposed by a wave for review.
-
-   Token-Efficient Tier 1 Response (ADR 20260125002853):
-   Returns metadata only - use get_diff_details for hunk inspection.
-
-   Returns map with:
-     :wave-id     - The wave ID
-     :count       - Number of diffs
-     :diffs       - List of diff metadata (tier-1: no content/hunks)
-     :auto-approve-results - Which diffs would pass auto-approve"
+  "Get a summary of all diffs proposed by a wave for review."
   [wave-id]
   (let [diffs (get-wave-diffs wave-id)
-        ;; Tier 1: metadata only
         summaries (mapv (fn [d]
                           {:id (:id d)
                            :file-path (:file-path d)
@@ -64,13 +42,7 @@
      :auto-approve-results auto-results}))
 
 (defn approve-wave-diffs!
-  "Approve and apply all diffs from a wave.
-
-   Arguments:
-     wave-id    - Wave ID to approve diffs for
-     diff-ids   - Optional specific diff IDs to approve (nil = all)
-
-   Returns map with :applied and :failed lists."
+  "Approve and apply all or selected diffs from a wave."
   ([wave-id] (approve-wave-diffs! wave-id nil))
   ([wave-id diff-ids]
    (let [wave-diffs (get-wave-diffs wave-id)
@@ -92,13 +64,7 @@
       :failed (vec failed)})))
 
 (defn reject-wave-diffs!
-  "Reject all diffs from a wave.
-
-   Arguments:
-     wave-id - Wave ID to reject diffs for
-     reason  - Reason for rejection
-
-   Returns count of rejected diffs."
+  "Reject all diffs from a wave."
   [wave-id reason]
   (let [wave-diffs (get-wave-diffs wave-id)]
     (doseq [{:keys [id]} wave-diffs]
@@ -109,19 +75,13 @@
      :reason reason}))
 
 (defn auto-approve-wave-diffs!
-  "Auto-approve diffs that meet criteria, flag others for manual review.
-
-   Arguments:
-     wave-id - Wave ID to process
-
-   Returns map with :auto-approved, :manual-review, and :failed lists."
+  "Auto-approve diffs meeting criteria, flag others for manual review."
   [wave-id]
   (let [wave-diffs (get-wave-diffs wave-id)
         categorized (for [d wave-diffs]
                       (assoc d :auto-check (auto-approve/auto-approve-diff? d)))
         auto-approvable (filter #(get-in % [:auto-check :approved]) categorized)
         manual-review (remove #(get-in % [:auto-check :approved]) categorized)
-        ;; Apply auto-approved diffs
         apply-results (for [{:keys [id]} auto-approvable]
                         (let [response (handlers/handle-apply-diff {:diff_id id})
                               parsed (try (json/read-str (:text response) :key-fn keyword)
@@ -142,13 +102,8 @@
                           manual-review)
      :failed (vec failed)}))
 
-;; =============================================================================
-;; Wave MCP Handlers
-;; =============================================================================
-
 (defn handle-review-wave-diffs
-  "Handle review_wave_diffs tool call.
-   Returns summary of all diffs from a wave with auto-approve analysis."
+  "Handle review_wave_diffs tool call."
   [{:keys [wave_id]}]
   (log/debug "review_wave_diffs called" {:wave_id wave_id})
   (if (clojure.string/blank? wave_id)
@@ -161,8 +116,7 @@
         (mcp-error-json (str "Failed to review wave diffs: " (.getMessage e)))))))
 
 (defn handle-approve-wave-diffs
-  "Handle approve_wave_diffs tool call.
-   Applies all or selected diffs from a wave."
+  "Handle approve_wave_diffs tool call."
   [{:keys [wave_id diff_ids]}]
   (log/debug "approve_wave_diffs called" {:wave_id wave_id :diff_ids diff_ids})
   (if (clojure.string/blank? wave_id)
@@ -175,8 +129,7 @@
         (mcp-error-json (str "Failed to approve wave diffs: " (.getMessage e)))))))
 
 (defn handle-reject-wave-diffs
-  "Handle reject_wave_diffs tool call.
-   Rejects all diffs from a wave."
+  "Handle reject_wave_diffs tool call."
   [{:keys [wave_id reason]}]
   (log/debug "reject_wave_diffs called" {:wave_id wave_id :reason reason})
   (if (clojure.string/blank? wave_id)
@@ -189,8 +142,7 @@
         (mcp-error-json (str "Failed to reject wave diffs: " (.getMessage e)))))))
 
 (defn handle-auto-approve-wave-diffs
-  "Handle auto_approve_wave_diffs tool call.
-   Auto-approves diffs meeting criteria, flags others for manual review."
+  "Handle auto_approve_wave_diffs tool call."
   [{:keys [wave_id]}]
   (log/debug "auto_approve_wave_diffs called" {:wave_id wave_id})
   (if (clojure.string/blank? wave_id)

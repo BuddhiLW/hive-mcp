@@ -18,7 +18,7 @@
    - :co-accessed  - Frequently recalled together (batch recall pattern)"
   #{:implements :supersedes :refines :contradicts
     :depends-on :derived-from :applies-to :co-accessed
-    :projects-to})  ; L3 synthetic -> L2 entry projection
+    :projects-to})  ; synthetic -> entry projection
 
 (def kg-schema
   "DataScript schema for Knowledge Graph edges.
@@ -38,15 +38,10 @@
    :kg-edge/source-type   {:db/doc "How this edge was established: :manual, :automated, :inferred, :co-access"}})
 
 ;; =============================================================================
-;; Abstraction Level Tracking (per Korzybski's Structural Differential)
 ;; =============================================================================
 ;;
 ;; Abstraction Levels:
 ;;   L0: Parabola (Runtime) - Not stored, inferred from live system
-;;   L1: Disc (Files)       - kondo analysis, git state, actual code
-;;   L2: Semantic           - What functions DO, behavior descriptions
-;;   L3: Pattern            - Conventions, idioms, recurring structures
-;;   L4: Intent             - ADRs, decisions, axioms, design rationale
 ;;
 ;; Knowledge degrades as it rises through abstraction levels. These fields
 ;; track the abstraction level and grounding status of knowledge entries.
@@ -54,17 +49,17 @@
 (def abstraction-levels
   "Valid abstraction levels for knowledge entries.
    L0 (runtime) is not stored - it's inferred from live system state."
-  {:L1 {:level 1 :name "Disc"     :description "Files, kondo analysis, git state"}
-   :L2 {:level 2 :name "Semantic" :description "What functions DO"}
-   :L3 {:level 3 :name "Pattern"  :description "Conventions, idioms"}
-   :L4 {:level 4 :name "Intent"   :description "ADRs, decisions, axioms"}})
+  {:level-1 {:level 1 :name "Disc"     :description "Files, kondo analysis, git state"}
+   :level-2 {:level 2 :name "Semantic" :description "What functions DO"}
+   :level-3 {:level 3 :name "Pattern"  :description "Conventions, idioms"}
+   :level-4 {:level 4 :name "Intent"   :description "ADRs, decisions, axioms"}})
 
 (def knowledge-schema
   "DataScript schema for knowledge abstraction tracking.
 
    Tracks the abstraction level and grounding status of knowledge entries,
    enabling drift detection and re-grounding workflows."
-  {:knowledge/abstraction-level {:db/doc "Abstraction level 1-4 (L1=Disc, L2=Semantic, L3=Pattern, L4=Intent)"}
+  {:knowledge/abstraction-level {:db/doc "Abstraction level 1-4 (1=File, 2=Semantic, 3=Pattern, 4=Intent)"}
    :knowledge/grounded-at       {:db/doc "Timestamp of last verification against lower level (inst)"}
    :knowledge/grounded-from     {:db/doc "Ref to disc entity (file/commit) verified against"}
    :knowledge/gaps              {:db/cardinality :db.cardinality/many
@@ -105,7 +100,7 @@
        (<= 1 level 4)))
 
 (defn abstraction-level-keyword
-  "Convert integer level to keyword (:L1, :L2, :L3, :L4)."
+  "Convert integer level to keyword (:level-1, :level-2, :level-3, :level-4)."
   [level]
   (when (valid-abstraction-level? level)
     (keyword (str "L" level))))
@@ -138,7 +133,7 @@
 (def disc-schema
   "DataScript schema for disc (file) state tracking.
 
-   Disc entities represent the L1 abstraction level - actual files on disk.
+   Disc entities represent the file abstraction level - actual files on disk.
    Used as grounding targets for higher-level knowledge entries.
 
    Bayesian Certainty Fields:
@@ -232,13 +227,13 @@
   (merge (disc-certainty-defaults-with-timestamp) disc-entity))
 
 ;; =============================================================================
-;; Synthetic Node Schema (L3 Emergent Clusters)
+;; Synthetic Node Schema (Emergent Clusters)
 ;; =============================================================================
 ;;
-;; Synthetic nodes represent emergent L3 patterns discovered through
+;; Synthetic nodes represent emergent pattern-level discovered through
 ;; co-access analysis, temporal proximity, or semantic similarity.
-;; Per convention 20260131014506-72b6afed: L3 is emergent, not stored as
-;; raw entries, but as synthesized clusters that project onto L2 entries.
+;; Per convention 20260131014506-72b6afed: Emergent knowledge is, not stored as
+;; raw entries, but as synthesized clusters that project onto entries.
 
 (def synthetic-types
   "Valid types for synthetic (emergent) knowledge nodes.
@@ -252,10 +247,10 @@
     :workflow-step :decision-cluster})
 
 (def synthetic-schema
-  "DataScript schema for synthetic (emergent L3) nodes.
+  "DataScript schema for synthetic emergent nodes.
 
    Synthetic nodes are discovered patterns that don't exist as direct
-   memory entries. They aggregate multiple L2 entries via :projects-to
+   memory entries. They aggregate multiple entries via :projects-to
    edges, enabling pattern-level queries without denormalizing content."
   {:kg-synthetic/id             {:db/unique :db.unique/identity
                                  :db/doc "Unique synthetic node ID (UUID string)"}
@@ -281,10 +276,10 @@
 (def type->abstraction-level
   "Maps memory entry types to their default abstraction levels.
 
-   L1 (Disc):     Not stored as memory - use disc entities
-   L2 (Semantic): What things DO - snippets, notes, function docs
-   L3 (Pattern):  Recurring structures - conventions, idioms
-   L4 (Intent):   Why - ADRs, decisions, axioms"
+   File-level:     Not stored as memory - use disc entities
+   Semantic: What things DO - snippets, notes, function docs
+   pattern-level:  Recurring structures - conventions, idioms
+   intent-level:   Why - ADRs, decisions, axioms"
   {"snippet"    2  ; Code snippets describe what code does
    "note"       2  ; Notes describe semantic understanding
    "convention" 3  ; Conventions are patterns

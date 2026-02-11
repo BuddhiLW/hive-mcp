@@ -6,9 +6,6 @@
    - :drone/completed - Drone finished successfully
    - :drone/failed    - Drone execution failed
 
-   CLARITY-T: Telemetry first - structured events for monitoring
-   CLARITY-Y: Yield safe failure - records patterns for smart routing
-   SOLID: SRP - Drone lifecycle only"
   (:require [hive-mcp.events.core :as ev]
             [hive-mcp.events.interceptors :as interceptors]
             [hive-mcp.agent.drone.feedback :as feedback]
@@ -87,17 +84,14 @@
    - :log             - Log drone completion message (includes failure details)
    - :prometheus      - Increment drone_completed counter, record duration
 
-   CLARITY-T: Diff failures are now included in log for visibility.
-   CLARITY-Y: Records pattern for smart routing decisions."
   [_coeffects [_ {:keys [drone-id task-id parent-id files-modified files-failed
                          duration-ms model task-type] :as _event-data}]]
-  (let [;; Format failure details for log message (CLARITY-T: escalate diff failures)
+  (let [;; Format failure details for log message
         failure-details (when (seq files-failed)
                           (->> files-failed
                                (map #(str (:file %) ": " (:error %)))
                                (str/join ", ")))]
 
-    ;; CLARITY-Y: Record success pattern for feedback loop
     (when (and model task-type)
       (feedback/record-pattern! (keyword task-type)
                                 model
@@ -164,11 +158,9 @@
    - :prometheus      - Increment drone_failed counter with drone_id label
                       - Record duration histogram with status=failed
 
-   CLARITY-Y: Records failure pattern for smart routing decisions."
   [_coeffects [_ {:keys [drone-id task-id parent-id error error-type files
                          duration-ms model task-type] :as _event-data}]]
 
-  ;; CLARITY-Y: Record failure pattern for feedback loop
   (when (and model task-type)
     (let [result-class (feedback/classify-result {:status :failed
                                                   :error (or error "unknown")})]

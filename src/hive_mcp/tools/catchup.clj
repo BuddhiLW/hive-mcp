@@ -126,7 +126,7 @@
                                     (log/debug "Project tree scan failed (non-fatal):" (.getMessage e))
                                     {:scanned false :error (.getMessage e)}))
 
-              ;; P0.2: Apply disc certainty time-decay at catchup (L1 maintenance)
+              ;; P0.2: Apply disc certainty time-decay at catchup (disc maintenance)
               ;; Discs lose certainty over time proportional to their volatility class.
               ;; Catchup is the natural cadence: runs at session start, periodic.
               ;; Bounded, idempotent, non-blocking (errors caught inside).

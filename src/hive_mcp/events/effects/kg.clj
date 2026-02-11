@@ -14,9 +14,6 @@
    (kg-effects/register-kg-effects!)
    ```
 
-   SOLID: Single Responsibility - KG effect execution only
-   CLARITY: R - Represented Intent (clear KG namespace)
-   CLARITY: T - Telemetry (logging preserved in handlers)"
   (:require [hive-mcp.events.core :as ev]
             [hive-mcp.knowledge-graph.edges :as kg-edges]
             [taoensso.timbre :as log]))

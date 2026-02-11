@@ -29,9 +29,6 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;;; ============================================================
-;;; Configuration
-;;; ============================================================
 
 (def ^:private models
   "Supported Ollama embedding models with their dimensions.
@@ -44,9 +41,6 @@
 (def ^:private default-model "nomic-embed-text")
 (def ^:private default-host "http://localhost:11434")
 
-;;; ============================================================
-;;; HTTP Client
-;;; ============================================================
 
 (defonce ^:private http-client
   (delay
@@ -74,9 +68,6 @@
                        :body body-str
                        :url url})))))
 
-;;; ============================================================
-;;; Embedding Functions
-;;; ============================================================
 
 (defn- context-length-error?
   "Check if exception message indicates content exceeded token limit."
@@ -114,9 +105,6 @@
   (let [futures (mapv #(future (get-embedding host model %)) texts)]
     (mapv deref futures)))
 
-;;; ============================================================
-;;; Provider Implementation
-;;; ============================================================
 
 (defrecord OllamaEmbedder [host model dimension]
   chroma/EmbeddingProvider
@@ -126,9 +114,6 @@
     (get-embeddings-batch host model texts))
   (embedding-dimension [_] dimension))
 
-;;; ============================================================
-;;; Provider Factory
-;;; ============================================================
 
 (defn ->provider
   "Create an Ollama embedding provider.
@@ -161,9 +146,6 @@
      (log/info "Created Ollama embedder with model:" model "dimension:" dimension)
      (->OllamaEmbedder host model dimension))))
 
-;;; ============================================================
-;;; Utility Functions
-;;; ============================================================
 
 (defn list-models
   "List available models on the Ollama server."

@@ -32,9 +32,6 @@
        ;; result has :context and :token-estimate
        (merge parent-data result))
 
-   SOLID-S: Context reconstruction only.
-   SOLID-D: Depends on resource fns, not reconstruction.clj directly.
-   CLARITY-Y: Graceful degradation -- missing refs/KG produce partial context."
   (:require [hive.events.fsm :as fsm]
             [taoensso.timbre :as log]))
 
@@ -244,7 +241,7 @@
   "Create resources map wired to production context.reconstruction functions.
 
    Lazily resolves hive-mcp.context.reconstruction via requiring-resolve
-   to avoid hard namespace dependency (SOLID-D)."
+   to avoid hard namespace dependency."
   []
   (let [resolve-fn (fn [sym]
                      (try

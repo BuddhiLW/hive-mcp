@@ -1,13 +1,5 @@
 (ns hive-mcp.tools.memory.analytics
-  "Analytics handlers for memory feedback and usage tracking.
-
-   SOLID: SRP - Single responsibility for usage analytics.
-   CLARITY: T - Telemetry first with access tracking.
-
-   Handlers:
-   - log-access: Track when entries are accessed (with cross-project detection W5)
-   - feedback: Record helpfulness feedback
-   - helpfulness-ratio: Calculate entry usefulness ratio"
+  "Analytics handlers for memory feedback and usage tracking."
   (:require [hive-mcp.tools.memory.core :refer [with-chroma]]
             [hive-mcp.tools.memory.scope :as scope]
             [hive-mcp.tools.memory.format :as fmt]
@@ -20,13 +12,8 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;; ============================================================
-;; Access Tracking Handler
-;; ============================================================
-
 (defn- xpoll-tag
-  "Create a cross-pollination tag for a project-id.
-   Format: xpoll:project:<project-id>"
+  "Create a cross-pollination tag for a project-id."
   [project-id]
   (str "xpoll:project:" project-id))
 
@@ -37,9 +24,7 @@
     (some #(= % tag) (or (:tags entry) []))))
 
 (defn- detect-cross-project-access
-  "Detect if this access is from a different project than the entry's origin.
-
-   Returns the accessing project-id if cross-project, nil otherwise."
+  "Return the accessing project-id if cross-project, nil otherwise."
   [entry accessing-project-id]
   (when (and accessing-project-id
              (not (str/blank? accessing-project-id))
@@ -48,12 +33,7 @@
     accessing-project-id))
 
 (defn handle-log-access
-  "Log access to a memory entry (Chroma-only).
-   Increments access-count and updates last-accessed timestamp.
-
-   W5 Cross-Pollination: When directory is provided, detects cross-project access
-   and adds xpoll:project:<id> tag to track which projects use this entry.
-   This feeds into cross-pollination auto-promotion scoring in crystal/core.clj."
+  "Log access to a memory entry, incrementing access-count and updating last-accessed."
   [{:keys [id directory]}]
   (log/info "mcp-memory-log-access:" id "directory:" directory)
   (with-chroma
@@ -62,10 +42,8 @@
             accessing-project (when directory
                                 (scope/get-current-project-id directory))
             cross-project-id (detect-cross-project-access entry accessing-project)
-            ;; Base updates: access count + timestamp
             base-updates {:access-count new-count
                           :last-accessed (str (ZonedDateTime/now))}
-            ;; W5: Add xpoll tag if cross-project and not already tagged
             updates (if (and cross-project-id
                              (not (has-xpoll-tag? entry cross-project-id)))
                       (let [new-tags (conj (vec (or (:tags entry) []))
@@ -84,13 +62,8 @@
                                                 :origin_project (:project-id entry)}}))))
       (mcp-json {:error "Entry not found"}))))
 
-;; ============================================================
-;; Feedback Handler
-;; ============================================================
-
 (defn handle-feedback
-  "Submit helpfulness feedback for a memory entry (Chroma-only).
-   feedback should be 'helpful' or 'unhelpful'."
+  "Submit helpfulness feedback for a memory entry."
   [{:keys [id feedback]}]
   (log/info "mcp-memory-feedback:" id feedback)
   (with-chroma
@@ -103,13 +76,8 @@
         (mcp-json (fmt/entry->json-alist updated)))
       (mcp-json {:error "Entry not found"}))))
 
-;; ============================================================
-;; Helpfulness Ratio Handler
-;; ============================================================
-
 (defn handle-helpfulness-ratio
-  "Get helpfulness ratio for a memory entry (Chroma-only).
-   Returns helpful/(helpful+unhelpful) or null if no feedback."
+  "Get helpfulness ratio for a memory entry."
   [{:keys [id]}]
   (log/info "mcp-memory-helpfulness-ratio:" id)
   (with-chroma

@@ -11,8 +11,6 @@
     :evidence  vector   ;; Supporting evidence [{:source :content :confidence}]
     :message   string}  ;; Human-readable argument text
 
-   SOLID-S: Single responsibility - signal schema and validation only.
-   CLARITY-R: Represented intent through typed signals."
   (:require [clojure.string :as str]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>

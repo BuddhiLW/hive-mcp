@@ -1,19 +1,5 @@
 (ns hive-mcp.tools.swarm.health
-  "Drone health monitoring - detect stuck/failed drones and auto-recover.
-
-   Provides:
-   - Heartbeat tracking for active drones
-   - Stuck drone detection with configurable timeouts
-   - Auto-recovery actions (kill, release claims, retry)
-   - Wave health dashboard MCP tool
-
-   TIMEOUT THRESHOLDS:
-   - Alert: 2 minutes without progress
-   - Kill: 5 minutes without progress
-
-   CLARITY: T - Telemetry first (heartbeat monitoring)
-   CLARITY: Y - Yield safe failure (auto-recovery)
-   SOLID: SRP - Single responsibility for drone health."
+  "Drone health monitoring - detect stuck/failed drones and auto-recover."
   (:require [hive-mcp.swarm.coordinator :as coordinator]
             [hive-mcp.swarm.datascript :as ds]
             [hive-mcp.swarm.datascript.lings :as lings]
@@ -25,10 +11,6 @@
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
-
-;;; =============================================================================
-;;; Configuration Constants
-;;; =============================================================================
 
 (def ^:const check-interval-ms
   "How often to check drone health (30 seconds)."
@@ -50,44 +32,16 @@
   "Maximum retry attempts before escalation to ling."
   3)
 
-;;; =============================================================================
-;;; Heartbeat State
-;;; =============================================================================
-
-;; Map of drone-id -> {:last-beat timestamp :status :active/:alert/:stuck :wave-id :task}
 (defonce drone-heartbeats (atom {}))
 
-;;; =============================================================================
-;;; Retry Queue State (CLARITY-Y: Graceful degradation via retry)
-;;; =============================================================================
-
-;; Queue of tasks to retry: [{:drone-id :task :files :attempt :wave-id :queued-at}]
 (defonce retry-queue (atom []))
 
-;; Flag to control the background monitoring loop
 (defonce monitor-running? (atom false))
 
-;; Channel to stop the monitoring loop
 (defonce monitor-control-chan (atom nil))
 
-;;; =============================================================================
-;;; Heartbeat Tracking
-;;; =============================================================================
-
 (defn record-heartbeat!
-  "Record a heartbeat for an active drone.
-
-   Arguments:
-     drone-id - Unique drone identifier
-     opts     - Optional map with :wave-id :task :files :status :refresh-claims?
-
-   Updates the heartbeat timestamp and any provided metadata.
-   Called during drone execution to indicate progress.
-   Stores task/files info for retry queue in case of stuck recovery.
-   Optionally refreshes claim timestamps to prevent stale expiration.
-
-   CLARITY-T: Telemetry first - observable drone activity.
-   CLARITY-Y: Refreshes claims to prevent false-positive TTL expiration."
+  "Record a heartbeat for an active drone."
   [drone-id & [{:keys [wave-id task files status refresh-claims?]
                 :or {refresh-claims? true}}]]
   (let [now (System/currentTimeMillis)
@@ -100,8 +54,6 @@
                     (when wave-id {:wave-id wave-id})
                     (when task {:task task})
                     (when files {:files files}))))
-    ;; Refresh claim timestamps to prevent TTL expiration
-    ;; Only do this periodically (when claims exist) to avoid unnecessary DB ops
     (when (and refresh-claims? (or files had-files?))
       (try
         (when-let [claim-files (or files (get-in @drone-heartbeats [drone-id :files]))]
@@ -112,10 +64,7 @@
     (log/debug "Heartbeat recorded:" drone-id)))
 
 (defn clear-heartbeat!
-  "Remove heartbeat tracking for a drone (called on completion/failure).
-
-   Arguments:
-     drone-id - Drone identifier to clear"
+  "Remove heartbeat tracking for a drone."
   [drone-id]
   (swap! drone-heartbeats dissoc drone-id)
   (log/debug "Heartbeat cleared:" drone-id))
@@ -131,15 +80,7 @@
   @drone-heartbeats)
 
 (defn refresh-drone-claims!
-  "Refresh claim timestamps for a drone's files.
-
-   Called automatically when heartbeat is recorded to keep claims fresh.
-   Prevents claim TTL expiration for active drones.
-
-   Arguments:
-     drone-id - Drone identifier
-
-   CLARITY-Y: Prevents false-positive stale claim detection."
+  "Refresh claim timestamps for a drone's files."
   [drone-id]
   (when-let [heartbeat (get-heartbeat drone-id)]
     (when-let [files (:files heartbeat)]
@@ -149,18 +90,8 @@
           (catch Exception e
             (log/debug "Could not refresh claim for" f (.getMessage e))))))))
 
-;;; =============================================================================
-;;; Retry Queue Management (CLARITY-Y: Graceful degradation)
-;;; =============================================================================
-
 (defn queue-for-retry!
-  "Queue a failed task for retry with attempt tracking.
-
-   Arguments:
-     task-info - Map with :drone-id :task :files :wave-id
-
-   Returns:
-     Updated attempt count (1 if first retry, 2 if second, etc)"
+  "Queue a failed task for retry with attempt tracking."
   [{:keys [drone-id task files wave-id]}]
   (let [existing (->> @retry-queue
                       (filter #(= (:task %) task))
@@ -169,15 +100,12 @@
                   (inc (:attempt existing))
                   1)]
     (if (>= attempt max-retry-attempts)
-      ;; Max retries reached - escalate to ling
       (do
         (log/error "Max retries reached for task, escalating to ling"
                    {:drone-id drone-id :task task :attempts attempt})
         (prom/inc-events-total! :drone/retry-escalated :error)
-        ;; Remove from retry queue
         (swap! retry-queue #(vec (remove (fn [t] (= (:task t) task)) %)))
         {:escalated true :attempts attempt})
-      ;; Queue for retry
       (do
         (swap! retry-queue
                (fn [q]
@@ -199,8 +127,7 @@
   @retry-queue)
 
 (defn pop-retry-task!
-  "Pop the next task from the retry queue (FIFO).
-   Returns the task map or nil if queue is empty."
+  "Pop the next task from the retry queue (FIFO)."
   []
   (let [task (first @retry-queue)]
     (when task
@@ -208,19 +135,13 @@
       task)))
 
 (defn clear-retry-queue!
-  "Clear the retry queue. For testing or manual reset."
+  "Clear the retry queue."
   []
   (reset! retry-queue [])
   (log/info "Retry queue cleared"))
 
-;;; =============================================================================
-;;; Stuck Detection
-;;; =============================================================================
-
 (defn- classify-drone-health
-  "Classify a drone's health based on time since last heartbeat.
-
-   Returns :active, :alert, or :stuck."
+  "Classify a drone's health based on time since last heartbeat."
   [last-beat-ms now-ms]
   (let [elapsed (- now-ms last-beat-ms)]
     (cond
@@ -229,28 +150,17 @@
       :else :active)))
 
 (defn drone-stuck?
-  "Check if a drone is stuck (no heartbeat for kill-timeout-ms).
-
-   Arguments:
-     drone-id   - Drone identifier
-     timeout-ms - Optional custom timeout (default: kill-timeout-ms)
-
-   Returns true if drone should be considered stuck."
+  "Check if a drone is stuck (no heartbeat for timeout period)."
   ([drone-id]
    (drone-stuck? drone-id kill-timeout-ms))
   ([drone-id timeout-ms]
    (let [heartbeat (get-heartbeat drone-id)]
      (if-not heartbeat
-       false ; No heartbeat means drone not tracked
+       false
        (> (- (System/currentTimeMillis) (:last-beat heartbeat)) timeout-ms)))))
 
 (defn check-all-drones
-  "Check health of all tracked drones.
-
-   Returns map with:
-     :active - Vector of healthy drone-ids
-     :alert  - Vector of drones needing attention
-     :stuck  - Vector of stuck drone-ids needing recovery"
+  "Check health of all tracked drones, returns map with :active :alert :stuck."
   []
   (let [now (System/currentTimeMillis)
         heartbeats @drone-heartbeats
@@ -267,17 +177,10 @@
                     heartbeats)]
     classified))
 
-;;; =============================================================================
-;;; Recovery Actions
-;;; =============================================================================
-
 (defn- release-drone-claims!
-  "Release any file claims held by a drone.
-
-   Uses the coordinator to find and release claims associated with the drone's task."
+  "Release any file claims held by a drone."
   [drone-id]
   (try
-    ;; Try to find task-id from drone-id pattern
     (let [task-id (str "task-" drone-id)]
       (coordinator/release-task-claims! task-id)
       (log/info "Released claims for stuck drone:" drone-id))
@@ -285,12 +188,7 @@
       (log/warn "Failed to release claims for drone:" drone-id (.getMessage e)))))
 
 (defn- kill-stuck-drone!
-  "Kill a drone process via DataScript (mark as terminated).
-
-   Arguments:
-     drone-id - ID of the drone to kill
-
-   Returns :killed or :not-found"
+  "Kill a drone process via DataScript."
   [drone-id]
   (try
     (when (ds/get-slave drone-id)
@@ -302,48 +200,28 @@
       :error)))
 
 (defn recover-stuck-drone!
-  "Recover from a stuck drone.
-
-   Actions:
-   1. Release file claims
-   2. Kill the drone process
-   3. Emit recovery event
-   4. Clear heartbeat tracking
-   5. Queue task for retry (if retry? true and task info available)
-
-   Arguments:
-     drone-id - ID of the stuck drone
-     opts     - Optional map with :retry? :wave-id
-
-   Returns map with recovery status and retry info."
+  "Recover from a stuck drone by releasing claims, killing, and optionally retrying."
   [drone-id & [{:keys [retry? wave-id]}]]
   (log/warn "Recovering stuck drone:" drone-id {:retry? retry? :wave-id wave-id})
 
-  ;; Get heartbeat info before clearing (for retry task info)
   (let [heartbeat-info (get-heartbeat drone-id)]
 
-    ;; 1. Release file claims first
     (release-drone-claims! drone-id)
 
-    ;; 2. Kill the drone
     (let [kill-result (kill-stuck-drone! drone-id)]
 
-      ;; 3. Emit recovery event
       (ev/dispatch [:drone/recovered {:drone-id drone-id
                                       :kill-result kill-result
                                       :wave-id wave-id}])
 
-      ;; 4. Clear heartbeat
       (clear-heartbeat! drone-id)
 
-      ;; 5. Queue for retry if requested and task info available
       (let [retry-result (when (and retry? (:task heartbeat-info))
                            (queue-for-retry! {:drone-id drone-id
                                               :task (:task heartbeat-info)
                                               :files (:files heartbeat-info)
                                               :wave-id (or wave-id (:wave-id heartbeat-info))}))]
 
-        ;; 6. Record for telemetry
         (prom/inc-events-total! :drone/stuck-recovered :warn)
 
         (cond-> {:drone-id drone-id
@@ -352,17 +230,8 @@
                  :claims-released true}
           retry-result (assoc :retry-info retry-result))))))
 
-;;; =============================================================================
-;;; Background Monitoring Loop
-;;; =============================================================================
-
 (defn- check-and-release-stale-claims!
-  "Check for stale claims and auto-release them.
-
-   Uses claim-ttl-ms (5 minutes) as the threshold.
-   Emits telemetry event for each released claim.
-
-   CLARITY-Y: Graceful degradation via automatic claim cleanup."
+  "Check for stale claims and auto-release them."
   []
   (let [stale-claims (lings/get-stale-claims claim-ttl-ms)]
     (when (seq stale-claims)
@@ -375,39 +244,25 @@
                   {:owner slave-id})))))
 
 (defn- run-health-check!
-  "Execute one health check cycle.
-
-   Called periodically by the monitoring loop.
-
-   Actions:
-   1. Alert on drones approaching timeout
-   2. Auto-recover stuck drones (with retry queue)
-   3. Check and release stale claims (CLAIM TTL)"
+  "Execute one health check cycle."
   []
   (let [{:keys [alert stuck]} (check-all-drones)]
 
-    ;; 1. Log alerts
     (doseq [{:keys [drone-id elapsed-ms]} alert]
       (log/warn "Drone alert - no progress for" (/ elapsed-ms 1000) "seconds:" drone-id)
-      ;; Update status to alert
       (swap! drone-heartbeats assoc-in [drone-id :status] :alert))
 
-    ;; 2. Auto-recover stuck drones with retry enabled
     (doseq [{:keys [drone-id wave-id elapsed-ms]} stuck]
       (log/error "Drone stuck - auto-recovering after" (/ elapsed-ms 1000) "seconds:" drone-id)
       (recover-stuck-drone! drone-id {:retry? true :wave-id wave-id}))
 
-    ;; 3. Check and release stale claims (CLAIM TTL - ADR Phase 1)
     (try
       (check-and-release-stale-claims!)
       (catch Exception e
         (log/error e "Error checking stale claims")))))
 
 (defn start-monitoring!
-  "Start the background health monitoring loop.
-
-   Checks drone health every check-interval-ms.
-   Idempotent - safe to call multiple times."
+  "Start the background health monitoring loop."
   []
   (when-not @monitor-running?
     (reset! monitor-running? true)
@@ -417,7 +272,6 @@
       (go-loop []
         (let [[_ ch] (async/alts! [ctrl-chan (timeout check-interval-ms)])]
           (when-not (= ch ctrl-chan)
-            ;; Not cancelled - run health check
             (try
               (run-health-check!)
               (catch Exception e
@@ -436,23 +290,8 @@
     (reset! monitor-control-chan nil)
     (log/info "Drone health monitoring stopped")))
 
-;;; =============================================================================
-;;; Wave Health Dashboard
-;;; =============================================================================
-
 (defn get-wave-health
-  "Get health status for all drones in a wave.
-
-   Arguments:
-     wave-id - Optional wave ID to filter by
-
-   Returns map with:
-     :total-drones   - Number of tracked drones
-     :active         - Healthy drones
-     :alert          - Drones needing attention
-     :stuck          - Stuck drones
-     :retry-queue    - Tasks queued for retry
-     :monitoring?    - Whether background monitoring is active"
+  "Get health status for all drones in a wave."
   [& [wave-id]]
   (let [{:keys [active alert stuck]} (check-all-drones)
         filter-by-wave (fn [drones]
@@ -476,27 +315,12 @@
                   :check-interval-ms check-interval-ms
                   :max-retry-attempts max-retry-attempts}}))
 
-;;; =============================================================================
-;;; Event Handlers (CLARITY-C: Composition over modification)
-;;; =============================================================================
-
 (defonce ^:private events-registered? (atom false))
 
 (defn register-event-handlers!
-  "Register event handlers to automatically track drone lifecycle.
-
-   Hooks into:
-   - :drone/started  -> record-heartbeat! (with task/files for retry)
-   - :drone/progress -> record-heartbeat! (auto-heartbeat on activity)
-   - :drone/completed -> clear-heartbeat!
-   - :drone/failed   -> clear-heartbeat!
-   - :drone/tool-result -> record-heartbeat! (auto-heartbeat on tool calls)
-
-   CLARITY-C: Uses event composition instead of modifying drone.clj
-   CLARITY-Y: Captures task/files info for retry queue on stuck recovery"
+  "Register event handlers for automatic drone lifecycle tracking."
   []
   (when-not @events-registered?
-    ;; Handler for drone started - capture all info for potential retry
     (ev/reg-event :drone/started
                   []
                   (fn [_coeffects [_ {:keys [drone-id wave-id task files]}]]
@@ -506,8 +330,6 @@
                                                  :status :active})
                     {}))
 
-    ;; Handler for drone progress - auto-heartbeat on activity
-    ;; This is the key for reducing reliance on manual heartbeats
     (ev/reg-event :drone/progress
                   []
                   (fn [_coeffects [_ {:keys [drone-id wave-id]}]]
@@ -515,8 +337,6 @@
                                                  :status :active})
                     {}))
 
-    ;; Handler for tool results - auto-heartbeat on tool execution
-    ;; Bridges tool activity to heartbeat system
     (ev/reg-event :drone/tool-result
                   []
                   (fn [_coeffects [_ {:keys [drone-id wave-id tool-name]}]]
@@ -525,21 +345,18 @@
                     (log/debug "Auto-heartbeat from tool result:" drone-id tool-name)
                     {}))
 
-    ;; Handler for drone completed - clear heartbeat
     (ev/reg-event :drone/completed
                   []
                   (fn [_coeffects [_ {:keys [drone-id]}]]
                     (clear-heartbeat! drone-id)
                     {}))
 
-    ;; Handler for drone failed - clear heartbeat
     (ev/reg-event :drone/failed
                   []
                   (fn [_coeffects [_ {:keys [drone-id]}]]
                     (clear-heartbeat! drone-id)
                     {}))
 
-    ;; Handler for drone recovered (from this module)
     (ev/reg-event :drone/recovered
                   []
                   (fn [_coeffects [_ {:keys [drone-id]}]]
@@ -550,30 +367,15 @@
     (log/info "Drone health event handlers registered (with auto-heartbeat)")))
 
 (defn init!
-  "Initialize drone health monitoring system.
-
-   - Registers event handlers for automatic heartbeat tracking
-   - Optionally starts background monitoring loop
-
-   Arguments:
-     opts - Map with :auto-start? (default true)"
+  "Initialize drone health monitoring system."
   [& [{:keys [auto-start?] :or {auto-start? true}}]]
   (register-event-handlers!)
   (when auto-start?
     (start-monitoring!))
   (log/info "Drone health monitoring initialized"))
 
-;;; =============================================================================
-;;; MCP Tool Handlers
-;;; =============================================================================
-
 (defn handle-drone-health-status
-  "Get current drone health status.
-
-   Parameters:
-     wave_id - Optional wave ID to filter results
-
-   Returns drone health dashboard data."
+  "Get current drone health status."
   [{:keys [wave_id]}]
   (try
     (let [health (get-wave-health wave_id)]
@@ -583,13 +385,7 @@
       (mcp-json {:error (.getMessage e)}))))
 
 (defn handle-recover-drone
-  "Manually recover a stuck drone.
-
-   Parameters:
-     drone_id - ID of the drone to recover (required)
-     retry    - Whether to queue for retry (default: false)
-
-   Returns recovery status."
+  "Manually recover a stuck drone."
   [{:keys [drone_id retry]}]
   (try
     (if-not drone_id
@@ -601,12 +397,7 @@
       (mcp-json {:error (.getMessage e)}))))
 
 (defn handle-drone-health-control
-  "Control drone health monitoring.
-
-   Parameters:
-     action - \"start\" or \"stop\"
-
-   Returns monitoring status."
+  "Control drone health monitoring (start/stop)."
   [{:keys [action]}]
   (try
     (case action
@@ -620,9 +411,7 @@
       (mcp-json {:error (.getMessage e)}))))
 
 (defn handle-retry-queue-status
-  "Get the current retry queue status.
-
-   Returns queue info with tasks waiting for retry."
+  "Get the current retry queue status."
   [_params]
   (try
     (let [queue @retry-queue]
@@ -637,9 +426,7 @@
       (mcp-json {:error (.getMessage e)}))))
 
 (defn handle-pop-retry-task
-  "Pop the next task from the retry queue for re-execution.
-
-   Returns the task info if available, nil if queue is empty."
+  "Pop the next task from the retry queue for re-execution."
   [_params]
   (try
     (if-let [task (pop-retry-task!)]
@@ -651,10 +438,6 @@
     (catch Exception e
       (log/error e "Failed to pop retry task")
       (mcp-json {:error (.getMessage e)}))))
-
-;;; =============================================================================
-;;; Tool Definitions
-;;; =============================================================================
 
 (def tools
   "MCP tool definitions for drone health monitoring."

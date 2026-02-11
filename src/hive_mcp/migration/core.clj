@@ -10,7 +10,6 @@
    - validate-backup exposes :backup/project-id
    - Prevents cross-project restore contamination
 
-   CLARITY-Y: All operations are non-destructive by default."
   (:require [clojure.java.io :as io]
             [clojure.edn :as edn]
             [clojure.string :as str]

@@ -22,8 +22,6 @@
      ;; Review-before-apply mode
      (delegate {:tasks [...] :review_mode true})
 
-   SOLID: ISP - Single tool with polymorphic dispatch based on params.
-   CLARITY: L - Thin wrapper delegating to focused modules."
   (:require [hive-mcp.agent.core :as agent]
             [hive-mcp.knowledge-graph.disc :as kg-disc]
             [hive-mcp.tools.swarm.wave :as wave]
@@ -61,7 +59,6 @@
      concurrency - Max concurrent drones for batch (int)"
   [{:keys [task tasks files validate review_mode max_retries lint_level
            preset trace cwd parent_id _concurrency]}]
-  ;; CLARITY-T: Log unified API usage for migration tracking
   (log/info {:event :delegate/unified-api-call
              :mode (cond task :single tasks :batch :else :invalid)
              :validate validate
@@ -88,7 +85,7 @@
       (log/info {:event :delegate/routing
                  :mode :single
                  :file-count (count (or files []))})
-      (let [;; L1 Disc: Proactively surface staleness warnings for claimed files
+      (let [;; file-level: Proactively surface staleness warnings for claimed files
             disc-warnings (try (kg-disc/staleness-warnings files) (catch Exception _ nil))
             disc-notice (kg-disc/format-staleness-warnings disc-warnings)
             augmented-task (if disc-notice (str disc-notice task) task)

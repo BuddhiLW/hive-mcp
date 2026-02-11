@@ -5,9 +5,7 @@
    stale detection so that different storage backends (DataScript,
    Datalevin) can be used interchangeably.
 
-   CLARITY-L: Layers stay pure - protocol is the boundary between
    daemon domain logic and storage implementation.
-   CLARITY-I: Inputs guarded at protocol boundary.
 
    Mirrors the coordinator pattern in:
    - hive-mcp.swarm.datascript.coordination (coordinator lifecycle)
@@ -16,9 +14,6 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;;; =============================================================================
-;;; Status Enumerations (Value Objects)
-;;; =============================================================================
 
 (def daemon-statuses
   "Valid Emacs daemon status values.
@@ -29,9 +24,6 @@
    :terminated - Gracefully shutdown"
   #{:active :stale :error :terminated})
 
-;;; =============================================================================
-;;; Protocol Definition
-;;; =============================================================================
 
 (defprotocol IEmacsDaemon
   "Lifecycle management protocol for Emacs daemon instances.
@@ -58,7 +50,6 @@
      Returns:
        Transaction report
 
-     CLARITY-I: Validates daemon-id is a non-empty string.")
 
   (heartbeat! [this daemon-id]
     "Update a daemon's heartbeat timestamp.
@@ -70,7 +61,6 @@
      Returns:
        Transaction report or nil if daemon not found
 
-     CLARITY-T: Heartbeat is the telemetry signal for liveness detection.")
 
   (mark-error! [this daemon-id error-message]
     "Mark a daemon as being in error state.
@@ -156,4 +146,3 @@
      Returns:
        Seq of daemon-ids that were marked stale
 
-     CLARITY-Y: Graceful degradation - marks as stale rather than deleting."))

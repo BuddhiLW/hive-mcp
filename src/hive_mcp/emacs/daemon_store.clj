@@ -4,8 +4,6 @@
    Provides a shared IEmacsDaemon store instance that can be accessed
    from swarm sync, emacsclient, and coordinator modules.
 
-   SOLID-S: Single Responsibility - store lifecycle management only.
-   SOLID-D: Depends on IEmacsDaemon protocol abstraction.
    DDD: Infrastructure layer - singleton access to repository."
   (:require [hive-mcp.emacs.daemon :as daemon]
             [hive-mcp.emacs.daemon-ds :as daemon-ds]
@@ -16,9 +14,6 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;;; =============================================================================
-;;; Singleton Instance
-;;; =============================================================================
 
 (defonce ^{:doc "Singleton daemon store instance. Lazily initialized on first access."}
   daemon-store
@@ -35,9 +30,6 @@
   []
   @daemon-store)
 
-;;; =============================================================================
-;;; Convenience API (delegates to protocol)
-;;; =============================================================================
 
 (defn register!
   "Register a new Emacs daemon. Delegates to IEmacsDaemon.register!"
@@ -96,9 +88,6 @@
   ([opts]
    (daemon/cleanup-stale! (get-store) opts)))
 
-;;; =============================================================================
-;;; Default Daemon ID
-;;; =============================================================================
 
 (defn default-daemon-id
   "Get the default daemon ID from environment or use 'server'.
@@ -118,9 +107,6 @@
       (log/info "Registering default daemon:" id)
       (register! id {:socket-name id}))))
 
-;;; =============================================================================
-;;; Daemon Selection (Multi-Daemon W1)
-;;; =============================================================================
 
 (defn select-daemon-for-ling
   "Select the best daemon for a new ling spawn.
@@ -149,9 +135,6 @@
   [daemon-id score]
   (selection/update-health-score! daemon-id score))
 
-;;; =============================================================================
-;;; Heartbeat Loop (Background Thread)
-;;; =============================================================================
 
 (def ^:private heartbeat-interval-ms
   "Interval between heartbeats in milliseconds. Default: 30 seconds."
@@ -304,9 +287,6 @@
             :daemon-health-level (when-let [s (:emacs-daemon/health-score daemon)]
                                    (selection/health-level s))})))
 
-;;; =============================================================================
-;;; Auto-Heal API (Multi-Daemon W3)
-;;; =============================================================================
 
 (defn heal-orphans!
   "Manually trigger orphan detection and healing.
@@ -327,9 +307,6 @@
   []
   (autoheal/orphan-status (get-store)))
 
-;;; =============================================================================
-;;; Redistribution API (Multi-Daemon W4)
-;;; =============================================================================
 
 (defn redistribute-lings!
   "Manually trigger ling redistribution from overloaded/degraded daemons.

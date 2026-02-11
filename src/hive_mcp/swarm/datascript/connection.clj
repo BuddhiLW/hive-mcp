@@ -6,8 +6,6 @@
    - Connection lifecycle (create, get, reset)
    - Shared helper functions (now, gen-id)
 
-   SOLID-S: Single Responsibility - connection lifecycle only.
-   SOLID-D: Dependency Inversion - other modules depend on this abstraction."
   (:require [datascript.core :as d]
             [taoensso.timbre :as log]
             [hive-mcp.swarm.datascript.schema :as schema]
@@ -42,7 +40,6 @@
 (defn reset-conn!
   "Reset the global connection to empty state.
 
-   CLARITY-Y: Guarded - skipped if coordinator is running to protect production."
   []
   (guards/when-not-coordinator
    "ds/reset-conn! blocked"

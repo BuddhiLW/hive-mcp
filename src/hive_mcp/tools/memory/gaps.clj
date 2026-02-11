@@ -1,27 +1,10 @@
 (ns hive-mcp.tools.memory.gaps
-  "Knowledge Gap Auto-Detection (P2.8).
-
-   Lightweight regex/keyword analysis to identify knowledge gaps
-   in memory content. Populated automatically on memory add.
-
-   Detects:
-   1. Questions (sentences ending with ?)
-   2. TODO/TBD/FIXME/HACK/XXX markers
-   3. Uncertainty language (unclear, unknown, uncertain, etc.)
-   4. Missing/incomplete markers (missing, stub, not implemented, etc.)
-   5. Assumption markers (assuming, assumption)
-
-   SOLID-S: Single responsibility - knowledge gap extraction only.
-   CLARITY-Y: Enhanced NLP-based analysis via extension (noop fallback)."
+  "Knowledge gap auto-detection via regex/keyword analysis of memory content."
   (:require [hive-mcp.extensions.registry :as ext]
             [clojure.string :as str]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
-
-;; ============================================================
-;; Constants
-;; ============================================================
 
 (def ^:private max-gaps
   "Maximum number of knowledge gaps to extract per entry."
@@ -30,10 +13,6 @@
 (def ^:private max-gap-length
   "Maximum character length for a single gap descriptor."
   80)
-
-;; ============================================================
-;; Utility
-;; ============================================================
 
 (defn- truncate-gap
   "Truncate a gap descriptor to max-gap-length, preserving word boundaries."
@@ -46,23 +25,17 @@
         (str (subs truncated 0 last-space) "...")
         (str (subs s 0 (- max-gap-length 3)) "...")))))
 
-;; ============================================================
-;; Extractors
-;; ============================================================
-
 (defn extract-questions
-  "Extract sentences ending with question marks from content.
-   Returns vector of gap descriptors like 'question: ...'."
+  "Extract sentences ending with question marks from content."
   [content]
   (->> (re-seq #"[^.!?\n]*\?" content)
        (map str/trim)
        (remove str/blank?)
-       (remove #(< (count %) 10))  ; Skip very short questions (e.g., just "?")
+       (remove #(< (count %) 10))
        (mapv #(truncate-gap (str "question: " %)))))
 
 (defn extract-todo-markers
-  "Extract TODO/TBD/FIXME/HACK/XXX markers and their context.
-   Returns vector of gap descriptors like 'todo: ...'."
+  "Extract TODO/TBD/FIXME/HACK/XXX markers and their context."
   [content]
   (->> (re-seq #"(?i)\b(TODO|TBD|FIXME|HACK|XXX)\b[:\s]*([^\n.!?]{0,60})" content)
        (mapv (fn [[_ marker context]]
@@ -80,8 +53,7 @@
    #"(?i)\b(needs?\s+to\s+be\s+determined|remains?\s+to\s+be\s+seen)\b[:\s]*([^\n.!?]{0,60})"])
 
 (defn extract-uncertainty
-  "Extract uncertainty language from content.
-   Returns vector of gap descriptors like 'unclear: ...'."
+  "Extract uncertainty language from content."
   [content]
   (->> uncertainty-patterns
        (mapcat #(re-seq % content))
@@ -100,8 +72,7 @@
   [#"(?i)\b(missing|incomplete|placeholder|stub|not\s+implemented|needs?\s+work)\b[:\s]*([^\n.!?]{0,60})"])
 
 (defn extract-missing
-  "Extract missing/incomplete markers from content.
-   Returns vector of gap descriptors like 'missing: ...'."
+  "Extract missing/incomplete markers from content."
   [content]
   (->> missing-patterns
        (mapcat #(re-seq % content))
@@ -120,8 +91,7 @@
   [#"(?i)\b(assuming|assumption)\b[:\s]*([^\n.!?]{0,60})"])
 
 (defn extract-assumptions
-  "Extract assumption markers from content.
-   Returns vector of gap descriptors like 'assumption: ...'."
+  "Extract assumption markers from content."
   [content]
   (->> assumption-patterns
        (mapcat #(re-seq % content))
@@ -135,44 +105,23 @@
        (distinct)
        (vec)))
 
-;; ============================================================
-;; Main Entry Point
-;; ============================================================
-
 (defn extract-knowledge-gaps
-  "Analyze content to detect knowledge gaps.
-
-   Lightweight regex/keyword analysis that identifies:
-   1. Questions (sentences ending with ?)
-   2. TODO/TBD/FIXME/HACK/XXX markers
-   3. Uncertainty language (unclear, unknown, uncertain, etc.)
-   4. Missing/incomplete markers (missing, stub, not implemented, etc.)
-   5. Assumption markers (assuming, assumption)
-
-   Returns vector of gap descriptor strings (max 10), each <=80 chars.
-   Returns empty vector if no gaps detected or content is nil/blank.
-
-   Delegates to enhanced extension for deeper NLP-based analysis
-   when available, falls back to heuristic extraction."
+  "Analyze content to detect knowledge gaps via lightweight regex extraction."
   [content]
   (if (or (nil? content) (str/blank? (str content)))
     []
     (let [content-str (str content)
-          ;; L1/L2: Lightweight regex extraction
           questions    (extract-questions content-str)
           todos        (extract-todo-markers content-str)
           uncertainty  (extract-uncertainty content-str)
           missing      (extract-missing content-str)
           assumptions  (extract-assumptions content-str)
-          ;; Combine and deduplicate
           all-gaps (->> (concat questions todos uncertainty missing assumptions)
                         (distinct)
                         (take max-gaps)
                         (vec))
-          ;; Enhanced gap analysis via extension
           enhanced-gaps (when-let [analyze-fn (ext/get-extension :gs/detect-gaps)]
                           (try
                             (analyze-fn content-str all-gaps)
                             (catch Exception _ nil)))]
-      ;; Enhanced result overrides heuristic if available
       (or enhanced-gaps all-gaps))))

@@ -29,9 +29,6 @@
    (wf-reg/reload!)
    ```
 
-   SOLID-S: Registry only — no execution logic.
-   SOLID-O: Open to new workflows via EDN files + handler registration.
-   CLARITY-L: Pure data layer (EDN specs) + code layer (handler maps)."
   (:require [clojure.java.io :as io]
             [hive.events.fsm :as fsm]
             [sci.core :as sci]

@@ -6,8 +6,6 @@
    - Import EDN data into any backend (DataScript, Datalevin, Datahike)
    - Migrate between backends with validation
 
-   CLARITY-Y: Validates migration completeness with count comparison.
-   CLARITY-T: Logs progress during migration."
   (:require [hive-mcp.knowledge-graph.connection :as conn]
             [hive-mcp.knowledge-graph.protocol :as proto]
             [hive-mcp.knowledge-graph.store.datascript :as ds-store]

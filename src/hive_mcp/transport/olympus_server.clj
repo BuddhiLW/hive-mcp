@@ -34,7 +34,6 @@
    - stop! called on shutdown
    - Delegates to olympus.clj for snapshot/broadcast infrastructure
 
-   CLARITY: Composition over modification - extends olympus.clj, doesn't replace it."
   (:require [clojure.data.json :as json]
             [taoensso.timbre :as log]
             [hive-mcp.transport.olympus :as olympus]))

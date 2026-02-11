@@ -11,7 +11,6 @@
    3. plan_to_kanban parses plan, creates tasks
    4. KG edges link plan -> tasks and task -> task dependencies
 
-   SOLID-S: Single Responsibility - only plan schema definitions.
    DDD: Value Objects for enums, schemas as domain contracts."
   (:require [malli.core :as m]
             [malli.error :as me]
@@ -69,7 +68,7 @@
    Example:
    {:id \"step-1\"
     :title \"Add disc entity schema for file tracking\"
-    :description \"Extend KG schema with disc entities for L1 file state\"
+    :description \"Extend KG schema with disc entities for file state\"
     :depends-on []
     :priority :high
     :files [\"src/hive_mcp/knowledge_graph/schema.clj\"]
@@ -280,7 +279,7 @@
    :steps
    [{:id "step-1"
      :title "Add disc entity schema for file tracking"
-     :description "Extend KG schema with disc entities for L1 file state"
+     :description "Extend KG schema with disc entities for file state"
      :depends-on []
      :priority :high
      :files ["src/hive_mcp/knowledge_graph/schema.clj"]

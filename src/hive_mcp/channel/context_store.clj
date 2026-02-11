@@ -1,14 +1,5 @@
 (ns hive-mcp.channel.context-store
-  "Ephemeral context store for pass-by-reference agent communication.
-
-   ConcurrentHashMap-backed store for structured Clojure data with TTL
-   auto-eviction. Agents store context once, pass IDs in messages (~50
-   tokens vs 2000+ for serialized payloads).
-
-   Lifecycle: context-put! → context-get (by ID) → auto-evict after TTL.
-   Reaper runs every 60s to clean expired entries.
-
-   Thread-safe: ConcurrentHashMap for O(1) get/put, no atom contention."
+  "Ephemeral context store for pass-by-reference agent communication with TTL auto-eviction."
   (:require [taoensso.timbre :as log])
   (:import [java.util.concurrent ConcurrentHashMap ScheduledExecutorService
             Executors TimeUnit]
@@ -17,9 +8,7 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;; =============================================================================
 ;; Constants
-;; =============================================================================
 
 (def ^:const default-ttl-ms
   "Default time-to-live for context entries (5 minutes)."
@@ -29,9 +18,7 @@
   "Reaper runs every 60 seconds."
   60)
 
-;; =============================================================================
 ;; Store (ConcurrentHashMap)
-;; =============================================================================
 
 (defonce ^{:doc "ConcurrentHashMap<String, Map> — the context store."}
   ^ConcurrentHashMap store
@@ -41,21 +28,16 @@
   reaper-executor
   (atom nil))
 
-;; =============================================================================
 ;; ID Generation
-;; =============================================================================
 
 (defn- generate-ctx-id
-  "Generate a context ID: ctx-{timestamp}-{8hex}.
-   Timestamp provides rough ordering; hex suffix provides uniqueness."
+  "Generate a unique context ID."
   []
   (let [ts (System/currentTimeMillis)
         hex (format "%08x" (bit-and (hash (random-uuid)) 0xFFFFFFFF))]
     (str "ctx-" ts "-" hex)))
 
-;; =============================================================================
 ;; Internal Helpers
-;; =============================================================================
 
 (defn- now-ms
   "Current epoch milliseconds."
@@ -67,16 +49,10 @@
   [entry]
   (> (now-ms) (:expires-at entry)))
 
-;; =============================================================================
 ;; Public API
-;; =============================================================================
 
 (defn context-put!
-  "Store data in the context store. Returns ctx-id.
-
-   Options:
-   - :tags    — set of string tags for querying (default #{})
-   - :ttl-ms  — time-to-live in milliseconds (default 300000 = 5 min)"
+  "Store data in the context store, returns ctx-id."
   [data & {:keys [tags ttl-ms] :or {tags #{} ttl-ms default-ttl-ms}}]
   (let [id (generate-ctx-id)
         now (now-ms)
@@ -93,9 +69,7 @@
     id))
 
 (defn context-get
-  "Retrieve entry by ID. Returns entry map or nil.
-   Increments :access-count and updates :last-accessed atomically.
-   Returns nil for expired entries (lazy eviction on read)."
+  "Retrieve entry by ID, returns nil for expired entries."
   [ctx-id]
   (let [result (volatile! nil)]
     (.computeIfPresent store ctx-id
@@ -113,12 +87,7 @@
     @result))
 
 (defn context-query
-  "Query entries by tags. Returns entries whose tags are a superset of query tags.
-   Excludes expired entries (lazy eviction).
-
-   Options:
-   - :tags  — set of tags to match (entries must have ALL of these)
-   - :limit — max entries to return (default: 100)"
+  "Query entries by tags, returns matching non-expired entries."
   [& {:keys [tags limit] :or {limit 100}}]
   (let [query-tags (set tags)
         results (java.util.ArrayList.)]
@@ -138,12 +107,7 @@
   (some? (.remove store ctx-id)))
 
 (defn evict-by-tags!
-  "Evict all entries matching ANY of the given tags.
-   Returns count of entries evicted. Used for session cleanup:
-   when a session wraps/completes, evict cached context for that agent.
-
-   Example: (evict-by-tags! #{\"agent:swarm-xyz-123\"}) evicts all
-   entries tagged with that agent ID."
+  "Evict all entries matching any of the given tags, returns count evicted."
   [tags]
   (let [query-tags (set tags)
         evicted (atom 0)]
@@ -158,8 +122,7 @@
       n)))
 
 (defn context-stats
-  "Return store statistics.
-   {:total N :oldest <ts> :newest <ts> :bytes-approx N}"
+  "Return store statistics."
   []
   (let [entries (vec (vals (into {} store)))
         live (remove expired? entries)
@@ -170,9 +133,7 @@
      :newest (when (seq timestamps) (apply max timestamps))
      :bytes-approx (reduce + 0 (map #(count (pr-str (:data %))) live-vec))}))
 
-;; =============================================================================
 ;; Reaper
-;; =============================================================================
 
 (defn reap-expired!
   "Remove all expired entries from the store. Returns count removed."
@@ -212,9 +173,7 @@
     (reset! reaper-executor nil)
     (log/info "[context-store] reaper stopped")))
 
-;; =============================================================================
 ;; Reset (for testing)
-;; =============================================================================
 
 (defn reset-all!
   "Clear all entries and stop reaper. For testing."

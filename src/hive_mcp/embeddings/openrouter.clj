@@ -27,9 +27,6 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;;; ============================================================
-;;; Configuration
-;;; ============================================================
 
 (def ^:private models
   "Supported OpenRouter embedding models with their dimensions.
@@ -43,9 +40,6 @@
 (def ^:private default-model "qwen/qwen3-embedding-8b")
 (def ^:private api-url "https://openrouter.ai/api/v1/embeddings")
 
-;;; ============================================================
-;;; HTTP Client
-;;; ============================================================
 
 (defonce ^:private http-client
   (delay
@@ -74,9 +68,6 @@
                       {:status status
                        :body body-str})))))
 
-;;; ============================================================
-;;; Embedding Functions
-;;; ============================================================
 
 (defn- get-embeddings
   "Get embeddings for one or more texts from OpenRouter API."
@@ -90,9 +81,6 @@
          (sort-by :index)
          (mapv :embedding))))
 
-;;; ============================================================
-;;; Provider Implementation
-;;; ============================================================
 
 (defrecord OpenRouterEmbedder [api-key model dimension]
   chroma/EmbeddingProvider
@@ -104,9 +92,6 @@
       (vec (mapcat #(get-embeddings api-key model (vec %)) batches))))
   (embedding-dimension [_] dimension))
 
-;;; ============================================================
-;;; Provider Factory
-;;; ============================================================
 
 (defn ->provider
   "Create an OpenRouter embedding provider.
@@ -129,9 +114,6 @@
      (log/info "Created OpenRouter embedder with model:" model "dimension:" dimension)
      (->OpenRouterEmbedder api-key model dimension))))
 
-;;; ============================================================
-;;; Utility Functions
-;;; ============================================================
 
 (defn set-as-default!
   "Convenience function to set OpenRouter as the default embedding provider.

@@ -1,7 +1,7 @@
 (ns hive-mcp.validation
   "Input validation for REPL evaluation requests.
    
-   Following CLARITY principle: 'Inputs are guarded' - validate at system boundaries.
+   validate at system boundaries.
    
    Validates:
    - Code must be non-empty string

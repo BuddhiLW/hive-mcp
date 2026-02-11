@@ -1,20 +1,5 @@
 (ns hive-mcp.tools.swarm.jvm
-  "JVM process management and resource guard tools.
-
-   Provides:
-   - JVM cleanup handler (orchestrates orphan detection and cleanup)
-   - Resource guard handler (memory-based spawn protection)
-
-   Architecture (SLAP principle):
-   - Handlers at INTENT level (this file)
-   - Classification at MECHANISM level (jvm/classifier)
-   - Orphan detection at MECHANISM level (jvm/orphan)
-   - Memory checking at MECHANISM level (jvm/memory)
-   - Summary building at UTILITY level (jvm/summary)
-   - Parsing at UTILITY level (jvm/parser)
-
-   Used by swarm orchestration to garbage collect orphaned JVM processes
-   and prevent OOM conditions before spawning new agents."
+  "JVM process management and resource guard tools for orphan cleanup and OOM prevention."
   (:require [hive-mcp.tools.core :refer [mcp-error mcp-json]]
             [clojure.data.json :as json]
             [clojure.java.shell :as shell]
@@ -27,11 +12,6 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-
-;; ============================================================
-;; JVM Cleanup Handler (Orchestration)
-;; ============================================================
-
 (defn- kill-orphans!
   "Kill orphan processes, returning list of killed PIDs."
   [orphans]
@@ -43,15 +23,7 @@
   (map :pid orphans))
 
 (defn handle-jvm-cleanup
-  "Find and optionally kill orphaned JVM processes.
-
-   TRUE ORPHAN DETECTION:
-   - Parent process is dead (not running)
-   - Parent is PID 1 (reparented to init/systemd)
-
-   EFFICIENT: Uses only 2 ps calls total (not O(n) per process).
-
-   Keeps processes whose parent is a living Claude session."
+  "Find and optionally kill orphaned JVM processes."
   [{:keys [min_age_minutes dry_run keep_types swarm_only true_orphans_only]}]
   (try
     (let [min-age (or min_age_minutes 30)
@@ -60,19 +32,16 @@
           swarm-only (boolean swarm_only)
           true-orphans-only (if (nil? true_orphans_only) true true_orphans_only)
 
-          ;; Discovery and classification (delegated)
           all-procs (classifier/find-jvm-processes)
           all-parents (classifier/get-all-process-parents)
           classified (->> all-procs
                           (map classifier/classify-jvm-process)
                           (map #(orphan/enrich-with-parent-info % all-parents)))
 
-          ;; Filter to swarm-only if requested
           working-procs (if swarm-only
                           (filter :swarm-spawned classified)
                           classified)
 
-          ;; Orphan identification (delegated)
           all-classified (orphan/identify-orphans working-procs
                                                   :protected-types keep-types-set
                                                   :true-orphans-only true-orphans-only
@@ -80,11 +49,9 @@
 
           orphans (filter :orphan all-classified)
 
-          ;; Kill orphans if not dry run
           killed-pids (when (and (not dry-run) (seq orphans))
                         (kill-orphans! orphans))
 
-          ;; Build summary (delegated to summary module)
           result (summary/build-cleanup-summary
                   all-procs classified all-classified orphans killed-pids
                   {:dry-run dry-run
@@ -96,26 +63,8 @@
     (catch Exception e
       (mcp-error (str "Error during JVM cleanup: " (.getMessage e))))))
 
-;; ============================================================
-;; Resource Guard Handler (Orchestration)
-;; ============================================================
-
 (defn handle-resource-guard
-  "Check system resources and automatically clean up orphaned JVMs if memory is high.
-
-   WORKFLOW:
-   1. Check current RAM usage
-   2. If above threshold (default 80%), run jvm_cleanup automatically
-   3. Re-check memory after cleanup
-   4. Return spawn permission based on final memory state
-
-   Use this BEFORE spawning new Claude swarm slaves to prevent OOM.
-
-   Parameters:
-   - ram_threshold: Percentage threshold (default 80)
-   - min_available_mb: Minimum available RAM in MB (default 2048)
-   - auto_cleanup: Whether to auto-run jvm_cleanup when high (default true)
-   - cleanup_dry_run: If auto_cleanup, whether to actually kill (default false)"
+  "Check system resources and auto-clean orphaned JVMs if memory is high."
   [{:keys [ram_threshold min_available_mb auto_cleanup cleanup_dry_run]}]
   (try
     (let [threshold (or ram_threshold 80)
@@ -123,7 +72,6 @@
           auto-clean (if (nil? auto_cleanup) true auto_cleanup)
           cleanup-dry (if (nil? cleanup_dry_run) false cleanup_dry_run)
 
-          ;; Initial memory check (delegated)
           initial-mem (memory/get-memory-usage)
 
           _ (when (:error initial-mem)
@@ -131,29 +79,25 @@
 
           initial-high? (memory/memory-high? initial-mem threshold min-available)
 
-          ;; Auto cleanup if needed
           cleanup-result (when (and initial-high? auto-clean)
                            (log/info "Memory high (" (:percent-used initial-mem) "%), running jvm_cleanup...")
                            (handle-jvm-cleanup {:dry_run cleanup-dry
                                                 :true_orphans_only true}))
 
-          ;; Parse cleanup result
           cleanup-data (when cleanup-result
                          (try
                            (json/read-str (:text cleanup-result) :key-fn keyword)
                            (catch Exception _ nil)))
 
-          ;; Re-check memory after cleanup (if any orphans were killed)
           orphans-killed (when cleanup-data (count (:killed cleanup-data)))
           final-mem (if (and cleanup-data (pos? (or orphans-killed 0)))
                       (do
-                        (Thread/sleep 500) ;; Wait for processes to fully exit
+                        (Thread/sleep 500)
                         (memory/get-memory-usage))
                       initial-mem)
 
           final-high? (memory/memory-high? final-mem threshold min-available)
 
-          ;; Build summary (delegated to summary module)
           result (summary/build-resource-guard-summary
                   (not final-high?) initial-mem final-mem threshold min-available
                   initial-high? final-high?

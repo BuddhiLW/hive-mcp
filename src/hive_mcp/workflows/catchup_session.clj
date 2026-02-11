@@ -11,8 +11,8 @@
 
    Design constraints (same as forge-belt, wrap-session):
    - Handlers are PURE functions: (resources, data) -> data'
-   - Side effects flow through the resources map (L1 territory)
-   - The FSM is the L2 map -- deterministic state transitions
+   - Side effects flow through the resources map (territory)
+   - The FSM is the map -- deterministic state transitions
    - Dispatch predicates are pure functions of state data
 
    Resources map (injected at run time):
@@ -80,9 +80,6 @@
       ;; Error
       :error                any}
 
-   SOLID: SRP -- FSM handlers only, no side effects.
-   CLARITY: L -- Pure layer, side effects via resources.
-   CLARITY: R -- States represent domain intent."
   (:require [hive.events.fsm :as fsm]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;

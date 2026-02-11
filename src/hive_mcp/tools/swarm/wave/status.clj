@@ -1,11 +1,5 @@
 (ns hive-mcp.tools.swarm.wave.status
-  "Wave status queries and formatting.
-
-   Provides read-only query functions for wave state.
-   Delegates to DataScript for data access.
-
-   SOLID-S: Single responsibility - status queries only.
-   CLARITY-L: Thin adapter layer for status access."
+  "Read-only wave status queries and formatting."
   (:require [hive-mcp.swarm.datascript :as ds]
             [clojure.string]))
 
@@ -13,19 +7,8 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;;; ============================================================
-;;; Wave Status Queries
-;;; ============================================================
-
 (defn get-wave-status
-  "Get current status of a wave execution.
-
-   Arguments:
-     wave-id - Wave identifier
-
-   Returns:
-     Map with :wave-id :plan-id :status :active-count :completed-count :failed-count
-     or nil if wave not found."
+  "Get current status of a wave execution."
   [wave-id]
   (when-let [wave (ds/get-wave wave-id)]
     {:wave-id wave-id
@@ -49,18 +32,8 @@
   (when-let [status (get-wave-status wave-id)]
     (#{:completed :partial-failure :failed :cancelled} (:status status))))
 
-;;; ============================================================
-;;; Plan Status Queries
-;;; ============================================================
-
 (defn get-plan-status
-  "Get current status of a change plan.
-
-   Arguments:
-     plan-id - Plan identifier
-
-   Returns:
-     Map with plan info and all items."
+  "Get current status of a change plan with all items."
   [plan-id]
   (when-let [plan (ds/get-plan plan-id)]
     (let [items (ds/get-plan-items plan-id)]
@@ -84,18 +57,8 @@
   [plan-id]
   (ds/get-plan-items plan-id))
 
-;;; ============================================================
-;;; Failed Items Queries
-;;; ============================================================
-
 (defn get-failed-items
-  "Get details of failed items for a wave.
-
-   Arguments:
-     wave-id - Wave identifier
-
-   Returns:
-     Vector of maps with :item-id :file :result for failed items."
+  "Get details of failed items for a wave."
   [wave-id]
   (when-let [status (get-wave-status wave-id)]
     (let [plan-status (get-plan-status (:plan-id status))]
@@ -104,13 +67,7 @@
            (mapv #(select-keys % [:item-id :file :result]))))))
 
 (defn get-wave-summary
-  "Get a summary of wave execution.
-
-   Arguments:
-     wave-id - Wave identifier
-
-   Returns:
-     Map with :wave-id :status :completed :failed :success-rate :failed-items"
+  "Get a summary of wave execution with success rate."
   [wave-id]
   (when-let [status (get-wave-status wave-id)]
     (let [completed (:completed-count status)
@@ -124,18 +81,8 @@
        :success-rate success-rate
        :failed-items (get-failed-items wave-id)})))
 
-;;; ============================================================
-;;; Formatting
-;;; ============================================================
-
 (defn format-wave-status
-  "Format wave status for display.
-
-   Arguments:
-     wave-id - Wave identifier
-
-   Returns:
-     Formatted string or nil if wave not found."
+  "Format wave status for display."
   [wave-id]
   (when-let [summary (get-wave-summary wave-id)]
     (format "Wave %s: %s (%d/%d completed, %.1f%% success rate)"
@@ -146,13 +93,7 @@
             (* 100 (:success-rate summary)))))
 
 (defn format-failed-items
-  "Format failed items for display.
-
-   Arguments:
-     wave-id - Wave identifier
-
-   Returns:
-     Formatted string listing failed items."
+  "Format failed items for display."
   [wave-id]
   (let [failed (get-failed-items wave-id)]
     (if (empty? failed)
@@ -162,43 +103,64 @@
            (cons "Failed items:")
            (clojure.string/join "\n")))))
 
-;;; ============================================================
-;;; Active Waves
-;;; ============================================================
+(defn- get-validated-wave-sessions
+  "Get validated wave sessions via requiring-resolve."
+  []
+  (try
+    (when-let [list-fn (requiring-resolve
+                        'hive-mcp.tools.swarm.validated-wave/list-validated-wave-sessions)]
+      (list-fn))
+    (catch Exception _ nil)))
 
 (defn get-active-waves
-  "Get all currently active waves.
-
-   Returns:
-     Vector of wave status maps."
+  "Get all currently active waves (both DataScript and validated sessions)."
   []
-  (->> (ds/get-all-waves)
-       (filter #(#{:pending :in-progress :running} (:wave/status %)))
-       (mapv (fn [w]
-               {:wave-id (:wave/id w)
-                :plan-id (:wave/plan w)
-                :status (:wave/status w)
-                :active-count (:wave/active-count w)
-                :started-at (:wave/started-at w)}))))
+  (let [ds-active (->> (ds/get-all-waves)
+                       (filter #(#{:pending :in-progress :running} (:wave/status %)))
+                       (mapv (fn [w]
+                               {:wave-id (:wave/id w)
+                                :plan-id (:wave/plan w)
+                                :status (:wave/status w)
+                                :active-count (:wave/active-count w)
+                                :started-at (:wave/started-at w)})))
+        vw-active (->> (get-validated-wave-sessions)
+                       (filter #(= :running (:status %)))
+                       (mapv (fn [s]
+                               {:wave-id (:session-id s)
+                                :type :validated-wave
+                                :status :running
+                                :task-count (:task-count s)
+                                :started-at (:started-at s)})))]
+    (into ds-active vw-active)))
 
 (defn get-recent-waves
-  "Get recently completed waves.
-
-   Arguments:
-     limit - Maximum number of waves to return (default: 10)
-
-   Returns:
-     Vector of wave status maps, most recent first."
+  "Get recently completed waves, most recent first."
   [& [limit]]
-  (let [n (or limit 10)]
-    (->> (ds/get-all-waves)
-         (sort-by :wave/started-at #(compare %2 %1))
+  (let [n (or limit 10)
+        ds-waves (->> (ds/get-all-waves)
+                      (mapv (fn [w]
+                              {:wave-id (:wave/id w)
+                               :plan-id (:wave/plan w)
+                               :status (:wave/status w)
+                               :completed-count (:wave/completed-count w)
+                               :failed-count (:wave/failed-count w)
+                               :started-at (:wave/started-at w)
+                               :completed-at (:wave/completed-at w)})))
+        vw-waves (->> (get-validated-wave-sessions)
+                      (mapv (fn [s]
+                              {:wave-id (:session-id s)
+                               :type :validated-wave
+                               :status (:status s)
+                               :task-count (:task-count s)
+                               :started-at (:started-at s)
+                               :completed-at (:completed-at s)})))]
+    (->> (into ds-waves vw-waves)
+         (sort-by (fn [w]
+                    (let [t (:started-at w)]
+                      (cond
+                        (instance? java.util.Date t) (.getTime ^java.util.Date t)
+                        (number? t) (long t)
+                        :else 0)))
+                  #(compare %2 %1))
          (take n)
-         (mapv (fn [w]
-                 {:wave-id (:wave/id w)
-                  :plan-id (:wave/plan w)
-                  :status (:wave/status w)
-                  :completed-count (:wave/completed-count w)
-                  :failed-count (:wave/failed-count w)
-                  :started-at (:wave/started-at w)
-                  :completed-at (:wave/completed-at w)})))))
+         (vec))))

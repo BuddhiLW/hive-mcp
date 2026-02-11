@@ -1,16 +1,5 @@
 (ns hive-mcp.knowledge-graph.store.datahike
-  "Datahike implementation of IKGStore protocol.
-
-   Immutable, content-addressable Datalog store with time-travel capabilities.
-   Data is persistent and supports branching/merging for multi-ling exploration.
-
-   Part of the replikativ ecosystem - pairs with yggdrasil for versioning.
-
-   Schema uses DataScript format directly (no translation needed unlike Datalevin).
-
-   CLARITY-I: Validates config before connecting.
-   CLARITY-T: Logs backend selection, config, schema.
-   CLARITY-Y: Falls back to DataScript with warning if Datahike fails."
+  "Datahike implementation of IKGStore protocol."
   (:require [datahike.api :as d]
             [hive-mcp.protocols.kg :as kg]
             [hive-mcp.knowledge-graph.schema :as schema]
@@ -21,23 +10,10 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;; =============================================================================
-;; Configuration
-;; =============================================================================
-
 (def ^:private default-db-path "data/kg/datahike")
 
 (defn- make-config
-  "Create Datahike configuration map.
-
-   Arguments:
-     opts - Optional map with:
-       :db-path   - Path for file-based storage (default: data/kg/datahike)
-       :backend   - Storage backend (:file, :mem) (default: :file)
-       :index     - Index type (:datahike.index/persistent-set) (default)
-       :id        - Store identifier (default: auto-generated UUID)
-
-   Returns Datahike config map."
+  "Create Datahike configuration map."
   [& [{:keys [db-path backend index id]
        :or {db-path default-db-path
             backend :file
@@ -49,33 +25,24 @@
                      :id store-id}
              :schema-flexibility :read
              :index index}
-      ;; :mem/:memory both map to :memory (Datahike's in-memory backend)
       (:mem :memory) {:store {:backend :memory
                               :id store-id}
                       :schema-flexibility :read
                       :index index}
-      ;; Default to file
       {:store {:backend :file
                :path db-path
                :id store-id}
        :schema-flexibility :read
        :index index})))
 
-;; =============================================================================
-;; Input Validation (CLARITY-I)
-;; =============================================================================
-
 (defn- validate-config!
-  "Validate Datahike configuration.
-   Creates parent directories for file backend if needed.
-   Throws on invalid config."
+  "Validate Datahike configuration and create directories if needed."
   [cfg]
   (when-not (map? cfg)
     (throw (ex-info "Datahike config must be a map" {:cfg cfg})))
   (when-not (get-in cfg [:store :backend])
     (throw (ex-info "Datahike config missing :store :backend" {:cfg cfg})))
 
-  ;; Create parent directory for file backend
   (when (= :file (get-in cfg [:store :backend]))
     (let [db-path (get-in cfg [:store :path])]
       (when (or (nil? db-path) (empty? db-path))
@@ -87,10 +54,6 @@
           (.mkdirs (.getParentFile dir))))))
   cfg)
 
-;; =============================================================================
-;; Datahike Store Implementation
-;; =============================================================================
-
 (defrecord DatahikeStore [conn-atom cfg]
   kg/IKGStore
 
@@ -100,9 +63,6 @@
       (validate-config! cfg)
       (let [dh-schema (schema/full-schema)]
         (log/debug "Datahike schema" {:attributes (count dh-schema)})
-        ;; Create database if it doesn't exist
-        ;; Datahike treats an existing empty directory as "store exists"
-        ;; so we remove it first to let create-database handle dir creation
         (when-not (d/database-exists? cfg)
           (when (= :file (get-in cfg [:store :backend]))
             (let [dir (io/file (get-in cfg [:store :path]))]
@@ -110,7 +70,6 @@
                 (.delete dir))))
           (log/info "Creating new Datahike database" {:cfg cfg})
           (d/create-database cfg))
-        ;; Connect to database
         (reset! conn-atom (d/connect cfg))))
     @conn-atom)
 
@@ -127,7 +86,6 @@
     (d/entity (d/db (kg/ensure-conn! this)) eid))
 
   (entid [this lookup-ref]
-    ;; Datahike doesn't have entid like DataScript, so we query for it
     (let [[attr val] lookup-ref
           results (d/q '[:find ?e .
                          :in $ ?attr ?val
@@ -144,14 +102,12 @@
 
   (reset-conn! [this]
     (log/info "Resetting Datahike KG store" {:cfg cfg})
-    ;; Release existing connection if open
     (when-let [c @conn-atom]
       (try
         (d/release c)
         (catch Exception e
           (log/warn "Failed to release Datahike conn during reset"
                     {:error (.getMessage e)}))))
-    ;; Delete and recreate database
     (when (d/database-exists? cfg)
       (d/delete-database cfg))
     (reset! conn-atom nil)
@@ -167,7 +123,6 @@
                     {:error (.getMessage e)})))
       (reset! conn-atom nil)))
 
-  ;; Temporal Store Protocol - Datahike supports time-travel queries
   kg/ITemporalKGStore
 
   (history-db [this]
@@ -179,23 +134,8 @@
   (since-db [this tx-or-time]
     (d/since (d/db (kg/ensure-conn! this)) tx-or-time)))
 
-;; =============================================================================
-;; Store Factory
-;; =============================================================================
-
 (defn create-store
-  "Create a new Datahike-backed graph store.
-
-   Arguments:
-     opts - Optional map with:
-       :db-path - Path for file storage (default: data/kg/datahike)
-       :backend - :file or :mem (default: :file)
-       :index   - Index type (default: :datahike.index/persistent-set)
-
-   Returns an IKGStore implementation.
-
-   CLARITY-Y: If Datahike fails to initialize, logs warning
-   and returns nil (caller should fall back to DataScript)."
+  "Create a new Datahike-backed graph store."
   [& [opts]]
   (try
     (let [cfg (make-config opts)]
@@ -206,35 +146,23 @@
                  {:error (.getMessage e) :opts opts})
       nil)))
 
-;; =============================================================================
-;; Temporal Query Extensions (Datahike-specific)
-;; =============================================================================
-
 (defn history-db
-  "Get full history database for temporal queries.
-   Returns a DB value that includes all historical facts."
+  "Get full history database for temporal queries."
   [store]
   (d/history (d/db (kg/ensure-conn! store))))
 
 (defn as-of-db
-  "Get database as of a specific transaction ID or timestamp.
-   tx-or-time can be:
-     - Transaction ID (integer)
-     - java.util.Date instance"
+  "Get database as of a specific transaction or timestamp."
   [store tx-or-time]
   (d/as-of (d/db (kg/ensure-conn! store)) tx-or-time))
 
 (defn since-db
-  "Get database with only facts added since a transaction ID or timestamp.
-   tx-or-time can be:
-     - Transaction ID (integer)
-     - java.util.Date instance"
+  "Get database with only facts added since a transaction or timestamp."
   [store tx-or-time]
   (d/since (d/db (kg/ensure-conn! store)) tx-or-time))
 
 (defn query-history
-  "Query against the full history database.
-   Useful for auditing and change tracking."
+  "Query against the full history database."
   [store q & inputs]
   (if (seq inputs)
     (apply d/q q (history-db store) inputs)

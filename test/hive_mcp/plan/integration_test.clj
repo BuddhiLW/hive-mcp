@@ -99,11 +99,16 @@
     entry-id))
 
 (defn parse-json-result
-  "Parse JSON result from MCP tool response."
+  "Parse JSON result from MCP tool response.
+   Converts step-mapping keys back to strings (they are step IDs, not field names)."
   [result]
   (when-not (:isError result)
     (try
-      (clojure.data.json/read-str (:text result) :key-fn keyword)
+      (let [parsed (clojure.data.json/read-str (:text result) :key-fn keyword)]
+        (cond-> parsed
+          (:step-mapping parsed)
+          (update :step-mapping
+                  #(into {} (map (fn [[k v]] [(name k) v]) %)))))
       (catch Exception _ nil))))
 
 (defn get-kg-edges-from
@@ -421,9 +426,12 @@ Please review and approve before implementation begins.")
       ;; Assert: Returns error
       (is (:isError result) "Invalid deps should return error")
 
-      ;; Assert: Error mentions invalid reference
-      (is (str/includes? (str (:text result)) "Invalid dependency")
-          "Error should mention invalid dependency")))
+      ;; Assert: Error mentions invalid reference (FSM reports via validation data)
+      (is (or (str/includes? (str (:text result)) "invalid")
+              (str/includes? (str (:text result)) "Invalid")
+              (str/includes? (str (:text result)) "missing-dep")
+              (str/includes? (str (:text result)) "step-99"))
+          "Error should mention invalid/missing dependency")))
 
   (testing "Self-referential dependency is detected"
     (let [self-ref-plan "```edn

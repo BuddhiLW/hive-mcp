@@ -1,16 +1,5 @@
 (ns hive-mcp.agent.drone.feedback
-  "Drone feedback loop - learn from execution results.
-
-   CLARITY-T (Telemetry First): Records execution patterns for analysis.
-   CLARITY-Y (Yield Safe Failure): Routes away from failing model/task combos.
-
-   This module:
-   1. Classifies drone execution results
-   2. Records patterns to project memory (Chroma)
-   3. Queries patterns before dispatch for smart routing
-   4. Aggregates weekly statistics for pattern analysis
-
-   Extracted for 200 LOC compliance and single responsibility."
+  "Drone feedback loop for learning from execution results and pattern-based routing."
   (:require [hive-mcp.tools.memory.crud :as mem-crud]
             [clojure.string :as str]
             [clojure.data.json :as json]
@@ -19,30 +8,20 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;;; ============================================================
-;;; Result Classification
-;;; ============================================================
-
 (def result-classes
-  "Canonical result classifications for drone telemetry.
-   Used for pattern tracking and smart routing decisions."
+  "Canonical result classifications for drone telemetry."
   #{:success
-    :rate-limited      ; API rate limit hit
-    :timeout           ; Execution timeout
-    :empty-response    ; No output from model
-    :model-error       ; Model returned error
-    :file-conflict     ; File lock conflict
-    :validation-error  ; Input validation failed
-    :connection-error  ; Network/API connection failed
-    :unknown-failure}) ; Fallback category
+    :rate-limited
+    :timeout
+    :empty-response
+    :model-error
+    :file-conflict
+    :validation-error
+    :connection-error
+    :unknown-failure})
 
 (defn classify-result
-  "Classify a drone execution result into a pattern category.
-
-   Arguments:
-     drone-result - Map with :status, :result, :error, :output keys
-
-   Returns one of the result-classes keywords."
+  "Classify a drone execution result into a pattern category."
   [drone-result]
   (let [status (:status drone-result)
         error (or (:error drone-result) "")
@@ -50,60 +29,47 @@
         output (:output drone-result)
         result (:result drone-result)]
     (cond
-      ;; Success cases
       (= status :completed) :success
       (= status :success) :success
 
-      ;; Rate limiting
       (or (re-find #"rate.?limit" error-lower)
           (re-find #"429" error-lower)
           (re-find #"too.?many.?requests" error-lower))
       :rate-limited
 
-      ;; Timeouts
       (or (re-find #"timeout" error-lower)
           (re-find #"timed.?out" error-lower)
           (re-find #"deadline.?exceeded" error-lower))
       :timeout
 
-      ;; Empty response
       (or (and (nil? output) (nil? result))
           (and (string? output) (str/blank? output))
           (and (string? result) (str/blank? result)))
       :empty-response
 
-      ;; Model-specific errors
       (or (re-find #"model.?error" error-lower)
           (re-find #"invalid.?response" error-lower)
           (re-find #"content.?filter" error-lower)
           (re-find #"safety" error-lower))
       :model-error
 
-      ;; File conflicts
       (or (re-find #"conflict" error-lower)
           (re-find #"locked" error-lower)
           (re-find #"claimed" error-lower))
       :file-conflict
 
-      ;; Validation errors
       (or (re-find #"validation" error-lower)
           (re-find #"invalid.?input" error-lower)
           (re-find #"schema" error-lower))
       :validation-error
 
-      ;; Connection errors
       (or (re-find #"connection" error-lower)
           (re-find #"network" error-lower)
           (re-find #"unreachable" error-lower)
           (re-find #"econnrefused" error-lower))
       :connection-error
 
-      ;; Fallback
       :else :unknown-failure)))
-
-;;; ============================================================
-;;; Pattern Storage
-;;; ============================================================
 
 (defn- make-pattern-content
   "Create content string for pattern memory entry."
@@ -122,15 +88,7 @@
    (str "result:" (name result-class))])
 
 (defn record-pattern!
-  "Record a drone execution pattern to memory.
-
-   Arguments:
-     task-type    - Keyword describing task category (e.g., :refactor, :implement, :fix)
-     model        - Model identifier used (e.g., 'mistralai/devstral-2512:free')
-     result-class - Result classification from classify-result
-     opts         - Optional map with :duration-ms, :directory, :agent-id
-
-   Stores pattern in Chroma with 'short' duration (7 days) for pattern analysis."
+  "Record a drone execution pattern to memory."
   [task-type model result-class & [{:keys [duration-ms directory agent-id]}]]
   (try
     (let [content (make-pattern-content task-type model result-class duration-ms)
@@ -148,21 +106,8 @@
     (catch Exception e
       (log/warn e "Failed to record drone pattern"))))
 
-;;; ============================================================
-;;; Pattern Querying
-;;; ============================================================
-
 (defn query-patterns
-  "Query historical patterns for a task type and/or model.
-
-   Arguments:
-     opts - Map with optional filters:
-            :task-type  - Filter by task type keyword
-            :model      - Filter by model name
-            :limit      - Max results (default 20)
-            :directory  - Project directory for scoping
-
-   Returns vector of pattern records with :result-class counts."
+  "Query historical patterns for a task type and/or model."
   [{:keys [task-type model limit directory]
     :or {limit 20}}]
   (try
@@ -181,10 +126,7 @@
       [])))
 
 (defn get-success-rate
-  "Calculate success rate for a task-type/model combination.
-
-   Returns map with :success-count, :total-count, :success-rate (0.0-1.0).
-   Returns nil if no patterns found."
+  "Calculate success rate for a task-type/model combination."
   [task-type model & [{:keys [directory]}]]
   (let [patterns (query-patterns {:task-type task-type
                                   :model model
@@ -200,10 +142,6 @@
                          (double (/ successes total))
                          0.0)}))))
 
-;;; ============================================================
-;;; Pattern-Based Routing
-;;; ============================================================
-
 (def ^:private min-samples-for-routing
   "Minimum pattern samples before making routing decisions."
   3)
@@ -213,60 +151,29 @@
   0.3)
 
 (defn should-avoid-combo?
-  "Check if a task-type/model combination should be avoided.
-
-   Returns true if:
-   - Has enough samples (>= min-samples-for-routing)
-   - Success rate is below failure-threshold
-
-   Arguments:
-     task-type - Task type keyword
-     model     - Model identifier
-     opts      - Optional map with :directory"
+  "Check if a task-type/model combination should be avoided based on historical patterns."
   [task-type model & [opts]]
   (when-let [stats (get-success-rate task-type model opts)]
     (and (>= (:total-count stats) min-samples-for-routing)
          (< (:success-rate stats) failure-threshold))))
 
 (defn recommend-model
-  "Recommend a model for a task type based on historical patterns.
-
-   Arguments:
-     task-type      - Task type keyword
-     available-models - Sequence of model identifiers to choose from
-     opts           - Optional map with :directory
-
-   Returns the model with highest success rate, or first available if no patterns."
+  "Recommend a model for a task type based on historical patterns."
   [task-type available-models & [{:keys [_directory] :as opts}]]
   (if (empty? available-models)
     nil
     (let [model-stats (for [model available-models]
                         (let [stats (get-success-rate task-type model opts)]
                           {:model model
-                           :success-rate (or (:success-rate stats) 0.5) ; Default 50% for unknowns
+                           :success-rate (or (:success-rate stats) 0.5)
                            :samples (or (:total-count stats) 0)}))
-          ;; Prefer models with actual samples, then by success rate
           sorted (sort-by (juxt #(if (pos? (:samples %)) 0 1)
                                 #(- (:success-rate %)))
                           model-stats)]
       (:model (first sorted)))))
 
-;;; ============================================================
-;;; Weekly Pattern Analysis
-;;; ============================================================
-
 (defn aggregate-weekly-stats
-  "Aggregate pattern statistics for analysis.
-
-   Arguments:
-     opts - Map with :directory for project scoping
-
-   Returns map with:
-     :by-model      - Success rates grouped by model
-     :by-task-type  - Success rates grouped by task type
-     :by-result     - Counts grouped by result class
-     :problematic   - Model/task combos with low success rates
-     :top-performers - Best performing combos"
+  "Aggregate pattern statistics for analysis."
   [& [{:keys [directory]}]]
   (let [patterns (query-patterns {:limit 500 :directory directory})]
     (if (empty? patterns)
@@ -277,8 +184,7 @@
        :problematic []
        :top-performers []}
 
-      (let [;; Parse pattern content to extract fields
-            parsed (for [p patterns]
+      (let [parsed (for [p patterns]
                      (let [content (or (:content p) "")
                            task-match (re-find #"task:(\S+)" (str (:tags p)))
                            model-match (re-find #"model:(\S+)" (str (:tags p)))
@@ -288,7 +194,6 @@
                         :result (or (second result-match) "unknown")
                         :success? (str/includes? content "-> :success")}))
 
-            ;; Group by model
             by-model (group-by :model parsed)
             model-stats (into {}
                               (for [[model entries] by-model]
@@ -297,7 +202,6 @@
                                         :success-rate (double (/ (count (filter :success? entries))
                                                                  (count entries)))}]))
 
-            ;; Group by task type
             by-task (group-by :task-type parsed)
             task-stats (into {}
                              (for [[task entries] by-task]
@@ -306,10 +210,8 @@
                                       :success-rate (double (/ (count (filter :success? entries))
                                                                (count entries)))}]))
 
-            ;; Group by result
             by-result (frequencies (map :result parsed))
 
-            ;; Find problematic combos (success rate < 30%, >= 3 samples)
             combo-groups (group-by (juxt :task-type :model) parsed)
             problematic (->> combo-groups
                              (map (fn [[[task model] entries]]
@@ -322,7 +224,6 @@
                                            (< (:success-rate %) 0.3)))
                              (sort-by :success-rate))
 
-            ;; Find top performers (success rate >= 80%, >= 3 samples)
             top-performers (->> combo-groups
                                 (map (fn [[[task model] entries]]
                                        {:task-type task
@@ -342,9 +243,7 @@
          :top-performers (vec top-performers)}))))
 
 (defn generate-recommendations
-  "Generate prompt improvement recommendations based on patterns.
-
-   Analyzes problematic combos and suggests improvements."
+  "Generate prompt improvement recommendations based on patterns."
   [& [opts]]
   (let [stats (aggregate-weekly-stats opts)
         problematic (:problematic stats)]

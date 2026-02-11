@@ -1,11 +1,5 @@
 (ns hive-mcp.agent.ling.vterm
-  "Vterm spawn strategy — Emacs vterm buffer-based ling lifecycle.
-
-   Delegates spawn/dispatch/status/kill to emacsclient elisp functions.
-   Requires a running Emacs daemon with hive-mcp-swarm addon loaded.
-
-   SOLID: Single Responsibility — only vterm/elisp interaction.
-   CLARITY: L — Pure adapter between ILingStrategy and emacsclient."
+  "Vterm spawn strategy using Emacs vterm buffer-based ling lifecycle."
   (:require [hive-mcp.agent.ling.strategy :refer [ILingStrategy]]
             [hive-mcp.tools.swarm.core :as swarm-core]
             [hive-mcp.emacs.client :as ec]
@@ -14,10 +8,6 @@
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
-
-;;; =============================================================================
-;;; Vterm Strategy Implementation
-;;; =============================================================================
 
 (defrecord VtermStrategy []
   ILingStrategy
@@ -108,10 +98,6 @@
       {:success? false
        :ling-id id
        :errors ["Interrupt not supported for vterm spawn mode"]})))
-
-;;; =============================================================================
-;;; Factory
-;;; =============================================================================
 
 (defn ->vterm-strategy
   "Create a VtermStrategy instance."

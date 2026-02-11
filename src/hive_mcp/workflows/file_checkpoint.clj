@@ -28,10 +28,6 @@
       :files       {path content}  ;; file path -> content at snapshot time
       :metadata    map}      ;; optional: wave-id, plan-id, agent-id, etc.
 
-   SOLID-S: File checkpointing only — no execution logic.
-   SOLID-O: Open for extension via metadata and custom I/O fns.
-   CLARITY-L: Pure data operations + injectable side effects.
-   CLARITY-I: Validate inputs at public API boundary."
   (:require [clojure.java.io :as io]
             [taoensso.timbre :as log])
   (:import [java.time Instant]))

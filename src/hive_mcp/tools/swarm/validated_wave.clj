@@ -1,18 +1,5 @@
 (ns hive-mcp.tools.swarm.validated-wave
-  "Validated wave execution with self-healing loop.
-
-   Extends dispatch_drone_wave with post-execution validation:
-   - Runs kondo_lint after each wave iteration
-   - Generates fix tasks from lint findings
-   - Re-dispatches until validation passes or max retries reached
-
-   Token Efficiency (ADR-004):
-   - Lings NEVER implement directly (92% token savings)
-   - Drones handle all file mutations
-   - Self-healing loop reduces manual ling intervention
-
-   SOLID: SRP - Validation loop orchestration only
-   CLARITY: A - Architectural performance via bounded retries"
+  "Validated wave execution with self-healing lint-and-retry loop."
   (:require [hive-mcp.tools.swarm.wave :as wave]
             [hive-mcp.tools.kondo :as kondo]
             [hive-mcp.tools.core :refer [mcp-error]]
@@ -25,15 +12,7 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;;; =============================================================================
-;;; Forward Declarations
-;;; =============================================================================
-
 (declare execute-review-wave!)
-
-;;; =============================================================================
-;;; Constants
-;;; =============================================================================
 
 (def ^:const default-max-retries
   "Default maximum retry iterations for validation loop."
@@ -43,32 +22,15 @@
   "Default severity threshold for validation."
   "error")
 
-;;; =============================================================================
-;;; Validation Functions
-;;; =============================================================================
-
 (defn- extract-modified-files
-  "Extract list of modified files from wave execution result.
-
-   Arguments:
-     wave-status - Status map from get-wave-status
-
-   Returns:
-     Vector of file paths that were successfully modified."
+  "Extract file paths of completed items from wave status."
   [plan-status]
   (->> (:items plan-status)
        (filter #(= :completed (:status %)))
        (mapv :file)))
 
 (defn- lint-files
-  "Run clj-kondo lint on files and filter by severity level.
-
-   Arguments:
-     files      - Collection of file paths to lint
-     lint-level - Severity threshold (:error, :warning, :info)
-
-   Returns:
-     Map with :findings (filtered) and :files-with-errors"
+  "Run clj-kondo lint on files and filter by severity level."
   [files lint-level]
   (let [level-kw (keyword lint-level)
         all-findings (reduce
@@ -95,29 +57,15 @@
      :count (count all-findings)}))
 
 (defn- format-finding-for-task
-  "Format a lint finding into a human-readable string for task description.
-
-   Arguments:
-     finding - Map with :filename :row :col :level :type :message"
+  "Format a lint finding into a human-readable string."
   [{:keys [row col level type message]}]
   (format "- Line %d, Col %d [%s/%s]: %s"
           row col (name level) (name type) message))
 
 (defn- generate-fix-tasks
-  "Generate fix tasks from lint findings.
-
-   Groups findings by file and creates one task per file with all its errors.
-
-   Arguments:
-     findings - Collection of lint findings
-     original-tasks - Original tasks to extract context from
-
-   Returns:
-     Vector of {:file :task} maps for re-dispatch."
+  "Generate fix tasks from lint findings, grouped by file."
   [findings original-tasks]
-  (let [;; Group findings by file
-        by-file (group-by :filename findings)
-        ;; Build task map from original for context
+  (let [by-file (group-by :filename findings)
         original-by-file (into {} (map (juxt :file :task) original-tasks))]
     (mapv (fn [[file file-findings]]
             {:file file
@@ -129,40 +77,8 @@
                         "IMPORTANT: Fix ALL listed errors. Ensure code compiles after changes.")})
           by-file)))
 
-;;; =============================================================================
-;;; Self-Healing Loop
-;;; =============================================================================
-
 (defn execute-validated-wave!
-  "Execute a wave with validation loop and auto-retry.
-
-   Execution Flow:
-     DISPATCH → VALIDATE → [PASS] → COMPLETE
-                    │
-                 [FAIL]
-                    │
-                    ▼
-              DIAGNOSE → GENERATE FIX TASKS → DISPATCH (loop)
-
-   Arguments:
-     tasks   - Collection of {:file :task} maps
-     opts    - Options map:
-               :validate     - Run validation (default: true)
-               :max-retries  - Max retry iterations (default: 3)
-               :lint-level   - Severity threshold (default: \"error\")
-               :preset       - Drone preset (default: \"drone-worker\")
-               :trace        - Emit events (default: true)
-               :cwd          - Working directory override
-
-   Returns:
-     Map with:
-       :status      - :success, :partial, or :failed
-       :iterations  - Number of iterations executed
-       :final-wave-id - Last wave ID
-       :findings    - Remaining lint findings (if partial)
-       :history     - Iteration history [{:iteration :wave-id :findings}]
-
-   CLARITY-Y: Graceful degradation - returns partial on max retries."
+  "Execute a wave with validation loop and auto-retry on lint failures."
   [tasks {:keys [validate max-retries lint-level preset trace cwd]
           :or {validate true
                max-retries default-max-retries
@@ -185,12 +101,10 @@
            history []]
       (log/info "Validated wave iteration" iteration "with" (count current-tasks) "tasks")
 
-      ;; Emit iteration start event
       (when trace
         (ev/dispatch [:validated-wave/iteration-start {:iteration iteration
                                                        :task-count (count current-tasks)}]))
 
-      ;; Execute wave
       (let [plan-id (wave/create-plan! current-tasks preset)
             wave-id (wave/execute-wave! plan-id {:trace trace :cwd cwd})
             plan-status (wave/get-plan-status plan-id)
@@ -198,11 +112,9 @@
             failed-items (->> (:items plan-status)
                               (filter #(= :failed (:status %))))]
 
-        ;; Check for execution failures (not lint failures)
         (when (seq failed-items)
           (log/warn "Some tasks failed in iteration" iteration {:failed-count (count failed-items)}))
 
-        ;; Run validation if enabled and we have modified files
         (let [validation-result (when (and validate (seq modified-files))
                                   (lint-files modified-files lint-level))
               findings (:findings validation-result)
@@ -213,16 +125,11 @@
                                 :finding-count (count findings)
                                 :execution-failures (count failed-items)}
               updated-history (conj history iteration-record)
-              ;; Calculate total execution failures across all iterations
               total-exec-failures (reduce + (map :execution-failures updated-history))]
 
-          ;; Decision point: pass, retry, or give up
           (cond
-              ;; No validation requested or no lint findings
-              ;; BUT: check for execution failures - those make it partial, not success
             (or (not validate) (empty? findings))
             (if (pos? total-exec-failures)
-                ;; Execution failures exist - return partial success, not full success
               (do
                 (log/warn "Validated wave completed with execution failures"
                           {:iterations iteration
@@ -240,7 +147,6 @@
                  :execution-failures total-exec-failures
                  :history updated-history
                  :message (format "Lint passed but %d task(s) failed to execute." total-exec-failures)})
-                ;; No execution failures, true success
               (do
                 (log/info "Validated wave completed successfully" {:iterations iteration})
                 (when trace
@@ -255,7 +161,6 @@
                  :modified-files modified-files
                  :history updated-history}))
 
-            ;; Max retries reached → partial success
             (>= iteration max-retries)
             (do
               (log/warn "Validated wave reached max retries" {:iterations iteration
@@ -279,7 +184,6 @@
                :message (format "Validation failed after %d iterations. %d lint errors remain. %d task(s) failed to execute."
                                 iteration (count findings) total-exec-failures)})
 
-            ;; Findings present and retries remaining → generate fix tasks and retry
             :else
             (let [fix-tasks (generate-fix-tasks findings current-tasks)]
               (log/info "Generating fix tasks for iteration" (inc iteration)
@@ -291,33 +195,10 @@
                                                      :fix-task-count (count fix-tasks)}]))
               (recur fix-tasks (inc iteration) updated-history))))))))
 
-;;; =============================================================================
-;;; Async Execution with Session Tracking
-;;; =============================================================================
-
-;; Session state for async validated wave executions.
-;; Keyed by session-id, stores progress and final results.
-;; CLARITY-A: Non-blocking architecture — sessions enable polling
-;; instead of blocking the nREPL transport layer.
 (defonce ^:private validated-wave-sessions (atom {}))
 
 (defn execute-validated-wave-async!
-  "Execute a validated wave asynchronously in a background thread.
-   Returns immediately with {:session-id ...} for polling.
-
-   Session state transitions:
-     :running → :success | :partial | :failed
-
-   Poll via get-validated-wave-session to check progress.
-
-   Arguments:
-     tasks - Collection of {:file :task} maps
-     opts  - Same options as execute-validated-wave!
-
-   Returns:
-     Map with :session-id :task-count for immediate response.
-
-   CLARITY-A: Eliminates nREPL socket timeout for validated waves."
+  "Execute a validated wave asynchronously, returning a session-id for polling."
   [tasks opts]
   (let [session-id (str "vw-" (java.util.UUID/randomUUID))]
     (swap! validated-wave-sessions assoc session-id
@@ -343,15 +224,7 @@
      :task-count (count tasks)}))
 
 (defn execute-review-wave-async!
-  "Execute a review wave asynchronously in a background thread.
-   Returns immediately with {:session-id ...} for polling.
-
-   Arguments:
-     tasks - Collection of {:file :task} maps
-     opts  - Same options as execute-review-wave!
-
-   Returns:
-     Map with :session-id :task-count for immediate response."
+  "Execute a review wave asynchronously, returning a session-id for polling."
   [tasks opts]
   (let [session-id (str "rw-" (java.util.UUID/randomUUID))]
     (swap! validated-wave-sessions assoc session-id
@@ -378,52 +251,19 @@
      :task-count (count tasks)}))
 
 (defn get-validated-wave-session
-  "Get session state for an async validated wave execution.
-
-   Returns nil if session not found."
+  "Get session state for an async validated wave execution."
   [session-id]
   (get @validated-wave-sessions session-id))
 
 (defn list-validated-wave-sessions
-  "List all validated wave sessions (for debugging).
-
-   Returns vector of {:session-id :status :task-count :started-at}."
+  "List all validated wave sessions."
   []
   (->> (vals @validated-wave-sessions)
        (mapv #(select-keys % [:session-id :status :task-count :started-at :completed-at]))
        (sort-by :started-at)))
 
-;;; =============================================================================
-;;; Review-Before-Apply Mode
-;;; =============================================================================
-
 (defn execute-review-wave!
-  "Execute a wave with review-before-apply workflow.
-
-   Execution Flow:
-     DISPATCH (skip-auto-apply) → PROPOSE DIFFS → AWAIT REVIEW
-                                                     │
-                                               [User reviews]
-                                                     │
-                                        approve_wave_diffs / auto_approve_wave_diffs
-                                                     │
-                                                   APPLY
-
-   Arguments:
-     tasks   - Collection of {:file :task} maps
-     opts    - Options map:
-               :preset       - Drone preset (default: \"drone-worker\")
-               :trace        - Emit events (default: true)
-               :cwd          - Working directory override
-
-   Returns:
-     Map with:
-       :status        - :awaiting-review
-       :wave-id       - Wave ID for tracking
-       :proposed-diffs - Count of proposed diffs
-       :next-steps    - Instructions for review workflow
-
-   CLARITY-Y: Graceful degradation - diffs await human review."
+  "Execute a wave with review-before-apply workflow."
   [tasks {:keys [preset trace cwd]
           :or {preset "drone-worker"
                trace true}}]
@@ -434,7 +274,6 @@
       (ev/dispatch [:review-wave/start {:task-count (count tasks)
                                         :mode :review-before-apply}]))
 
-    ;; Execute wave with skip-auto-apply: true
     (let [plan-id (wave/create-plan! tasks preset)
           wave-id (wave/execute-wave! plan-id {:trace trace
                                                :cwd cwd
@@ -463,47 +302,9 @@
        :failed-tasks (count failed-items)
        :next-steps ["review_wave_diffs" "approve_wave_diffs" "auto_approve_wave_diffs"]})))
 
-;;; =============================================================================
-;;; MCP Handler
-;;; =============================================================================
-
 (defn handle-dispatch-validated-wave
-  "Handle dispatch_validated_wave MCP tool call.
-
-   Supports two validation modes:
-   - lint mode (default): Execute → validate with lint → auto-retry on failures
-   - review mode: Execute with skip-auto-apply → propose diffs → await human review
-
-   Parameters:
-     tasks       - Array of {:file :task} objects (required)
-     review_mode - When true, use review-before-apply workflow (default: false)
-     validate    - Run clj-kondo lint after execution (default: true, ignored in review mode)
-     max_retries - Max retry iterations (default: 3, ignored in review mode)
-     lint_level  - Severity threshold: error, warning, info (default: error, ignored in review mode)
-     preset      - Drone preset (default: drone-worker)
-     trace       - Emit progress events (default: true)
-     cwd         - Working directory override (optional)
-
-   Returns:
-     Lint mode: JSON with execution status, iteration count, and any remaining findings.
-     Review mode: JSON with wave_id and instructions to use review_wave_diffs, approve_wave_diffs.
-
-   Usage (lint mode):
-     dispatch_validated_wave(
-       tasks: [{file: \"src/foo.clj\", task: \"Add docstrings\"}],
-       validate: true,
-       max_retries: 3,
-       lint_level: \"error\"
-     )
-
-   Usage (review mode):
-     dispatch_validated_wave(
-       tasks: [{file: \"src/foo.clj\", task: \"Add docstrings\"}],
-       review_mode: true
-     )
-     # Then: review_wave_diffs(wave_id) → approve_wave_diffs(wave_id)"
+  "Handle dispatch_validated_wave MCP tool call with lint or review mode."
   [{:keys [tasks review_mode validate max_retries lint_level preset trace cwd]}]
-  ;; DEPRECATION WARNING: Prefer unified 'delegate' tool
   (log/warn {:event :deprecation-warning
              :tool "dispatch_validated_wave"
              :message "DEPRECATED: Use 'delegate' tool instead. delegate({tasks: [...], validate: true})"})
@@ -512,19 +313,13 @@
     (when (empty? tasks)
       (throw (ex-info "tasks array is required and must not be empty" {})))
 
-    ;; CTX Migration: Use request context fallback for cwd
-    ;; Fallback chain: explicit param → ctx binding → nil
     (let [effective-cwd (or cwd (ctx/current-directory))
-          ;; Normalize task keys (MCP sends string keys)
           normalized-tasks (mapv (fn [t]
                                    {:file (or (get t "file") (:file t))
                                     :task (or (get t "task") (:task t))})
                                  tasks)]
 
-      ;; Route to appropriate mode — both use async execution
-      ;; CLARITY-A: Non-blocking to prevent nREPL socket timeout
       (if review_mode
-        ;; Review-before-apply mode (async)
         (let [{:keys [session-id task-count]}
               (execute-review-wave-async!
                normalized-tasks
@@ -541,7 +336,6 @@
                                  "Poll get_validated_wave_status(session_id: \"" session-id "\") for progress. "
                                  "When complete, use review_wave_diffs/approve_wave_diffs.")})})
 
-        ;; Lint validation mode (async)
         (let [{:keys [session-id task-count]}
               (execute-validated-wave-async!
                normalized-tasks
@@ -564,21 +358,8 @@
       (log/error e "dispatch_validated_wave failed")
       (mcp-error (str "Validated wave failed: " (.getMessage e))))))
 
-;;; =============================================================================
-;;; Validated Wave Status Handler
-;;; =============================================================================
-
 (defn handle-get-validated-wave-status
-  "Handle get_validated_wave_status MCP tool call.
-
-   Returns the current state of an async validated wave session.
-
-   Parameters:
-     session_id - Session ID returned by dispatch_validated_wave (required)
-
-   Returns:
-     JSON with session status. When running: {:status :running, :task-count N}.
-     When complete: full result including iterations, findings, wave IDs."
+  "Return the current state of an async validated wave session."
   [{:keys [session_id]}]
   (try
     (when-not session_id
@@ -589,46 +370,38 @@
         {:type "text"
          :text (json/write-str
                 (if running?
-                  ;; Still running — return minimal status
                   {:session_id session_id
                    :status "running"
                    :task_count (:task-count session)
                    :started_at (:started-at session)
                    :message "Validated wave is still executing. Poll again."}
-                  ;; Complete — return full result
                   (merge
                    {:session_id session_id
                     :status (name (:status session))
                     :task_count (:task-count session)
                     :started_at (:started-at session)
                     :completed_at (:completed-at session)}
-                   ;; Include lint-mode fields
                    (when (:iterations session)
                      {:iterations (:iterations session)
                       :final_wave_id (:final-wave-id session)
                       :final_plan_id (:final-plan-id session)
                       :modified_files (:modified-files session)})
-                   ;; Include review-mode fields
                    (when (:wave-id session)
                      {:wave_id (:wave-id session)
                       :plan_id (:plan-id session)
                       :completed_tasks (:completed-tasks session)
                       :failed_tasks (:failed-tasks session)
                       :next_steps (:next-steps session)})
-                   ;; Include execution failures
                    (when-let [exec-failures (:execution-failures session)]
                      {:execution_failures exec-failures})
-                   ;; Include partial-specific fields
                    (when (= :partial (:status session))
                      (merge
                       {:message (:message session)}
                       (when (:findings session)
                         {:remaining_findings (count (:findings session))
                          :files_with_errors (:files-with-errors session)})))
-                   ;; Include error for failed sessions
                    (when (:error session)
                      {:error (:error session)})
-                   ;; Always include history
                    (when (seq (:history session))
                      {:iteration_history
                       (mapv #(select-keys % [:iteration :wave-id :finding-count :execution-failures])
@@ -640,10 +413,6 @@
       (log/error e "get_validated_wave_status failed")
       {:type "text"
        :text (json/write-str {:error (.getMessage e)})})))
-
-;;; =============================================================================
-;;; Tool Definition
-;;; =============================================================================
 
 (def tools
   "Tool definitions for validated wave execution."

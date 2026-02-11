@@ -8,8 +8,6 @@
    - :validated-wave/partial         - Max retries reached, partial success
    - :validated-wave/retry           - Validation failed, retrying with fix tasks
 
-   SOLID: SRP - Validated wave lifecycle only
-   CLARITY: R - Represented intent through validated-wave domain"
   (:require [hive-mcp.events.core :as ev]
             [hive-mcp.events.interceptors :as interceptors]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>

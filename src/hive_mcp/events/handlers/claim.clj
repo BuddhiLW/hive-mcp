@@ -8,8 +8,6 @@
    Event Cascade:
    release-claim! → :claim/file-released → check wait-queue → :claim/notify-waiting → targeted shout
 
-   SOLID: SRP - File claim lifecycle only
-   CLARITY: R - Represented intent through claim domain"
   (:require [hive-mcp.events.core :as ev]
             [hive-mcp.events.interceptors :as interceptors]
             [datascript.core :as d]

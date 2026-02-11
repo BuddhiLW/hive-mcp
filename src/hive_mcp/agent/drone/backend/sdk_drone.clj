@@ -1,20 +1,5 @@
 (ns hive-mcp.agent.drone.backend.sdk-drone
-  "SDKDroneBackend — IDroneExecutionBackend via Claude Agent SDK.
-
-   Executes drone tasks as ephemeral headless SDK sessions.
-   Each execute-drone call:
-   1. Checks SDK availability
-   2. Spawns a short-lived SDK session
-   3. Dispatches the task as a raw query (no SAA phases)
-   4. Drains output channel, collecting messages
-   5. Tears down the session
-
-   Suitable for tasks requiring Claude Code's full tool suite
-   (file editing, bash, etc.) vs OpenRouter's API-only approach.
-
-   SOLID-O: Extends backend protocol without modifying execution.clj.
-   SOLID-D: Depends on IDroneExecutionBackend abstraction.
-   CLARITY-Y: Graceful degradation when SDK unavailable."
+  "SDKDroneBackend -- IDroneExecutionBackend via Claude Agent SDK ephemeral sessions."
   (:require [hive-mcp.agent.drone.backend :as backend]
             [hive-mcp.agent.sdk.availability :as avail]
             [hive-mcp.agent.sdk.lifecycle :as lifecycle]
@@ -24,10 +9,6 @@
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
-
-;;; ============================================================
-;;; Helpers (SLAP: one level of abstraction per function)
-;;; ============================================================
 
 (defn- generate-session-id
   "Generate a unique session ID for an ephemeral drone SDK session."
@@ -44,9 +25,7 @@
                        :backend :sdk-drone})))))
 
 (defn- drain-output-channel
-  "Drain all messages from a core.async channel into a vector.
-   Uses future + deref timeout to avoid core.async/timeout classloader issues.
-   Returns {:messages [...] :timed-out? bool} when channel closes or timeout."
+  "Drain all messages from a core.async channel into a vector with timeout."
   [ch timeout-ms]
   (let [collected (atom [])
         drain-future (future
@@ -74,23 +53,27 @@
   "Convert collected messages and timeout status into standardized result map."
   [{:keys [messages timed-out?]} model]
   (let [errors (filter #(= :error (:type %)) messages)
-        result-text (extract-result-text messages)]
+        result-text (extract-result-text messages)
+        default-tokens {:input-tokens 0 :output-tokens 0}]
     (cond
       timed-out?
       {:status :timeout
        :result (str "SDK session timed out. Partial output:\n" result-text)
+       :tokens default-tokens
        :model model
        :steps (count messages)}
 
       (seq errors)
       {:status :failed
        :result (str "SDK execution failed: " (:error (first errors)))
+       :tokens default-tokens
        :model model
        :steps (count messages)}
 
       :else
       {:status :completed
        :result result-text
+       :tokens default-tokens
        :model model
        :steps (count messages)})))
 
@@ -117,10 +100,6 @@
       (log/warn "[sdk-drone] Failed to kill session"
                 {:session-id session-id :error (ex-message e)}))))
 
-;;; ============================================================
-;;; SDKDroneBackend Record
-;;; ============================================================
-
 (defrecord SDKDroneBackend [default-model timeout-ms]
   backend/IDroneExecutionBackend
 
@@ -145,7 +124,9 @@
                      {:session-id session-id :error (ex-message e)})
           {:status :failed
            :result (str "SDK drone execution failed: " (ex-message e))
-           :model effective-model})
+           :tokens {:input-tokens 0 :output-tokens 0}
+           :model effective-model
+           :steps 0})
         (finally
           (kill-session-safe! session-id)))))
 
@@ -155,17 +136,8 @@
   (backend-type [_this]
     :sdk-drone))
 
-;;; ============================================================
-;;; Constructor & Registration
-;;; ============================================================
-
 (defn ->sdk-drone-backend
-  "Create an SDKDroneBackend instance.
-
-   Arguments:
-     opts - Optional map with:
-            :default-model - Default model (default: claude-sonnet-4-20250514)
-            :timeout-ms    - Execution timeout in ms (default: 300000)"
+  "Create an SDKDroneBackend instance."
   ([] (->sdk-drone-backend {}))
   ([{:keys [default-model timeout-ms]}]
    (->SDKDroneBackend

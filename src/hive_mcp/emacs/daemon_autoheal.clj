@@ -10,9 +10,6 @@
    ADR-010: Compute isolation, not data isolation. DataScript is unified —
    orphan cleanup works across all daemons from a single coordinator view.
 
-   SOLID-S: Single Responsibility — orphan detection and healing only.
-   CLARITY-Y: Yield safe failure — graceful degradation for working lings.
-   CLARITY-T: Telemetry first — log all orphan events for visibility."
   (:require [hive-mcp.emacs.daemon :as daemon]
             [hive-mcp.emacs.daemon-selection :as selection]
             [hive-mcp.swarm.datascript.connection :as conn]
@@ -24,18 +21,12 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;;; =============================================================================
-;;; Constants
-;;; =============================================================================
 
 (def ^:const unhealthy-daemon-statuses
   "Daemon statuses that indicate a daemon is dead or non-functional.
    Lings bound to daemons in these states are considered orphaned."
   #{:stale :terminated :error})
 
-;;; =============================================================================
-;;; Orphan Detection (Pure Query Functions)
-;;; =============================================================================
 
 (defn find-orphaned-lings
   "Find all lings that are bound to dead/unhealthy daemons.
@@ -93,9 +84,6 @@
     ;; Unknown status — be conservative, try to terminate
     :terminate))
 
-;;; =============================================================================
-;;; Healing Actions
-;;; =============================================================================
 
 (defn- rebind-ling!
   "Rebind an idle ling from a dead daemon to a healthy one.
@@ -183,9 +171,6 @@
        :claims-released claims-released
        :success?        true})))
 
-;;; =============================================================================
-;;; Main Heal Orchestrator
-;;; =============================================================================
 
 (defn heal-orphan!
   "Heal a single orphaned ling based on its classification.
@@ -248,9 +233,6 @@
        :failed        failed
        :results       results})))
 
-;;; =============================================================================
-;;; Status / Introspection
-;;; =============================================================================
 
 (defn orphan-status
   "Get current orphan status without healing. Useful for monitoring.

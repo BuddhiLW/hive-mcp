@@ -1,28 +1,5 @@
 (ns hive-mcp.agent.sdk.session
-  "SDK session registry for tracking active agent SDK sessions.
-
-   Manages the lifecycle state of SDK sessions including:
-   - Registration and unregistration
-   - State updates (phase transitions, turn counts)
-   - Session lookup and existence checks
-   - Ling ID to Python-safe identifier conversion
-
-   Session data structure:
-   {:ling-id             String
-    :phase               keyword (:idle :silence :abstract :act)
-    :phase-history       [{:phase kw :started-at inst :ended-at inst}]
-    :observations        vector (collected during silence phase)
-    :plan                string (produced during abstract phase)
-    :compressed-context  string (compressed observations from last phase transition)
-    :message-ch          core.async channel (streaming messages)
-    :result-ch           core.async channel (final result)
-    :turn-count          int (number of query() calls)
-    :client-ref          String (Python global var name for client)
-    :py-loop-var         String (Python global var name for event loop)
-    :py-safe-id          String (Python-safe ling identifier)
-    :started-at          long
-    :cwd                 string
-    :system-prompt       string}"
+  "SDK session registry for tracking active agent SDK sessions."
   (:require [clojure.core.async :refer [close!]]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
@@ -48,7 +25,6 @@
   "Remove a session from registry."
   [ling-id]
   (when-let [session (get @session-registry ling-id)]
-    ;; Close channels
     (when-let [ch (:message-ch session)] (close! ch))
     (when-let [ch (:result-ch session)] (close! ch)))
   (swap! session-registry dissoc ling-id)
@@ -60,12 +36,11 @@
   (get @session-registry ling-id))
 
 (defn session-registry-ref
-  "Return the session registry atom. For internal use by lifecycle functions."
+  "Return the session registry atom."
   []
   session-registry)
 
 (defn ling-id->safe-id
-  "Convert a ling-id to a Python-safe identifier.
-   Replaces non-alphanumeric chars with underscores to use as Python variable suffix."
+  "Convert a ling-id to a Python-safe identifier."
   [ling-id]
   (str/replace ling-id #"[^a-zA-Z0-9_]" "_"))

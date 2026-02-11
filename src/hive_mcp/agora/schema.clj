@@ -13,7 +13,6 @@
    - :approve   - Agree and support
    - :defer     - Yield to another's judgment
 
-   SOLID-S: Single Responsibility - dialogue schema and CRUD only.
    DDD: Aggregate Root pattern (dialogue owns turns)."
   (:require [datascript.core :as d]
             [taoensso.timbre :as log]))
@@ -21,9 +20,6 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;;; =============================================================================
-;;; Status and Signal Enumerations (Value Objects)
-;;; =============================================================================
 
 (def dialogue-statuses
   "Valid dialogue status values.
@@ -44,9 +40,6 @@
    :defer     - Yield to another's judgment on this matter"
   #{:propose :counter :no-change :approve :defer})
 
-;;; =============================================================================
-;;; Schema Definition
-;;; =============================================================================
 
 (def schema
   "DataScript schema for Agora dialogue system.
@@ -134,9 +127,6 @@
    :agora.dialogue/evidence-pool
    {:db/doc "Accumulated evidence from research stage (EDN string): [{:source :content :confidence}]"}})
 
-;;; =============================================================================
-;;; Connection Management
-;;; =============================================================================
 
 (defonce ^:private conn (atom nil))
 
@@ -166,9 +156,6 @@
   []
   (get-conn))
 
-;;; =============================================================================
-;;; Helper Functions
-;;; =============================================================================
 
 (defn now
   "Current timestamp as epoch millis."
@@ -191,9 +178,6 @@
   (when edn-str
     (read-string edn-str)))
 
-;;; =============================================================================
-;;; Dialogue CRUD Functions
-;;; =============================================================================
 
 (defn create-dialogue!
   "Create a new dialogue session.
@@ -295,9 +279,6 @@
                  {:id id :name name :status status :created created}))
           (sort-by :created)))))
 
-;;; =============================================================================
-;;; Turn CRUD Functions
-;;; =============================================================================
 
 (defn add-turn!
   "Add a turn to a dialogue.
@@ -446,9 +427,6 @@
                  :turn-number turn-num}))
          (sort-by :turn-number))))
 
-;;; =============================================================================
-;;; Consensus Helpers
-;;; =============================================================================
 
 (defn count-signals
   "Count signal types for a dialogue.

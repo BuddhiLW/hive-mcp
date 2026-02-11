@@ -1,14 +1,5 @@
 (ns hive-mcp.tools.kg.commands
-  "KG command (write/mutate) tool handlers.
-
-   Handlers for write operations on the Knowledge Graph:
-   - add-edge:           Create relationship between nodes
-   - promote:            Bubble edge up to broader scope
-   - reground:           Re-verify entry against source file
-   - backfill-grounding: Batch discover and ground entries
-
-   SOLID-S: Single Responsibility - write-only KG operations.
-   CQRS:    Command side of KG tool decomposition."
+  "KG write/mutate command handlers for edge creation, promotion, and grounding."
   (:require [hive-mcp.tools.core :refer [mcp-json mcp-error]]
             [hive-mcp.tools.kg.queries :as q]
             [hive-mcp.knowledge-graph.edges :as edges]
@@ -18,10 +9,6 @@
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
-
-;;; =============================================================================
-;;; Validation Helpers (command-specific)
-;;; =============================================================================
 
 (defn- validate-relation
   "Validate relation is a valid keyword."
@@ -44,21 +31,8 @@
     :else
     {:error "relation must be a string or keyword"}))
 
-;;; =============================================================================
-;;; Command Handlers
-;;; =============================================================================
-
 (defn handle-kg-add-edge
-  "Create a relationship between two knowledge nodes.
-
-   Arguments:
-     from       - Source node ID (memory entry ID)
-     to         - Target node ID (memory entry ID)
-     relation   - Relation type (implements, supersedes, refines, contradicts,
-                                 depends-on, derived-from, applies-to)
-     scope      - Optional scope where edge was discovered
-     confidence - Optional confidence score 0.0-1.0 (default: 1.0)
-     created_by - Optional agent ID creating the edge"
+  "Create a relationship between two knowledge nodes."
   [{:keys [from to relation scope confidence created_by]}]
   (log/info "kg_add_edge" {:from from :to to :relation relation})
   (try
@@ -86,17 +60,7 @@
       (mcp-error (str "Failed to add edge: " (.getMessage e))))))
 
 (defn handle-kg-promote
-  "Promote knowledge (edge) to a broader scope.
-
-   This creates a new edge in the target scope, preserving the original.
-   Used to 'bubble up' valuable knowledge from submodule to parent project.
-
-   Arguments:
-     edge_id  - Edge to promote (required)
-     to_scope - Target scope to promote to (required)
-
-   Returns:
-     New edge ID in target scope"
+  "Promote knowledge edge to a broader scope, preserving the original."
   [{:keys [edge_id to_scope]}]
   (log/info "kg_promote" {:edge edge_id :to-scope to_scope})
   (try
@@ -128,11 +92,7 @@
       (mcp-error (str "Promotion failed: " (.getMessage e))))))
 
 (defn handle-kg-reground
-  "Re-ground a knowledge entry by verifying against its source file.
-
-   Arguments:
-     entry_id - Entry ID to re-ground (required)
-     force    - Force re-ground even if recently grounded (optional)"
+  "Re-ground a knowledge entry by verifying against its source file."
   [{:keys [entry_id force]}]
   (log/info "kg_reground" {:entry-id entry_id :force force})
   (try
@@ -149,17 +109,7 @@
       (mcp-error (str "Re-grounding failed: " (.getMessage e))))))
 
 (defn handle-kg-backfill-grounding
-  "Batch-discover and ground all Chroma entries with source-file metadata.
-
-   Scans memory entries, finds those linked to source files, computes
-   current content hashes, and sets grounded-at timestamps. Detects drift
-   where source files have changed since knowledge was abstracted.
-
-   Arguments:
-     project_id   - Filter to specific project (optional, default: all)
-     limit        - Max entries to process (optional, default: 500)
-     force        - Re-ground even if already grounded (optional, default: false)
-     max_age_days - Only re-ground if older than N days (optional, default: 7)"
+  "Batch-discover and ground all Chroma entries with source-file metadata."
   [{:keys [project_id limit force max_age_days]}]
   (log/info "kg_backfill_grounding" {:project-id project_id :limit limit :force force})
   (try
@@ -180,10 +130,6 @@
     (catch Exception e
       (log/error e "kg_backfill_grounding failed")
       (mcp-error (str "Backfill grounding failed: " (.getMessage e))))))
-
-;;; =============================================================================
-;;; Command Tool Definitions
-;;; =============================================================================
 
 (def command-tools
   "Tool definitions for KG write/mutate operations."

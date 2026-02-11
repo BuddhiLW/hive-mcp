@@ -1,9 +1,7 @@
 (ns hive-mcp.emacs.client
   "Shell wrapper for emacsclient communication with running Emacs.
 
-   CLARITY-Y: Yield safe failure — daemon crash detection, circuit breaker,
    and structured telemetry prevent cascading failures when Emacs dies.
-   CLARITY-T: Telemetry first — every crash/recovery event is logged with
    structured data for observability."
   (:require [clojure.java.shell :refer [sh]]
             [clojure.string :as str]
@@ -30,9 +28,6 @@
    defense — no call may exceed this regardless of what callers request."
   30000)
 
-;;; =============================================================================
-;;; Crash Telemetry — CLARITY-T + CLARITY-Y
-;;; =============================================================================
 
 (def ^:private daemon-dead-patterns
   "Stderr patterns from emacsclient that indicate daemon death.
@@ -65,9 +60,6 @@
    Prevents thundering-herd probes right after a crash."
   5000)
 
-;;; =============================================================================
-;;; Daemon Death Detection & Error Reporting (IEmacsDaemon Integration)
-;;; =============================================================================
 
 (defn- detect-daemon-death
   "Check if an error string indicates daemon death.
@@ -185,7 +177,7 @@
 (defn eval-elisp!
   "Execute elisp and return result string, or throw on non-timeout error.
    On timeout, returns {:error :timeout :msg \"...\"}  instead of throwing,
-   so callers can degrade gracefully (CLARITY-Y)."
+   so callers can degrade gracefully."
   [code]
   (let [{:keys [success result error timed-out]} (eval-elisp code)]
     (cond

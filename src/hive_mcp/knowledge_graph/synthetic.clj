@@ -1,11 +1,11 @@
 (ns hive-mcp.knowledge-graph.synthetic
-  "CRUD operations for L3 Synthetic (Emergent) Knowledge Nodes.
+  "CRUD operations for Synthetic (Emergent) Knowledge Nodes.
 
    Synthetic nodes represent emergent patterns discovered through co-access
    analysis, temporal proximity, or semantic similarity. They project onto
-   L2 entries via :projects-to edges, enabling pattern-level queries.
+   entries via :projects-to edges, enabling pattern-level queries.
 
-   Per convention 20260131014506-72b6afed: L3 is emergent, not stored as
+   Per convention 20260131014506-72b6afed: Emergent knowledge is, not stored as
    raw entries, but as synthesized clusters."
   (:require [hive-mcp.knowledge-graph.connection :as conn]
             [hive-mcp.knowledge-graph.schema :as schema]))
@@ -29,7 +29,7 @@
 ;; =============================================================================
 
 (defn create-synthetic!
-  "Create a new synthetic (L3 emergent) node.
+  "Create a new synthetic (emergent) node.
 
    Required keys:
    - :type       - Synthetic type (must be in schema/synthetic-types)
@@ -200,16 +200,16 @@
 ;; Projection Edge Operations
 ;; =============================================================================
 ;;
-;; Projection edges connect synthetic L3 nodes to their constituent L2 entries.
+;; Projection edges connect synthetic nodes to their constituent entries.
 ;; These are stored as regular KG edges with relation :projects-to.
 
 (defn add-projection-edge!
-  "Create a projection edge from a synthetic node to an L2 entry.
+  "Create a projection edge from a synthetic node to an entry.
    The edge represents that the synthetic pattern 'projects to' the entry.
 
    Arguments:
    - synth-id  - The synthetic node ID
-   - entry-id  - The L2 memory entry ID
+   - entry-id  - The memory entry ID
 
    Optional keys:
    - :confidence - Edge confidence (default: matches synthetic confidence)
@@ -235,7 +235,7 @@
     edge-id))
 
 (defn get-projections
-  "Get all L2 entry IDs that a synthetic node projects to.
+  "Get all entry IDs that a synthetic node projects to.
    Returns a vector of entry IDs."
   [synth-id]
   (let [query '[:find [?to ...]
@@ -247,7 +247,7 @@
     (vec (conn/query query synth-id))))
 
 (defn get-projected-from
-  "Get all synthetic node IDs that project to a given L2 entry.
+  "Get all synthetic node IDs that project to a given entry.
    Returns a vector of synthetic node IDs."
   [entry-id]
   (let [query '[:find [?from ...]

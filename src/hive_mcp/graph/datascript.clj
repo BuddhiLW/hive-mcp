@@ -10,7 +10,6 @@
    - Simple string matching for find-similar (no vector embeddings)
    - Thread-safe via Datascript's atom-based connection
    
-   SOLID: Dependency Inversion - depends on protocol, not concrete stores.
    DDD: Repository pattern for graph persistence."
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
@@ -25,9 +24,6 @@
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 
-;;; -----------------------------------------------------------------------------
-;;; String Similarity (for find-similar)
-;;; -----------------------------------------------------------------------------
 
 (defn- normalize-text
   "Normalize text for comparison: lowercase, collapse whitespace."
@@ -63,9 +59,6 @@
   [text-a text-b]
   (jaccard-similarity (word-set text-a) (word-set text-b)))
 
-;;; -----------------------------------------------------------------------------
-;;; Content Extraction Helpers
-;;; -----------------------------------------------------------------------------
 
 (defn- entity-content-attr
   "Return the content attribute for an entity type."
@@ -85,9 +78,6 @@
     :agent :agent/type
     nil))
 
-;;; -----------------------------------------------------------------------------
-;;; DatascriptStore Record
-;;; -----------------------------------------------------------------------------
 
 (defrecord DatascriptStore [conn persist-path]
   proto/GraphStore
@@ -176,9 +166,6 @@
             (log/debug "No persisted state found at" persist-path)
             nil))))))
 
-;;; -----------------------------------------------------------------------------
-;;; Constructor
-;;; -----------------------------------------------------------------------------
 
 (defn create-store
   "Create a new DatascriptStore.
@@ -209,9 +196,6 @@
   [persist-path]
   (create-store schema/schema persist-path))
 
-;;; -----------------------------------------------------------------------------
-;;; Convenience Functions (for crystal/graph.clj compatibility)
-;;; -----------------------------------------------------------------------------
 
 (defn make-datascript-store
   "Create a DatascriptStore with default schema and no persistence.
@@ -279,9 +263,6 @@
   [store tx-data]
   (d/transact! (:conn store) tx-data))
 
-;;; -----------------------------------------------------------------------------
-;;; Convenience Functions
-;;; -----------------------------------------------------------------------------
 
 (defn store-stats
   "Get statistics about a DatascriptStore."

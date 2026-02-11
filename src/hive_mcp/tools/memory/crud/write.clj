@@ -1,19 +1,5 @@
 (ns hive-mcp.tools.memory.crud.write
-  "Write operations for memory: add entry with KG edge creation.
-
-   SOLID: SRP - Handles only memory creation and KG edge wiring.
-   CLARITY: L - Layers stay pure with clear domain separation.
-
-   Handlers:
-   - handle-add: Create new memory entry (with optional KG edge creation)
-
-   Knowledge Graph Integration:
-   - add supports kg_implements, kg_supersedes, kg_depends_on, kg_refines
-   - Edges are stored in DataScript with full provenance
-
-   Intelligence delegated to focused submodules:
-   - classify.clj: Abstraction level auto-classification (P1.5)
-   - gaps.clj: Knowledge gap auto-detection (P2.8)"
+  "Write operations for memory: add entry with KG edge creation."
   (:require [hive-mcp.tools.memory.core :refer [with-chroma]]
             [hive-mcp.tools.memory.scope :as scope]
             [hive-mcp.tools.memory.format :as fmt]
@@ -32,13 +18,8 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;; ============================================================
-;; Knowledge Graph Edge Creation
-;; ============================================================
-
 (defn- update-target-incoming!
-  "Update target entry's kg-incoming field with the new edge ID.
-   Appends to existing incoming edges if present."
+  "Append edge-id to target entry's kg-incoming field."
   [target-id edge-id]
   (when-let [target-entry (chroma/get-entry-by-id target-id)]
     (let [existing-incoming (or (:kg-incoming target-entry) [])
@@ -46,20 +27,7 @@
       (chroma/update-entry! target-id {:kg-incoming updated-incoming}))))
 
 (defn- create-kg-edges!
-  "Create KG edges for the given relationships.
-
-   Arguments:
-     entry-id    - The newly created memory entry ID
-     kg-params   - Map with :kg_implements, :kg_supersedes, :kg_depends_on, :kg_refines
-     project-id  - Project scope for edge attribution
-     agent-id    - Agent creating the edges (for attribution)
-
-   Returns:
-     Vector of created edge IDs
-
-   Side effects:
-     - Creates edges in DataScript KG store
-     - Updates target entries' kg-incoming field in Chroma (bidirectional lookup)"
+  "Create KG edges for the given relationships and update target entries."
   [entry-id {:keys [kg_implements kg_supersedes kg_depends_on kg_refines]} project-id agent-id]
   (let [created-by (when agent-id (str "agent:" agent-id))
         create-edges (fn [targets relation]
@@ -72,7 +40,6 @@
                                                  :scope project-id
                                                  :confidence 1.0
                                                  :created-by created-by})]
-                                   ;; Update target's kg-incoming for bidirectional lookup
                                    (update-target-incoming! target-id edge-id)
                                    edge-id))
                                targets)))]
@@ -82,12 +49,8 @@
           (create-edges kg_depends_on :depends-on)
           (create-edges kg_refines :refines)))))
 
-;; ============================================================
-;; Tag Building
-;; ============================================================
-
 (defn- build-entry-tags
-  "Build complete tags vector: base → agent → KG markers → scope."
+  "Build complete tags vector: base, agent, KG markers, and scope."
   [tags-vec agent-id kg-vecs project-id]
   (let [agent-tag (when agent-id (str "agent:" agent-id))
         tags-with-agent (if agent-tag (conj tags-vec agent-tag) tags-vec)
@@ -100,14 +63,8 @@
         tags-with-kg (into tags-with-agent kg-tags)]
     (scope/inject-project-scope tags-with-kg project-id)))
 
-;; ============================================================
-;; Plan Gate Validation
-;; ============================================================
-
 (defn- validate-plan-gate!
-  "FSM Gate: validate plan content before storage.
-   Ensures plan-to-kanban compatibility at write time.
-   Throws ex-info on gate rejection."
+  "Validate plan content before storage via FSM gate."
   [content]
   (when (plan-gate/plan-content? content)
     (let [gate-result (plan-gate/validate-for-storage content)]
@@ -117,13 +74,8 @@
                          :phase (:phase gate-result)
                          :errors (:errors gate-result)}))))))
 
-;; ============================================================
-;; Entry Indexing
-;; ============================================================
-
 (defn- index-entry!
-  "Index entry in appropriate collection (plans or memory).
-   Plans route to OpenRouter 4096-dim collection, memory to Ollama 768-dim."
+  "Index entry in appropriate collection (plans or memory)."
   [plan? {:keys [type content tags-with-scope content-hash duration-str
                  expires project-id abstraction-level knowledge-gaps agent-id]}]
   (if plan?
@@ -140,12 +92,8 @@
       :abstraction-level abstraction-level
       :knowledge-gaps knowledge-gaps})))
 
-;; ============================================================
-;; Post-Index Finalization
-;; ============================================================
-
 (defn- finalize-entry!
-  "Wire KG edges, fetch created entry, notify Olympus, format response."
+  "Wire KG edges, fetch created entry, notify channel, and format response."
   [entry-id plan? kg-params project-id agent-id
    {:keys [tags-with-scope type knowledge-gaps]}]
   (let [edge-ids (create-kg-edges! entry-id kg-params project-id agent-id)
@@ -163,30 +111,8 @@
     (mcp-json (cond-> (fmt/entry->json-alist created)
                 (seq edge-ids) (assoc :kg_edges_created edge-ids)))))
 
-;; ============================================================
-;; Add Handler
-;; ============================================================
-
 (defn handle-add
-  "Add an entry to project memory (Chroma-only storage).
-   Stores full entry in Chroma with content, metadata, and embedding.
-
-   When directory is provided, uses that path to determine project scope
-   instead of relying on Emacs's current buffer (fixes /wrap scoping issue).
-
-   When agent_id is provided (or CLAUDE_SWARM_SLAVE_ID env var is set),
-   adds an 'agent:{id}' tag for tracking which ling created the entry.
-
-   Knowledge Graph Integration:
-   When kg_* parameters are provided, creates corresponding KG edges:
-     - kg_implements: List of entry IDs this implements
-     - kg_supersedes: List of entry IDs this supersedes
-     - kg_depends_on: List of entry IDs this depends on
-     - kg_refines: List of entry IDs this refines
-
-   Edges are stored in DataScript with full provenance (scope, agent, timestamp).
-
-   ELM Principle: Array parameters are coerced with helpful error messages."
+  "Add an entry to project memory with optional KG edge creation."
   [{:keys [type content tags duration directory agent_id
            kg_implements kg_supersedes kg_depends_on kg_refines abstraction_level]}]
   (try

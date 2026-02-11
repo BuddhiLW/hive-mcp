@@ -1,8 +1,6 @@
 (ns hive-mcp.embeddings.config
   "EmbeddingConfig value object for per-collection embedding configuration.
 
-   SOLID: SRP - Single responsibility for embedding configuration.
-   CLARITY: R - Represented intent via explicit config records.
 
    An EmbeddingConfig describes how a specific collection should embed its content:
    - provider-type: :ollama, :openai, :openrouter
@@ -22,9 +20,6 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;;; ============================================================
-;;; EmbeddingConfig Value Object
-;;; ============================================================
 
 (defrecord EmbeddingConfig
            [provider-type  ; :ollama, :openai, :openrouter
@@ -48,9 +43,6 @@
    :dimension (:dimension config)
    :options (select-keys (:options config) [:host])}) ; Don't log api-key
 
-;;; ============================================================
-;;; Provider-Specific Model Definitions
-;;; ============================================================
 
 (def ^:private ollama-models
   "Ollama embedding models with dimensions."
@@ -83,9 +75,6 @@
     :openrouter (get openrouter-models model 4096) ; Default for unknown OpenRouter models
     nil))
 
-;;; ============================================================
-;;; Factory Functions (CLARITY: C - Composition over modification)
-;;; ============================================================
 
 (defn ollama-config
   "Create Ollama embedding configuration.
@@ -147,9 +136,6 @@
                        {:type :missing-api-key})))
      (->EmbeddingConfig :openrouter model dimension {:api-key api-key}))))
 
-;;; ============================================================
-;;; Utility Functions
-;;; ============================================================
 
 (defn same-dimension?
   "Check if two configs have the same embedding dimension."

@@ -1,13 +1,5 @@
 (ns hive-mcp.crystal.core
-  "Crystal core: Progressive crystallization of ephemeral knowledge.
-   
-   Domain logic for:
-   - Promotion score calculation (weighted recalls)
-   - Crystallization decisions (should-promote?)
-   - Session lineage tracking
-   
-   SOLID: Single responsibility - promotion scoring only.
-   DDD: Pure domain functions, no side effects."
+  "Progressive crystallization of ephemeral knowledge."
   (:require [clojure.string :as str]
             [hive-mcp.extensions.registry :as ext]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -47,12 +39,7 @@
 ;; =============================================================================
 
 (defn calculate-promotion-score
-  "Calculate promotion score from recall history.
-   
-   recalls: seq of {:context :keyword, :count int, :timestamp string}
-   
-   Returns: {:score float
-             :breakdown [{:context :weight :count :contribution}]}"
+  "Calculate promotion score from recall history."
   [recalls]
   (let [breakdown (for [{:keys [context count] :or {count 1}} recalls
                         :let [weight (get recall-weights context 1.0)
@@ -99,13 +86,7 @@
     10.0)) ; default
 
 (defn should-promote?
-  "Determine if a memory entry should be promoted.
-
-   entry: {:id :duration :recalls [...] :tags [...]}
-   opts: {:behavioral-adjustment float  - Optional adjustment from behavioral tracking
-          :cross-pollination-boost float - Optional boost from cross-project access (W5)}
-
-   Returns: {:promote? bool :current-score float :threshold float :next-duration keyword}"
+  "Determine if a memory entry should be promoted."
   ([entry] (should-promote? entry {}))
   ([{:keys [duration recalls] :as entry} {:keys [behavioral-adjustment cross-pollination-boost]
                                           :or {behavioral-adjustment 0.0
@@ -128,16 +109,7 @@
       :next-duration (when should? (current-duration->next duration))})))
 
 (defn should-demote?
-  "Determine if a memory entry should be demoted due to poor behavioral outcomes.
-
-   Demotion occurs when:
-   - Behavioral adjustment is strongly negative (many corrections)
-   - Entry has been recalled but consistently led to failures
-
-   entry: {:id :duration :recalls [...]}
-   behavioral-adjustment: float from behavioral outcome tracking
-
-   Returns: {:demote? bool :reason keyword :prev-duration keyword}"
+  "Determine if a memory entry should be demoted."
   [{:keys [duration] :as _entry} behavioral-adjustment]
   (let [demote? (< behavioral-adjustment -3.0)
         prev-duration (case (keyword duration)
@@ -233,15 +205,7 @@
         nil))))
 
 (defn decay-candidate?
-  "Predicate: should this entry be considered for staleness decay?
-
-   Candidates have:
-   - Low access count (< access-threshold, default 3)
-   - Not permanent duration
-   - Not axiom type (axioms are foundational, never decay)
-
-   entry: {:access-count int :duration string :type string}
-   opts: {:access-threshold int (default 3)}"
+  "Check if entry should be considered for staleness decay."
   ([entry] (decay-candidate? entry {}))
   ([{:keys [access-count duration type] :as _entry}
     {:keys [access-threshold] :or {access-threshold 3}}]
@@ -258,19 +222,7 @@
    "long"      0.5})
 
 (defn calculate-decay-delta
-  "Calculate staleness-beta increase for a decay cycle.
-
-   Pure function: takes entry data, returns delta (float >= 0).
-
-   Factors:
-   - Days since last access (more days = more decay)
-   - Access count (higher = less decay, logarithmic dampening)
-   - Duration tier (ephemeral decays fastest)
-
-   Returns 0.0 if entry was recently accessed (< recency-days).
-
-   entry: {:access-count int :last-accessed string :duration string}
-   opts:  {:recency-days int (default 7) - grace period}"
+  "Calculate staleness-beta increase for a decay cycle."
   ([entry] (calculate-decay-delta entry {}))
   ([{:keys [access-count last-accessed duration] :as _entry}
     {:keys [recency-days] :or {recency-days 7}}]
@@ -289,14 +241,7 @@
 ;; =============================================================================
 
 (defn extract-xpoll-projects
-  "Extract distinct project IDs from cross-pollination tags on an entry.
-
-   xpoll tags have format: 'xpoll:project:<project-id>'
-   The entry's own project-id is NOT included (it's the origin, not cross-access).
-
-   entry: {:tags [string]}
-
-   Returns: set of project-id strings that accessed this entry cross-project."
+  "Extract distinct project IDs from cross-pollination tags."
   [entry]
   (let [tags (or (:tags entry) [])]
     (->> tags
@@ -305,11 +250,7 @@
          set)))
 
 (defn cross-pollination-count
-  "Count distinct projects that accessed this entry cross-project.
-
-   entry: {:tags [string]}
-
-   Returns: int (0 if no cross-project access detected)"
+  "Count distinct projects that accessed this entry cross-project."
   [entry]
   (count (extract-xpoll-projects entry)))
 
@@ -343,14 +284,7 @@
 ;; =============================================================================
 
 (defn task-to-progress-note
-  "Convert a completed kanban task to a progress note structure.
-   
-   task: {:title :context :priority :started :completed-at}
-   
-   Returns: {:type :note
-             :content string
-             :tags [...]
-             :duration :ephemeral}"
+  "Convert a completed kanban task to a progress note."
   [{:keys [title context priority started] :as task}]
   (let [completed-at (or (:completed-at task)
                          (.toString (java.time.Instant/now)))
@@ -368,12 +302,7 @@
      :duration :ephemeral}))
 
 (defn- extract-content-summary
-  "Safely extract a one-line summary from note content.
-   
-   Handles:
-   - String content: takes first line
-   - Map content: extracts :title or stringifies
-   - nil content: returns placeholder"
+  "Extract a one-line summary from note content."
   [content]
   (cond
     (nil? content) "(no content)"
@@ -391,7 +320,6 @@
 
    Returns: session summary map suitable for crystallization, or nil if no content.
 
-   CLARITY-I: Inputs are guarded - filters non-map items to prevent
    'Key must be integer' error when accessing (:tags item) on vectors.
    Also filters out notes with nil/empty content to prevent '(no content)' entries."
   [notes git-commits]
