@@ -32,11 +32,11 @@ Persistent, project-scoped memory with semantic search. Conventions, decisions, 
 
 | Capability | hive-mcp | Typical MCP servers |
 |---|---|---|
-| **Knowledge Graph** | Structural edges (refines, depends-on, supersedes) connecting entries — traversal reconstructs full context from 3 seeds | Flat key-value or vector-only |
-| **Session Continuity** | `/wrap` crystallizes, `/catchup` reconstructs — zero re-explaining across sessions | Manual copy-paste or lost |
-| **Multi-Agent Coordination** | Lings (planners) + drones (executors) with file claims, hivemind shouts, and a continuous forge belt | Single-agent only |
-| **Scoped Memory** | Hierarchical project scoping — global axioms, project decisions, session notes — with TTL decay | Global namespace or none |
-| **Extension Architecture** | `requiring-resolve` stubs with noop fallbacks — proprietary layers plug in without modifying AGPL core | Monolithic |
+| **Knowledge Graph** | Structural edges - how knowledge relate? | Flat key-value or vector-only |
+| **Session Continuity** | `/wrap` crystallizes, `/catchup` reconstructs — zero-down re-explaining across sessions | Manual copy-paste or lost |
+| **Multi-Agent Coordination** | Lings (planners) + drones (executors) with file claims, hivemind shouts, and a continuous production belt | Single-agent only |
+| **Scoped Memory** | Hierarchical Context Retrieval (HCR) - project scoping - with TTL decay | Global namespace or none |
+| **Extension Architecture** | `requiring-resolve` stubs with noop fallbacks - plug your extensions and play | Monolithic |
 
 ---
 
@@ -90,7 +90,9 @@ docker compose up -d              # Chroma vector DB
 | Babashka | 1.3+ | [babashka.org](https://babashka.org) |
 | Java | 17+ | `apt install openjdk-17-jdk` |
 
-**Optional**: Emacs 28.1+ for swarm vterm UI and buffer integration. See [Emacs Configuration](https://github.com/hive-agi/hive-mcp/wiki/Emacs-Configuration). Headless mode works without Emacs.
+**Optional**: 
+- Emacs 28.1+ for swarm vterm UI and buffer integration. See [Emacs Configuration](https://github.com/hive-agi/hive-mcp/wiki/Emacs-Configuration). 
+- Headless mode works without Emacs (but WIP for stability of headless - recommended to use Emacs as a dependency).
 
 ---
 
@@ -99,7 +101,7 @@ docker compose up -d              # Chroma vector DB
 | Tool | Purpose |
 |---|---|
 | `memory` | Persistent entries with semantic search, TTL decay, scoping |
-| `kg` | Knowledge Graph — edges, traversal, impact analysis, subgraphs |
+| `kg` | Knowledge Graph — edges, subgraphs |
 | `agent` | Spawn/kill/dispatch lings and drones |
 | `wave` | Parallel drone dispatch with validation |
 | `hivemind` | Shout/ask coordination between agents |
@@ -117,7 +119,7 @@ docker compose up -d              # Chroma vector DB
 | `agora` | Multi-agent deliberation and debates |
 | `config` | Runtime configuration management |
 | `migration` | KG/memory backup, restore, backend switching |
-| `multi` | Meta-facade — batch operations and DSL |
+| `multi` | Meta-facade — batch operations |
 
 Each tool is a consolidated namespace with subcommands (e.g., `memory add`, `memory query`, `kg traverse`).
 
@@ -129,12 +131,12 @@ Each tool is a consolidated namespace with subcommands (e.g., `memory add`, `mem
 Claude ──MCP──► hive-mcp (Clojure)
                     │
                     ├── Memory (Chroma vectors + scoped entries)
-                    ├── Knowledge Graph (DataScript/Datalevin)
+                    ├── Knowledge Graph (DataScript, Datalevin, or Datahike)
                     ├── Swarm (lings + drones + hivemind)
-                    ├── Forge Belt (continuous production cycles)
+                    ├── Workflows for AIs (building blocks for repeatable behavior)
                     └── Extension Registry (requiring-resolve stubs)
                             │
-                            └──► [optional] proprietary extensions
+                            └──► [optional] your extensions (e.g., plug openclaw, langchain, whatever etc)
 ```
 
 ---
