@@ -1,0 +1,42 @@
+{:lint-as {;; pldb/db-rel defines relations - column names are schema, not symbols
+           clojure.core.logic.pldb/db-rel clojure.core/declare
+           ;; with-entry binds entry symbol like let
+           hive-mcp.tools.memory.core/with-entry clojure.core/let
+           ;; manifold.deferred macros - let-flow binds like let
+           manifold.deferred/let-flow clojure.core/let
+           manifold.deferred/let-flow' clojure.core/let
+           manifold.deferred/loop clojure.core/let
+           ;; dns.result let-ok is railway-oriented let
+           hive-mcp.dns.result/let-ok clojure.core/let
+           ;; test.check defspec defines test vars like deftest
+           clojure.test.check.clojure-test/defspec clojure.test/deftest}
+
+ :linters {:unresolved-var
+           {:exclude [;; core.logic vars that may not be in kondo's database
+                      clojure.core.logic/membero
+                      ;; datahike.api - dynamically loaded, kondo can't resolve
+                      datahike.api/database-exists?
+                      datahike.api/create-database
+                      datahike.api/connect
+                      datahike.api/transact
+                      datahike.api/q
+                      datahike.api/db
+                      datahike.api/entity
+                      datahike.api/pull
+                      datahike.api/release
+                      datahike.api/delete-database
+                      datahike.api/history
+                      datahike.api/as-of
+                      datahike.api/since]}}
+
+ ;; Per-namespace configuration for core.logic files
+ :config-in-ns
+ {hive-mcp.swarm.logic
+  {:linters {:unresolved-symbol {:level :off}
+             :syntax {:level :off}}}
+  hive-mcp.swarm.logic.predicates
+  {:linters {:unresolved-symbol {:level :off}
+             :syntax {:level :off}}}
+  ;; websocket uses manifold.deferred/let-flow which kondo has trouble with aliases
+  hive-mcp.channel.websocket
+  {:linters {:unresolved-symbol {:exclude [socket]}}}}}

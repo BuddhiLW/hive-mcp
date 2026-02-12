@@ -1,0 +1,148 @@
+;; Catchup Workflow FSM Spec (EDN)
+;;
+;; hive-events FSM specification for the Catchup workflow.
+;; This is the data-driven representation — handlers are referenced by keyword
+;; and must be supplied via the handlers map at compile time.
+;;
+;; The catchup workflow restores session context from Chroma memory,
+;; enriches it with KG relationships, runs maintenance tasks, and
+;; delivers entries via piggyback + context-store for pass-by-reference.
+;;
+;; Usage:
+;;   (require '[hive.events.fsm :as fsm])
+;;   (require '[clojure.edn :as edn])
+;;   (-> (fsm/compile (edn/read-string (slurp "resources/fsm/catchup.edn"))
+;;                    handler-map)
+;;       (fsm/run resources initial-state))
+;;
+;; Handler map keys:
+;;   :start           — Check prerequisites (Chroma configured?), init state
+;;   :scope-resolve   — Resolve project-id, project-name, build scopes
+;;   :query-memory    — Query all Chroma entries (axioms, decisions, etc.)
+;;   :gather-context  — Gather git info + transform entries to metadata
+;;   :enrich-kg       — KG enrichment of decisions/conventions + insights
+;;   :maintenance     — Auto-permeate wraps, project tree scan, disc decay
+;;   :deliver         — Piggyback enqueue + context-store dual-write
+;;   :end             — Terminal state, format and return response
+;;   :error           — Error state, return error response
+;;
+;; State data shape:
+;;   {:directory            string    ;; working directory (input)
+;;    :project-id           string    ;; resolved project scope
+;;    :project-name         string    ;; display name
+;;    :scopes               vector    ;; scope tags for display
+;;    :chroma-configured?   bool      ;; prerequisite check
+;;
+;;    ;; Raw Chroma entries
+;;    :axioms               vector
+;;    :priority-conventions vector
+;;    :sessions             vector
+;;    :decisions            vector
+;;    :conventions          vector
+;;    :snippets             vector
+;;    :expiring             vector
+;;
+;;    ;; Git context
+;;    :git-info             map       ;; {:branch :uncommitted :last-commit}
+;;
+;;    ;; Metadata transforms
+;;    :axioms-meta          vector
+;;    :priority-meta        vector
+;;    :sessions-meta        vector
+;;    :decisions-meta       vector    ;; KG-enriched
+;;    :conventions-meta     vector    ;; KG-enriched
+;;    :snippets-meta        vector
+;;    :expiring-meta        vector
+;;
+;;    ;; KG enrichment
+;;    :kg-insights          map
+;;
+;;    ;; Maintenance results
+;;    :permeation           map       ;; {:permeated N :agents [...]}
+;;    :project-tree-scan    map
+;;    :disc-decay           map
+;;
+;;    ;; Delivery
+;;    :context-refs         map       ;; category->ctx-id
+;;    :piggyback-enqueued?  bool
+;;
+;;    ;; Error
+;;    :error                any}
+;;
+;; Resources map (injected at run time):
+;;   :chroma-check-fn      — () → bool (embedding configured?)
+;;   :scope-fn             — (directory) → project-id
+;;   :project-name-fn      — (directory) → string
+;;   :query-fn             — (type, tags, project-id, limit) → entries
+;;   :query-axioms-fn      — (project-id) → entries
+;;   :query-conventions-fn — (project-id, axiom-ids, priority-ids) → entries
+;;   :query-expiring-fn    — (project-id, limit) → entries
+;;   :git-fn               — (directory) → git-info
+;;   :entry->meta-fns      — {:axiom fn, :priority fn, :catchup fn}
+;;   :kg-enrich-fn         — (entries) → {:entries [...] :kg-count N}
+;;   :kg-insights-fn       — (decisions, conventions, sessions, project-id) → map
+;;   :co-access-fn         — (entry-ids, exclude-ids) → suggestions
+;;   :permeate-fn          — (directory) → {:permeated N :agents [...]}
+;;   :tree-scan-fn         — (directory) → scan-result
+;;   :disc-decay-fn        — (project-id) → decay-stats
+;;   :piggyback-fn         — (agent-id, project-id, entries, refs) → nil
+;;   :context-store-fn     — (data, tags, ttl) → ctx-id
+;;   :build-scopes-fn      — (project-name, project-id) → scopes
+;;   :build-response-fn    — (data) → response
+;;   :error-response-fn    — (error) → response
+;;
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW)
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
+{:fsm
+ {:hive.events.fsm/start
+  {:handler    :start
+   :dispatches [[:hive-mcp.workflows.catchup/scope-resolve
+                 (fn [data] (true? (:chroma-configured? data)))]
+                [:hive.events.fsm/error
+                 (fn [data] (not (:chroma-configured? data)))]]}
+
+  :hive-mcp.workflows.catchup/scope-resolve
+  {:handler    :scope-resolve
+   :dispatches [[:hive-mcp.workflows.catchup/query-memory
+                 (fn [data] (some? (:project-id data)))]
+                [:hive.events.fsm/error
+                 (fn [_] true)]]}
+
+  :hive-mcp.workflows.catchup/query-memory
+  {:handler    :query-memory
+   :dispatches [[:hive-mcp.workflows.catchup/gather-context
+                 (fn [data] (not (:query-failed? data)))]
+                [:hive.events.fsm/error
+                 (fn [data] (true? (:query-failed? data)))]]}
+
+  :hive-mcp.workflows.catchup/gather-context
+  {:handler    :gather-context
+   :dispatches [[:hive-mcp.workflows.catchup/enrich-kg
+                 (fn [_] true)]]}
+
+  :hive-mcp.workflows.catchup/enrich-kg
+  {:handler    :enrich-kg
+   :dispatches [[:hive-mcp.workflows.catchup/maintenance
+                 (fn [_] true)]]}
+
+  :hive-mcp.workflows.catchup/maintenance
+  {:handler    :maintenance
+   :dispatches [[:hive-mcp.workflows.catchup/deliver
+                 (fn [_] true)]]}
+
+  :hive-mcp.workflows.catchup/deliver
+  {:handler    :deliver
+   :dispatches [[:hive.events.fsm/end
+                 (fn [_] true)]]}
+
+  :hive.events.fsm/end
+  {:handler :end}
+
+  :hive.events.fsm/error
+  {:handler :error}}
+
+ :opts
+ {:max-trace     50
+  :subscriptions {[:project-id]  {:handler (fn [_path _old _new] nil)}
+                  [:kg-insights] {:handler (fn [_path _old _new] nil)}}}}

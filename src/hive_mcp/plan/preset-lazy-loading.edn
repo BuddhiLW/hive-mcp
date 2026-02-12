@@ -1,0 +1,229 @@
+{:id "preset-lazy-loading"
+ :title "SAA: Lazy Preset Loading for DAG-Wave Token Efficiency"
+ :created "2026-01-31"
+ :status :planned
+
+ :problem
+ {:description "Full preset content (~1-2K tokens each) injected at spawn wastes 5-10K tokens per ling"
+  :waste-point "hive-mcp-swarm-presets-build-system-prompt (elisp line 320)"
+  :current-flow ["spawn-async calls build-system-prompt"
+                 "build-system-prompt calls (hive-mcp-swarm-presets-get preset) for EACH preset"
+                 "Each preset (~1-2K tokens) concatenated into system prompt"
+                 "Default presets: [\"ling\" \"mcp-first\" \"hivemind\"] = ~5K tokens minimum"]
+  :token-analysis {:ling-preset "~390 lines, ~1.5K tokens"
+                   :default-presets 3
+                   :estimated-waste "5-10K tokens per spawn"}}
+
+ :solution
+ {:approach "Lazy loading: inject preset NAMES + query instructions (~300 tokens) at spawn, lings fetch on-demand"
+  :target-reduction "80-90% (5-10K → 300-500 tokens)"
+  :tools-for-fetching {:consolidated-tool "preset"
+                       :commands ["get (existing) - full content"
+                                  "search (existing) - semantic search"
+                                  "list (existing) - full listing"
+                                  "core (new) - summary only (~200 tokens)"
+                                  "list_slim (new) - names + categories only"]}
+  :feature-flag "hive-mcp-swarm-presets-lazy-mode"}
+
+ :steps
+ [{:id :step-1
+   :title "Add feature flag defcustom"
+   :file "elisp/addons/swarm/hive-mcp-swarm-presets.el"
+   :action :add
+   :location "After hive-mcp-swarm-default-presets defcustom (~line 73)"
+   :content "(defcustom hive-mcp-swarm-presets-lazy-mode nil
+  \"When non-nil, inject preset names + query instructions instead of full content.
+Lings fetch preset content on-demand via MCP tools (preset_get, preset_search).
+This reduces spawn token overhead by 80-90%.\"
+  :type 'boolean
+  :group 'hive-mcp-swarm-presets)"
+   :dependencies []}
+
+  {:id :step-2
+   :title "Create lazy instructions constant"
+   :file "elisp/addons/swarm/hive-mcp-swarm-presets.el"
+   :action :add
+   :location "After hive-mcp-swarm-presets--auto-shout-footer (~line 130)"
+   :note "Uses CONSOLIDATED TOOLS pattern - all operations via single 'preset' tool"
+   :content "(defconst hive-mcp-swarm-presets--lazy-instructions
+  \"
+## Presets Available (Lazy-Loaded)
+
+Your coordinator has assigned these presets: %s
+
+**CRITICAL: Fetch your assigned presets IMMEDIATELY at session start:**
+
+```
+preset(command: \\\"get\\\", name: \\\"<preset-name>\\\")
+```
+
+For quick summary without full content (~200 tokens):
+```
+preset(command: \\\"core\\\", name: \\\"<preset-name>\\\")
+```
+
+Presets contain:
+- Role-specific behavior rules
+- Tool usage patterns
+- Workflow requirements
+- Anti-patterns to avoid
+
+**Workflow:**
+1. Fetch each assigned preset via `preset(command: 'get', name: ...)`
+2. Read and internalize the instructions
+3. Follow the preset rules throughout your session
+
+**Search for additional presets:**
+```
+preset(command: \\\"search\\\", query: \\\"<natural language description>\\\")
+preset(command: \\\"list_slim\\\")  ; Minimal tokens - names + categories only
+preset(command: \\\"list\\\")       ; Full listing
+```
+\"
+  \"Instructions injected when lazy mode is active.
+%s is replaced with comma-separated preset names.\")"
+   :dependencies [:step-1]}
+
+  {:id :step-3
+   :title "Create lazy prompt builder function"
+   :file "elisp/addons/swarm/hive-mcp-swarm-presets.el"
+   :action :add
+   :location "Before hive-mcp-swarm-presets-build-system-prompt (~line 320)"
+   :content "(defun hive-mcp-swarm-presets--build-lazy-prompt (presets &optional injected-context)
+  \"Build lightweight system prompt with preset names only.
+PRESETS is a list of preset names to reference.
+INJECTED-CONTEXT is optional catchup context.
+Returns ~300 token prompt instead of ~5K full content.\"
+  (let ((preset-names (string-join presets \", \")))
+    (concat
+     ;; Injected context comes first (axioms, conventions, decisions)
+     (when injected-context
+       (concat injected-context \"\\n\\n---\\n\\n\"))
+     ;; Lazy instructions with preset names
+     (format hive-mcp-swarm-presets--lazy-instructions preset-names)
+     ;; Auto-shout footer still required
+     hive-mcp-swarm-presets--auto-shout-footer)))"
+   :dependencies [:step-2]}
+
+  {:id :step-4
+   :title "Modify build-system-prompt to check lazy flag"
+   :file "elisp/addons/swarm/hive-mcp-swarm-presets.el"
+   :action :modify
+   :location "hive-mcp-swarm-presets-build-system-prompt (line 320)"
+   :change {:from "Build combined system prompt from list of PRESETS."
+            :to "Check hive-mcp-swarm-presets-lazy-mode flag, dispatch to lazy or full builder"}
+   :new-implementation "(defun hive-mcp-swarm-presets-build-system-prompt (presets &optional injected-context)
+  \"Build combined system prompt from list of PRESETS.
+When `hive-mcp-swarm-presets-lazy-mode' is non-nil, returns lightweight
+prompt with preset names and fetch instructions (~300 tokens).
+Otherwise, returns full preset content concatenated (~5K+ tokens).
+
+INJECTED-CONTEXT prepended as 'Project Context (Auto-Injected)' section.\"
+  (if hive-mcp-swarm-presets-lazy-mode
+      ;; Lazy mode: names + instructions only
+      (hive-mcp-swarm-presets--build-lazy-prompt presets injected-context)
+    ;; Full mode: fetch and concatenate all content
+    (let ((contents '()))
+      (dolist (preset presets)
+        (when-let* ((content (hive-mcp-swarm-presets-get preset)))
+          (push content contents)))
+      (when (or contents injected-context)
+        (let ((preset-body (when contents
+                             (mapconcat #'identity (nreverse contents) \"\\n\\n---\\n\\n\"))))
+          (concat
+           (when injected-context
+             (concat injected-context \"\\n\\n---\\n\\n\"))
+           (or preset-body \"\")
+           hive-mcp-swarm-presets--auto-shout-footer))))))"
+   :dependencies [:step-3]}
+
+  {:id :step-5
+   :title "Add list_slim command to consolidated preset tool"
+   :file "src/hive_mcp/tools/presets.clj"
+   :action :add
+   :location "After handle-preset-list"
+   :rationale "Returns only name + category for minimal token usage. Uses CONSOLIDATED TOOL pattern."
+   :content "(defn handle-preset-list-slim
+  \"List presets with minimal info (name + category only).
+  Optimized for lazy-loading context - minimal token usage.
+
+  Usage: preset(command: 'list_slim')\"
+  [_]
+  (log/info \"preset list_slim\")
+  (try
+    (let [presets (presets/list-presets)]
+      {:type \"text\"
+       :text (json/write-str
+              {:presets (mapv #(select-keys % [:name :category]) presets)
+               :count (count presets)})})
+    (catch Exception e
+      {:type \"text\"
+       :text (json/write-str {:error (str \"Failed: \" (.getMessage e))})
+       :isError true})))"
+   :dependencies []
+   :optional true}
+
+  {:id :step-6
+   :title "Wire list_slim to consolidated preset handlers"
+   :file "src/hive_mcp/tools/consolidated/preset.clj"
+   :action :modify
+   :location "handlers map"
+   :rationale "CONSOLIDATED TOOLS pattern - add command to existing preset tool, not new standalone"
+   :change {:from "handlers map without :list_slim"
+            :to "Add :list_slim to handlers map"}
+   :content ";; Add to handlers map:
+:list_slim preset-handlers/handle-preset-list-slim"
+   :dependencies [:step-5]
+   :also-update {:file "src/hive_mcp/tools/consolidated/preset.clj"
+                 :location "tool-def inputSchema enum"
+                 :content "Add 'list_slim' to command enum"}
+   :optional true}
+
+  {:id :step-7
+   :title "Update preset documentation"
+   :file "elisp/addons/swarm/README.md"
+   :action :modify
+   :location "Presets section"
+   :content "Document lazy mode feature flag and token savings"
+   :dependencies [:step-4]}
+
+  {:id :step-8
+   :title "Add lazy mode to ling preset"
+   :file "presets/ling.md"
+   :action :modify
+   :location "Session Start section"
+   :content "Add note: 'If spawned in lazy mode, fetch assigned presets first via preset_get'"
+   :dependencies [:step-4]}]
+
+ :testing
+ {:manual ["Set hive-mcp-swarm-presets-lazy-mode to t"
+           "Spawn a ling with default presets"
+           "Verify system prompt is ~300 tokens (not 5K+)"
+           "Verify ling correctly fetches presets via MCP"
+           "Verify full workflow still works"]
+  :metrics ["Measure token count before/after in system prompt"
+            "Target: 80-90% reduction"]}
+
+ :rollback
+ {:procedure "Set hive-mcp-swarm-presets-lazy-mode to nil (default)"
+  :risk :low
+  :reason "Feature flag controls behavior, nil = original full mode"}
+
+ :consolidated-tools-pattern
+ {:description "All preset operations use consolidated 'preset' tool with command parameter"
+  :rationale "Reduces tool count, consistent UX, easier discovery"
+  :pattern-file "src/hive_mcp/tools/consolidated/preset.clj"
+  :examples ["preset(command: 'get', name: 'ling') - fetch full content"
+             "preset(command: 'core', name: 'ling') - fetch summary only"
+             "preset(command: 'list_slim') - names + categories only"
+             "preset(command: 'search', query: 'testing') - semantic search"]
+  :anti-patterns ["Creating standalone tools like preset_core, preset_list_slim"
+                  "Using old-style syntax like preset_get(name: ...) instead of preset(command: 'get', ...)"]}
+
+ :notes
+ ["Lazy mode trades spawn latency for MCP round-trips"
+  "Lings must be trained to fetch presets immediately using preset(command: 'get')"
+  "Auto-shout footer preserved in both modes (critical for coordination)"
+  "Injected context (catchup) still works in both modes"
+  "Optional step-5/6 adds 'list_slim' command for even more token efficiency"
+  "PATTERN: All preset operations routed through consolidated 'preset' tool"]}

@@ -1,0 +1,7 @@
+{:project-id "hive-mcp"
+ :parent "hive"
+ :description "Core MCP server — swarm coordination, memory, KG, tools"
+ :language :clojure
+ :nrepl-port 7910
+ :hot-reload false
+ :tags ["mcp" "core" "swarm"]}

@@ -1,0 +1,357 @@
+{:id "plan-20260201-autopoiesis-impl"
+ :title "IAutopoiesis Protocol Implementation"
+ :description "Implement IAutopoiesis protocol in hive-mcp with BasicAutopoiesis fallback, bridge to closed-source enhanced-extension with SmartAutopoiesis"
+ :goal "Define autopoietic interface in open-source foundation"
+ :endgoal "Enable closed-source enhanced-extension to provide intelligent emergence, decay, and cross-pollination"
+ :tags ["plan" "SAA" "autopoiesis" "enhanced-extension" "IAutopoiesis" "emergence" "open-core"]
+
+ :decision-refs ["20260131021353-38eca760"   ;; Open Core Licensing Boundary
+                 "20260131021515-53db3f4f"   ;; IAutopoiesis Protocol Name
+                 "20260131005656-36ec099d"   ;; Emergent KG ADR
+                 "20260131014506-72b6afed"]  ;; L3 Synthetic Nodes Convention
+
+ :steps
+ [;; === WAVE 1: Foundation (hive-mcp open) ===
+  {:id "step-1"
+   :title "Define IAutopoiesis protocol"
+   :description "Create defprotocol IAutopoiesis with 6 methods:
+     - (observe [this query opts]) - Query with structural awareness, staleness checks
+     - (trust? [this entry]) - Should we trust this map, or ground in territory?
+     - (emerge [this scope]) - Detect L3 patterns from L2 clusters
+     - (cross-pollinate [this entry-id]) - Find isomorphic patterns across project boundaries
+     - (learn [this exploration-result]) - Extract knowledge from territory exploration
+     - (decay [this]) - Apply entropy, prune stale knowledge
+   This is the open interface - implementations may be open or closed-source."
+   :files ["src/hive_mcp/protocols/autopoiesis.clj"]
+   :depends-on []
+   :priority :high
+   :estimate :small
+   :wave 1}
+
+  {:id "step-2"
+   :title "Implement BasicAutopoiesis no-op record"
+   :description "Create defrecord BasicAutopoiesis implementing IAutopoiesis with no-op/passthrough methods:
+     - observe: returns original query results unchanged
+     - trust?: always returns true (trust everything)
+     - emerge: returns nil (no emergence detection)
+     - cross-pollinate: returns nil (no suggestions)
+     - learn: returns nil (no learning)
+     - decay: no-op (no decay applied)
+   This is the fallback when enhanced-extension is not available."
+   :files ["src/hive_mcp/protocols/autopoiesis.clj"]
+   :depends-on ["step-1"]
+   :priority :high
+   :estimate :small
+   :wave 1}
+
+  {:id "step-3"
+   :title "Add runtime detection and loading"
+   :description "Create load-autopoiesis function:
+     (defn load-autopoiesis []
+       (try
+         (require 'enhanced-extension.core)
+         ((resolve 'enhanced-extension.core/create-autopoiesis))
+         (catch Exception _
+           (->BasicAutopoiesis))))
+   Add atom for singleton instance with init! function called at server startup."
+   :files ["src/hive_mcp/protocols/autopoiesis.clj"]
+   :depends-on ["step-2"]
+   :priority :high
+   :estimate :small
+   :wave 1}
+
+  {:id "step-4"
+   :title "Write protocol and BasicAutopoiesis tests"
+   :description "Unit tests:
+     - Verify BasicAutopoiesis implements all 6 protocol methods
+     - observe is passthrough (returns input unchanged)
+     - trust? returns true for any entry
+     - emerge/cross-pollinate/learn return nil
+     - decay is no-op (doesn't throw)
+     - Runtime detection falls back to BasicAutopoiesis when enhanced-extension absent"
+   :files ["test/hive_mcp/protocols/autopoiesis_test.clj"]
+   :depends-on ["step-3"]
+   :priority :high
+   :estimate :small
+   :wave 1}
+
+  ;; === WAVE 2: Integration (hive-mcp open) ===
+  {:id "step-5"
+   :title "Hook observe into memory query path"
+   :description "In memory.clj query handlers, wrap results through autopoiesis/observe:
+     (let [results (query-chroma ...)
+           enhanced (autopoiesis/observe @autopoiesis-instance results opts)]
+       enhanced)
+   This allows SmartAutopoiesis to add staleness hints, structural context, confidence scores."
+   :files ["src/hive_mcp/tools/memory.clj"
+           "src/hive_mcp/tools/consolidated/memory.clj"]
+   :depends-on ["step-3"]
+   :priority :medium
+   :estimate :medium
+   :wave 2}
+
+  {:id "step-6"
+   :title "Hook trust? into grounding checks"
+   :description "Before returning memory entries, call autopoiesis/trust?:
+     (if (autopoiesis/trust? @instance entry)
+       entry
+       (assoc entry :requires-grounding true))
+   When false, add :requires-grounding metadata hint for LLM to verify in territory."
+   :files ["src/hive_mcp/tools/memory.clj"]
+   :depends-on ["step-5"]
+   :priority :medium
+   :estimate :small
+   :wave 2}
+
+  {:id "step-7"
+   :title "Add emerge scheduling hook"
+   :description "Create emerge-detection MCP tool in new autopoiesis.clj:
+     {:name 'autopoiesis_emerge'
+      :handler (fn [{:keys [scope]}]
+                 (autopoiesis/emerge @instance scope))}
+   For BasicAutopoiesis returns nil. Can be invoked manually or by background scheduler."
+   :files ["src/hive_mcp/tools/autopoiesis.clj"
+           "src/hive_mcp/tools/consolidated/autopoiesis.clj"]
+   :depends-on ["step-3"]
+   :priority :medium
+   :estimate :medium
+   :wave 2}
+
+  {:id "step-8"
+   :title "Wire cross-pollinate to KG queries"
+   :description "After KG traverse/context queries, optionally call cross-pollinate:
+     (when-let [suggestions (autopoiesis/cross-pollinate @instance entry-id)]
+       (assoc result :cross-project-patterns suggestions))
+   Returns nil for BasicAutopoiesis, related patterns from other projects for Smart."
+   :files ["src/hive_mcp/tools/consolidated/kg.clj"]
+   :depends-on ["step-3"]
+   :priority :low
+   :estimate :medium
+   :wave 2}
+
+  {:id "step-9"
+   :title "Add learn hook to session wrap"
+   :description "In session/wrap-crystallize, call autopoiesis/learn:
+     (autopoiesis/learn @instance
+       {:decisions decisions
+        :conventions conventions
+        :exploration exploration-summary})
+   Allows SmartAutopoiesis to extract patterns from session. BasicAutopoiesis is no-op."
+   :files ["src/hive_mcp/tools/memory/lifecycle.clj"]
+   :depends-on ["step-3"]
+   :priority :medium
+   :estimate :small
+   :wave 2}
+
+  {:id "step-10"
+   :title "Hook decay into cleanup-expired"
+   :description "In memory/cleanup-expired, call autopoiesis/decay:
+     (autopoiesis/decay @instance)
+   SmartAutopoiesis can apply sophisticated staleness algorithms.
+   BasicAutopoiesis does nothing extra beyond standard cleanup."
+   :files ["src/hive_mcp/tools/memory/lifecycle.clj"]
+   :depends-on ["step-3"]
+   :priority :low
+   :estimate :small
+   :wave 2}
+
+  ;; === WAVE 3: Bridge (enhanced-extension closed-source) ===
+  {:id "step-11"
+   :title "Stub SmartAutopoiesis in enhanced-extension"
+   :description "In closed-source enhanced-extension repo, create autopoiesis.clj:
+     (ns enhanced-extension.autopoiesis
+       (:require [hive-mcp.protocols.autopoiesis :as proto]))
+     
+     (defrecord SmartAutopoiesis []
+       proto/IAutopoiesis
+       (observe [this query opts] query)  ;; Initial: passthrough
+       (trust? [this entry] true)
+       (emerge [this scope] nil)
+       (cross-pollinate [this entry-id] nil)
+       (learn [this result] nil)
+       (decay [this] nil))
+     
+     (defn create-autopoiesis []
+       (->SmartAutopoiesis))
+   
+   Add hive-mcp as dependency in deps.edn."
+   :files ["(enhanced-extension) src/enhanced_extension/autopoiesis.clj"
+           "(enhanced-extension) src/enhanced_extension/core.clj"
+           "(enhanced-extension) deps.edn"]
+   :depends-on ["step-4"]
+   :priority :high
+   :estimate :medium
+   :wave 3
+   :repo "enhanced-extension"
+   :license "closed-source"}
+
+  {:id "step-12"
+   :title "Connect SmartAutopoiesis to L3 synthetic nodes"
+   :description "Implement emerge method in SmartAutopoiesis:
+     1. Query L2 entries via structural-signature (from edges.clj)
+     2. Cluster by structural-behavioral similarity
+     3. When cluster spans 3+ distinct project scopes AND confidence > 0.8
+     4. Create synthetic L3 node via hive-mcp.knowledge_graph.synthetic/create-synthetic!
+     5. Add :projects-to edges from L3 to L2 members
+   Use existing synthetic.clj CRUD from hive-mcp."
+   :files ["(enhanced-extension) src/enhanced_extension/autopoiesis.clj"
+           "(enhanced-extension) src/enhanced_extension/emergence.clj"]
+   :depends-on ["step-11"]
+   :priority :high
+   :estimate :large
+   :wave 3
+   :repo "enhanced-extension"
+   :license "closed-source"}
+
+  ;; === WAVE 4: Intelligence (enhanced-extension closed-source) ===
+  {:id "step-13"
+   :title "Implement behavioral tracking in SmartAutopoiesis"
+   :description "In learn method, track tool usage outcomes:
+     {:recall-id uuid
+      :entries-recalled [id1 id2 ...]
+      :outcome {:task-completed? boolean
+                :tools-used [:edit :bash :test ...]
+                :user-correction? boolean
+                :time-to-completion-ms long
+                :error-encountered? boolean}}
+   Store behavioral signatures for structural-behavioral similarity calculations.
+   This is the feedback loop for reinforcement."
+   :files ["(enhanced-extension) src/enhanced_extension/behavioral.clj"
+           "(enhanced-extension) src/enhanced_extension/autopoiesis.clj"]
+   :depends-on ["step-11"]
+   :priority :medium
+   :estimate :large
+   :wave 4
+   :repo "enhanced-extension"
+   :license "closed-source"}
+
+  {:id "step-14"
+   :title "Implement trust? with P-stale model"
+   :description "Calculate probabilistic staleness based on:
+     P-stale = 1 - confidence(entry)
+     confidence = f(access-frequency, territory-changes, time-decay)
+     
+     (defn trust? [this entry]
+       (let [p-stale (calculate-p-stale entry)]
+         (< p-stale 0.3)))  ;; Trust if <30% chance stale
+   
+   Return false when P-stale > threshold, triggering grounding hints."
+   :files ["(enhanced-extension) src/enhanced_extension/autopoiesis.clj"
+           "(enhanced-extension) src/enhanced_extension/staleness.clj"]
+   :depends-on ["step-11"]
+   :priority :medium
+   :estimate :medium
+   :wave 4
+   :repo "enhanced-extension"
+   :license "closed-source"}
+
+  {:id "step-15"
+   :title "Implement cross-pollinate with structural similarity"
+   :description "Find isomorphic patterns across projects:
+     1. Get structural signature of entry (in/out edge frequencies)
+     2. Query KG for entries with similar signatures in OTHER project scopes
+     3. Filter by behavioral similarity (similar tool sequences led to success)
+     4. Return top-N suggestions with confidence scores
+   
+   Uses existing Jaccard similarity from graph/datascript.clj."
+   :files ["(enhanced-extension) src/enhanced_extension/autopoiesis.clj"
+           "(enhanced-extension) src/enhanced_extension/cross_pollination.clj"]
+   :depends-on ["step-12"]
+   :priority :low
+   :estimate :large
+   :wave 4
+   :repo "enhanced-extension"
+   :license "closed-source"}
+
+  {:id "step-16"
+   :title "Implement decay with access-weighted algorithm"
+   :description "Apply decay function from Emergent KG ADR:
+     decay-rate = base-decay * access-boost * change-penalty
+     
+     where:
+       base-decay = 0.01 per day
+       access-boost = 1 / (1 + access-count-last-30d)
+       change-penalty = 2.0 if territory changed, else 1.0
+     
+     Reduce confidence of entries, prune those below threshold."
+   :files ["(enhanced-extension) src/enhanced_extension/autopoiesis.clj"
+           "(enhanced-extension) src/enhanced_extension/decay.clj"]
+   :depends-on ["step-14"]
+   :priority :medium
+   :estimate :medium
+   :wave 4
+   :repo "enhanced-extension"
+   :license "closed-source"}]
+
+ :waves
+ {:wave-1 {:title "Foundation (hive-mcp open)"
+           :steps ["step-1" "step-2" "step-3" "step-4"]
+           :parallel false
+           :repo "hive-mcp"
+           :license "AGPL-3.0"
+           :description "Define protocol, BasicAutopoiesis fallback, runtime detection. Sequential - each step depends on previous."}
+
+  :wave-2 {:title "Integration (hive-mcp open)"
+           :steps ["step-5" "step-6" "step-7" "step-8" "step-9" "step-10"]
+           :parallel true
+           :repo "hive-mcp"
+           :license "AGPL-3.0"
+           :description "Hook IAutopoiesis into memory, KG, session lifecycle. All independent, can run in parallel."}
+
+  :wave-3 {:title "Bridge (enhanced-extension closed-source)"
+           :steps ["step-11" "step-12"]
+           :parallel false
+           :repo "enhanced-extension"
+           :license "closed-source"
+           :description "Stub SmartAutopoiesis, connect to L3 emergence. Sequential - stub first, then emergence."}
+
+  :wave-4 {:title "Intelligence (enhanced-extension closed-source)"
+           :steps ["step-13" "step-14" "step-15" "step-16"]
+           :parallel true
+           :repo "enhanced-extension"
+           :license "closed-source"
+           :description "Behavioral tracking, P-stale trust, cross-pollination, decay algorithms. Independent features."}}
+
+ :constraints
+ ["hive-mcp NEVER imports enhanced-extension (dependency flows closed-source→open only)"
+  "IAutopoiesis protocol definition must be stable before Wave 3 begins"
+  "L3 synthetic nodes use existing :kg-synthetic/* schema in Datahike"
+  "BasicAutopoiesis must be zero-config - works out of box without any setup"
+  "SmartAutopoiesis requires enhanced-extension.core on classpath to activate"]
+
+ :open-questions
+ [{:q "Should emerge run on schedule or on-demand via MCP tool?"
+   :options ["Scheduled background job (e.g., hourly)"
+             "On-demand MCP tool only"
+             "Both - schedule + manual override"]
+   :recommendation "Both - default schedule with manual override for testing"}
+
+  {:q "Behavioral tracking: hook into all tool executions or just memory recall?"
+   :options ["All tool executions (comprehensive but noisy)"
+             "Memory recall only (focused but incomplete)"
+             "Configurable via env var"]
+   :recommendation "Memory recall + session wrap events initially, expand later"}
+
+  {:q "Cross-pollination: opt-in per project or global default?"
+   :options ["Opt-in via project config"
+             "Global default, opt-out per project"
+             "Always on"]
+   :recommendation "Global default with opt-out - encourage learning"}
+
+  {:q "Decay scheduler: background thread or lazy on-access?"
+   :options ["Background thread (consistent but resource usage)"
+             "Lazy on-access (efficient but spiky)"
+             "Batch at cleanup-expired time"]
+   :recommendation "Batch at cleanup-expired - piggyback on existing lifecycle"}]
+
+ :success-criteria
+ ["BasicAutopoiesis works standalone (hive-mcp without enhanced-extension)"
+  "SmartAutopoiesis transparently replaces BasicAutopoiesis when available"
+  "L3 emergence creates synthetic nodes when 3+ projects show similar L2 patterns"
+  "trust? returns false for entries with staleness-score > 0.7"
+  "Decay reduces entry confidence by ~30% over 30 days without access"
+  "Cross-pollination surfaces at least 1 relevant pattern from other projects"]
+
+ :created "2026-02-01T23:50:00-03:00"
+ :created-by "abstract-ling"
+ :status "ready-for-review"}

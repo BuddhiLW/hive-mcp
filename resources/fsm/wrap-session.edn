@@ -1,0 +1,80 @@
+;; Wrap Session FSM Spec (EDN)
+;;
+;; hive-events FSM specification for the session wrap (crystallize) workflow.
+;; Crystallizes session learnings into long-term memory without git commit.
+;;
+;; Usage:
+;;   (require '[hive.events.fsm :as fsm])
+;;   (-> (fsm/compile spec handler-map)
+;;       (fsm/run resources {:data {:agent-id "ling-123" :directory "/project"}}))
+;;
+;; Handler map keys:
+;;   :start       - Initialize wrap, resolve agent-id/directory
+;;   :gather      - Harvest session data (crystal hooks)
+;;   :crystallize  - Persist session summary to long-term memory
+;;   :kg-edges    - Create :derived-from KG edges (summary -> sources)
+;;   :notify      - Emit wrap_notify event for hivemind permeation
+;;   :evict       - Evict agent's cached context-store entries
+;;   :end         - Terminal state, return summary
+;;   :error       - Error state, return error context
+;;
+;; State data shape:
+;;   {:agent-id      string    ;; Effective agent identifier
+;;    :directory     string    ;; Working directory
+;;    :project-id    string    ;; Derived project scope
+;;    :harvested     map       ;; Crystal harvest result
+;;    :crystal-result map      ;; Crystallize result (summary-id, stats)
+;;    :source-ids    [string]  ;; Memory IDs of source entries
+;;    :kg-result     map       ;; KG edge creation result
+;;    :eviction      map       ;; Context eviction result
+;;    :error         any}      ;; Error info if in error state
+;;
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW)
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
+{:fsm
+ {:hive.events.fsm/start
+  {:handler    :start
+   :dispatches [[:hive-mcp.workflows.wrap-session/gather
+                 (fn [data] (and (:agent-id data) (not (:error data))))]
+                [:hive.events.fsm/error
+                 (fn [data] (some? (:error data)))]]}
+
+  :hive-mcp.workflows.wrap-session/gather
+  {:handler    :gather
+   :dispatches [[:hive-mcp.workflows.wrap-session/crystallize
+                 (fn [data] (some? (:harvested data)))]
+                [:hive.events.fsm/error
+                 (fn [_] true)]]}
+
+  :hive-mcp.workflows.wrap-session/crystallize
+  {:handler    :crystallize
+   :dispatches [[:hive-mcp.workflows.wrap-session/kg-edges
+                 (fn [data] (and (:crystal-result data)
+                                 (not (get-in data [:crystal-result :error]))))]
+                [:hive.events.fsm/error
+                 (fn [data] (some? (get-in data [:crystal-result :error])))]]}
+
+  :hive-mcp.workflows.wrap-session/kg-edges
+  {:handler    :kg-edges
+   :dispatches [[:hive-mcp.workflows.wrap-session/notify
+                 (fn [_] true)]]}
+
+  :hive-mcp.workflows.wrap-session/notify
+  {:handler    :notify
+   :dispatches [[:hive-mcp.workflows.wrap-session/evict
+                 (fn [_] true)]]}
+
+  :hive-mcp.workflows.wrap-session/evict
+  {:handler    :evict
+   :dispatches [[:hive.events.fsm/end
+                 (fn [_] true)]]}
+
+  :hive.events.fsm/end
+  {:handler :end}
+
+  :hive.events.fsm/error
+  {:handler :error}}
+
+ :opts
+ {:max-trace 50}}

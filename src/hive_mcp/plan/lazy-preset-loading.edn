@@ -1,0 +1,254 @@
+{:title "Lazy Preset Loading"
+ :created "2026-01-30"
+ :status :planned
+ :adr-ref "ADR-SAA-lazy-preset-loading"
+
+ :problem
+ {:symptom "Full preset content (~1-2K tokens per preset) injected into system prompt at spawn"
+  :impact ["3-5 presets = 5-10K tokens wasted per ling"
+           "Token budget consumed before actual work"
+           "Multiplied across swarm scales exponentially"]
+  :goal "Lazy loading via memory queries - presets fetched on-demand"}
+
+ :current-state
+ {:elisp-flow
+  {:file "elisp/addons/swarm/hive-mcp-swarm-presets.el"
+   :key-functions
+   ["hive-mcp-swarm-presets-get (line 311) - fetches content: Chroma -> memory -> file"
+    "hive-mcp-swarm-presets-build-system-prompt (line 320) - concatenates ALL preset contents"
+    "hive-mcp-swarm-presets-merge-defaults (line 283) - merges explicit + default presets"]
+   :token-waste "Full .md content of each preset is concatenated into system-prompt"}
+
+  :chroma-infrastructure
+  {:status :exists
+   :collection "hive-mcp-presets"
+   :tools ["preset_search" "preset_get" "preset_list" "preset_add" "preset_delete" "preset_migrate" "preset_status"]
+   :files ["src/hive_mcp/presets.clj (415 lines) - core domain logic"
+           "src/hive_mcp/tools/presets.clj (239 lines) - MCP tool handlers"]
+   :lazy-loading "Embedding providers lazily instantiated via registry pattern"}
+
+  :spawn-context
+  {:file "src/hive_mcp/tools/catchup.clj"
+   :function "spawn-context (line 654-723)"
+   :token-budget "~3K tokens max (~12K chars)"
+   :includes ["Axioms (full content, INVIOLABLE)"
+              "Priority conventions (tagged catchup-priority)"
+              "Active decisions (preview, max 5)"
+              "Git status (branch, last commit)"
+              "Stale files (L1 Disc KG)"]
+   :note "spawn-context is SEPARATE from preset injection"}}
+
+ :gap-analysis
+ {:what-exists
+  ["Presets CAN be stored in Chroma (infrastructure exists)"
+   "preset_search, preset_get tools exist and work"
+   "Embedding service with lazy provider loading exists"
+   "spawn-context already injects minimal context (~3K tokens)"]
+
+  :what-is-missing
+  ["Presets STILL injected as full text in elisp build-system-prompt"
+   "No on-demand preset query flow for lings"
+   "Lings don't know HOW to query presets when needed"
+   "No 'just-in-time' preset retrieval mechanism"
+   "No preset 'summary' or 'core' extraction (only full content)"]
+
+  :nih-check
+  {:verdict "Not NIH - infrastructure exists but wiring is incomplete"
+   :reason "Chroma preset storage exists; missing is the 'lazy' mode in prompt building"}}
+
+ :architecture-decision
+ {:approach "Inject preset NAMES + query instructions instead of full content"
+  :tradeoff {:pro "Saves 80-90% of preset tokens per spawn"
+             :con "Lings must call preset_get/preset_search when they need guidance"
+             :mitigation "Add 'core' preset summary tool for quick orientation without full content"}
+  :fallback "Keep :full mode for debugging or critical presets (axioms)"}
+
+ :steps
+ [{:id :step-1
+   :description "Add 'core' command to consolidated preset tool"
+   :rationale "CONSOLIDATED TOOLS pattern: preset(command: 'core', name: 'ling') returns summary (~200 tokens) without full content (~1500 tokens)"
+   :files ["src/hive_mcp/presets.clj"
+           "src/hive_mcp/tools/presets.clj"
+           "src/hive_mcp/tools/consolidated/preset.clj"]
+   :changes ["Add extract-preset-core fn in presets.clj (title, summary paragraph, key bullet points)"
+             "Add handle-preset-core handler fn in tools/presets.clj"
+             "Wire :core to handlers map in consolidated/preset.clj"
+             "Add 'core' to command enum in tool-def inputSchema"]
+   :pattern {:name "CONSOLIDATED TOOLS"
+             :usage "preset(command: 'core', name: 'ling')"
+             :anti-pattern "Do NOT create standalone preset_core tool"}
+   :depends-on []
+   :wave 1}
+
+  {:id :step-1b
+   :description "Add 'list_slim' command to consolidated preset tool"
+   :rationale "CONSOLIDATED TOOLS pattern: preset(command: 'list_slim') returns names + categories only for minimal token usage"
+   :files ["src/hive_mcp/tools/presets.clj"
+           "src/hive_mcp/tools/consolidated/preset.clj"]
+   :changes ["Add handle-preset-list-slim handler in tools/presets.clj"
+             "Wire :list_slim to handlers map in consolidated/preset.clj"
+             "Add 'list_slim' to command enum in tool-def inputSchema"]
+   :pattern {:name "CONSOLIDATED TOOLS"
+             :usage "preset(command: 'list_slim')"
+             :anti-pattern "Do NOT create standalone preset_list_slim tool"}
+   :depends-on []
+   :wave 1}
+
+  {:id :step-2
+   :description "Add lazy-prompt-header generator in Clojure"
+   :rationale "Generate the instructions for on-demand preset querying"
+   :files ["src/hive_mcp/tools/swarm/prompt.clj"]
+   :changes ["Add build-lazy-preset-header fn - generates instruction block"
+             "Include: preset names, when to query, example tool calls using consolidated syntax"
+             "~300 tokens vs ~1500 tokens per preset"
+             "Use: preset(command: 'get', name: ...) NOT preset_get(name: ...)"]
+   :depends-on []
+   :wave 1}
+
+  {:id :step-3
+   :description "Expose lazy preset header via MCP tool"
+   :rationale "Elisp can call Clojure to generate header instead of concatenating content"
+   :files ["src/hive_mcp/tools/swarm/lifecycle.clj"
+           "src/hive_mcp/tools.clj"]
+   :changes ["Add handle-swarm-preset-header tool"
+             "Input: preset names list, lazy-mode boolean"
+             "Output: prompt header text (lazy or full)"]
+   :depends-on [:step-2]
+   :wave 2}
+
+  {:id :step-4
+   :description "Add hive-mcp-swarm-presets-lazy-mode defcustom in elisp"
+   :rationale "Toggle between full (current) and lazy modes"
+   :files ["elisp/addons/swarm/hive-mcp-swarm-presets.el"]
+   :changes ["Add defcustom hive-mcp-swarm-presets-lazy-mode (default nil for safety)"
+             "Add toggle command hive-mcp-swarm-presets-toggle-lazy-mode"]
+   :depends-on []
+   :wave 1}
+
+  {:id :step-5
+   :description "Modify build-system-prompt to use lazy mode"
+   :rationale "Core change - switch from content concatenation to header injection"
+   :files ["elisp/addons/swarm/hive-mcp-swarm-presets.el"]
+   :changes ["Modify hive-mcp-swarm-presets-build-system-prompt"
+             "When lazy-mode: call Clojure handle-swarm-preset-header"
+             "When not lazy: use current content concatenation"
+             "Preserve injected-context and auto-shout-footer logic"]
+   :depends-on [:step-3 :step-4]
+   :wave 2}
+
+  {:id :step-6
+   :description "Add preset query instructions to ling default preset"
+   :rationale "Lings need to know preset_get/preset_search exist and when to use them"
+   :files ["presets/ling.md"]
+   :changes ["Add section: 'On-Demand Preset Access'"
+             "Document: preset_search for discovery, preset_get for full content"
+             "Document: preset_core for quick summary"]
+   :depends-on [:step-1]
+   :wave 2}
+
+  {:id :step-7
+   :description "Integration test: lazy vs full token comparison"
+   :rationale "Verify token savings claim (80-90% reduction)"
+   :files ["test/hive_mcp/tools/swarm/prompt_test.clj"]
+   :changes ["Add test comparing token counts"
+             "Scenario: spawn with 3 default presets (ling, mcp-first, hivemind)"
+             "Assert: lazy header < 500 tokens, full content > 3000 tokens"]
+   :depends-on [:step-2]
+   :wave 3}
+
+  {:id :step-8
+   :description "E2E test: ling queries preset on demand"
+   :rationale "Verify lings can actually use preset_get when needed"
+   :files ["test/hive_mcp/tools/swarm/lazy_preset_integration_test.clj"]
+   :changes ["Spawn ling in lazy mode with 'tdd' preset"
+             "Give task requiring TDD guidance"
+             "Verify ling calls preset_get or preset_search"
+             "Verify correct behavior follows"]
+   :depends-on [:step-5 :step-6]
+   :wave 3}
+
+  {:id :step-9
+   :description "Add lazy-mode to spawn-context for Clojure-originated spawns"
+   :rationale "swarm_spawn from Clojure should also respect lazy mode"
+   :files ["src/hive_mcp/tools/swarm/lifecycle.clj"
+           "src/hive_mcp/tools/catchup.clj"]
+   :changes ["Add :lazy-preset-mode to spawn-context options"
+             "When lazy: include preset names in spawn-context"
+             "Format: list of names + query hint, not full content"]
+   :depends-on [:step-3]
+   :wave 2}
+
+  {:id :step-10
+   :description "Documentation: Update presets ADR with implementation notes"
+   :rationale "Record design decisions and token savings measurements"
+   :files ["docs/adr/lazy-preset-loading.md"]
+   :changes ["Document token savings (before/after)"
+             "Document fallback behavior"
+             "Document when to use full vs lazy mode"]
+   :depends-on [:step-7 :step-8]
+   :wave 3}]
+
+ :waves
+ {:wave-1
+  {:description "Foundation - no behavior change yet (CONSOLIDATED TOOLS pattern)"
+   :steps [:step-1 :step-1b :step-2 :step-4]
+   :parallel true
+   :outcome "preset 'core' + 'list_slim' commands available, lazy header generator exists, mode toggle exists"}
+
+  :wave-2
+  {:description "Wiring - connect lazy mode through the stack"
+   :steps [:step-3 :step-5 :step-6 :step-9]
+   :parallel false
+   :outcome "Lazy mode works end-to-end, lings know about preset tools"}
+
+  :wave-3
+  {:description "Validation & documentation"
+   :steps [:step-7 :step-8 :step-10]
+   :parallel true
+   :outcome "Token savings verified, e2e behavior confirmed, documented"}}
+
+ :verification
+ {:repl-commands
+  [";; Wave 1 verification - Using CONSOLIDATED TOOLS pattern"
+   "(require '[hive-mcp.tools.consolidated.preset :as preset])"
+   "(preset/handle-preset {:command \"core\" :name \"ling\"})  ; Should return summary, not full"
+   "(preset/handle-preset {:command \"list_slim\"})           ; Should return names + categories only"
+   ""
+   "(require '[hive-mcp.tools.swarm.prompt :as prompt])"
+   "(prompt/build-lazy-preset-header [\"ling\" \"mcp-first\" \"hivemind\"])"
+   ";; Should be < 500 chars with preset names + query instructions"
+   ""
+   ";; Wave 2 verification"
+   "(require '[hive-mcp.tools.swarm.lifecycle :as lifecycle])"
+   "(lifecycle/handle-swarm-preset-header {:presets [\"ling\"] :lazy true})"
+   ";; Should return lazy header"
+   "(lifecycle/handle-swarm-preset-header {:presets [\"ling\"] :lazy false})"
+   ";; Should return full content"]
+
+  :elisp-verification
+  ["(setq hive-mcp-swarm-presets-lazy-mode t)"
+   "(hive-mcp-swarm-presets-build-system-prompt '(\"ling\" \"tdd\") nil)"
+   ";; Should return ~500 chars, not ~3000 chars"]}
+
+ :rollback
+ {:strategy "Feature flag - hive-mcp-swarm-presets-lazy-mode defaults to nil"
+  :steps ["Set hive-mcp-swarm-presets-lazy-mode to nil"
+          "All spawns use current full-content behavior"
+          "No code removal needed"]}
+
+ :consolidated-tools-pattern
+ {:description "All new preset operations MUST be commands on existing consolidated 'preset' tool"
+  :rationale "Reduces tool count, consistent UX, easier discovery"
+  :pattern-file "src/hive_mcp/tools/consolidated/preset.clj"
+  :examples ["preset(command: 'core', name: 'ling') NOT preset_core(name: 'ling')"
+             "preset(command: 'list_slim') NOT preset_list_slim()"]
+  :anti-patterns ["Creating new standalone tools like preset_core, preset_list_slim"
+                  "Using old-style tool names like preset_get instead of preset(command: 'get')"]}
+
+ :notes
+ ["Default presets (ling, mcp-first, hivemind) are most impactful target"
+  "Axioms should NEVER be lazy - they are INVIOLABLE"
+  "spawn-context already has token budget (~3K) - lazy presets complement this"
+  "Consider: preset 'core' command could use LLM to extract summary if not manually written"
+  "Future: semantic preset selection based on task (already exists in drone/preset.clj)"
+  "PATTERN: All preset operations use consolidated 'preset' tool with command param"]}

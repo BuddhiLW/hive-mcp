@@ -1,0 +1,107 @@
+# Demonstration: Composable catchup workflow using :mcp-call action
+#
+# Shows how YAML workflows can call MCP tool handlers as steps,
+# enabling composition of existing tools into higher-level workflows.
+#
+# Usage:
+#   (let [engine (create-yaml-engine {:workflow-dir "resources/workflows"})]
+#     (-> (wf/load-workflow engine "catchup-composed" {:params {:directory "/home/user/project"}})
+#         (wf/execute-workflow engine {})))
+
+name: catchup-composed
+version: '1.0'
+description: Composed catchup workflow using mcp-call steps
+
+params:
+  directory: '.'
+  agent_id: coordinator
+
+steps:
+  # Step 1: Get agent identity context
+  - id: whoami
+    title: Identify Agent
+    action: mcp-call
+    args:
+      tool: session
+      command: whoami
+      params:
+        directory: '{{directory}}'
+
+  # Step 2: Query axioms (inviolable rules)
+  - id: axioms
+    title: Load Axioms
+    action: mcp-call
+    args:
+      tool: memory
+      command: query
+      params:
+        type: axiom
+        limit: 10
+        directory: '{{directory}}'
+
+  # Step 3: Query recent decisions
+  - id: decisions
+    title: Load Decisions
+    action: mcp-call
+    depends-on:
+      - axioms
+    args:
+      tool: memory
+      command: query
+      params:
+        type: decision
+        limit: 5
+        directory: '{{directory}}'
+
+  # Step 4: Check kanban status
+  - id: kanban
+    title: Check Kanban
+    action: mcp-call
+    args:
+      tool: kanban
+      command: status
+      params:
+        directory: '{{directory}}'
+
+  # Step 5: Check git status
+  - id: git-status
+    title: Git Status
+    action: mcp-call
+    args:
+      tool: magit
+      command: status
+      params:
+        directory: '{{directory}}'
+
+  # Step 6: Check expiring memories
+  - id: expiring
+    title: Expiring Memories
+    action: mcp-call
+    depends-on:
+      - axioms
+    args:
+      tool: memory
+      command: expiring
+      params:
+        days: 3
+        directory: '{{directory}}'
+
+  # Step 7: Summarize results
+  - id: summary
+    title: Build Summary
+    action: echo
+    depends-on:
+      - whoami
+      - axioms
+      - decisions
+      - kanban
+      - git-status
+      - expiring
+    args:
+      agent: '{{whoami.result}}'
+      axiom_count: '{{axioms.result}}'
+      decision_count: '{{decisions.result}}'
+      kanban: '{{kanban.result}}'
+      git: '{{git-status.result}}'
+      expiring: '{{expiring.result}}'
+      message: 'Catchup complete for {{directory}}'

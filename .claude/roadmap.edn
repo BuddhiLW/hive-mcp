@@ -1,0 +1,47 @@
+{:project "emacs-mcp"
+ :current-focus "org-clj: Native Clojure Org-Mode Parser"
+ :current-branch "feat/org-clj-parser"
+ :date "2025-12-30"
+
+ :open-prs
+ [{:number 12
+   :title "feat(org-clj): Add native Clojure org-mode parser library"
+   :status :open}]
+
+ :phases
+ {:phase-1 {:name "Parser & Schemas" :status :complete}
+  :phase-2 {:name "Writer & Round-trip" :status :complete}
+  :phase-3 {:name "Query & Transform" :status :complete}
+  :phase-4 {:name "MCP Tools" :status :complete}
+  :phase-5 {:name "Caching, Telemetry, Docs" :status :pending}}
+
+ :completed
+ [{:task "org-clj library (parser, writer, query, transform)" :done true}
+  {:task "MCP tools implementation" :done true}
+  {:task "org_clj_parse MCP tool" :done true}
+  {:task "org_clj_write MCP tool" :done true}
+  {:task "org_clj_query MCP tool" :done true}
+  {:task "org_kanban_native_status MCP tool" :done true}
+  {:task "org_kanban_native_move MCP tool" :done true}
+  {:task "Interactive kanban board with evil-mode" :done true}
+  {:task "Board addon API integration" :done true}
+  {:task "PROJECT_SUMMARY.md created" :done true}]
+
+ :next-actions
+ [{:task "Merge PR #12" :priority :high :done false}
+  {:task "Add document caching layer" :priority :medium :done false}
+  {:task "Add telemetry for org-clj operations" :priority :medium :done false}
+  {:task "Update org-kanban.el for native backend option" :priority :medium :done false}
+  {:task "Write org-clj API documentation" :priority :low :done false}]
+
+ :backlog
+ [{:task "Implement bidirectional sync between vibe-kanban and org-kanban" :done false}
+  {:task "Create projectile addon for emacs-mcp" :done false}
+  {:task "Create magit addon for emacs-mcp" :done false}]
+
+ :decisions
+ ["Use malli for schema validation instead of clojure.spec"
+  "Tree-based headline structure with :children for nesting"
+  "Immutable transforms return new document copies"
+  "Property keys stored as keywords in Clojure"
+  "MCP tools return JSON strings in :content field"]}

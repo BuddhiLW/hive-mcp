@@ -1,0 +1,140 @@
+{:title "Fix compat.clj shim nil return issue"
+ :created "2026-01-29"
+ :status :planned
+
+ :problem
+ {:symptom "compat/swarm-status-shim returns nil when called via MCP"
+  :observed ["Direct handler call (agent/handle-status {}) returns correct JSON"
+             "Shim call (compat/swarm-status-shim {}) logs deprecation warning but returns nil"
+             "The warning IS logged, so shim function executes"]
+  :expected "Shim should delegate to consolidated handler and return same result"}
+
+ :investigation
+ {:call-chain
+  ["1. (compat/swarm-status-shim {}) called"
+   "2. make-shim fn executes: logs DEPRECATED warning"
+   "3. Builds final params: {:command \"status\"}"
+   "4. Calls (get-consolidated-handler :agent)"
+   "5. If handler found: (handler {:command \"status\"})"
+   "6. handle-agent dispatches to handle-status"
+   "7. handle-status returns mcp-json result"]
+
+  :potential-issues
+  [{:id :deref-nil
+    :location "compat.clj:44-58"
+    :code "@(resolve 'hive-mcp.tools.consolidated.agent/handle-agent)"
+    :issue "If var exists but value is nil at deref time, returns nil"
+    :likelihood :medium}
+
+   {:id :command-routing
+    :location "cli.clj:17-24"
+    :code "(keyword command)"
+    :issue "If command param is nil, keyword returns nil, lookup fails"
+    :note "But shim explicitly sets {:command \"status\"} - unlikely"}
+
+   {:id :exception-swallowed
+    :location "Multiple"
+    :issue "Exception thrown in consolidated namespace loading, caught elsewhere"
+    :likelihood :high}
+
+   {:id :handler-return-nil
+    :location "agent.clj handle-status"
+    :issue "Handler might return nil in some edge case"
+    :note "Unlikely - has try/catch returning mcp-error on exception"}]}
+
+ :root-cause-hypothesis
+ {:primary
+  {:issue "Lazy loading race condition with @(resolve ...)"
+   :detail "When load-consolidated-handlers! runs:
+           1. (require '[...agent :as agent]) loads namespace
+           2. @(resolve '...handle-agent) executes immediately
+           3. If defonce/defn evaluation order issues exist, var may be nil
+           4. Result: :agent maps to nil in consolidated-handlers atom"
+   :evidence "Tests pass because they mock get-consolidated-handler"}
+
+  :secondary
+  {:issue "Exception during require silently captured"
+   :detail "If any require in load-consolidated-handlers! throws,
+           the whole function throws, but error might be swallowed
+           at a higher level (e.g., MCP layer try/catch)"}}
+
+ :fix-plan
+ {:steps
+  [{:step 1
+    :action "Add nil check in get-consolidated-handler"
+    :file "src/hive_mcp/tools/compat.clj"
+    :change "After resolve, verify handler is not nil before adding to map"
+    :code
+    "(defn- load-consolidated-handlers!
+      []
+      (require '[hive-mcp.tools.consolidated.agent :as agent]
+               ;; ... other requires ...)
+      (let [handlers-map {:agent (some-> (resolve '...handle-agent) deref)
+                          ;; ...}]
+        ;; Validate all handlers loaded
+        (doseq [[k v] handlers-map]
+          (when (nil? v)
+            (log/error \"Consolidated handler nil for:\" k)))
+        handlers-map))"}
+
+   {:step 2
+    :action "Add defensive logging in make-shim"
+    :file "src/hive_mcp/tools/compat.clj"
+    :change "Log when handler is nil or returns nil"
+    :code
+    "(if-let [handler (get-consolidated-handler new-tool)]
+       (let [result (handler final)]
+         (when (nil? result)
+           (log/error \"Consolidated handler returned nil\"
+                      {:tool new-tool :cmd new-cmd :params final}))
+         result)
+       {:isError true :text ...})"}
+
+   {:step 3
+    :action "Use require+resolve pattern with explicit var check"
+    :file "src/hive_mcp/tools/compat.clj"
+    :change "Replace @(resolve ...) with safer pattern"
+    :code
+    "(defn- resolve-handler [sym]
+      (require (symbol (namespace sym)))
+      (if-let [v (resolve sym)]
+        @v
+        (do (log/error \"Failed to resolve:\" sym)
+            nil)))
+
+    ;; In load-consolidated-handlers!:
+    {:agent (resolve-handler 'hive-mcp.tools.consolidated.agent/handle-agent)
+     ;; ...}"}
+
+   {:step 4
+    :action "Add integration test for shim->handler chain"
+    :file "test/hive_mcp/tools/compat_integration_test.clj"
+    :change "Test actual delegation without mocks"
+    :code
+    "(deftest shim-to-handler-integration
+      (testing \"swarm-status-shim delegates to real handler\"
+        (let [result (compat/swarm-status-shim {})]
+          (is (some? result) \"Shim should not return nil\")
+          (is (map? result) \"Should return a map\")
+          (is (or (:type result) (:isError result))
+              \"Should be MCP response format\"))))"}]}
+
+ :verification
+ {:repl-commands
+  ["(require '[hive-mcp.tools.compat :as compat])"
+   "(compat/list-consolidated-tools)  ; Should show all tools"
+   "(compat/get-consolidated-handler :agent)  ; Should be fn, not nil"
+   "(let [h (compat/get-consolidated-handler :agent)] (h {:command \"status\"}))"
+   "(compat/swarm-status-shim {})  ; Should match above"]
+
+  :expected-outcomes
+  ["list-consolidated-tools returns [:kg :memory :kanban ... :agent]"
+   "get-consolidated-handler returns function (not nil)"
+   "Direct handler call returns {:type \"text\" :text \"...\"}"
+   "Shim call returns same format as direct handler call"]}
+
+ :notes
+ ["Tests mock get-consolidated-handler so real loading path untested"
+  "MCP layer adds wrap-handler-normalize which handles nil->text"
+  "But nil at shim level bypasses MCP wrapping"
+  "Consider: should shims go through MCP wrapper pipeline?"]}
