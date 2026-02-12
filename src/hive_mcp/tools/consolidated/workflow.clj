@@ -286,7 +286,9 @@
                                         (or (:spawn-mode opts) effective-spawn-mode)
                                         (assoc :spawn-mode (or (:spawn-mode opts) effective-spawn-mode))
                                         (or (:model opts) model)
-                                        (assoc :model (or (:model opts) model)))))}
+                                        (assoc :model (or (:model opts) model)))))
+                  :dispatch-fn    (fn [_agent-id _task] true)
+                  :wait-ready-fn  (fn [_agent-id] true)}
      :kanban-ops {:list-fn   (fn [dir]
                                (survey {:directory dir
                                         :vulcan-mode effective-vulcan?}))

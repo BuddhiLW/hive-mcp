@@ -81,7 +81,7 @@
   [{:keys [progress-notes completed-tasks memory-ids-created]}]
   (->> (concat (keep :id progress-notes)
                (keep :id completed-tasks)
-               (or memory-ids-created []))
+               (keep :id memory-ids-created))
        (filter some?)
        (distinct)
        (vec)))

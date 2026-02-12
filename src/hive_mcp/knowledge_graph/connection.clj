@@ -12,6 +12,7 @@
 
   (:require [hive-mcp.knowledge-graph.protocol :as proto]
             [hive-mcp.knowledge-graph.store.datascript :as ds-store]
+            [hive-mcp.knowledge-graph.scope :as scope]
             [hive-mcp.config.core :as config]
             [clojure.java.io :as io]
             [clojure.edn :as edn]
@@ -21,32 +22,57 @@
 ;; Config-based Backend Auto-detection
 ;; =============================================================================
 
-(defn- read-project-config
-  "Read :kg-backend from .hive-project.edn in the current directory.
-   Returns keyword (:datascript, :datalevin) or nil."
+(defn- walk-hierarchy-for-kg-backend
+  "Walk up .hive-project.edn hierarchy to find :kg-backend.
+   Parent is more authoritative than child — first match walking UP wins.
+   Returns keyword or nil."
   []
   (try
-    (let [f (io/file ".hive-project.edn")]
-      (when (.exists f)
-        (-> f slurp edn/read-string :kg-backend)))
+    (let [cwd (System/getProperty "user.dir")
+          home (System/getProperty "user.home")]
+      (loop [dir (io/file cwd)
+             ;; Collect configs child→parent, then reverse for parent-first
+             configs []]
+        (cond
+          (nil? dir) nil
+          (= (.getAbsolutePath dir) home)
+          ;; Check home dir then stop
+          (let [all-configs (if-let [cfg (scope/read-direct-project-config (.getAbsolutePath dir))]
+                              (conj configs cfg)
+                              configs)
+                ;; Parent-first: last found = most ancestral = highest authority
+                parent-first (reverse all-configs)]
+            (some :kg-backend parent-first))
+
+          :else
+          (let [cfg (scope/read-direct-project-config (.getAbsolutePath dir))]
+            (recur (.getParentFile dir)
+                   (if cfg (conj configs cfg) configs))))))
     (catch Exception e
-      (log/debug "Failed to read .hive-project.edn for KG backend"
-                 {:error (.getMessage e)})
+      (log/debug "Failed hierarchy walk for KG backend" {:error (.getMessage e)})
       nil)))
 
 (defn- detect-backend
   "Detect the desired KG backend from configuration sources.
-   Priority: config.edn :services.kg > env var > .hive-project.edn > default (:datalevin).
-   Returns keyword :datascript, :datalevin, or :datahike."
+
+   Priority (highest → lowest):
+   1. .hive-project.edn hierarchy (parent > child > grandchild)
+   2. HIVE_KG_BACKEND env var (explicit override)
+   3. config.edn :services.kg.backend (global default)
+   4. Fallback: :datalevin
+
+   Rationale: project hierarchy is ground truth (lives with code),
+   config.edn is user-global preference, env var is session override."
   []
-  (let [env-backend (config/get-service-value :kg :backend
-                                              :env "HIVE_KG_BACKEND"
-                                              :parse keyword)
-        project-backend (read-project-config)
-        backend (or env-backend project-backend :datalevin)]
-    (log/debug "KG backend detection" {:env env-backend
-                                       :project project-backend
-                                       :selected backend})
+  (let [hierarchy-backend (walk-hierarchy-for-kg-backend)
+        env-backend (some-> (System/getenv "HIVE_KG_BACKEND") keyword)
+        config-backend (config/get-service-value :kg :backend :parse keyword)
+        backend (or hierarchy-backend env-backend config-backend :datalevin)]
+    (log/info "KG backend detection"
+              {:hierarchy hierarchy-backend
+               :env env-backend
+               :config config-backend
+               :selected backend})
     backend))
 
 (defn- ensure-store!
