@@ -1,0 +1,359 @@
+(ns hive-mcp.plan.parser-test
+  "Tests for plan parser (EDN and markdown modes)."
+  (:require [clojure.test :refer [deftest testing is are]]
+            [clojure.string :as str]
+            [hive-mcp.plan.parser :as parser]
+            [hive-mcp.plan.schema :as schema]))
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
+;;
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
+;; =============================================================================
+;; EDN Parsing Tests
+;; =============================================================================
+
+(deftest contains-edn-block?-test
+  (testing "detects EDN blocks"
+    (is (parser/contains-edn-block? "```edn\n{:foo 1}\n```"))
+    (is (parser/contains-edn-block? "Some text\n```edn\n{:x 1}\n```\nMore text")))
+
+  (testing "returns false when no EDN blocks"
+    (is (not (parser/contains-edn-block? "No EDN here")))
+    (is (not (parser/contains-edn-block? "```clojure\n(+ 1 2)\n```")))
+    (is (not (parser/contains-edn-block? "")))))
+
+(deftest contains-edn-plan?-test
+  (testing "detects EDN blocks"
+    (is (parser/contains-edn-plan? "```edn\n{:steps []}\n```")))
+
+  (testing "detects raw EDN with :plan/steps"
+    (is (parser/contains-edn-plan? "{:plan/steps [{:step/id \"s1\"}]}"))
+    (is (parser/contains-edn-plan? "{:plan/id \"x\" :plan/steps []}")))
+
+  (testing "detects raw EDN with :steps"
+    (is (parser/contains-edn-plan? "{:steps [{:id \"s1\"}]}"))
+    (is (parser/contains-edn-plan? "{:id \"plan-1\" :steps []}")))
+
+  (testing "returns false for non-plan content"
+    (is (not (parser/contains-edn-plan? "Just some text")))
+    (is (not (parser/contains-edn-plan? "# Markdown header")))
+    (is (not (parser/contains-edn-plan? "{:foo :bar}")))))
+
+(deftest parse-edn-plan-test
+  (testing "parses valid EDN plan from code block"
+    (let [content "Here's the plan:\n```edn\n{:title \"My Plan\"\n :steps [{:id \"step-1\" :title \"First step\"}]}\n```"
+          result (parser/parse-edn-plan content)]
+      (is (:success result))
+      (is (= "My Plan" (-> result :plan :title)))
+      (is (= 1 (count (-> result :plan :steps))))
+      (is (= "step-1" (-> result :plan :steps first :id)))
+      (is (= :edn (-> result :plan :source-format)))))
+
+  (testing "parses raw EDN plan with :plan/steps"
+    (let [content "{:plan/id \"l1-p2-transitive-staleness\"
+                    :plan/title \"L1 Phase 2: Transitive Staleness\"
+                    :plan/steps
+                    [{:step/id \"step-1\"
+                      :step/title \"Add staleness fields\"
+                      :step/depends-on []
+                      :step/priority :high
+                      :step/files [\"src/file.clj\"]}
+                     {:step/id \"step-2\"
+                      :step/title \"Create function\"
+                      :step/depends-on [\"step-1\"]
+                      :step/priority :high
+                      :step/files [\"src/other.clj\"]}]}"
+          result (parser/parse-edn-plan content)]
+      (is (:success result))
+      (is (= "L1 Phase 2: Transitive Staleness" (-> result :plan :title)))
+      (is (= "l1-p2-transitive-staleness" (-> result :plan :id)))
+      (is (= 2 (count (-> result :plan :steps))))
+      (is (= "step-1" (-> result :plan :steps first :id)))
+      (is (= "step-2" (-> result :plan :steps second :id)))
+      (is (= ["step-1"] (-> result :plan :steps second :depends-on)))
+      (is (= :high (-> result :plan :steps first :priority)))
+      (is (= ["src/file.clj"] (-> result :plan :steps first :files)))
+      (is (= :edn (-> result :plan :source-format)))))
+
+  (testing "parses raw EDN plan with plain :steps key"
+    (let [content "{:id \"test-plan\"
+                    :title \"Test Plan\"
+                    :steps [{:id \"s1\" :title \"Step 1\"}
+                            {:id \"s2\" :title \"Step 2\" :depends-on [\"s1\"]}]}"
+          result (parser/parse-edn-plan content)]
+      (is (:success result))
+      (is (= "Test Plan" (-> result :plan :title)))
+      (is (= 2 (count (-> result :plan :steps))))))
+
+  (testing "parses plan with dependencies"
+    (let [content "```edn\n{:steps [{:id \"a\" :title \"A\"}\n {:id \"b\" :title \"B\" :depends-on [\"a\"]}]}\n```"
+          result (parser/parse-edn-plan content)]
+      (is (:success result))
+      (is (= ["a"] (-> result :plan :steps second :depends-on)))))
+
+  (testing "parses plan with priority"
+    (let [content "```edn\n{:steps [{:id \"x\" :title \"X\" :priority :high}]}\n```"
+          result (parser/parse-edn-plan content)]
+      (is (:success result))
+      (is (= :high (-> result :plan :steps first :priority)))))
+
+  (testing "normalizes string priority to keyword"
+    (let [content "```edn\n{:steps [{:id \"x\" :title \"X\" :priority \"high\"}]}\n```"
+          result (parser/parse-edn-plan content)]
+      (is (:success result))
+      (is (= :high (-> result :plan :steps first :priority)))))
+
+  (testing "fails gracefully on invalid EDN"
+    (let [content "```edn\n{:invalid\n```"
+          result (parser/parse-edn-plan content)]
+      (is (not (:success result)))
+      (is (string? (:error result)))))
+
+  (testing "fails when no plan structure in EDN"
+    (let [content "```edn\n{:foo \"bar\"}\n```"
+          result (parser/parse-edn-plan content)]
+      (is (not (:success result)))))
+
+  (testing "fails when no EDN plan found"
+    (let [result (parser/parse-edn-plan "No EDN here")]
+      (is (not (:success result)))
+      (is (string? (:error result))))))
+
+;; =============================================================================
+;; Markdown Parsing Tests
+;; =============================================================================
+
+(deftest parse-markdown-plan-test
+  (testing "parses simple markdown plan"
+    (let [content "# My Plan\n\n## First Step\n\nDo something.\n\n## Second Step\n\nDo more."
+          result (parser/parse-markdown-plan content)]
+      (is (:success result))
+      (is (= "My Plan" (-> result :plan :title)))
+      (is (= 2 (count (-> result :plan :steps))))
+      (is (= "First Step" (-> result :plan :steps first :title)))
+      (is (= :markdown (-> result :plan :source-format)))))
+
+  (testing "extracts dependencies from header"
+    (let [content "# Plan\n\n## Step A\n\n## Step B [depends: step-a-1]"
+          result (parser/parse-markdown-plan content)]
+      (is (:success result))
+      (is (= ["step-a-1"] (-> result :plan :steps second :depends-on)))))
+
+  (testing "extracts multiple dependencies"
+    (let [content "# Plan\n\n## Step A\n\n## Step B\n\n## Step C [depends: step-a-1, step-b-2]"
+          result (parser/parse-markdown-plan content)]
+      (is (:success result))
+      (is (= ["step-a-1" "step-b-2"] (-> result :plan :steps (nth 2) :depends-on)))))
+
+  (testing "extracts priority from header"
+    (let [content "# Plan\n\n## Important Task [priority: high]"
+          result (parser/parse-markdown-plan content)]
+      (is (:success result))
+      (is (= :high (-> result :plan :steps first :priority)))))
+
+  (testing "extracts explicit ID from header"
+    (let [content "# Plan\n\n## My Step [id: custom-id]"
+          result (parser/parse-markdown-plan content)]
+      (is (:success result))
+      (is (= "custom-id" (-> result :plan :steps first :id)))))
+
+  (testing "combines all annotations"
+    (let [content "# Plan\n\n## Task [id: t1] [priority: high] [depends: t0]"
+          result (parser/parse-markdown-plan content)]
+      (is (:success result))
+      (let [step (-> result :plan :steps first)]
+        (is (= "t1" (:id step)))
+        (is (= :high (:priority step)))
+        (is (= ["t0"] (:depends-on step)))
+        (is (= "Task" (:title step))))))
+
+  (testing "extracts estimate from header"
+    (let [content "# Plan\n\n## Quick Fix [estimate: small]"
+          result (parser/parse-markdown-plan content)]
+      (is (:success result))
+      (is (= :small (-> result :plan :steps first :estimate)))))
+
+  (testing "extracts files from header"
+    (let [content "# Plan\n\n## Update Schema [files: src/schema.clj, src/core.clj]"
+          result (parser/parse-markdown-plan content)]
+      (is (:success result))
+      (is (= ["src/schema.clj" "src/core.clj"] (-> result :plan :steps first :files)))))
+
+  (testing "combines all annotations including estimate and files"
+    (let [content "# Plan\n\n## Task [id: t1] [priority: high] [estimate: large] [files: src/a.clj] [depends: t0]"
+          result (parser/parse-markdown-plan content)]
+      (is (:success result))
+      (let [step (-> result :plan :steps first)]
+        (is (= "t1" (:id step)))
+        (is (= :high (:priority step)))
+        (is (= :large (:estimate step)))
+        (is (= ["src/a.clj"] (:files step)))
+        (is (= ["t0"] (:depends-on step)))
+        (is (= "Task" (:title step))))))
+
+  (testing "generates step IDs from title"
+    (let [content "# Plan\n\n## Create Database Schema"
+          result (parser/parse-markdown-plan content)]
+      (is (:success result))
+      (is (str/starts-with? (-> result :plan :steps first :id) "create-database-schema"))))
+
+  (testing "captures content as description"
+    (let [content "# Plan\n\n## Step\n\nThis is the description.\nWith multiple lines."
+          result (parser/parse-markdown-plan content)]
+      (is (:success result))
+      (is (str/includes? (-> result :plan :steps first :description) "This is the description"))))
+
+  (testing "fails when no headers found"
+    (let [result (parser/parse-markdown-plan "No headers here")]
+      (is (not (:success result)))
+      (is (= "No ## headers found in content" (:error result)))))
+
+  (testing "handles plan without # title"
+    (let [content "## Step One\n\n## Step Two"
+          result (parser/parse-markdown-plan content)]
+      (is (:success result))
+      (is (= "Untitled Plan" (-> result :plan :title))))))
+
+;; =============================================================================
+;; Unified Parsing Tests
+;; =============================================================================
+
+(deftest parse-plan-test
+  (testing "auto-detects EDN format from code block"
+    (let [content "```edn\n{:steps [{:id \"a\" :title \"A\"}]}\n```"
+          result (parser/parse-plan content)]
+      (is (:success result))
+      (is (= :edn (-> result :plan :source-format)))))
+
+  (testing "auto-detects raw EDN format with :plan/steps"
+    (let [content "{:plan/id \"test\" :plan/title \"Test\" :plan/steps [{:step/id \"a\" :step/title \"A\"}]}"
+          result (parser/parse-plan content)]
+      (is (:success result))
+      (is (= :edn (-> result :plan :source-format)))
+      (is (= "Test" (-> result :plan :title)))))
+
+  (testing "auto-detects raw EDN format with :steps"
+    (let [content "{:id \"test\" :title \"Test\" :steps [{:id \"a\" :title \"A\"}]}"
+          result (parser/parse-plan content)]
+      (is (:success result))
+      (is (= :edn (-> result :plan :source-format)))))
+
+  (testing "auto-detects markdown format"
+    (let [content "# Plan\n\n## Step"
+          result (parser/parse-plan content)]
+      (is (:success result))
+      (is (= :markdown (-> result :plan :source-format)))))
+
+  (testing "falls back to markdown when EDN parse fails"
+    (let [content "# Plan\n\n## Step\n\n```edn\n{:not-a-plan true}\n```"
+          result (parser/parse-plan content)]
+      (is (:success result))
+      (is (= :markdown (-> result :plan :source-format)))))
+
+  (testing "respects :prefer-format option"
+    (let [content "# Plan\n\n## Step\n\n```edn\n{:steps [{:id \"x\" :title \"X\"}]}\n```"]
+      (is (= :edn (-> (parser/parse-plan content {:prefer-format :edn}) :plan :source-format)))
+      (is (= :markdown (-> (parser/parse-plan content {:prefer-format :markdown}) :plan :source-format)))))
+
+  (testing "attaches memory-id when provided"
+    (let [content "# Plan\n\n## Step"
+          result (parser/parse-plan content {:memory-id "20260128-abc"})]
+      (is (:success result))
+      (is (= "20260128-abc" (-> result :plan :memory-id))))))
+
+;; =============================================================================
+;; Utility Function Tests
+;; =============================================================================
+
+(deftest plan->task-specs-test
+  (testing "converts plan to task specs"
+    (let [plan {:steps [{:id "s1"
+                         :title "Task 1"
+                         :description "Do this"
+                         :priority :high
+                         :tags ["tag1"]
+                         :depends-on ["s0"]}]}
+          specs (parser/plan->task-specs plan)]
+      (is (= 1 (count specs)))
+      (is (= "Task 1" (:title (first specs))))
+      (is (= "Do this" (:description (first specs))))
+      (is (= "high" (:priority (first specs))))
+      (is (= ["tag1"] (:tags (first specs))))
+      (is (= ["s0"] (:depends-on (first specs))))
+      (is (= "s1" (:plan-step-id (first specs)))))))
+
+(deftest validate-dependencies-test
+  (testing "valid when all dependencies exist"
+    (let [plan {:steps [{:id "a" :title "A" :depends-on []}
+                        {:id "b" :title "B" :depends-on ["a"]}]}
+          result (parser/validate-dependencies plan)]
+      (is (:valid result))))
+
+  (testing "invalid when dependency missing"
+    (let [plan {:steps [{:id "a" :title "A" :depends-on ["missing"]}]}
+          result (parser/validate-dependencies plan)]
+      (is (not (:valid result)))
+      (is (= ["missing"] (:missing result)))
+      (is (= "a" (:step result)))))
+
+  (testing "valid with empty dependencies"
+    (let [plan {:steps [{:id "a" :title "A" :depends-on []}]}
+          result (parser/validate-dependencies plan)]
+      (is (:valid result)))))
+
+;; =============================================================================
+;; Schema Validation Tests
+;; =============================================================================
+
+(deftest schema-validation-test
+  (testing "valid step passes validation"
+    (let [step {:id "step-1"
+                :title "Test Step"
+                :depends-on []
+                :priority :medium
+                :estimate :medium
+                :files []
+                :tags []}]
+      (is (schema/valid-step? step))))
+
+  (testing "step with missing id fails"
+    (let [step {:title "No ID"}]
+      (is (not (schema/valid-step? step)))))
+
+  (testing "valid plan passes validation"
+    (let [plan {:id "plan-1"
+                :title "Test Plan"
+                :steps [{:id "s1" :title "Step 1" :depends-on [] :priority :medium :estimate :medium :files [] :tags []}]
+                :source-format :edn
+                :tags []}]
+      (is (schema/valid-plan? plan))))
+
+  (testing "plan with invalid priority fails"
+    (let [plan {:id "plan-1"
+                :title "Test"
+                :steps [{:id "s1" :title "Step" :priority :invalid}]
+                :source-format :edn}]
+      (is (not (schema/valid-plan? plan))))))
+
+;; =============================================================================
+;; Normalization Tests
+;; =============================================================================
+
+(deftest normalization-test
+  (testing "normalizes string priority"
+    (is (= :high (schema/normalize-priority "HIGH")))
+    (is (= :low (schema/normalize-priority "low")))
+    (is (= :medium (schema/normalize-priority nil))))
+
+  (testing "normalizes string estimate"
+    (is (= :small (schema/normalize-estimate "SMALL")))
+    (is (= :large (schema/normalize-estimate "large")))
+    (is (= :medium (schema/normalize-estimate nil))))
+
+  (testing "normalizes step with defaults"
+    (let [step (schema/normalize-step {:id "x" :title "X"})]
+      (is (= [] (:depends-on step)))
+      (is (= :medium (:priority step)))
+      (is (= :medium (:estimate step)))
+      (is (= [] (:files step)))
+      (is (= [] (:tags step))))))

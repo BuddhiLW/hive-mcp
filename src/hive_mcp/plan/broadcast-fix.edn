@@ -1,0 +1,214 @@
+{:plan-id "broadcast-silent-failure-fix"
+ :created-at "2026-01-30"
+ :created-by "swarm-explorer-broadcast-bug"
+ :status :analysis-complete
+
+ ;; ============================================================================
+ ;; SAA Pattern: Silence → Abstract → Act
+ ;; ============================================================================
+
+ :silence
+ {:grounding
+  {:files-read
+   ["src/hive_mcp/hivemind.clj"
+    "src/hive_mcp/tools/consolidated/agent.clj"
+    "src/hive_mcp/tools/consolidated/hivemind.clj"
+    "src/hive_mcp/tools/swarm/status.clj"
+    "src/hive_mcp/channel.clj"
+    "elisp/hive-mcp-swarm.el"
+    "elisp/addons/swarm/hive-mcp-swarm-tasks.el"
+    "elisp/addons/swarm/hive-mcp-swarm-events.el"
+    "elisp/hive-mcp-hivemind.el"]
+
+   :message-flow-traced
+   ["agent(command: 'broadcast', prompt: '...')"
+    "→ handle-broadcast [agent.clj:403-414]"
+    "→ swarm-status/handle-swarm-broadcast [status.clj:155-174]"
+    "→ elisp: (json-encode (hive-mcp-swarm-broadcast \"prompt\"))"
+    "→ alias: hive-mcp-swarm-tasks-broadcast [swarm.el:491]"
+    "→ maphash over hive-mcp-swarm--slaves [tasks.el:406-415]"
+    "→ hive-mcp-swarm-tasks-dispatch for each slave"
+    "→ returns list of task-ids (empty if no slaves)"]}}
+
+ ;; ============================================================================
+ ;; ROOT CAUSE ANALYSIS
+ ;; ============================================================================
+
+ :abstract
+ {:root-causes
+  [{:id :RC-1
+    :severity :critical
+    :title "Silent Success on Empty Slaves Hash Table"
+    :description "broadcast iterates over hive-mcp-swarm--slaves elisp hash. If empty, returns [] which MCP treats as success. Coordinator receives task IDs [] with no indication zero messages were sent."
+    :location "elisp/addons/swarm/hive-mcp-swarm-tasks.el:406-415"
+    :symptom "mcp__hive__agent(command: 'broadcast') returns empty task IDs, looks like success"}
+
+   {:id :RC-2
+    :severity :high
+    :title "DataScript/Elisp Desynchronization"
+    :description "Lings registered in DataScript may not exist in hive-mcp-swarm--slaves. Broadcast only checks elisp hash, misses lings that exist only in DataScript registry."
+    :location "elisp/addons/swarm/hive-mcp-swarm-tasks.el:410"
+    :related ["ADR-002: DataScript is source of truth for slave metadata"]}
+
+   {:id :RC-3
+    :severity :medium
+    :title "Async Queue Drop Not Surfaced to Caller"
+    :description "ACID queue can drop dispatches after max retries (20). dispatch-dropped events are emitted but caller already received task-id - no blocking failure notification."
+    :location "elisp/addons/swarm/hive-mcp-swarm-tasks.el:191-240"
+    :events-exist true
+    :problem "Async events don't reach original broadcast caller"}
+
+   {:id :RC-4
+    :severity :medium
+    :title "No Message Broker Pattern"
+    :description "Dispatches go directly to terminals. No persistent queue survives terminal state changes. If ling buffer dies, message is lost."
+    :architectural-gap true}]
+
+  :questions-answered
+  [{:q "Where does broadcast lose messages?"
+    :a "Two places: (1) If hive-mcp-swarm--slaves hash is empty, zero dispatches occur silently. (2) If ACID queue drops after max retries, dispatch-dropped event fires but original caller has no synchronous feedback."}
+
+   {:q "Is there error handling that swallows failures?"
+    :a "Yes. Empty hash table returns [], MCP treats as success. Queue drops emit events but caller has already received task-ids."}
+
+   {:q "Is the message format correct for ling consumption?"
+    :a "Yes, when messages reach lings. Problem is messages may never reach lings due to empty hash or queue drops."}
+
+   {:q "Does the queue mechanism exist or is it direct-only?"
+    :a "ACID queue exists (hive-mcp-swarm-tasks.el:35-70) but only for individual dispatches when terminal not ready. No broker-level persistence."}]}
+
+ ;; ============================================================================
+ ;; FIX PLAN (DAG)
+ ;; ============================================================================
+
+ :act
+ {:steps
+  [{:id :step-1
+    :title "Add Empty Slaves Guard to Broadcast"
+    :description "Return error or warning when hive-mcp-swarm--slaves hash is empty instead of silent success"
+    :file "elisp/addons/swarm/hive-mcp-swarm-tasks.el"
+    :changes ["Add (when (zerop (hash-table-count hive-mcp-swarm--slaves)) ...) check at start of broadcast"
+              "Emit broadcast-no-targets event"
+              "Return error structure {:error 'no-lings-available :hint 'spawn-lings-first}"]
+    :depends-on []
+    :wave 1}
+
+   {:id :step-2
+    :title "Propagate Empty Broadcast to Clojure Layer"
+    :description "Make handle-swarm-broadcast surface the empty-targets error to MCP caller"
+    :file "src/hive_mcp/tools/swarm/status.clj"
+    :changes ["Parse elisp result for error structure"
+              "Return mcp-error when no targets available"
+              "Include helpful message: 'No lings available. Use agent spawn first.'"]
+    :depends-on [:step-1]
+    :wave 1}
+
+   {:id :step-3
+    :title "Add Broadcast Summary to Return Value"
+    :description "Return structured result with dispatch count, not just task IDs"
+    :file "elisp/addons/swarm/hive-mcp-swarm-tasks.el"
+    :changes ["Return {:dispatched N :task-ids [...] :queued M :dropped 0}"
+              "Include target count for coordinator visibility"]
+    :depends-on [:step-1]
+    :wave 1}
+
+   {:id :step-4
+    :title "Sync Elisp Hash from DataScript"
+    :description "Before broadcast, sync hive-mcp-swarm--slaves from DataScript source of truth"
+    :file "src/hive_mcp/tools/swarm/status.clj"
+    :changes ["Query DataScript for active lings before calling elisp broadcast"
+              "Pass ling IDs to elisp for targeting"
+              "Alternative: Call sync function in elisp first"]
+    :depends-on [:step-2]
+    :wave 2
+    :architectural-note "ADR-002 says DataScript is source of truth"}
+
+   {:id :step-5
+    :title "Add Blocking Wait for Queue Completion (Optional)"
+    :description "For synchronous broadcast semantics, wait for ACID queue to process"
+    :file "elisp/addons/swarm/hive-mcp-swarm-tasks.el"
+    :changes ["Add :wait-for-queue option to broadcast"
+              "Block until all queued dispatches succeed or fail"
+              "Return comprehensive result with failures"]
+    :depends-on [:step-3]
+    :wave 2
+    :optional true}
+
+   {:id :step-6
+    :title "Surface dispatch-dropped in hivemind"
+    :description "Register handler for dispatch-dropped events in hivemind coordinator"
+    :file "src/hive_mcp/hivemind.clj"
+    :changes ["Subscribe to dispatch-dropped channel events"
+              "Store in pending-issues for coordinator visibility"
+              "Surface in hivemind_status response"]
+    :depends-on []
+    :wave 2}
+
+   {:id :step-7
+    :title "Add Consolidated broadcast_status Tool"
+    :description "Tool to check status of recent broadcasts including async failures"
+    :file "src/hive_mcp/tools/consolidated/agent.clj"
+    :changes ["Add handle-broadcast-status command"
+              "Query dispatch queue status"
+              "Query recent dispatch-dropped events"
+              "Return comprehensive broadcast health"]
+    :depends-on [:step-6]
+    :wave 3}]
+
+  :waves
+  [{:wave 1
+    :goal "Surface the bug - make silent failures visible"
+    :steps [:step-1 :step-2 :step-3]
+    :effort "~2 hours"}
+
+   {:wave 2
+    :goal "Fix root cause - sync sources of truth"
+    :steps [:step-4 :step-5 :step-6]
+    :effort "~4 hours"}
+
+   {:wave 3
+    :goal "Observability - tools for debugging broadcasts"
+    :steps [:step-7]
+    :effort "~1 hour"}]}
+
+ ;; ============================================================================
+ ;; TEST CRITERIA
+ ;; ============================================================================
+
+ :test-criteria
+ [{:id :TC-1
+   :description "Broadcast with no lings returns error, not empty success"
+   :command "mcp__hive__agent(command: 'broadcast', prompt: 'test')"
+   :expected "{:error 'no-lings-available' ...}"
+   :current-behavior "{:task-ids []}"}
+
+  {:id :TC-2
+   :description "Broadcast to N lings returns N task IDs with dispatch count"
+   :precondition "3 lings spawned"
+   :command "mcp__hive__agent(command: 'broadcast', prompt: 'test')"
+   :expected "{:dispatched 3 :task-ids [id1 id2 id3]}"}
+
+  {:id :TC-3
+   :description "Dropped dispatches appear in hivemind_status"
+   :precondition "Kill ling buffer during queued dispatch"
+   :command "mcp__hive__hivemind_status()"
+   :expected ":dropped-dispatches contains the lost message info"}
+
+  {:id :TC-4
+   :description "DataScript lings included in broadcast even if not in elisp hash"
+   :precondition "Ling exists in DataScript only (direct DataScript insert)"
+   :command "mcp__hive__agent(command: 'broadcast', prompt: 'test')"
+   :expected "Either sync to elisp or use DataScript as target source"}]
+
+ ;; ============================================================================
+ ;; ADR REFERENCES
+ ;; ============================================================================
+
+ :related-adrs
+ ["ADR-002: DataScript as source of truth for slave metadata"
+  "ADR-001: Registry sync between elisp and Clojure"]
+
+ :notes
+ ["This bug is a symptom of dual-state (elisp hash + DataScript)"
+  "Long-term fix: Single source of truth, query DataScript directly"
+  "Short-term fix: Surface errors, sync before broadcast"]}

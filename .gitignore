@@ -1,0 +1,71 @@
+# Clojure
+.cpcache/
+.nrepl-port
+*.jar
+target/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+# clj-kondo: track config.edn, ignore generated files
+.clj-kondo/.cache/
+.clj-kondo/.lock
+.clj-kondo/imports/
+.clj-kondo/inline-configs/
+.lsp/
+
+# OS
+.DS_Store
+*~
+
+# Logs
+*.log
+
+# Compiled Elisp
+*.elc
+
+# Test output
+test-output/
+
+# Local config
+.clojure-mcp/
+deps.local.edn
+.dir-locals.el
+
+# Generated diagrams
+overarch/
+melpa/
+
+# Vector index backups
+backups/
+
+arxiv/
+
+# MELPA clone for local testing
+melpa/
+
+pdfs/
+
+# Codanna local index
+.codanna/
+.fastembed_cache/
+
+# deprecated kanban
+kanban.org
+
+# Drone test artifacts
+test/drone_test_file_*.clj
+test/drone-test-file-*.txt
+
+# Datalevin LMDB data (persistent KG storage)
+data/
+
+# python stuff
+classes
+
+**/__pycache__/*
+__pycache__/
+*/__pycache__
+
+plans/

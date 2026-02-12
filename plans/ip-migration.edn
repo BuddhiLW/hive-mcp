@@ -1,0 +1,150 @@
+{:id "plan-20260212-ip-migration"
+ :title "IP Migration: Move L3+ Intelligence from hive-mcp to hive-knowledge"
+ :created "2026-02-12"
+ :status :planned
+ :source-decision "20260212011303-34e633da"
+
+ :problem
+ {:symptom "16 of 20 recently-built files contain L3+ intelligence leaked into hive-mcp (AGPL)"
+  :impact ["Proprietary algorithm cores exposed in AGPL codebase"
+           "Nothing pushed to remote yet — window to restructure"
+           "IP self-concealment axiom violated in naming and logic placement"]
+  :solution "Move algorithm cores to hive-knowledge, keep delegate-or-noop stubs in hive-mcp"}
+
+ :steps
+ [{:id "t1-classifier"
+   :title "Stub out agent/task_classifier.clj → :tc/* registry keys"
+   :description "0 prod consumers. Move scoring weights + signal scorers to hive-knowledge. hive-mcp keeps classify-task as requiring-resolve stub with noop fallback (always returns {:route :ling :confidence 0.0})."
+   :files ["src/hive_mcp/agent/task_classifier.clj"]
+   :depends-on []
+   :wave 1}
+
+  {:id "t1-macros"
+   :title "Stub out dsl/macros.clj → :dm/* registry keys"
+   :description "0 prod consumers. Move workflow composition macros (forge!, catchup!, plan>kb, plan>kb>forge!) to hive-knowledge. hive-mcp keeps expand-macro as stub returning nil."
+   :files ["src/hive_mcp/dsl/macros.clj"]
+   :depends-on []
+   :wave 1}
+
+  {:id "t1-verbs"
+   :title "Stub out dsl/verbs.clj → :dv/* registry keys"
+   :description "1 consumer with fallback. Move verb compilation + DSL resolution to hive-knowledge. hive-mcp keeps compile-verb as requiring-resolve stub."
+   :files ["src/hive_mcp/dsl/verbs.clj"]
+   :depends-on []
+   :wave 1}
+
+  {:id "t1-response"
+   :title "Stub out dsl/response.clj → :dr/* registry keys"
+   :description "3 consumers, pass-through noop. Move compression modes (compact/minimal) intelligence to hive-knowledge. hive-mcp keeps compress-response returning input unchanged."
+   :files ["src/hive_mcp/dsl/response.clj"]
+   :depends-on []
+   :wave 1}
+
+  {:id "t1-decompose"
+   :title "Stub out agent/drone/decompose.clj → :dd/* registry keys"
+   :description "3 consumers, defaults safe. Move estimate-complexity + decomposition logic to hive-knowledge. hive-mcp stub returns {:complexity :simple} always."
+   :files ["src/hive_mcp/agent/drone/decompose.clj"]
+   :depends-on []
+   :wave 1}
+
+  {:id "t1-budget"
+   :title "Stub out context/budget.clj → :cb/* registry keys"
+   :description "3 consumers, pass-through. Move budget allocation + token estimation to hive-knowledge. hive-mcp stub passes through without budget constraints."
+   :files ["src/hive_mcp/context/budget.clj"]
+   :depends-on []
+   :wave 1}
+
+  {:id "t2-unified-ctx"
+   :title "Stub out agent/drone/unified_context.clj → :uc/* registry keys"
+   :description "Already has :uc/* keys. Move seed resolution + BFS traversal + enrichment to hive-knowledge. hive-mcp keeps gather-context as requiring-resolve stub returning empty context map."
+   :files ["src/hive_mcp/agent/drone/unified_context.clj"]
+   :depends-on ["t1-decompose" "t1-budget"]
+   :wave 2}
+
+  {:id "t2-reconstruction"
+   :title "Stub out context/reconstruction.clj → :cr/* registry keys"
+   :description "4 consumers with fallbacks, :cr/* keys exist. Move KG reconstruction logic to hive-knowledge. hive-mcp stub returns empty reconstruction."
+   :files ["src/hive_mcp/context/reconstruction.clj"]
+   :depends-on []
+   :wave 2}
+
+  {:id "t2-multi"
+   :title "Stub out tools/multi.clj intelligence → :bx/* registry keys"
+   :description "$ref resolution + topo-sort + wave exec intelligence to hive-knowledge. hive-mcp keeps basic sequential batch execution, delegates advanced orchestration."
+   :files ["src/hive_mcp/tools/multi.clj"]
+   :depends-on []
+   :wave 2}
+
+  {:id "t2-forge-belt"
+   :title "Stub out workflows/forge_belt.clj → :fb/* registry keys"
+   :description "FSM spec + survey/smite/spark intelligence to hive-knowledge. hive-mcp keeps forge-strike as requiring-resolve stub."
+   :files ["src/hive_mcp/workflows/forge_belt.clj"]
+   :depends-on []
+   :wave 2}
+
+  {:id "t3-crystal-hooks"
+   :title "Dual-layer crystal/hooks.clj — keep basic harvest, move enrichment → :ch/*"
+   :description "Keep basic session harvesting (AGPL). Move enrichment logic (structural similarity scoring, cross-pollination, emergence detection) to hive-knowledge via :ch/* keys."
+   :files ["src/hive_mcp/crystal/hooks.clj"]
+   :depends-on ["t2-unified-ctx" "t2-reconstruction"]
+   :wave 3}
+
+  {:id "t3-recall"
+   :title "Dual-layer crystal/recall.clj — keep buffer atoms, move classification → :cl/*"
+   :description "Keep buffer atom management + basic recall (AGPL). Move classification intelligence (relevance scoring, priority ranking) to hive-knowledge via :cl/* keys."
+   :files ["src/hive_mcp/crystal/recall.clj"]
+   :depends-on ["t2-reconstruction"]
+   :wave 3}
+
+  {:id "t3-crystal-tools"
+   :title "Dual-layer tools/crystal.clj — keep handlers, move edge strategy → :ck/*"
+   :description "Keep MCP tool handlers (AGPL). Move KG edge creation strategy (which edges to create, confidence scoring) to hive-knowledge via :ck/* keys."
+   :files ["src/hive_mcp/tools/crystal.clj"]
+   :depends-on ["t3-crystal-hooks" "t3-recall"]
+   :wave 3}
+
+  {:id "t4-hk-init"
+   :title "Wire hive-knowledge/init.clj with all new registry keys"
+   :description "Update hive-knowledge/init.clj to register all new extension points: :tc/*, :dm/*, :dv/*, :dr/*, :dd/*, :cb/*, :uc/* (enhanced), :cr/* (enhanced), :bx/*, :fb/*, :ch/*, :cl/*, :ck/*. Self-registration pattern."
+   :files ["../hive-knowledge/src/hive_knowledge/init.clj"]
+   :depends-on ["t3-crystal-tools"]
+   :wave 4}
+
+  {:id "t4-verify-push"
+   :title "Run full test suite + kondo lint + verify no IP leaks, then push"
+   :description "Run all tests via nREPL, kondo lint at error level, grep for revealing names. If clean: git push both hive-mcp and hive-knowledge."
+   :files []
+   :depends-on ["t4-hk-init"]
+   :wave 4}]
+
+ :waves
+ {:wave-1
+  {:description "Tier 1 — Easy stubs (0-1 consumers, safe noops)"
+   :steps ["t1-classifier" "t1-macros" "t1-verbs" "t1-response" "t1-decompose" "t1-budget"]
+   :parallel true
+   :outcome "6 files stubbed out with delegate-or-noop pattern"}
+
+  :wave-2
+  {:description "Tier 2 — Moderate stubs (fallbacks exist)"
+   :steps ["t2-unified-ctx" "t2-reconstruction" "t2-multi" "t2-forge-belt"]
+   :parallel true
+   :outcome "4 files stubbed, advanced orchestration delegated"}
+
+  :wave-3
+  {:description "Tier 3 — Dual-layer split (AGPL basic + proprietary enhancement)"
+   :steps ["t3-crystal-hooks" "t3-recall" "t3-crystal-tools"]
+   :parallel false
+   :outcome "3 files split: basic AGPL behavior preserved, intelligence delegated"}
+
+  :wave-4
+  {:description "Wire + verify + push"
+   :steps ["t4-hk-init" "t4-verify-push"]
+   :parallel false
+   :outcome "hive-knowledge registered, tests green, pushed to remote"}}
+
+ :notes
+ ["Pattern: same as existing similarity.clj/emergence.clj — requiring-resolve + noop fallback"
+  "CANNOT MOVE: knowledge_graph/scope.clj (12 consumers), swarm/logic/predicates.clj (infrastructure)"
+  "IP self-concealment: use opaque registry key prefixes, not descriptive names"
+  "All stubs must pass existing tests — noop fallbacks must match expected return shapes"
+  "KG nodes for IP context: 20260205193521-66716377 (stub convention), 20260210122914-735cbddd (self-concealment)"]}

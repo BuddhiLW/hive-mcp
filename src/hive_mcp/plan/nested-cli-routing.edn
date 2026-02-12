@@ -1,0 +1,245 @@
+{:id "plan-20260202-nested-cli-routing"
+ :title "Nested CLI Routing for MCP Tools (Bonzai-style)"
+ :description "Extend make-cli-handler to support nested subcommands like real CLIs"
+ :tags ["architecture" "cli" "nested-routing" "SAA"]
+
+ ;; ============================================================
+ ;; CONTEXT: Why This Matters
+ ;; ============================================================
+ :context
+ "Current CLI dispatcher supports flat commands only:
+    agent(command: \"spawn\") → handler
+  
+  Real CLIs use nested subcommands:
+    git remote add → 2 levels
+    docker container ls → 2 levels
+    nmcli device wifi list → 3 levels
+  
+  This enables composable tool trees where parent commands
+  can have default behavior AND subcommands."
+
+ ;; ============================================================
+ ;; DESIGN DECISIONS
+ ;; ============================================================
+ :decisions
+ [{:id "D1"
+   :question "Command syntax: how to express nested commands?"
+   :options ["Space-separated string: \"status list\""
+             "Path-style: \"status/list\""
+             "Array: [\"status\", \"list\"]"]
+   :choice "Space-separated string"
+   :rationale "Matches real CLI UX (git remote add), minimal MCP schema change,
+               familiar to users. Array would require inputSchema type change."}
+  
+  {:id "D2"
+   :question "Handler tree structure: how to represent nested handlers?"
+   :choice "Nested maps with :_handler for default"
+   :example "{:status {:_handler handle-status-default
+                       :list handle-status-list}
+             :spawn handle-spawn}"
+   :rationale "Clean recursive structure. :_handler convention (like _index.html)
+               allows parent to have both default behavior and children."}
+  
+  {:id "D3"
+   :question "Backwards compatibility?"
+   :choice "Flat handlers still work - dispatch tries exact match first"
+   :rationale "Existing tools continue working without changes.
+               Migration is opt-in per tool."}]
+
+ ;; ============================================================
+ ;; IMPLEMENTATION STEPS
+ ;; ============================================================
+ :steps
+ [{:id "step-1"
+   :title "Add parse-command helper"
+   :description "Parse command string into path segments.
+                 \"status list\" → [:status :list]
+                 \"spawn\" → [:spawn]
+                 Handles edge cases: extra spaces, empty string."
+   :files ["src/hive_mcp/tools/cli.clj"]
+   :depends-on []
+   :priority :high
+   :estimate :small
+   :wave 1}
+
+  {:id "step-2"
+   :title "Add resolve-handler for tree traversal"
+   :description "Walk handler tree following command path.
+                 Returns {:handler fn :remaining-path [...]}
+                 
+                 Algorithm:
+                 1. If path empty, check for :_handler or return tree
+                 2. Get first segment, look up in tree
+                 3. If found and is fn → return it (leaf)
+                 4. If found and is map → recurse with rest of path
+                 5. If not found → check :_handler for partial match"
+   :files ["src/hive_mcp/tools/cli.clj"]
+   :depends-on ["step-1"]
+   :priority :high
+   :estimate :medium
+   :wave 1}
+
+  {:id "step-3"
+   :title "Update make-cli-handler for nested dispatch"
+   :description "Modify dispatch logic:
+                 1. Parse command string to path
+                 2. Resolve handler in tree
+                 3. If handler found → call with params
+                 4. If partial match with :_handler → call default
+                 5. Otherwise → error with available subcommands"
+   :files ["src/hive_mcp/tools/cli.clj"]
+   :depends-on ["step-2"]
+   :priority :high
+   :estimate :medium
+   :wave 2}
+
+  {:id "step-4"
+   :title "Extend format-help for nested trees"
+   :description "Generate help showing command tree structure:
+                 
+                 Available commands:
+                   spawn           - Create new agent
+                   status          - Query agent status
+                     status list   - List all agents
+                     status lings  - List lings only
+                   kill            - Terminate agent
+                 
+                 Recursive function that indents children."
+   :files ["src/hive_mcp/tools/cli.clj"]
+   :depends-on ["step-3"]
+   :priority :high
+   :estimate :medium
+   :wave 2}
+
+  {:id "step-5"
+   :title "Add test coverage for nested routing"
+   :description "Test cases:
+                 - Flat command (backwards compat)
+                 - Nested command \"parent child\"
+                 - Default handler :_handler
+                 - Unknown subcommand error
+                 - help command at each level
+                 - Edge cases: extra spaces, empty command"
+   :files ["test/hive_mcp/tools/cli_test.clj"]
+   :depends-on ["step-4"]
+   :priority :high
+   :estimate :medium
+   :wave 3}
+
+  {:id "step-6"
+   :title "Migrate agent tool as pilot"
+   :description "Convert agent handlers to nested structure:
+                 {:spawn handle-spawn
+                  :status {:_handler handle-status
+                           :list handle-status-list}
+                  :kill handle-kill
+                  ...}
+                 
+                 Add handle-status-list that filters by agent type."
+   :files ["src/hive_mcp/tools/consolidated/agent.clj"]
+   :depends-on ["step-5"]
+   :priority :medium
+   :estimate :medium
+   :wave 4}
+
+  {:id "step-7"
+   :title "Update tool-def inputSchema for nested"
+   :description "Extend MCP schema to document nested commands:
+                 {:enum [\"spawn\" \"status\" \"status list\" ...]}
+                 
+                 Or add :subcommands field in schema for discovery."
+   :files ["src/hive_mcp/tools/consolidated/agent.clj"]
+   :depends-on ["step-6"]
+   :priority :medium
+   :estimate :small
+   :wave 4}]
+
+ ;; ============================================================
+ ;; WAVE STRUCTURE (Parallel Execution Groups)
+ ;; ============================================================
+ :waves
+ {:wave-1 {:steps ["step-1" "step-2"] :parallel true
+           :description "Core parsing and tree traversal"}
+  :wave-2 {:steps ["step-3" "step-4"] :parallel false
+           :description "Dispatch logic and help (sequential - help depends on dispatch)"}
+  :wave-3 {:steps ["step-5"] :parallel false
+           :description "Test coverage"}
+  :wave-4 {:steps ["step-6" "step-7"] :parallel true
+           :description "Pilot migration of agent tool"}}
+
+ ;; ============================================================
+ ;; RISKS & MITIGATIONS
+ ;; ============================================================
+ :risks
+ [{:risk "Breaking existing tools"
+   :mitigation "Flat handlers continue to work (tested in step-5)"}
+  {:risk "MCP JSON schema doesn't support nested enum well"
+   :mitigation "Use flat enum with space-separated commands"}
+  {:risk "Command name collisions (e.g., \"list\" vs \"status list\")"
+   :mitigation "Resolve-handler checks exact match before partial"}]
+
+ ;; ============================================================
+ ;; CODE SNIPPETS
+ ;; ============================================================
+ :snippets
+ {:parse-command
+  "(defn parse-command
+  \"Parse command string into keyword path.\"
+  [command]
+  (when (and command (not (str/blank? command)))
+    (->> (str/split (str/trim command) #\"\\s+\")
+         (mapv keyword))))"
+
+  :resolve-handler
+  "(defn resolve-handler
+  \"Resolve handler from nested tree given command path.
+   Returns {:handler fn :path-used [...] :remaining [...]}\"
+  [handlers path]
+  (loop [tree handlers
+         used []
+         remaining path]
+    (cond
+      ;; No more path - check for _handler or return tree
+      (empty? remaining)
+      (if-let [h (or (when (fn? tree) tree)
+                     (get tree :_handler))]
+        {:handler h :path-used used :remaining []}
+        {:tree tree :path-used used})
+      
+      ;; Try next segment
+      :else
+      (let [seg (first remaining)
+            next-node (get tree seg)]
+        (cond
+          ;; Leaf handler found
+          (fn? next-node)
+          {:handler next-node :path-used (conj used seg) :remaining (rest remaining)}
+          
+          ;; Subtree found - recurse
+          (map? next-node)
+          (recur next-node (conj used seg) (rest remaining))
+          
+          ;; Not found - check for _handler fallback
+          :else
+          (if-let [default (get tree :_handler)]
+            {:handler default :path-used used :remaining remaining}
+            {:error :not-found :path-used used :remaining remaining}))))))"
+
+  :example-handlers
+  "(def handlers
+  {:spawn handle-spawn
+   :status {:_handler handle-status
+            :list handle-status-list
+            :lings handle-status-lings
+            :drones handle-status-drones}
+   :kill handle-kill
+   :dispatch handle-dispatch})"}
+
+ ;; ============================================================
+ ;; RELATED FILES
+ ;; ============================================================
+ :related-files
+ ["src/hive_mcp/tools/cli.clj"
+  "src/hive_mcp/tools/consolidated/agent.clj"
+  "src/hive_mcp/tools/consolidated/memory.clj"
+  "test/hive_mcp/tools/cli_test.clj"]}

@@ -1,0 +1,16 @@
+{:paths ["src" "scripts"]
+
+ :deps {babashka/process {:mvn/version "0.5.22"}}
+
+ :tasks
+ {test {:doc "Run tests"
+        :task (shell "clojure -M:test")}
+
+  repl {:doc "Start nREPL for development"
+        :task (shell "clojure -M:nrepl")}
+
+  mcp {:doc "Start MCP server"
+       :task (shell "clojure -X:mcp")}
+
+  diagram-deps {:doc "Check/install diagram dependencies (plantuml, graphviz, overarch)"
+                :task (exec 'diagram-deps/-main)}}}

@@ -1,0 +1,174 @@
+{:id "plan-20260130-plan-edn-parser-fix"
+ :title "Fix plan_to_kanban EDN Parsing"
+ :created "2026-01-30"
+ :status :planned
+ :source-kanban "20260128192246-240d034f"
+
+ :problem
+ {:symptom "plan_to_kanban only parses markdown ## headers, ignores raw EDN plans with :plan/steps"
+  :friction-report "20260128192212-50674d59"
+  :impact ["SAA workflow outputs EDN plans that fail silently"
+           "Users forced to create kanban tasks manually"
+           "Inconsistent behavior - docs say 'EDN or markdown' but EDN broken"]
+  :root-causes
+  [":1 - looks_like_edn_plan? requires content to START with '{' - fails for content with leading whitespace or markdown context"
+   ":2 - Keyword step IDs (:step-1) in EDN not converted to strings - schema requires [:id :string]"
+   ":3 - normalize-edn-step strips namespace from keys but doesn't stringify keyword values"
+   ":4 - No test coverage for raw EDN plans (tests only cover ```edn blocks)"]}
+
+ :current-state
+ {:parser-capabilities
+  {:file "src/hive_mcp/plan/parser.clj"
+   :edn-support "parse-edn-plan handles ```edn blocks and direct EDN parsing"
+   :markdown-support "parse-markdown-plan handles ## headers"
+   :auto-detect "parse-plan checks contains-edn-plan? then falls back to markdown"}
+
+  :detection-bug
+  {:function "looks-like-edn-plan? (line 37-47)"
+   :logic "(str/starts-with? trimmed \"{\")"
+   :problem "Raw EDN in memory may have leading whitespace or be wrapped in markdown"
+   :examples ["  {:steps [...]}       ; leading whitespace - FAILS"
+              "Plan output:\n{:steps [...]} ; markdown context - FAILS"
+              "{:title \"...\" :steps [...]} ; no :plan/steps marker - RELIES on 2nd check"]}
+
+  :normalization-bug
+  {:function "normalize-edn-step (line 94-102)"
+   :logic "strip-namespace on keys only"
+   :problem "Keyword IDs like :step-1 remain keywords, not converted to 'step-1' string"
+   :schema-requirement "[:id :string] in Step schema"}}
+
+ :gap-analysis
+ {:what-exists
+  ["Full EDN parsing infrastructure in parser.clj"
+   "Schema validation in schema.clj"
+   "Integration tests for ```edn blocks"
+   "Normalization for namespaced keys"]
+
+  :what-is-missing
+  ["Robust EDN detection for content not starting with '{'"
+   "Keyword-to-string coercion for :id fields"
+   "Test coverage for raw EDN plans (no ```edn fences)"
+   "Test for keyword step IDs"]}
+
+ :steps
+ [{:id "step-1"
+   :title "Fix looks_like_edn_plan? detection"
+   :description "Improve raw EDN detection to handle leading whitespace and markdown context"
+   :files ["src/hive_mcp/plan/parser.clj"]
+   :changes ["Remove str/starts-with? requirement"
+             "Use regex to find EDN-like pattern anywhere in content"
+             "Pattern: \\{[^}]*:(?:plan/)?steps\\s*\\["]
+   :depends-on []
+   :priority :high
+   :estimate :small
+   :wave 1}
+
+  {:id "step-2"
+   :title "Add keyword-to-string coercion in normalize-edn-step"
+   :description "Convert keyword IDs to strings to match schema requirement"
+   :files ["src/hive_mcp/plan/parser.clj"]
+   :changes ["In normalize-edn-step, coerce :id from keyword to string"
+             "Handle both keyword (:step-1) and string (\"step-1\") input"
+             "Also coerce :depends-on vector items from keywords to strings"]
+   :depends-on []
+   :priority :high
+   :estimate :small
+   :wave 1}
+
+  {:id "step-3"
+   :title "Add extract-edn-content helper"
+   :description "Extract EDN map from mixed markdown/text content"
+   :files ["src/hive_mcp/plan/parser.clj"]
+   :changes ["Add extract-edn-from-content function"
+             "Find first balanced {} containing :steps"
+             "Strip surrounding text/markdown before parsing"]
+   :depends-on ["step-1"]
+   :priority :medium
+   :estimate :small
+   :wave 2}
+
+  {:id "step-4"
+   :title "Update parse-edn-plan to use extract helper"
+   :description "Use new extraction in direct parse path"
+   :files ["src/hive_mcp/plan/parser.clj"]
+   :changes ["In parse-edn-plan, try extract-edn-from-content if direct parse fails"
+             "Preserve existing ```edn block extraction as fallback"
+             "Add error message clarifying what was tried"]
+   :depends-on ["step-3"]
+   :priority :medium
+   :estimate :small
+   :wave 2}
+
+  {:id "step-5"
+   :title "Add unit tests for raw EDN parsing"
+   :description "Test cases for EDN plans without ```edn fences"
+   :files ["test/hive_mcp/plan/tool_test.clj"]
+   :changes ["Test: raw EDN plan starting with '{'
+"             "Test: EDN plan with leading whitespace"
+             "Test: EDN plan embedded in markdown text"
+             "Test: keyword step IDs (:step-1) coerced to strings"]
+   :depends-on ["step-2" "step-4"]
+   :priority :high
+   :estimate :small
+   :wave 3}
+
+  {:id "step-6"
+   :title "Add integration test for SAA workflow EDN"
+   :description "E2E test mimicking SAA output format"
+   :files ["test/hive_mcp/plan/integration_test.clj"]
+   :changes ["Add test using lazy-preset-loading.edn format"
+             "Verify keyword IDs work"
+             "Verify :waves field ignored gracefully"
+             "Verify tasks created with correct titles"]
+   :depends-on ["step-5"]
+   :priority :medium
+   :estimate :small
+   :wave 3}]
+
+ :waves
+ {:wave-1
+  {:description "Core fixes - detection and coercion"
+   :steps ["step-1" "step-2"]
+   :parallel true
+   :outcome "EDN detection works, keyword IDs coerced to strings"}
+
+  :wave-2
+  {:description "Extraction helper for embedded EDN"
+   :steps ["step-3" "step-4"]
+   :parallel false
+   :outcome "Can parse EDN embedded in markdown/text content"}
+
+  :wave-3
+  {:description "Test coverage"
+   :steps ["step-5" "step-6"]
+   :parallel true
+   :outcome "Full test coverage for EDN edge cases"}}
+
+ :verification
+ {:repl-commands
+  [";; Test 1: Raw EDN parsing"
+   "(require '[hive-mcp.plan.parser :as parser])"
+   "(parser/parse-plan \"{:steps [{:id :step-1 :title \\\"Test\\\"}]}\")"
+   ";; Should return {:success true :plan {...}} with string ID"
+   ""
+   ";; Test 2: Leading whitespace"
+   "(parser/parse-plan \"  \\n{:steps [{:id \\\"step-1\\\" :title \\\"Test\\\"}]}\")"
+   ";; Should succeed"
+   ""
+   ";; Test 3: Embedded in markdown"
+   "(parser/parse-plan \"# Plan\\n\\n{:steps [{:id :s1 :title \\\"X\\\"}]}\\n\\nNotes here.\")"
+   ";; Should succeed"]
+
+  :expected-behavior
+  ["Keyword IDs (:step-1) converted to strings (\"step-1\")"
+   "Leading whitespace trimmed before detection"
+   "EDN embedded in markdown extracted and parsed"
+   "```edn blocks still work (backwards compatible)"
+   "Markdown ## headers still work (unchanged)"]}
+
+ :notes
+ ["Backwards compatible - existing ```edn and markdown plans unaffected"
+  "Existing tests in tool_test.clj and integration_test.clj must pass"
+  "lazy-preset-loading.edn uses :waves field which should be ignored"
+  "Consider adding :wave field support to schema in separate task"
+  "The friction report 20260128192212-50674d59 should be referenced in PR"]}

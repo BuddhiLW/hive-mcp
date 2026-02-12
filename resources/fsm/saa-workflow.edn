@@ -1,0 +1,287 @@
+;; SAA Workflow FSM Spec (EDN)
+;;
+;; hive-events FSM specification for the SAA (Silence-Abstract-Act) workflow.
+;; This is the data-driven representation -- handlers are referenced by keyword
+;; and must be supplied via the handlers map at compile time.
+;;
+;; SAA is a Korzybski-grounded methodology for structured exploration:
+;;   S (Silence)  -- Ground in territory: read files, query memory, traverse KG
+;;   A (Abstract) -- Create structured EDN plan with steps, dependencies, waves
+;;   A (Act)      -- Execute plan via DAG-Wave, validate with TDD
+;;
+;; "The map is not the territory." -- Read first, abstract second, act third.
+;;
+;; State Graph:
+;;
+;;   ::fsm/start --> ::catchup --> ::silence <--> ::silence-review
+;;                                                     |
+;;                                                     v
+;;                                                ::abstract <--> ::validate-plan
+;;                                                                     |
+;;                                                                     v
+;;                                                                ::store-plan
+;;                                                                 /         \
+;;                                                     ::fsm/end          ::act-dispatch
+;;                                                   (plan-only?)              |
+;;                                                                        ::act-verify
+;;                                                                             |
+;;                                                                        ::fsm/end
+;;
+;;   Error edges: every non-terminal state can transition to ::fsm/error
+;;   Loops:  silence <-> silence-review (max 3 iterations)
+;;           abstract <-> validate-plan (max 2 retries)
+;;
+;; Usage:
+;;   ;; EDN specs are read by Clojure reader (NOT edn/read-string) because
+;;   ;; dispatch predicates are (fn [data] ...) forms compiled by SCI at
+;;   ;; registration time via hive-mcp.workflows.registry.
+;;
+;;   (require '[hive.events.fsm :as fsm])
+;;   (-> (fsm/compile spec handler-map)
+;;       (fsm/run resources {:data initial-state}))
+;;
+;; Handler map keys (keyword -> fn, resolved at compile time):
+;;   :start          -- Initialize SAA session, resolve agent-id/project context
+;;   :catchup        -- Load project context (axioms, conventions, decisions, KG)
+;;   :silence        -- Exploration phase: read files, search code, record observations
+;;   :silence-review -- Evaluate observations, decide if grounding is sufficient
+;;   :abstract       -- Synthesize observations into structured EDN plan
+;;   :validate-plan  -- Validate plan integrity (deps, files, waves, no cycles)
+;;   :store-plan     -- Store plan in memory + optionally convert via plan-to-kanban
+;;   :act-dispatch   -- Dispatch execution (DAG-Wave, ling spawn, or direct)
+;;   :act-verify     -- Verify execution results (TDD, lint, integration checks)
+;;   :end            -- Terminal state, return SAA summary
+;;   :error          -- Error state, return error context
+;;
+;; State data shape:
+;;   {:agent-id           string    ;; Ling performing SAA (required)
+;;    :directory          string    ;; Working directory (required)
+;;    :task               string    ;; Task description (required)
+;;    :project-id         string    ;; Resolved project scope
+;;    :plan-only?         bool      ;; If true, skip Act phase (default false)
+;;
+;;    ;; Catchup phase
+;;    :context-loaded?    bool      ;; Whether catchup succeeded
+;;    :axioms             vector    ;; Loaded axioms
+;;    :conventions        vector    ;; Loaded conventions
+;;    :decisions          vector    ;; Loaded decisions
+;;
+;;    ;; Silence phase
+;;    :observations       vector    ;; Collected observations [{:type :file/:pattern/:issue, ...}]
+;;    :files-read         int       ;; Count of files explored
+;;    :discoveries        int       ;; Count of discoveries recorded
+;;    :grounding-score    float     ;; 0.0-1.0 sufficiency score
+;;    :grounding-threshold float    ;; Minimum score to proceed (default 0.6)
+;;    :silence-iterations int       ;; Number of silence loops (max 3)
+;;    :silence-started    string    ;; ISO timestamp of first silence entry
+;;    :silence-ended      string    ;; ISO timestamp of silence-review exit
+;;
+;;    ;; Abstract phase
+;;    :plan               map       ;; Structured EDN plan {:id :title :steps :waves}
+;;    :plan-valid?        bool      ;; Whether plan passed validation
+;;    :validation-errors  vector    ;; Validation error descriptions
+;;    :abstract-retries   int       ;; Number of abstract re-attempts (max 2)
+;;    :abstract-started   string    ;; ISO timestamp
+;;
+;;    ;; Store phase
+;;    :plan-memory-id     string    ;; Memory entry ID where plan is stored
+;;    :kanban-task-ids    vector    ;; Kanban tasks created from plan-to-kanban
+;;    :kg-edges-created   int       ;; KG edges linking plan -> tasks
+;;
+;;    ;; Act phase
+;;    :execution-mode     keyword   ;; :dag-wave | :ling-spawn | :direct
+;;    :wave-id            string    ;; Wave ID if dispatched via DAG-Wave
+;;    :execution-result   map       ;; Results from execution
+;;    :verification       map       ;; TDD/lint verification results
+;;    :tests-passed?      bool      ;; Whether verification succeeded
+;;    :act-started        string    ;; ISO timestamp
+;;    :act-ended          string    ;; ISO timestamp
+;;
+;;    ;; Tracing
+;;    :started-at         string    ;; ISO timestamp of workflow start
+;;    :phase              keyword   ;; Current phase marker
+;;    :trace-log          vector    ;; [{:state kw :step int :direction :enter/:exit}]
+;;    :trace-step         int       ;; Monotonic step counter for trace ordering
+;;
+;;    ;; Error
+;;    :error              any}      ;; Error info if in error state
+;;
+;; Resources map (injected at run time):
+;;   :scope-fn           -- (directory) -> project-id
+;;   :catchup-fn         -- (agent-id, directory) -> context-map
+;;   :explore-fn         -- (task, agent-id, observations) -> {:observations :files-read :discoveries}
+;;   :score-grounding-fn -- (observations, files-read) -> float (0.0-1.0)
+;;   :synthesize-fn      -- (task, observations, context) -> EDN plan map
+;;   :validate-plan-fn   -- (plan) -> {:valid? bool :errors [...]}
+;;   :store-plan-fn      -- (plan, agent-id, directory) -> {:memory-id :kanban-ids :kg-edges}
+;;   :dispatch-fn        -- (plan, execution-mode, agent-id) -> {:wave-id :result}
+;;   :verify-fn          -- (execution-result, plan) -> {:passed? bool :details map}
+;;   :shout-fn           -- (agent-id, phase, message) -> nil
+;;   :build-summary-fn   -- (data) -> response map
+;;   :error-response-fn  -- (error) -> response map
+;;   :clock-fn           -- () -> java.time.Instant
+;;
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW)
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
+{:fsm
+ {;; =====================================================================
+  ;; Initialization
+  ;; =====================================================================
+
+  :hive.events.fsm/start
+  {:handler    :start
+   :dispatches [;; Error first: missing required fields or startup error
+                [:hive.events.fsm/error
+                 (fn [data] (or (not (:agent-id data))
+                                (not (:task data))
+                                (some? (:error data))))]
+                ;; Happy path: proceed to catchup
+                [:hive-mcp.workflows.saa-workflow/catchup
+                 (fn [data] (and (:agent-id data)
+                                 (:task data)
+                                 (not (:error data))))]]}
+
+  :hive-mcp.workflows.saa-workflow/catchup
+  {:handler    :catchup
+   :dispatches [[:hive-mcp.workflows.saa-workflow/silence
+                 (fn [data] (true? (:context-loaded? data)))]
+                [:hive.events.fsm/error
+                 (fn [data] (not (:context-loaded? data)))]]}
+
+  ;; =====================================================================
+  ;; Silence Phase (S) -- Ground in territory
+  ;;
+  ;; May loop back via silence-review for deeper exploration.
+  ;; Max 3 iterations before forced progression to Abstract.
+  ;; =====================================================================
+
+  :hive-mcp.workflows.saa-workflow/silence
+  {:handler    :silence
+   :dispatches [;; Error takes priority over observations
+                [:hive.events.fsm/error
+                 (fn [data] (some? (:error data)))]
+                [:hive-mcp.workflows.saa-workflow/silence-review
+                 (fn [data] (some? (:observations data)))]]}
+
+  :hive-mcp.workflows.saa-workflow/silence-review
+  {:handler    :silence-review
+   :dispatches [;; Sufficient grounding -> proceed to Abstract
+                [:hive-mcp.workflows.saa-workflow/abstract
+                 (fn [data] (>= (get data :grounding-score 0.0)
+                                (get data :grounding-threshold 0.6)))]
+                ;; Insufficient but retries left -> loop back to Silence
+                [:hive-mcp.workflows.saa-workflow/silence
+                 (fn [data] (and (< (get data :grounding-score 0.0)
+                                    (get data :grounding-threshold 0.6))
+                                 (< (get data :silence-iterations 0) 3)))]
+                ;; Max iterations exceeded -> proceed anyway with warning
+                [:hive-mcp.workflows.saa-workflow/abstract
+                 (fn [data] (>= (get data :silence-iterations 0) 3))]]}
+
+  ;; =====================================================================
+  ;; Abstract Phase (A1) -- Synthesize plan from observations
+  ;;
+  ;; May loop back via validate-plan for plan correction.
+  ;; Max 2 retries before error.
+  ;; =====================================================================
+
+  :hive-mcp.workflows.saa-workflow/abstract
+  {:handler    :abstract
+   :dispatches [;; Error first: synthesis failed with no plan
+                [:hive.events.fsm/error
+                 (fn [data] (and (nil? (:plan data))
+                                 (some? (:error data))))]
+                ;; Plan produced -> validate it
+                [:hive-mcp.workflows.saa-workflow/validate-plan
+                 (fn [data] (some? (:plan data)))]]}
+
+  :hive-mcp.workflows.saa-workflow/validate-plan
+  {:handler    :validate-plan
+   :dispatches [;; Plan valid -> store it
+                [:hive-mcp.workflows.saa-workflow/store-plan
+                 (fn [data] (true? (:plan-valid? data)))]
+                ;; Plan invalid but retries left -> re-abstract
+                [:hive-mcp.workflows.saa-workflow/abstract
+                 (fn [data] (and (not (:plan-valid? data))
+                                 (< (get data :abstract-retries 0) 2)))]
+                ;; Plan invalid, no retries -> error
+                [:hive.events.fsm/error
+                 (fn [data] (and (not (:plan-valid? data))
+                                 (>= (get data :abstract-retries 0) 2)))]]}
+
+  :hive-mcp.workflows.saa-workflow/store-plan
+  {:handler    :store-plan
+   :dispatches [;; Plan-only mode -> skip Act, go to end
+                [:hive.events.fsm/end
+                 (fn [data] (true? (:plan-only? data)))]
+                ;; Full mode -> dispatch execution
+                [:hive-mcp.workflows.saa-workflow/act-dispatch
+                 (fn [data] (not (:plan-only? data)))]]}
+
+  ;; =====================================================================
+  ;; Act Phase (A2) -- Execute and verify
+  ;; =====================================================================
+
+  :hive-mcp.workflows.saa-workflow/act-dispatch
+  {:handler    :act-dispatch
+   :dispatches [;; Error first: dispatch failed
+                [:hive.events.fsm/error
+                 (fn [data] (some? (:error data)))]
+                ;; Execution result produced -> verify
+                [:hive-mcp.workflows.saa-workflow/act-verify
+                 (fn [data] (some? (:execution-result data)))]]}
+
+  :hive-mcp.workflows.saa-workflow/act-verify
+  {:handler    :act-verify
+   :dispatches [[:hive.events.fsm/end
+                 (fn [data] (true? (:tests-passed? data)))]
+                [:hive.events.fsm/error
+                 (fn [data] (not (:tests-passed? data)))]]}
+
+  ;; =====================================================================
+  ;; Terminal States
+  ;; =====================================================================
+
+  :hive.events.fsm/end
+  {:handler :end}
+
+  :hive.events.fsm/error
+  {:handler :error}}
+
+ :opts
+ {:max-trace 100
+
+  ;; Subscriptions: observe key state transitions for telemetry.
+  ;; These are compiled by SCI from (fn ...) forms in the EDN.
+  ;; In production, replace with actual handlers for metrics/logging.
+  :subscriptions
+  {[:grounding-score]    {:handler (fn [_path _old _new] nil)}
+   [:plan-valid?]        {:handler (fn [_path _old _new] nil)}
+   [:tests-passed?]      {:handler (fn [_path _old _new] nil)}
+   [:silence-iterations] {:handler (fn [_path _old _new] nil)}}
+
+  ;; Pre/post hooks: trace every state entry/exit for observability.
+  ;; Appends to :trace-log in data for post-mortem analysis.
+  ;; NOTE: Uses step-counter instead of timestamps because SCI bare context
+  ;; lacks java.time.Instant. Handlers use :clock-fn from resources for
+  ;; actual timestamps -- these hooks provide structural trace only.
+  :pre
+  (fn [{:keys [current-state-id] :as fsm} _resources]
+    (let [step (get-in fsm [:data :trace-step] 0)]
+      (-> fsm
+          (update-in [:data :trace-log] (fnil conj [])
+                     {:state current-state-id
+                      :step step
+                      :direction :enter})
+          (assoc-in [:data :trace-step] (inc step)))))
+
+  :post
+  (fn [{:keys [current-state-id] :as fsm} _resources]
+    (let [step (get-in fsm [:data :trace-step] 0)]
+      (-> fsm
+          (update-in [:data :trace-log] (fnil conj [])
+                     {:state current-state-id
+                      :step step
+                      :direction :exit})
+          (assoc-in [:data :trace-step] (inc step)))))}}

@@ -1,0 +1,204 @@
+# hive-mcp Docker Compose
+#
+# QUICK START (just Chroma):
+#   docker compose up -d
+#
+# WITH OBSERVABILITY:
+#   docker compose --profile observability up -d
+#
+# EVERYTHING:
+#   docker compose --profile observability up -d
+
+services:
+  # =============================================================================
+  # Core: Chroma Vector Database (default, always starts)
+  # =============================================================================
+  chroma:
+    image: chromadb/chroma:latest
+    container_name: hive-mcp-chroma
+    ports:
+      - "8000:8000"
+    volumes:
+      - chroma-data:/data
+    environment:
+      - IS_PERSISTENT=TRUE
+      - ANONYMIZED_TELEMETRY=FALSE
+    restart: unless-stopped
+    # Health check disabled - chromadb/chroma:latest lacks curl/wget/python
+    # Monitor via: curl http://localhost:8000/api/v2/heartbeat
+    # Or via nREPL: (chroma/embedding-configured?)
+
+  # =============================================================================
+  # Optional: Milvus Vector Database (profile: milvus)
+  # Alternative to Chroma for larger deployments
+  # Uncomment to enable. Requires: docker compose --profile milvus up -d
+  # =============================================================================
+  # etcd:
+  #   profiles: ["milvus"]
+  #   container_name: hive-mcp-milvus-etcd
+  #   image: quay.io/coreos/etcd:v3.5.5
+  #   environment:
+  #     - ETCD_AUTO_COMPACTION_MODE=revision
+  #     - ETCD_AUTO_COMPACTION_RETENTION=1000
+  #     - ETCD_QUOTA_BACKEND_BYTES=4294967296
+  #     - ETCD_SNAPSHOT_COUNT=50000
+  #   volumes:
+  #     - milvus-etcd:/etcd
+  #   command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+  #   healthcheck:
+  #     test: ["CMD", "etcdctl", "endpoint", "health"]
+  #     interval: 30s
+  #     timeout: 20s
+  #     retries: 3
+  #   restart: unless-stopped
+  #
+  # minio:
+  #   profiles: ["milvus"]
+  #   container_name: hive-mcp-milvus-minio
+  #   image: minio/minio:latest
+  #   environment:
+  #     MINIO_ROOT_USER: minioadmin
+  #     MINIO_ROOT_PASSWORD: minioadmin
+  #   ports:
+  #     - "9001:9001"
+  #     - "9000:9000"
+  #   volumes:
+  #     - milvus-minio:/minio_data
+  #   command: minio server /minio_data --console-address ":9001"
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+  #     interval: 30s
+  #     timeout: 20s
+  #     retries: 3
+  #   restart: unless-stopped
+  #
+  # milvus:
+  #   profiles: ["milvus"]
+  #   container_name: hive-mcp-milvus
+  #   image: milvusdb/milvus:v2.4.4
+  #   command: ["milvus", "run", "standalone"]
+  #   security_opt:
+  #     - seccomp:unconfined
+  #   environment:
+  #     ETCD_ENDPOINTS: etcd:2379
+  #     MINIO_ADDRESS: minio:9000
+  #   volumes:
+  #     - milvus-data:/var/lib/milvus
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+  #     interval: 30s
+  #     start_period: 90s
+  #     timeout: 20s
+  #     retries: 3
+  #   ports:
+  #     - "19530:19530"
+  #     - "9091:9091"
+  #   depends_on:
+  #     - etcd
+  #     - minio
+  #   restart: unless-stopped
+
+  # =============================================================================
+  # Optional: NATS Server (push-based drone notifications)
+  # Enable: config set services.nats.enabled true
+  # =============================================================================
+  nats:
+    image: nats:latest
+    container_name: hive-mcp-nats
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    command: ["--jetstream", "--http_port", "8222"]
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  # =============================================================================
+  # Optional: Observability Stack (profile: observability)
+  # CLARITY-T: Telemetry first
+  # =============================================================================
+  prometheus:
+    profiles: ["observability"]
+    image: prom/prometheus:latest
+    container_name: hive-mcp-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=7d'
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  grafana:
+    profiles: ["observability"]
+    image: grafana/grafana:latest
+    container_name: hive-mcp-grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=hivemcp
+      - GF_USERS_ALLOW_SIGN_UP=false
+    depends_on:
+      - prometheus
+      - loki
+    restart: unless-stopped
+
+  loki:
+    profiles: ["observability"]
+    image: grafana/loki:2.9.0
+    container_name: hive-mcp-loki
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./config/loki.yml:/etc/loki/local-config.yaml:ro
+      - loki-data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+    restart: unless-stopped
+
+  promtail:
+    profiles: ["observability"]
+    image: grafana/promtail:2.9.0
+    container_name: hive-mcp-promtail
+    volumes:
+      - ./config/promtail.yml:/etc/promtail/config.yml:ro
+      - ${HOME}/.config/hive-mcp:/var/log/hive-mcp:ro
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      - loki
+    restart: unless-stopped
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  # Core (always created)
+  chroma-data:
+    driver: local
+
+  # Milvus (uncomment when profile enabled)
+  # milvus-etcd:
+  #   driver: local
+  # milvus-minio:
+  #   driver: local
+  # milvus-data:
+  #   driver: local
+
+  # Observability (created when profile enabled)
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local
+  loki-data:
+    driver: local

@@ -1,0 +1,87 @@
+(ns hive-mcp.tools.consolidated.kg
+  "Consolidated Knowledge Graph CLI tool."
+  (:require [hive-mcp.tools.cli :refer [make-cli-handler make-batch-handler]]
+            [hive-mcp.tools.kg :as kg-handlers]))
+
+(def ^:private edge-handlers
+  {:edge kg-handlers/handle-kg-add-edge})
+
+(def ^:private traverse-handlers
+  {:traverse kg-handlers/handle-kg-traverse})
+
+(def handle-batch-edge
+  "Batch edge creation via make-batch-handler."
+  (make-batch-handler edge-handlers))
+
+(def handle-batch-traverse
+  "Batch traversal via make-batch-handler."
+  (make-batch-handler traverse-handlers))
+
+(def handlers
+  {:traverse       kg-handlers/handle-kg-traverse
+   :edge           kg-handlers/handle-kg-add-edge
+   :impact         kg-handlers/handle-kg-impact-analysis
+   :subgraph       kg-handlers/handle-kg-subgraph
+   :stats          kg-handlers/handle-kg-stats
+   :path           kg-handlers/handle-kg-find-path
+   :context        kg-handlers/handle-kg-node-context
+   :promote        kg-handlers/handle-kg-promote
+   :reground       kg-handlers/handle-kg-reground
+   :batch-edge     handle-batch-edge
+   :batch-traverse handle-batch-traverse})
+
+(def handle-kg
+  (make-cli-handler handlers))
+
+(def tool-def
+  {:name "kg"
+   :consolidated true
+   :description "Knowledge Graph operations: traverse (walk graph), edge (add relationship), impact (find dependents), subgraph (extract scope), stats (counts), path (shortest path), context (node details), promote (bubble up scope), reground (verify source). Batch: batch-edge (multiple edges), batch-traverse (multiple traversals). Use command='help' to list all."
+   :inputSchema {:type "object"
+                 :properties {"command" {:type "string"
+                                         :enum ["traverse" "edge" "impact" "subgraph" "stats" "path" "context" "promote" "reground" "batch-edge" "batch-traverse" "help"]
+                                         :description "KG operation to perform"}
+                              "start_node" {:type "string"
+                                            :description "Node ID to start traversal from"}
+                              "direction" {:type "string"
+                                           :enum ["outgoing" "incoming" "both"]
+                                           :description "Edge direction for traversal"}
+                              "max_depth" {:type "integer"
+                                           :description "Maximum traversal/search depth"}
+                              "relations" {:type "array"
+                                           :items {:type "string"}
+                                           :description "Relation types to follow"}
+                              "scope" {:type "string"
+                                       :description "Scope for filtering"}
+                              "from" {:type "string"
+                                      :description "Source node ID for edge"}
+                              "to" {:type "string"
+                                    :description "Target node ID for edge"}
+                              "relation" {:type "string"
+                                          :enum ["implements" "supersedes" "refines" "contradicts" "depends-on" "derived-from" "applies-to"]
+                                          :description "Relation type for edge"}
+                              "confidence" {:type "number"
+                                            :description "Confidence score 0.0-1.0"}
+                              "node_id" {:type "string"
+                                         :description "Node ID for impact/context analysis"}
+                              "from_node" {:type "string"
+                                           :description "Source node for path finding"}
+                              "to_node" {:type "string"
+                                         :description "Target node for path finding"}
+                              "edge_id" {:type "string"
+                                         :description "Edge ID to promote"}
+                              "to_scope" {:type "string"
+                                          :description "Target scope for promotion"}
+                              "entry_id" {:type "string"
+                                          :description "Entry ID to reground"}
+                              "force" {:type "boolean"
+                                       :description "Force reground even if recent"}
+                              "operations" {:type "array"
+                                            :items {:type "object"}
+                                            :description "Array of {command, ...} objects for batch-edge/batch-traverse. Each op needs its own :command ('edge' or 'traverse') plus per-op params."}
+                              "parallel" {:type "boolean"
+                                          :description "Run batch operations in parallel (default: false)"}}
+                 :required ["command"]}
+   :handler handle-kg})
+
+(def tools [tool-def])

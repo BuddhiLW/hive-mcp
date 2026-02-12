@@ -1,0 +1,116 @@
+{:id "plan-20260206-tool-composition-depth"
+ :title "Deepen Tool Composition: Eliminate Shallow Command Variants"
+ :description "Audit found 8 shallow composition anti-patterns across 6 consolidated tools. Commands that differ only by a boolean flag or verbosity level should be unified via parameter polymorphism instead of separate command enums."
+ :decision-id "20260206160436-3eac1498"
+ :tags ["tool-composition-audit" "architecture" "SAA" "refactoring"]
+
+ :steps
+ [{:id "step-1"
+   :title "Unify wave dispatch + dispatch-validated"
+   :description "Merge dispatch-validated params into dispatch: validate:bool, review_mode:bool, max_retries:int, lint_level:string. When validate=false (default), behaves like current dispatch. When validate=true, routes to validated_wave logic. Remove dispatch-validated from enum. Both underlying handlers are already DEPRECATED in favor of 'delegate'."
+   :depends-on []
+   :priority :high
+   :files ["src/hive_mcp/tools/consolidated/wave.clj"
+           "src/hive_mcp/tools/swarm/wave/handlers.clj"
+           "src/hive_mcp/tools/swarm/validated_wave.clj"]
+   :wave 1}
+
+  {:id "step-2"
+   :title "Remove agent list alias"
+   :description "Remove 'list' from agent command enum. It's a pure alias for status with no agent_id filter (handle-list literally calls handle-status). Update preset instructions that reference 'agent list' to use 'agent status'. Keep :list in handler map for backward compat but remove from enum/description."
+   :depends-on []
+   :priority :medium
+   :files ["src/hive_mcp/tools/consolidated/agent.clj"]
+   :wave 1}
+
+  {:id "step-3"
+   :title "Collapse kanban aliases: update->move, roadmap->status, my-tasks->list"
+   :description "Remove update/roadmap/my-tasks/sync from enum. Add filter param to list: filter='mine' for agent-specific filtering (replaces my-tasks). Remove no-op sync. 6 commands -> 4 (list, create, move, status, plan-to-kanban). Keep aliases in handler map with deprecation log."
+   :depends-on []
+   :priority :high
+   :files ["src/hive_mcp/tools/consolidated/kanban.clj"]
+   :wave 1}
+
+  {:id "step-4"
+   :title "Unify cider eval/eval-explicit/eval-session"
+   :description "Single 'eval' command with mode:'silent'|'explicit' (default: 'silent') and optional session_name:string. When session_name provided, route to eval-in-session. When not, route to eval-silent or eval-explicit based on mode. Remove eval-explicit and eval-session from enum."
+   :depends-on []
+   :priority :medium
+   :files ["src/hive_mcp/tools/consolidated/cider.clj"
+           "src/hive_mcp/tools/cider.clj"]
+   :wave 1}
+
+  {:id "step-5"
+   :title "Add verbosity param to preset list and get"
+   :description "preset list {verbosity: 'full'|'slim'} replaces list + list_slim. preset get {name, verbosity: 'full'|'core'} replaces get + core. Remove list_slim and core from enum. Follows the same pattern as header's lazy:bool — already the correct n-depth approach in the same tool."
+   :depends-on []
+   :priority :medium
+   :files ["src/hive_mcp/tools/consolidated/preset.clj"
+           "src/hive_mcp/tools/presets.clj"]
+   :wave 1}
+
+  {:id "step-6"
+   :title "Add verbosity param to memory query"
+   :description "memory query {verbosity: 'full'|'metadata'} replaces query + metadata. Default: 'full'. When 'metadata', strips to id/type/preview/tags/created (~10x fewer tokens). Remove metadata from enum. handle-query-metadata already delegates to handle-query internally."
+   :depends-on []
+   :priority :medium
+   :files ["src/hive_mcp/tools/consolidated/memory.clj"
+           "src/hive_mcp/tools/memory/crud.clj"]
+   :wave 1}
+
+  {:id "step-7"
+   :title "Unify agora list and list-debates"
+   :description "Single 'list' command with type:'dialogue'|'debate'|'staged'. Default: 'dialogue' for backward compat. Remove list-debates from enum."
+   :depends-on []
+   :priority :low
+   :files ["src/hive_mcp/tools/consolidated/agora.clj"
+           "src/hive_mcp/tools/agora.clj"]
+   :wave 2}
+
+  {:id "step-8"
+   :title "Unify agora debate/staged and debate-status/stage-status"
+   :description "debate command with staged:bool param. Single status command that auto-detects debate type from dialogue_id. Remove staged, debate-status, stage-status from enum. Merge params: research_roles and debate_roles only used when staged=true."
+   :depends-on ["step-7"]
+   :priority :low
+   :files ["src/hive_mcp/tools/consolidated/agora.clj"
+           "src/hive_mcp/tools/agora.clj"]
+   :wave 2}
+
+  {:id "step-9"
+   :title "Update preset instructions referencing removed commands"
+   :description "Grep all .md preset files, system prompts, and docstrings for references to removed commands (list_slim, core, dispatch-validated, eval-explicit, eval-session, list-debates, my-tasks, roadmap, update, sync) and update to new unified commands with parameters."
+   :depends-on ["step-1" "step-2" "step-3" "step-4" "step-5" "step-6"]
+   :priority :high
+   :files ["presets/*.md"]
+   :wave 3}
+
+  {:id "step-10"
+   :title "Backward compat shim: route old commands to new"
+   :description "Keep old command keywords in handler maps but route to the unified handler with default params injected. Log deprecation warnings via timbre. This allows gradual migration without breaking existing lings mid-session. Remove shims after one release cycle."
+   :depends-on ["step-1" "step-2" "step-3" "step-4" "step-5" "step-6" "step-7" "step-8"]
+   :priority :high
+   :files ["src/hive_mcp/tools/consolidated/*.clj"]
+   :wave 3}]
+
+ :waves
+ {:wave-1 {:steps ["step-1" "step-2" "step-3" "step-4" "step-5" "step-6"]
+           :parallel true
+           :description "All 6 high/medium findings can be refactored independently"}
+  :wave-2 {:steps ["step-7" "step-8"]
+           :parallel false
+           :description "Lower priority agora unifications, step-8 depends on step-7"}
+  :wave-3 {:steps ["step-9" "step-10"]
+           :parallel true
+           :description "Documentation updates and backward compat shims"}}
+
+ :risks
+ ["Breaking change for lings with cached system prompts referencing old commands. Mitigated by step-10 backward compat shims."
+  "MCP schema changes may require clients to re-fetch tool definitions. Mitigated by keeping old commands as deprecated aliases in handler maps."
+  "Agora debate/staged unification may lose clarity about 2-stage workflow semantics. Mitigated by clear parameter documentation."
+  "wave dispatch/dispatch-validated are BOTH already deprecated in favor of 'delegate' tool. May be wasted effort to refactor them vs finishing delegate migration."]
+
+ :open-questions
+ ["Should deprecated command aliases log warnings via timbre or return them in the MCP response?"
+  "What is the deprecation timeline for aliases? 1 release cycle? 2?"
+  "Should the bb-mcp shim (elisp side) also be updated to reflect new command enums?"
+  "The wave tool's dispatch and dispatch-validated are BOTH already deprecated in favor of 'delegate'. Should we skip wave refactoring (step-1) and just finish the delegate migration instead?"]}

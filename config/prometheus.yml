@@ -1,0 +1,20 @@
+# Prometheus configuration for hive-mcp
+# CLARITY-T: Telemetry first - observable system
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # hive-mcp Clojure server metrics
+  # Exposed at http://localhost:9999/metrics
+  - job_name: 'hive-mcp'
+    static_configs:
+      - targets: ['host.docker.internal:9999']
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']

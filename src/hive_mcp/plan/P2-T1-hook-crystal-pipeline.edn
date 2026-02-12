@@ -1,0 +1,297 @@
+;; P2-T1 Design: Hook → Crystal Pipeline
+;;
+;; SAA Abstract output — maps the current architecture and proposes FSM-driven unification.
+;;
+;; Author: swarm-forja-1770502412356-1770502412
+;; Date: 2026-02-07
+;; Status: Design complete, ready for implementation planning
+
+{:id "plan-20260207-hook-crystal-pipeline"
+ :title "Hook → Crystal Pipeline: FSM-Driven Unification"
+ :description "Document the current hook→crystal pipeline, identify gaps, and design FSM-driven unification that eliminates code duplication and makes wrap_session.clj the canonical execution engine."
+ :tags ["P2-T1" "design" "hook-crystal-pipeline" "FSM" "wrap" "crystallize" "architecture" "SAA"]
+
+ ;; =========================================================================
+ ;; CURRENT ARCHITECTURE (AS-IS)
+ ;; =========================================================================
+
+ :current-architecture
+ {:hook-systems
+  [{:name "Domain Hooks (hive-mcp.hooks)"
+    :type :registry-based
+    :events #{:task-start :task-complete :session-start :session-end
+              :error-occurred :file-changed :commit-created :branch-switched}
+    :wired-events #{:session-end :task-complete}
+    :unwired-events #{:task-start :session-start :error-occurred
+                      :file-changed :commit-created :branch-switched}
+    :lifecycle "Created in server/lifecycle.clj init-hooks!, stored in global atom"
+    :trigger "hooks/trigger-hooks registry event context — synchronous, ordered, safe-failure"
+    :files ["src/hive_mcp/hooks.clj"
+            "src/hive_mcp/server/lifecycle.clj"]}
+
+   {:name "hive-events System (hive-mcp.events.core)"
+    :type :event-dispatch
+    :key-events [:ling/session-complete :crystal/wrap-notify
+                 :workflow/before :workflow/after :system/error]
+    :effects #{:shout :wrap-crystallize :kanban-move-done :git-commit
+               :wrap-notify :channel-publish :memory-write :dispatch
+               :dispatch-n :emit-system-error}
+    :coeffects #{:now :agent-context :db-snapshot :request-ctx :waiting-lings}
+    :files ["src/hive_mcp/events/core.clj"
+            "src/hive_mcp/events/effects.clj"
+            "src/hive_mcp/events/handlers.clj"]}]
+
+  :crystallization-pathways
+  [{:id :path-a
+    :name "Manual Wrap (MCP tool)"
+    :entry "session(command: 'wrap')"
+    :chain ["consolidated/session.clj handle-wrap"
+            "tools/crystal.clj handle-wrap-crystallize"
+            "crystal/hooks.clj harvest-all"
+            "crystal/hooks.clj crystallize-session"
+            "→ Chroma store + KG edges + promotion + decay + xpoll + memory-decay"
+            "ev/dispatch [:crystal/wrap-notify ...]"
+            "evict-agent-context!"]}
+
+   {:id :path-b
+    :name "Session Complete (MCP tool)"
+    :entry "session(command: 'complete')"
+    :chain ["consolidated/session.clj handle-complete"
+            "session_complete.clj handle-session-complete"
+            "ev/dispatch [:ling/session-complete event-data]"
+            "effects: {:git-commit :kanban-move-done :wrap-crystallize :shout}"
+            ":wrap-crystallize effect → injected handler"
+            "→ tools/crystal.clj handle-wrap-crystallize (same as Path A)"
+            "evict-agent-context!"
+            "maybe-trigger-plan-to-kanban!"]}
+
+   {:id :path-c
+    :name "Auto-Wrap (JVM Shutdown)"
+    :entry "JVM shutdown hook"
+    :chain ["server/lifecycle.clj trigger-session-end!"
+            "hooks/trigger-hooks registry :session-end ctx"
+            "crystal/hooks.clj on-session-end"
+            "crystal/hooks.clj harvest-all + crystallize-session (same core)"]}]
+
+  :fsm-status
+  {:defined true
+   :wired false
+   :spec-file "src/hive_mcp/workflows/wrap_session.clj"
+   :edn-file "resources/fsm/wrap-session.edn"
+   :states [:hive.events.fsm/start
+            :hive-mcp.workflows.wrap-session/gather
+            :hive-mcp.workflows.wrap-session/crystallize
+            :hive-mcp.workflows.wrap-session/kg-edges
+            :hive-mcp.workflows.wrap-session/notify
+            :hive-mcp.workflows.wrap-session/evict
+            :hive.events.fsm/end
+            :hive.events.fsm/error]
+   :note "FSM exists as both inline Clojure and EDN spec, but all 3 execution paths bypass it and call crystal/hooks.clj directly."}}
+
+ ;; =========================================================================
+ ;; KEY OBSERVATIONS
+ ;; =========================================================================
+
+ :observations
+ [{:id :obs-1
+   :title "crystallize-session is the convergence point"
+   :detail "All 3 paths converge on crystal/hooks.clj crystallize-session. It runs: Chroma store → co-access promotion → edge decay → cross-pollination → memory decay. But has DUPLICATED code — same 4-step maintenance pipeline appears in both content and no-content branches."}
+
+  {:id :obs-2
+   :title "Domain hooks are underutilized"
+   :detail "Of 8 defined hook events, only 2 are wired (:session-end → auto-wrap, :task-complete → swarm/sync). The other 6 have no registered handlers — dead infrastructure."}
+
+  {:id :obs-3
+   :title "FSM not driving execution"
+   :detail "wrap_session.clj FSM is well-designed (pure handlers, resources injection, clear state graph) but never actually runs. The actual execution calls harvest-all + crystallize-session directly."}
+
+  {:id :obs-4
+   :title "Double eviction risk"
+   :detail "Paths A and B both call evict-agent-context! in consolidated/session.clj. The FSM has its own ::evict state. When FSM is wired, eviction will happen twice unless deduplicated."}
+
+  {:id :obs-5
+   :title "Effect injection preserves layer separation"
+   :detail "effects.clj uses set-wrap-crystallize-handler! for DIP — events layer doesn't import tools layer. This pattern must be preserved."}
+
+  {:id :obs-6
+   :title "crystallize-session does too much"
+   :detail "Beyond core crystallization, it also runs 4 maintenance operations (promotion, edge-decay, xpoll, memory-decay). These should be a separate concern."}]
+
+ ;; =========================================================================
+ ;; PROPOSED DESIGN (TO-BE)
+ ;; =========================================================================
+
+ :proposed-design
+ {:principle "FSM-Driven with Hook Integration"
+
+  :architecture-diagram
+  "
+                    ┌─────────────────────────────────────────────────────┐
+                    │              Entry Points                           │
+                    │                                                     │
+                    │  session(wrap)  session(complete)  JVM shutdown     │
+                    └────────┬──────────────┬──────────────────┬──────────┘
+                             │              │                  │
+                             ▼              ▼                  ▼
+                    ┌────────────────────────────────────────────────────┐
+                    │         Orchestration Layer                        │
+                    │                                                    │
+                    │  Builds resources map, resolves agent/directory,   │
+                    │  prepares initial data                             │
+                    └──────────────────────┬─────────────────────────────┘
+                                           │
+                                           ▼
+                    ┌────────────────────────────────────────────────────┐
+                    │    FSM Engine (wrap_session.clj)                   │
+                    │                                                    │
+                    │ ::start → ::gather → ::crystallize → ::maintain   │
+                    │         → ::kg-edges → ::notify → ::evict → ::end │
+                    │                                                    │
+                    │  Pure handlers + injected resources (L1/L2 split)  │
+                    └──────────────────────┬─────────────────────────────┘
+                                           │
+                          ┌────────────────┼────────────────┐
+                          ▼                ▼                ▼
+                    ┌──────────┐   ┌──────────┐   ┌──────────┐
+                    │ Domain   │   │ hive-    │   │ Channel  │
+                    │ Hooks    │   │ events   │   │ Broadcast│
+                    │ trigger  │   │ dispatch │   │          │
+                    └──────────┘   └──────────┘   └──────────┘
+  "
+
+  :design-decisions
+  [{:id :dd-1
+    :title "FSM becomes single execution engine"
+    :detail "All 3 paths compile and run the same FSM. Resources map is the injection point. Eliminates code duplication."
+    :impact :high}
+
+   {:id :dd-2
+    :title "New ::maintain state extracts maintenance pipeline"
+    :detail "The 4-step maintenance (co-access promotion → edge decay → cross-pollination → memory decay) becomes a dedicated FSM state between ::crystallize and ::kg-edges. Single implementation, no duplication."
+    :impact :high}
+
+   {:id :dd-3
+    :title "Domain hooks fire at FSM transitions"
+    :detail "FSM :pre/:post hooks trigger domain hooks at state boundaries. Example: ::end fires :session-end."
+    :impact :medium}
+
+   {:id :dd-4
+    :title "Eviction happens only in FSM"
+    :detail "Remove evict-agent-context! from consolidated/session.clj. FSM ::evict state is the single eviction point."
+    :impact :medium}
+
+   {:id :dd-5
+    :title "Preserve effect injection (DIP)"
+    :detail "set-wrap-crystallize-handler! continues to inject into effects.clj. The injected handler now calls FSM instead of handle-wrap-crystallize directly."
+    :impact :low}]}
+
+ ;; =========================================================================
+ ;; IMPLEMENTATION PLAN
+ ;; =========================================================================
+
+ :steps
+ [{:id "step-1"
+   :title "Add ::maintain state to FSM spec"
+   :description "Add a new ::maintain state between ::crystallize and ::kg-edges in wrap_session.clj. Handler runs co-access promotion, edge decay, cross-pollination, and memory decay via resources map functions. Update both inline spec and EDN spec."
+   :files ["src/hive_mcp/workflows/wrap_session.clj"
+           "resources/fsm/wrap-session.edn"]
+   :depends-on []
+   :priority :high
+   :wave 1}
+
+  {:id "step-2"
+   :title "Create resources builder for FSM"
+   :description "Create a function (e.g., in tools/crystal.clj or a new ns) that builds the resources map for FSM execution. Maps harvest-fn to crystal-hooks/harvest-all, crystallize-fn to crystal-hooks/crystallize-session (stripped of maintenance code), kg-edge-fn to create-derived-from-edges!, etc."
+   :files ["src/hive_mcp/tools/crystal.clj"]
+   :depends-on []
+   :priority :high
+   :wave 1}
+
+  {:id "step-3"
+   :title "Refactor crystallize-session to remove maintenance"
+   :description "Extract the 4-step maintenance pipeline from crystallize-session into a standalone function (run-maintenance-cycle!). crystallize-session becomes a pure crystal function: summarize → store to Chroma → return result. The maintenance pipeline moves to the FSM ::maintain handler."
+   :files ["src/hive_mcp/crystal/hooks.clj"]
+   :depends-on ["step-1"]
+   :priority :high
+   :wave 2}
+
+  {:id "step-4"
+   :title "Wire Path A (manual wrap) to FSM"
+   :description "Update tools/crystal.clj handle-wrap-crystallize to call wrap_session/run-wrap-session with built resources map instead of harvest-all + crystallize-session directly."
+   :files ["src/hive_mcp/tools/crystal.clj"]
+   :depends-on ["step-2" "step-3"]
+   :priority :high
+   :wave 3}
+
+  {:id "step-5"
+   :title "Wire Path B (session complete) to FSM"
+   :description "The :wrap-crystallize effect already delegates to injected handler which calls handle-wrap-crystallize. Since step-4 changes that to use FSM, Path B is automatically wired. Verify and test."
+   :files ["src/hive_mcp/events/effects.clj"
+           "src/hive_mcp/tools/session_complete.clj"]
+   :depends-on ["step-4"]
+   :priority :high
+   :wave 3}
+
+  {:id "step-6"
+   :title "Wire Path C (auto-wrap) to FSM"
+   :description "Update crystal/hooks.clj on-session-end to call FSM instead of harvest-all + crystallize-session. Build lightweight resources map for shutdown context."
+   :files ["src/hive_mcp/crystal/hooks.clj"]
+   :depends-on ["step-4"]
+   :priority :medium
+   :wave 3}
+
+  {:id "step-7"
+   :title "Deduplicate eviction"
+   :description "Remove evict-agent-context! from consolidated/session.clj handle-wrap and handle-complete. FSM ::evict state handles it. Verify no double-eviction."
+   :files ["src/hive_mcp/tools/consolidated/session.clj"]
+   :depends-on ["step-4" "step-5" "step-6"]
+   :priority :medium
+   :wave 4}
+
+  {:id "step-8"
+   :title "Connect domain hooks to FSM transitions"
+   :description "Extend FSM :pre hook to trigger domain hooks at state boundaries. E.g., entering ::end triggers :session-end domain hook. This replaces the JVM shutdown hook's direct crystal/hooks.clj call."
+   :files ["src/hive_mcp/workflows/wrap_session.clj"
+           "src/hive_mcp/server/lifecycle.clj"]
+   :depends-on ["step-6" "step-7"]
+   :priority :low
+   :wave 4}
+
+  {:id "step-9"
+   :title "Tests for FSM-driven pipeline"
+   :description "Write tests validating: (1) FSM executes full state graph, (2) maintenance runs once (no duplication), (3) all 3 paths produce same result, (4) error states handled, (5) eviction happens exactly once."
+   :files ["test/hive_mcp/workflows/wrap_session_test.clj"
+           "test/hive_mcp/tools/crystal_test.clj"]
+   :depends-on ["step-4" "step-5" "step-6"]
+   :priority :high
+   :wave 3}]
+
+ :waves
+ {:wave-1 {:steps ["step-1" "step-2"] :parallel true
+           :description "Foundation: FSM spec update + resources builder"}
+  :wave-2 {:steps ["step-3"] :parallel false
+           :description "Refactor: Extract maintenance from crystallize-session"}
+  :wave-3 {:steps ["step-4" "step-5" "step-6" "step-9"] :parallel true
+           :description "Wiring: Connect all 3 paths to FSM + tests"}
+  :wave-4 {:steps ["step-7" "step-8"] :parallel true
+           :description "Cleanup: Deduplicate eviction + domain hook integration"}}
+
+ ;; =========================================================================
+ ;; CONSTRAINTS & ANTI-PATTERNS
+ ;; =========================================================================
+
+ :constraints
+ ["Don't remove direct crystallize-session until FSM is fully validated"
+  "Don't break the effect injection (DIP via set-wrap-crystallize-handler!)"
+  "Don't make FSM handlers impure — side effects flow through resources map only"
+  "Don't duplicate the maintenance pipeline — single implementation in one place"
+  "Keep backward compatibility — existing MCP tool signatures don't change"
+  "crystallize-session remains callable directly for testing (but not in production paths)"]
+
+ :risks
+ [{:risk "Chroma/Ollama downtime during wrap"
+   :mitigation "FSM ::crystallize handler already has try/catch, transitions to ::error on failure"}
+  {:risk "Maintenance pipeline failure blocks crystallization"
+   :mitigation "::maintain is AFTER ::crystallize — crystal succeeds even if maintenance fails. ::maintain transitions to ::kg-edges on ANY outcome (success or caught error)."}
+  {:risk "JVM shutdown race with FSM execution"
+   :mitigation "FSM has :max-trace 50 and timeout in shutdown thread. Existing safe-failure pattern preserved."}]}

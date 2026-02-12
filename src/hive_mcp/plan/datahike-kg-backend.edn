@@ -1,0 +1,258 @@
+{:plan-id "datahike-kg-backend"
+ :title "Datahike as KG Persistence Backend"
+ :created "2026-01-31T05:00:00Z"
+ :status :approved
+ :references ["20260131010803-0603548e"  ; Datahike decision
+              "20260131005656-36ec099d"  ; Emergent KG ADR
+              "20260131014506-72b6afed"] ; L3 Emergent convention
+
+ :scout-summary
+ {:current-state
+  {:datahike-store {:status :implemented
+                    :file "src/hive_mcp/knowledge_graph/store/datahike.clj"
+                    :protocols [:IGraphStore :ITemporalGraphStore]
+                    :temporal-ops [:history-db :as-of-db :since-db :query-history :query-as-of]}
+   :deps {:datahike "0.7.1638" :yggdrasil "0.1.6"}
+   :backend-config {:env "HIVE_KG_BACKEND=datahike"
+                    :edn ":kg-backend :datahike in .hive-project.edn"}
+   :schema {:implemented [:kg-edge/* :knowledge/* :disc/*]
+            :missing [:kg-synthetic/*]}
+   :yggdrasil-adapter {:file "yggdrasil/src/yggdrasil/adapters/datahike.clj"
+                       :protocols [:Snapshotable :Branchable :Graphable :Mergeable]
+                       :integration :not-wired}}
+
+  :gaps
+  [:synthetic-schema-not-implemented
+   :no-synthetic-crud-operations
+   :temporal-not-exposed-via-facade
+   :yggdrasil-not-integrated
+   :no-migration-tooling]}
+
+ :architect-decisions
+ [{:decision "Add :kg-synthetic/* schema to schema.clj"
+   :rationale "Single source of truth, follows existing pattern"
+   :trade-off "Schema file grows vs separate file complexity"}
+
+  {:decision "Create synthetic.clj module for L3 CRUD"
+   :rationale "SRP, mirrors edges.clj pattern for consistency"
+   :trade-off "More files vs bloated edges.clj"}
+
+  {:decision "Add temporal facade functions to connection.clj"
+   :rationale "Backward compatible, delegates to store if temporal-capable"
+   :trade-off "Adds complexity vs breaking change"}
+
+  {:decision "Yggdrasil integration as optional advanced feature"
+   :rationale "No breaking change, gradual adoption"
+   :trade-off "Two APIs vs forced migration"}]
+
+ :waves
+ [{:wave 1
+   :name "Schema Extension"
+   :description "Add :kg-synthetic/* schema for L3 emergent nodes"
+   :tasks
+   [{:id "W1.1"
+     :subject "Add synthetic schema to schema.clj"
+     :file "src/hive_mcp/knowledge_graph/schema.clj"
+     :changes
+     ["Add kg-synthetic/id with :db.unique/identity"
+      "Add kg-synthetic/type for cluster type"
+      "Add kg-synthetic/members with :db.cardinality/many"
+      "Add kg-synthetic/confidence for aggregate score"
+      "Add kg-synthetic/created-at timestamp"
+      "Add kg-synthetic/last-reinforced timestamp"
+      "Add kg-synthetic/centroid for optional embedding"
+      "Add :projects-to to relation-types"]
+     :depends-on []}
+
+    {:id "W1.2"
+     :subject "Add full-schema-with-synthetic function"
+     :file "src/hive_mcp/knowledge_graph/schema.clj"
+     :changes
+     ["Create synthetic-schema def"
+      "Update full-schema to merge synthetic-schema"]
+     :depends-on ["W1.1"]}
+
+    {:id "W1.3"
+     :subject "Add schema tests for synthetic nodes"
+     :file "test/hive_mcp/knowledge_graph/schema_test.clj"
+     :changes
+     ["Test valid-synthetic-type? validation"
+      "Test schema merge includes synthetic attrs"]
+     :depends-on ["W1.2"]}]}
+
+  {:wave 2
+   :name "Synthetic CRUD Operations"
+   :description "Create synthetic.clj with L3 node operations"
+   :tasks
+   [{:id "W2.1"
+     :subject "Create synthetic.clj namespace"
+     :file "src/hive_mcp/knowledge_graph/synthetic.clj"
+     :changes
+     ["Namespace with connection/schema requires"
+      "create-synthetic! function (id, type, members, confidence)"
+      "get-synthetic function by ID"
+      "update-synthetic-confidence! function"
+      "reinforce-synthetic! to update last-reinforced"
+      "add-member! / remove-member! for cluster membership"
+      "get-synthetics-by-type query"]
+     :depends-on ["W1.2"]}
+
+    {:id "W2.2"
+     :subject "Add projection edge functions"
+     :file "src/hive_mcp/knowledge_graph/synthetic.clj"
+     :changes
+     ["add-projection-edge! (synthetic-id -> l2-entry-id)"
+      "get-projections (synthetic-id -> [l2-ids])"
+      "get-projected-from (l2-id -> [synthetic-ids])"]
+     :depends-on ["W2.1"]}
+
+    {:id "W2.3"
+     :subject "Add synthetic tests"
+     :file "test/hive_mcp/knowledge_graph/synthetic_test.clj"
+     :changes
+     ["Test create and get roundtrip"
+      "Test member add/remove"
+      "Test confidence update"
+      "Test reinforcement timestamp"
+      "Test projection edges"]
+     :depends-on ["W2.2"]}]}
+
+  {:wave 3
+   :name "Temporal Query Facade"
+   :description "Expose time-travel queries via connection.clj"
+   :tasks
+   [{:id "W3.1"
+     :subject "Add temporal predicates to connection.clj"
+     :file "src/hive_mcp/knowledge_graph/connection.clj"
+     :changes
+     ["temporal-store? predicate"
+      "require datahike store dynamically"]
+     :depends-on []}
+
+    {:id "W3.2"
+     :subject "Add temporal query functions to connection.clj"
+     :file "src/hive_mcp/knowledge_graph/connection.clj"
+     :changes
+     ["history-db function (delegates to store)"
+      "as-of-db function with tx-or-time param"
+      "since-db function with tx-or-time param"
+      "query-history for historical queries"
+      "query-as-of for point-in-time queries"]
+     :depends-on ["W3.1"]}
+
+    {:id "W3.3"
+     :subject "Add temporal query tests"
+     :file "test/hive_mcp/knowledge_graph/connection_temporal_test.clj"
+     :changes
+     ["Test history-db returns value when Datahike"
+      "Test as-of-db returns past state"
+      "Test temporal-store? false for DataScript"
+      "Test graceful nil return for non-temporal stores"]
+     :depends-on ["W3.2"]}]}
+
+  {:wave 4
+   :name "Yggdrasil Integration"
+   :description "Wire Yggdrasil adapter into main KG system"
+   :tasks
+   [{:id "W4.1"
+     :subject "Add versioning namespace"
+     :file "src/hive_mcp/knowledge_graph/versioning.clj"
+     :changes
+     ["Wrap DatahikeStore with Yggdrasil adapter"
+      "create-versioned-store function"
+      "branch! / checkout / branches functions"
+      "snapshot-id / parent-ids functions"
+      "merge! for branch merging"]
+     :depends-on ["W3.2"]}
+
+    {:id "W4.2"
+     :subject "Add versioning MCP tool"
+     :file "src/hive_mcp/tools/kg.clj"
+     :changes
+     ["kg_branch tool to create branch"
+      "kg_checkout tool to switch branches"
+      "kg_branches tool to list branches"
+      "kg_snapshot_id tool for current commit"
+      "kg_history tool for commit history"]
+     :depends-on ["W4.1"]}
+
+    {:id "W4.3"
+     :subject "Add versioning tests"
+     :file "test/hive_mcp/knowledge_graph/versioning_test.clj"
+     :changes
+     ["Test branch creation"
+      "Test checkout switches state"
+      "Test merge combines branches"
+      "Test history returns commit IDs"]
+     :depends-on ["W4.2"]}]}
+
+  {:wave 5
+   :name "Migration Tooling"
+   :description "Data migration from DataScript/Datalevin to Datahike"
+   :tasks
+   [{:id "W5.1"
+     :subject "Create migration namespace"
+     :file "src/hive_mcp/knowledge_graph/migration.clj"
+     :changes
+     ["export-to-edn function (dump all edges/disc/synthetic)"
+      "import-from-edn function (load into Datahike)"
+      "migrate-store! function (source-backend -> :datahike)"
+      "validate-migration function (count comparison)"]
+     :depends-on ["W2.2"]}
+
+    {:id "W5.2"
+     :subject "Add migration CLI command"
+     :file "src/hive_mcp/cli/migrate.clj"
+     :changes
+     ["--source-backend flag"
+      "--target-backend flag"
+      "--dry-run flag"
+      "Progress reporting"]
+     :depends-on ["W5.1"]}
+
+    {:id "W5.3"
+     :subject "Add migration tests"
+     :file "test/hive_mcp/knowledge_graph/migration_test.clj"
+     :changes
+     ["Test export produces valid EDN"
+      "Test import creates all entities"
+      "Test roundtrip DataScript -> Datahike"
+      "Test validation catches missing entities"]
+     :depends-on ["W5.2"]}]}]
+
+ :dependencies-graph
+ {:W1.1 []
+  :W1.2 [:W1.1]
+  :W1.3 [:W1.2]
+  :W2.1 [:W1.2]
+  :W2.2 [:W2.1]
+  :W2.3 [:W2.2]
+  :W3.1 []
+  :W3.2 [:W3.1]
+  :W3.3 [:W3.2]
+  :W4.1 [:W3.2]
+  :W4.2 [:W4.1]
+  :W4.3 [:W4.2]
+  :W5.1 [:W2.2]
+  :W5.2 [:W5.1]
+  :W5.3 [:W5.2]}
+
+ :parallel-opportunities
+ [["W1.1" "W3.1"]  ; Schema and temporal predicates independent
+  ["W1.3" "W2.1"]  ; Schema tests can run while synthetic starts
+  ["W2.3" "W3.3"]] ; Both test waves after their deps
+
+ :risk-mitigations
+ [{:risk "Datahike schema migration breaks existing data"
+   :mitigation "Export before schema change, version schema defs"}
+  {:risk "Yggdrasil API changes in upstream"
+   :mitigation "Pin version, wrap in versioning.clj abstraction"}
+  {:risk "Performance regression with persistent store"
+   :mitigation "Benchmark CRUD ops, add :mem backend for tests"}]
+
+ :success-criteria
+ ["All existing KG tests pass with :datahike backend"
+  "Synthetic nodes persist across JVM restarts"
+  "Time-travel queries return historical state"
+  "Yggdrasil branch/merge operations work"
+  "Migration from DataScript/Datalevin succeeds with 0 data loss"]}

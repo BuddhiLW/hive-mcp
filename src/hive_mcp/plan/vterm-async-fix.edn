@@ -1,0 +1,183 @@
+{:title "Fix vterm-mode async timer context bug"
+ :created "2026-01-30"
+ :status :planned
+ :kanban-ref "20260129211350-81e18468"
+
+ :problem
+ {:symptom "vterm-mode fails in async timer context with 'Invalid function: vterm'"
+  :observed ["Timer callback calls vterm-send-return without ensuring vterm is loaded"
+             "Error: Invalid function: vterm"
+             "Timer runs in deferred context where autoloads may not trigger"
+             "condition-case catches error but message is confusing"]
+  :expected "Timer callback should verify vterm functions are bound before calling"}
+
+ :investigation
+ {:affected-file "elisp/addons/swarm/hive-mcp-swarm-terminal.el"
+  :affected-lines "289-302"
+
+  :call-chain
+  ["1. hive-mcp-swarm-terminal--send-vterm called"
+   "2. vterm-send-string called synchronously (L292) - works if vterm loaded"
+   "3. run-at-time schedules timer callback (L294)"
+   "4. Timer fires in async context (different execution context)"
+   "5. with-current-buffer switches to buffer"
+   "6. vterm-send-return called without fboundp check (L299)"
+   "7. CRASH: vterm function not bound in timer context"]
+
+  :contrast-with-eat
+  {:file "same file"
+   :lines "304-320"
+   :pattern "eat backend properly guards: (boundp 'eat-terminal) AND eat-terminal"
+   :lesson "vterm should follow same defensive pattern"}
+
+  :existing-patterns
+  [{:location "L218-220"
+    :code "(and (require 'vterm nil t) (fboundp 'vterm-mode) (fboundp 'vterm-send-string))"
+    :context "backend-available-p check"
+    :note "This is checked BEFORE spawn, but timer runs AFTER"}
+
+   {:location "L285-288 (slaves.el)"
+    :code "(unless (and (require 'vterm nil t) (fboundp 'vterm-mode) (fboundp 'vterm-send-string))"
+    :context "spawn-time validation"
+    :note "Ensures vterm available at spawn, but not in deferred timer"}]}
+
+ :root-cause-hypothesis
+ {:primary
+  {:issue "vterm autoloads not triggered in timer execution context"
+   :detail "Emacs timer callbacks run in a minimal context where
+           autoload cookies may not fire automatically. The declare-function
+           at top of file only silences byte-compiler, doesn't load functions.
+           When timer fires, (vterm-send-return) sees symbol not bound to function."
+   :evidence "Error says 'Invalid function: vterm' - symbol exists but not fboundp"}
+
+  :secondary
+  {:issue "Asymmetric guarding between synchronous and async paths"
+   :detail "Line 292 calls vterm-send-string synchronously without guard.
+           Line 299 calls vterm-send-return in async timer without guard.
+           If vterm gets garbage-collected/unloaded between calls, both fail."}}
+
+ :fix-plan
+ {:strategy "Add fboundp guards in timer callback, matching eat backend pattern"
+
+  :steps
+  [{:step 1
+    :action "Add fboundp check for vterm-send-return in timer callback"
+    :file "elisp/addons/swarm/hive-mcp-swarm-terminal.el"
+    :location "L294-302"
+    :change "Guard vterm-send-return with fboundp check"
+    :before
+    "(run-at-time hive-mcp-swarm-terminal-send-delay nil
+                 (lambda ()
+                   (condition-case err
+                       (when (buffer-live-p buffer)
+                         (with-current-buffer buffer
+                           (vterm-send-return)))
+                     (error
+                      (message \"[swarm-terminal] Timer error in vterm send-return: %s\"
+                               (error-message-string err))))))"
+    :after
+    "(run-at-time hive-mcp-swarm-terminal-send-delay nil
+                 (lambda ()
+                   (condition-case err
+                       (when (and (buffer-live-p buffer)
+                                  (fboundp 'vterm-send-return))
+                         (with-current-buffer buffer
+                           (vterm-send-return)))
+                     (error
+                      (message \"[swarm-terminal] Timer error in vterm send-return: %s\"
+                               (error-message-string err))))))"}
+
+   {:step 2
+    :action "Add fboundp check for vterm-send-string in synchronous call"
+    :file "elisp/addons/swarm/hive-mcp-swarm-terminal.el"
+    :location "L291-292"
+    :change "Guard synchronous call and signal error if vterm unavailable"
+    :before
+    "(defun hive-mcp-swarm-terminal--send-vterm (buffer text)
+      \"Send TEXT to vterm BUFFER, then return. Non-blocking.\"
+      (with-current-buffer buffer
+        (vterm-send-string text)"
+    :after
+    "(defun hive-mcp-swarm-terminal--send-vterm (buffer text)
+      \"Send TEXT to vterm BUFFER, then return. Non-blocking.\"
+      (unless (fboundp 'vterm-send-string)
+        (error \"[swarm-terminal] vterm-send-string not available - ensure vterm is loaded\"))
+      (with-current-buffer buffer
+        (vterm-send-string text)"}
+
+   {:step 3
+    :action "Add lazy require before vterm operations (belt-and-suspenders)"
+    :file "elisp/addons/swarm/hive-mcp-swarm-terminal.el"
+    :location "L289-302"
+    :change "Add (require 'vterm nil t) at start of function for robustness"
+    :rationale "Even though backend-available-p checks at spawn, an extra
+               require call is cheap and ensures vterm is loaded when needed.
+               Pattern: defensive programming per CLARITY-Y"
+    :code
+    "(defun hive-mcp-swarm-terminal--send-vterm (buffer text)
+      \"Send TEXT to vterm BUFFER, then return. Non-blocking.\"
+      (require 'vterm nil t)  ; Ensure vterm loaded
+      (unless (fboundp 'vterm-send-string)
+        (error \"[swarm-terminal] vterm-send-string not available\"))
+      (with-current-buffer buffer
+        (vterm-send-string text)
+        ;; Schedule return via timer - never blocks
+        (run-at-time hive-mcp-swarm-terminal-send-delay nil
+                     (lambda ()
+                       (condition-case err
+                           (when (and (buffer-live-p buffer)
+                                      (fboundp 'vterm-send-return))
+                             (with-current-buffer buffer
+                               (vterm-send-return)))
+                         (error
+                          (message \"[swarm-terminal] Timer error in vterm send-return: %s\"
+                                   (error-message-string err))))))))"}]}
+
+ :test-scenarios
+ [{:scenario "Normal vterm operation"
+   :steps ["Spawn slave with vterm backend"
+           "Dispatch prompt"
+           "Verify vterm-send-string and vterm-send-return called"
+           "Task completes successfully"]
+   :expected "Works as before, no regression"}
+
+  {:scenario "vterm unloaded between spawn and dispatch"
+   :steps ["Spawn slave with vterm backend"
+           "Manually unload vterm: (unload-feature 'vterm t)"
+           "Dispatch prompt"
+           "Check error handling"]
+   :expected "Clear error message, no crash"}
+
+  {:scenario "Timer fires after vterm gc"
+   :steps ["Spawn slave"
+           "Dispatch prompt"
+           "Immediately force garbage collection"
+           "Wait for timer to fire"]
+   :expected "Timer callback handles missing function gracefully"}]
+
+ :verification
+ {:manual-test
+  ["1. M-x hive-mcp-swarm-mode RET"
+   "2. (setq hive-mcp-swarm-terminal 'vterm)"
+   "3. M-x hive-mcp-swarm-spawn RET test RET"
+   "4. Dispatch a prompt to the slave"
+   "5. Verify no 'Invalid function: vterm' errors in *Messages*"]
+
+  :automated-test-location "test/elisp/hive-mcp-swarm-terminal-test.el"
+
+  :expected-outcomes
+  ["No 'Invalid function: vterm' errors"
+   "Timer callbacks complete silently or with clear error message"
+   "Slave tasks complete successfully"
+   "Graceful degradation if vterm becomes unavailable"]}
+
+ :convention
+ {:name "CLARITY-Y"
+  :principle "Yield safe failure"
+  :application "Wrap async timer callbacks with condition-case AND fboundp guards
+               to prevent Emacs crash from symbol resolution failures"}
+
+ :related-issues
+ ["eat backend already follows this pattern (L304-320)"
+  "claude-code-ide backend uses sit-for instead of timer, different concern"
+  "ollama backend uses callbacks, similar pattern should be verified"]}

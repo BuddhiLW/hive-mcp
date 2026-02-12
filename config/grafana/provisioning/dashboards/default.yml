@@ -1,0 +1,14 @@
+# Grafana dashboard provisioning
+# Auto-loads dashboards from /var/lib/grafana/dashboards
+
+apiVersion: 1
+
+providers:
+  - name: 'hive-mcp'
+    orgId: 1
+    folder: 'hive-mcp'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/provisioning/dashboards/json

@@ -1,0 +1,83 @@
+;; Forge Belt FSM Spec (EDN)
+;;
+;; hive-events FSM specification for the Forja Belt (Vulcan Mode) workflow.
+;; This is the data-driven representation — handlers are referenced by keyword
+;; and must be supplied via the handlers map at compile time.
+;;
+;; Usage:
+;;   (require '[hive.events.fsm :as fsm])
+;;   (require '[clojure.edn :as edn])
+;;   (-> (fsm/compile (edn/read-string (slurp "resources/fsm/forge-belt.edn"))
+;;                    handler-map)
+;;       (fsm/run resources initial-state))
+;;
+;; Handler map keys:
+;;   :start   — Initialize cycle, clear previous results
+;;   :smite   — Kill completed/zombie lings
+;;   :survey  — Query kanban for todo tasks
+;;   :spark   — Spawn lings for ready tasks
+;;   :end     — Terminal state, return summary
+;;   :halt    — Quench state, return pausable FSM
+;;   :error   — Error state, throw with context
+;;
+;; State data shape:
+;;   {:quenched?      bool
+;;    :continuous?    bool
+;;    :strike-count   int
+;;    :total-smited   int
+;;    :total-sparked  int
+;;    :smite-result   map
+;;    :survey-result  map
+;;    :spark-result   map
+;;    :last-strike    string
+;;    :error          any}
+;;
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW)
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
+{:fsm
+ {:hive.events.fsm/start
+  {:handler    :start
+   :dispatches [[:hive.events.fsm/halt
+                 (fn [data] (true? (:quenched? data)))]
+                [:hive-mcp.workflows.forge-belt/smite
+                 (fn [_] true)]]}
+
+  :hive-mcp.workflows.forge-belt/smite
+  {:handler    :smite
+   :dispatches [[:hive.events.fsm/halt
+                 (fn [data] (true? (:quenched? data)))]
+                [:hive-mcp.workflows.forge-belt/survey
+                 (fn [_] true)]]}
+
+  :hive-mcp.workflows.forge-belt/survey
+  {:handler    :survey
+   :dispatches [[:hive.events.fsm/halt
+                 (fn [data] (true? (:quenched? data)))]
+                [:hive-mcp.workflows.forge-belt/spark
+                 (fn [data] (pos? (get-in data [:survey-result :count] 0)))]
+                [:hive.events.fsm/end
+                 (fn [data] (zero? (get-in data [:survey-result :count] 0)))]]}
+
+  :hive-mcp.workflows.forge-belt/spark
+  {:handler    :spark
+   :dispatches [[:hive.events.fsm/halt
+                 (fn [data] (true? (:quenched? data)))]
+                [:hive.events.fsm/start
+                 (fn [data] (true? (:continuous? data)))]
+                [:hive.events.fsm/end
+                 (fn [data] (not (:continuous? data)))]]}
+
+  :hive.events.fsm/end
+  {:handler :end}
+
+  :hive.events.fsm/halt
+  {:handler :halt}
+
+  :hive.events.fsm/error
+  {:handler :error}}
+
+ :opts
+ {:max-trace     100
+  :subscriptions {[:total-smited]  {:handler (fn [_path _old _new] nil)}
+                  [:total-sparked] {:handler (fn [_path _old _new] nil)}}}}

@@ -1,0 +1,188 @@
+(ns hive-mcp.channel.piggyback-cursor-test
+  "Tests for hivemind piggyback cursor stability.
+
+   Pins down the bug where different agent-ids in tool args created
+   spurious cursor keys, causing ALL accumulated shouts to be
+   re-delivered from timestamp 0 on every dispatch to a new target.
+
+   See: CURSOR IDENTITY FIX in server/routes.clj"
+  (:require [clojure.test :refer [deftest is testing use-fixtures]]
+            [hive-mcp.channel.piggyback :as pb]))
+
+;; Reset cursor and message source state between tests
+(use-fixtures :each
+  (fn [f]
+    (pb/reset-all-cursors!)
+    (f)
+    (pb/reset-all-cursors!)))
+
+;; =============================================================================
+;; Cursor Key Stability — The Core Bug
+;; =============================================================================
+
+(deftest different-agent-ids-create-independent-cursors-test
+  (testing "REGRESSION: Different agent-ids get independent cursors (the underlying behavior)"
+    ;; This test documents WHY the bug existed:
+    ;; piggyback/get-messages uses [agent-id project-id] as cursor key.
+    ;; When middleware passes different agent-ids (from dispatch targets),
+    ;; each creates an independent cursor starting from 0.
+    (let [messages (atom [{:agent-id "ling-1"
+                           :event-type :progress
+                           :message "working"
+                           :timestamp 1000
+                           :project-id "proj-A"}])]
+      (pb/register-message-source! (fn [] @messages))
+
+      ;; First read with coordinator-proj-A: gets the message, advances cursor
+      (let [r1 (pb/get-messages "coordinator-proj-A" :project-id "proj-A")]
+        (is (= 1 (count r1)) "coordinator reads 1 message"))
+
+      ;; Same coordinator reads again: nothing new
+      (let [r2 (pb/get-messages "coordinator-proj-A" :project-id "proj-A")]
+        (is (nil? r2) "same cursor key returns nil — already read"))
+
+      ;; DIFFERENT agent-id reads: gets the message AGAIN (fresh cursor!)
+      ;; This is the ROOT CAUSE — if middleware uses target agent-id,
+      ;; every dispatch to a new target re-reads all messages.
+      (let [r3 (pb/get-messages "swarm-target-ling-1" :project-id "proj-A")]
+        (is (= 1 (count r3)) "different agent-id = fresh cursor = re-delivery")))))
+
+(deftest stable-cursor-key-prevents-re-delivery-test
+  (testing "Using the SAME agent-id for all reads prevents re-delivery"
+    (let [messages (atom [{:agent-id "ling-1"
+                           :event-type :progress
+                           :message "task 1 progress"
+                           :timestamp 1000
+                           :project-id "proj-A"}])]
+      (pb/register-message-source! (fn [] @messages))
+
+      ;; Read 1: coordinator sees 1 message
+      (let [r1 (pb/get-messages "coordinator-proj-A" :project-id "proj-A")]
+        (is (= 1 (count r1))))
+
+      ;; Simulate: new shout arrives
+      (swap! messages conj {:agent-id "ling-2"
+                            :event-type :completed
+                            :message "task 2 done"
+                            :timestamp 2000
+                            :project-id "proj-A"})
+
+      ;; Read 2: same cursor key — only the NEW message
+      (let [r2 (pb/get-messages "coordinator-proj-A" :project-id "proj-A")]
+        (is (= 1 (count r2)) "only 1 new message, not 2")
+        (is (= "task 2 done" (:m (first r2)))))
+
+      ;; Read 3: nothing new
+      (let [r3 (pb/get-messages "coordinator-proj-A" :project-id "proj-A")]
+        (is (nil? r3) "cursor advanced, nothing to deliver")))))
+
+(deftest ever-growing-piggyback-regression-test
+  (testing "REGRESSION: Simulates the exact bug — dispatching to N agents re-delivers all N times"
+    ;; Scenario: coordinator dispatches to 3 different lings.
+    ;; With the bug, each dispatch used the TARGET agent-id as cursor key,
+    ;; so each got ALL accumulated shouts from timestamp 0.
+    (let [shouts (atom [{:agent-id "ling-scout" :event-type :progress
+                         :message "scouting" :timestamp 100
+                         :project-id "hive-mcp"}
+                        {:agent-id "ling-worker" :event-type :started
+                         :message "started" :timestamp 200
+                         :project-id "hive-mcp"}
+                        {:agent-id "ling-tester" :event-type :completed
+                         :message "tests pass" :timestamp 300
+                         :project-id "hive-mcp"}])]
+      (pb/register-message-source! (fn [] @shouts))
+
+      ;; WRONG behavior (before fix): each target-id creates fresh cursor
+      ;; Dispatch 1: using target "swarm-orchestrator" as cursor key
+      (let [r1 (pb/get-messages "swarm-orchestrator" :project-id "hive-mcp")]
+        (is (= 3 (count r1)) "fresh cursor → all 3 shouts"))
+
+      ;; Dispatch 2: using target "swarm-permissions" as cursor key
+      (let [r2 (pb/get-messages "swarm-permissions" :project-id "hive-mcp")]
+        (is (= 3 (count r2)) "DIFFERENT cursor key → all 3 AGAIN"))
+
+      ;; Dispatch 3: using target "swarm-session" as cursor key
+      (let [r3 (pb/get-messages "swarm-session" :project-id "hive-mcp")]
+        (is (= 3 (count r3)) "ANOTHER cursor key → all 3 AGAIN"))
+
+      ;; CORRECT behavior: using STABLE coordinator ID for all reads
+      (pb/reset-all-cursors!)
+
+      ;; Read 1: coordinator-hive-mcp reads all 3 (expected on first read)
+      (let [r1 (pb/get-messages "coordinator-hive-mcp" :project-id "hive-mcp")]
+        (is (= 3 (count r1)) "first read: all 3 shouts"))
+
+      ;; Read 2: same coordinator key — nothing new
+      (let [r2 (pb/get-messages "coordinator-hive-mcp" :project-id "hive-mcp")]
+        (is (nil? r2) "same cursor key: nothing to re-deliver"))
+
+      ;; Read 3: still nothing (cursor stable)
+      (let [r3 (pb/get-messages "coordinator-hive-mcp" :project-id "hive-mcp")]
+        (is (nil? r3) "cursor remains stable across reads")))))
+
+;; =============================================================================
+;; Cross-Session Stale Messages
+;; =============================================================================
+
+(deftest stale-messages-from-previous-session-test
+  (testing "Messages from previous sessions are delivered once on first read, then cursor advances"
+    (let [;; Old messages from previous session (lower timestamps)
+          old-shouts [{:agent-id "old-ling" :event-type :completed
+                       :message "old work done" :timestamp 1000
+                       :project-id "proj-A"}
+                      {:agent-id "old-ling-2" :event-type :error
+                       :message "old error" :timestamp 2000
+                       :project-id "proj-A"}]
+          ;; New messages from current session
+          new-shout {:agent-id "new-ling" :event-type :started
+                     :message "new work started" :timestamp 5000
+                     :project-id "proj-A"}
+          all-messages (atom (vec (conj old-shouts new-shout)))]
+      (pb/register-message-source! (fn [] @all-messages))
+
+      ;; First read: gets ALL messages (old + new), expected
+      (let [r1 (pb/get-messages "coordinator-proj-A" :project-id "proj-A")]
+        (is (= 3 (count r1)) "first read includes old + new"))
+
+      ;; Cursor now at timestamp 5000
+      ;; Second read: nothing new
+      (let [r2 (pb/get-messages "coordinator-proj-A" :project-id "proj-A")]
+        (is (nil? r2) "cursor advanced past all messages"))
+
+      ;; New message arrives at timestamp 6000
+      (swap! all-messages conj {:agent-id "new-ling" :event-type :progress
+                                :message "progressing" :timestamp 6000
+                                :project-id "proj-A"})
+
+      ;; Third read: only the truly new message
+      (let [r3 (pb/get-messages "coordinator-proj-A" :project-id "proj-A")]
+        (is (= 1 (count r3)))
+        (is (= "progressing" (:m (first r3))))))))
+
+;; =============================================================================
+;; Cursor Isolation Between Projects
+;; =============================================================================
+
+(deftest project-cursor-isolation-test
+  (testing "coordinator-proj-A cursor is independent of coordinator-proj-B"
+    (let [messages (atom [{:agent-id "ling-1" :event-type :progress
+                           :message "A work" :timestamp 1000
+                           :project-id "proj-A"}
+                          {:agent-id "ling-2" :event-type :progress
+                           :message "B work" :timestamp 1000
+                           :project-id "proj-B"}])]
+      (pb/register-message-source! (fn [] @messages))
+
+      ;; proj-A coordinator reads proj-A messages
+      (let [ra (pb/get-messages "coordinator-proj-A" :project-id "proj-A")]
+        (is (= 1 (count ra)))
+        (is (= "A work" (:m (first ra)))))
+
+      ;; proj-B coordinator reads proj-B messages (not affected by proj-A cursor)
+      (let [rb (pb/get-messages "coordinator-proj-B" :project-id "proj-B")]
+        (is (= 1 (count rb)))
+        (is (= "B work" (:m (first rb)))))
+
+      ;; Both cursors advanced — re-read returns nil
+      (is (nil? (pb/get-messages "coordinator-proj-A" :project-id "proj-A")))
+      (is (nil? (pb/get-messages "coordinator-proj-B" :project-id "proj-B"))))))
