@@ -1,0 +1,87 @@
+;; Complete Session FSM Spec (EDN)
+;;
+;; hive-events FSM specification for the full session completion workflow.
+;; Orchestrates: validate → git-commit → kanban-done → crystallize → shout → evict.
+;;
+;; Usage:
+;;   (require '[hive.events.fsm :as fsm])
+;;   (-> (fsm/compile spec handler-map)
+;;       (fsm/run resources {:data {:commit-msg "feat: done" :agent-id "ling-123"}}))
+;;
+;; Handler map keys:
+;;   :start       - Initialize, resolve agent-id/directory, validate params
+;;   :commit      - Git commit staged changes
+;;   :kanban      - Move kanban tasks to done
+;;   :crystallize  - Persist session summary to long-term memory
+;;   :shout       - Broadcast completion to hivemind coordinator
+;;   :plan-check  - Check if explorer preset → trigger plan-to-kanban
+;;   :evict       - Evict agent's cached context-store entries
+;;   :end         - Terminal state, return summary
+;;   :error       - Error state, return error context
+;;
+;; State data shape:
+;;   {:commit-msg    string    ;; Git commit message (required)
+;;    :task-ids      [string]  ;; Kanban task IDs to mark done
+;;    :agent-id      string    ;; Effective agent identifier
+;;    :directory     string    ;; Working directory
+;;    :commit-result map       ;; Git commit result
+;;    :kanban-result map       ;; Kanban move result
+;;    :crystal-result map      ;; Crystallize result
+;;    :shout-result  map       ;; Hivemind shout result
+;;    :plan-result   map       ;; Plan-to-kanban trigger result
+;;    :eviction      map       ;; Context eviction result
+;;    :error         any}      ;; Error info if in error state
+;;
+;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW)
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
+{:fsm
+ {:hive.events.fsm/start
+  {:handler    :start
+   :dispatches [[:hive-mcp.workflows.complete-session/commit
+                 (fn [data] (and (:commit-msg data)
+                                 (:agent-id data)
+                                 (not (:error data))))]
+                [:hive.events.fsm/error
+                 (fn [data] (some? (:error data)))]]}
+
+  :hive-mcp.workflows.complete-session/commit
+  {:handler    :commit
+   :dispatches [[:hive-mcp.workflows.complete-session/kanban
+                 (fn [data] (seq (:task-ids data)))]
+                [:hive-mcp.workflows.complete-session/crystallize
+                 (fn [data] (empty? (:task-ids data)))]]}
+
+  :hive-mcp.workflows.complete-session/kanban
+  {:handler    :kanban
+   :dispatches [[:hive-mcp.workflows.complete-session/crystallize
+                 (fn [_] true)]]}
+
+  :hive-mcp.workflows.complete-session/crystallize
+  {:handler    :crystallize
+   :dispatches [[:hive-mcp.workflows.complete-session/shout
+                 (fn [_] true)]]}
+
+  :hive-mcp.workflows.complete-session/shout
+  {:handler    :shout
+   :dispatches [[:hive-mcp.workflows.complete-session/plan-check
+                 (fn [_] true)]]}
+
+  :hive-mcp.workflows.complete-session/plan-check
+  {:handler    :plan-check
+   :dispatches [[:hive-mcp.workflows.complete-session/evict
+                 (fn [_] true)]]}
+
+  :hive-mcp.workflows.complete-session/evict
+  {:handler    :evict
+   :dispatches [[:hive.events.fsm/end
+                 (fn [_] true)]]}
+
+  :hive.events.fsm/end
+  {:handler :end}
+
+  :hive.events.fsm/error
+  {:handler :error}}
+
+ :opts
+ {:max-trace 50}}

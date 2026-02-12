@@ -1,0 +1,12 @@
+# Grafana datasource provisioning for Loki
+# Auto-configures Loki for log queries
+
+apiVersion: 1
+
+datasources:
+  - name: Loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    isDefault: false
+    editable: false

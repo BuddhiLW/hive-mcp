@@ -1,0 +1,128 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - '**.el'
+      - 'elisp/**'
+      - 'presets/**'
+      - 'docs/**'
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - '**.el'
+      - 'elisp/**'
+      - 'presets/**'
+      - 'docs/**'
+  workflow_dispatch:
+
+jobs:
+  lint:
+    name: clj-kondo Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Setup Clojure
+        uses: DeLaGuardo/setup-clojure@13.2
+        with:
+          cli: 'latest'
+          clj-kondo: 'latest'
+
+      - name: Lint with clj-kondo
+        run: |
+          clj-kondo --lint src test \
+            --config-dir .clj-kondo \
+            --fail-level error
+
+  test:
+    name: Unit Tests (Java ${{ matrix.java }})
+    runs-on: ubuntu-latest
+    needs: [lint]
+    strategy:
+      fail-fast: false
+      matrix:
+        java: ['21']
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: ${{ matrix.java }}
+
+      - name: Setup Clojure
+        uses: DeLaGuardo/setup-clojure@13.2
+        with:
+          cli: 'latest'
+
+      - name: Cache Maven deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.m2/repository
+            ~/.gitlibs
+            ~/.deps.clj
+          key: clj-${{ runner.os }}-${{ hashFiles('deps.edn') }}
+          restore-keys: |
+            clj-${{ runner.os }}-
+
+      - name: Download dependencies
+        run: clojure -P -M:test-unit
+
+      - name: Run unit tests
+        run: clojure -M:test-unit
+        env:
+          # Suppress Netty warnings in CI
+          JVM_OPTS: >-
+            --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED
+            --add-opens=java.base/java.nio=ALL-UNNAMED
+            -Dio.netty.tryReflectionSetAccessible=true
+
+  deps:
+    name: Dependency Resolution
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Setup Clojure
+        uses: DeLaGuardo/setup-clojure@13.2
+        with:
+          cli: 'latest'
+
+      - name: Cache Maven deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.m2/repository
+            ~/.gitlibs
+            ~/.deps.clj
+          key: clj-${{ runner.os }}-${{ hashFiles('deps.edn') }}
+          restore-keys: |
+            clj-${{ runner.os }}-
+
+      - name: Resolve all dependencies
+        run: clojure -P -M:dev:test
+
+      - name: Print classpath (debug)
+        run: clojure -Spath | tr ':' '\n' | head -30
