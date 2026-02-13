@@ -65,7 +65,7 @@
 ;;   :dd  = decompose           :cb  = context-budget
 ;;   :bx  = multi-batch         :fb  = forge-belt
 ;;   :ch  = crystal-hooks       :cl  = crystal-recall
-;;   :ck  = crystal-tools
+;;   :ck  = crystal-tools       :da  = done-archive
 
 (def ^:private ext-group-a
   {:ns 'hive-knowledge.similarity
@@ -306,6 +306,14 @@
   {:ns 'hive-knowledge.crystal-tools
    :fns [["build-crystal-edges" :ck/a]]})
 
+;; --- Group AC: Done Archive ---
+(def ^:private ext-group-ac
+  {:ns 'hive-knowledge.done-archive
+   :fns [["archive-done-task!"   :da/archive!]
+         ["query-done-tasks"     :da/query]
+         ["recent-completions"   :da/recent]
+         ["milestone-progress"   :da/milestone]]})
+
 ;; =============================================================================
 ;; All Extension Manifests
 ;; =============================================================================
@@ -316,10 +324,10 @@
    ext-group-f ext-group-g ext-group-h ext-group-i ext-group-j
    ext-group-k ext-group-l ext-group-m ext-group-n ext-group-o
    ext-group-p
-   ;; IP migration groups (Q-AB)
+   ;; IP migration groups (Q-AC)
    ext-group-q ext-group-r ext-group-s ext-group-t ext-group-u
    ext-group-v ext-group-w ext-group-x ext-group-y ext-group-z
-   ext-group-aa ext-group-ab])
+   ext-group-aa ext-group-ab ext-group-ac])
 
 ;; =============================================================================
 ;; Extension Self-Registration

@@ -20,6 +20,7 @@
             [hive-mcp.project.tree :as tree]
             [hive-mcp.agent.context :as ctx]
             [clojure.data.json :as json]
+            [clojure.string :as str]
             [taoensso.timbre :as log])
   (:import [java.time ZonedDateTime]
            [java.time.format DateTimeFormatter]))
@@ -178,11 +179,35 @@
         slim-entries (mapv #(task->slim % multi-project?) kanban-entries)]
     (mcp-json (sort-by-priority-then-created slim-entries))))
 
+(defn- archive-to-done-archive!
+  "Archive task data to Datahike done-archive before deletion.
+   Non-blocking, non-fatal. If hive-knowledge not available, logs and continues."
+  [entry task-id]
+  (try
+    (when-let [archive-fn (requiring-resolve 'hive-knowledge.done-archive/archive-done-task!)]
+      (let [content (:content entry)
+            task-data {:id task-id
+                       :title (or (get content :title)
+                                  (get content :description)
+                                  (str task-id))
+                       :scope (some-> entry :tags
+                                      (->> (filter #(str/starts-with? % "scope:project:"))
+                                           first
+                                           (str/replace "scope:project:" "")))
+                       :agent-id (get content :agent-id)
+                       :files (get content :files)}]
+        (archive-fn task-data)
+        (log/info "Archived done task to Datahike:" task-id)))
+    (catch Exception e
+      (log/debug "Done-archive not available (non-fatal):" (.getMessage e)))))
+
 (defn- move-to-done! [entry task-id]
   (when-let [task-data (crystal-hooks/extract-task-from-kanban-entry entry)]
     (log/info "Calling crystal hook for completed kanban task:" task-id)
     (try (crystal-hooks/on-kanban-done task-data)
          (catch Exception e (log/warn "Crystal hook failed (non-fatal):" (.getMessage e)))))
+  ;; Archive to Datahike before deleting from Chroma
+  (archive-to-done-archive! entry task-id)
   (chroma/delete-entry! task-id)
   (mcp-json {:deleted true :status "done" :id task-id}))
 

@@ -96,13 +96,14 @@
                tasks))))
 
 (defn- survey
-  "Query kanban for todo tasks, ranked and optionally filtered by KG dependencies."
-  [{:keys [directory vulcan-mode]}]
+  "Query kanban for todo tasks, ranked and optionally filtered by KG dependencies.
+   Extra keys in opts are passed through to vulcan/prioritize-tasks (OCP)."
+  [{:keys [directory vulcan-mode] :as opts}]
   (try
     (let [result (c-kanban/handle-kanban {:command "list" :status "todo" :directory directory})
           tasks (parse-kanban-tasks result)]
       (if vulcan-mode
-        (let [prioritized (vulcan/prioritize-tasks tasks)]
+        (let [prioritized (vulcan/prioritize-tasks tasks #{} (dissoc opts :directory :vulcan-mode))]
           (log/info "SURVEY (vulcan): ready" (:count prioritized)
                     "blocked" (:blocked-count prioritized)
                     "of" (count tasks) "total")
@@ -266,10 +267,12 @@
          :max-slots max-slots}))))
 
 (defn build-fsm-resources
-  "Build the resources map for the Forge Belt FSM."
-  [{:keys [directory max_slots presets spawn_mode model vulcan_mode]}]
+  "Build the resources map for the Forge Belt FSM.
+   Extra keys in params flow through to survey via kanban-ops/list-fn (OCP)."
+  [{:keys [directory max_slots presets spawn_mode model vulcan_mode] :as params}]
   (let [effective-spawn-mode (when spawn_mode (keyword spawn_mode))
-        effective-vulcan? (boolean vulcan_mode)]
+        effective-vulcan? (boolean vulcan_mode)
+        survey-opts (dissoc params :directory :max_slots :presets :spawn_mode :model :vulcan_mode)]
     {:directory  directory
      :config     {:max-slots  (or max_slots 10)
                   :presets    (or presets ["ling" "mcp-first" "saa"])
@@ -286,10 +289,13 @@
                                         (or (:spawn-mode opts) effective-spawn-mode)
                                         (assoc :spawn-mode (or (:spawn-mode opts) effective-spawn-mode))
                                         (or (:model opts) model)
-                                        (assoc :model (or (:model opts) model)))))}
+                                        (assoc :model (or (:model opts) model)))))
+                  :dispatch-fn    (fn [_agent-id _task] true)
+                  :wait-ready-fn  (fn [_agent-id] true)}
      :kanban-ops {:list-fn   (fn [dir]
-                               (survey {:directory dir
-                                        :vulcan-mode effective-vulcan?}))
+                               (survey (merge survey-opts
+                                              {:directory dir
+                                               :vulcan-mode effective-vulcan?})))
                   :update-fn (fn [_opts] nil)}
      :scope-fn   (fn [dir]
                    (when dir (scope/get-current-project-id dir)))
@@ -350,7 +356,8 @@
         (mcp-error (str "Forge strike (legacy) failed: " (ex-message e)))))))
 
 (defn- fsm-forge-strike
-  "FSM-driven forge strike implementation."
+  "FSM-driven forge strike implementation.
+   Extra keys in params flow through to survey (OCP)."
   [{:keys [directory max_slots spawn_mode model] :as params}]
   (try
     (log/info "FORGE STRIKE: Starting FSM cycle" {:directory directory :max-slots max_slots
@@ -491,6 +498,9 @@
                                        :description "Model override for spawned lings: 'claude' (default, Claude Code CLI) or OpenRouter model ID (e.g., 'moonshotai/kimi-k2.5'). Non-claude models auto-force headless/openrouter spawn mode for cost-efficient bulk work."}
                               "vulcan_mode" {:type "boolean"
                                              :description "When true, enables KG-aware dependency filtering in survey phase. Tasks blocked by incomplete KG :depends-on edges are excluded. Ready tasks sorted by priority > wave-number > creation-date. (default: false)"}
+                              "task_ids" {:type "array"
+                                          :items {:type "string"}
+                                          :description "Whitelist of kanban task IDs. When provided, survey only considers these tasks. Composable with vulcan_mode for targeted KG-aware strikes."}
                               "restart" {:type "boolean"
                                          :description "Pass true to unquench/restart the forge belt"}}
                  :required ["command"]}
