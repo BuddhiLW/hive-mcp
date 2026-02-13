@@ -10,6 +10,7 @@
   (:require [hive-mcp.dns.result :as result]
             [hive-mcp.tools.core :refer [mcp-json mcp-error]]
             [hive-mcp.emacs.client :as ec]
+            [hive-mcp.crystal.core :as crystal]
             [hive-mcp.crystal.hooks :as crystal-hooks]
             [hive-mcp.swarm.datascript :as ds]
             [hive-mcp.tools.memory.scope :as scope]
@@ -17,6 +18,7 @@
             [hive-mcp.events.effects]
             [hive-mcp.agent.context :as ctx]
             [hive-mcp.extensions.registry :as ext]
+            [hive-mcp.knowledge-graph.edges :as kg-edges]
             [clojure.data.json :as json]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -115,23 +117,49 @@
              (catch Exception _ nil))))))
 
 ;;; =============================================================================
-;;; Auto-KG Edge Creation — delegates to extension
+;;; Auto-KG Edge Creation — FOSS default + extension override
 ;;; =============================================================================
 
+(defn- build-crystal-edges-default
+  "FOSS default: create derived-from edges from summary to source entries.
+   Extensions (:ck/a) can override with richer logic (co-accessed, etc.)."
+  [{:keys [summary-id harvested project-id agent-id]}]
+  (let [source-ids (extract-source-ids harvested)
+        edge-ids (reduce
+                  (fn [acc source-id]
+                    (try
+                      (let [eid (kg-edges/add-edge!
+                                 {:from summary-id
+                                  :to source-id
+                                  :relation :derived-from
+                                  :scope project-id
+                                  :created-by agent-id
+                                  :source-type :automated})]
+                        (conj acc eid))
+                      (catch Exception e
+                        (log/warn "Failed to create derived-from edge"
+                                  summary-id "->" source-id ":" (.getMessage e))
+                        acc)))
+                  []
+                  source-ids)]
+    {:derived-from {:created-count (count edge-ids)
+                    :edge-ids edge-ids}
+     :co-accessed nil
+     :total-edges (count edge-ids)
+     :capped? false}))
+
 (defn- ck-a
-  "Delegates to extension if available.
-   OCP: positional core args + & opts for extension-specific keys."
+  "Create KG edges for wrap crystallization.
+   Delegates to :ck/a extension if available, otherwise uses FOSS default."
   [summary-id harvested project-id agent-id & {:as opts}]
-  (delegate-or-noop :ck/a
-                    {:derived-from nil
-                     :co-accessed nil
-                     :total-edges 0
-                     :capped? false}
-                    [(merge {:summary-id summary-id
-                             :harvested harvested
-                             :project-id project-id
-                             :agent-id agent-id}
-                            opts)]))
+  (let [params (merge {:summary-id summary-id
+                       :harvested harvested
+                       :project-id project-id
+                       :agent-id agent-id}
+                      opts)]
+    (if-let [f (ext/get-extension :ck/a)]
+      (f params)
+      (build-crystal-edges-default params))))
 
 ;;; =============================================================================
 ;;; Harvest / Crystallize Helpers
@@ -139,9 +167,11 @@
 
 (defn- harvest
   "Harvest session data. Returns Result."
-  [effective-dir]
-  (result/try-effect* :crystal/harvest-failed
-                      (crystal-hooks/harvest-all {:directory effective-dir})))
+  ([effective-dir] (harvest effective-dir nil))
+  ([effective-dir agent-id]
+   (result/try-effect* :crystal/harvest-failed
+                       (crystal-hooks/harvest-all {:directory effective-dir
+                                                   :agent-id agent-id}))))
 
 (defn- crystallize-session-result
   "Run crystallize-session, handling domain-level :error. Returns Result."
@@ -177,10 +207,11 @@
 
 (defn- gather*
   "Gather session data. Returns Result with combined crystal + elisp data."
-  [{:keys [directory]}]
-  (let [effective-dir (or directory (ctx/current-directory))]
+  [{:keys [directory agent_id]}]
+  (let [effective-dir (or directory (ctx/current-directory))
+        effective-agent (or agent_id (ctx/current-agent-id))]
     (log/info "wrap-gather with crystal harvesting" (str "directory:" effective-dir))
-    (result/let-ok [harvested (harvest effective-dir)]
+    (result/let-ok [harvested (harvest effective-dir effective-agent)]
                    (let [elisp-result (fetch-elisp-data effective-dir)]
                      (result/ok {:crystal harvested
                                  :elisp elisp-result
@@ -189,13 +220,15 @@
                                                  {:has-elisp-data (some? elisp-result)})})))))
 
 (defn- crystallize*
-  "Crystallize session data into long-term memory. Returns Result."
+  "Crystallize session data into long-term memory. Returns Result.
+   Resets per-agent session-start timestamp after successful crystallization
+   so subsequent sessions measure duration correctly."
   [{:keys [directory] :as params}]
   (let [effective-dir (or directory (ctx/current-directory))
         effective-agent (resolve-agent params)
         project-id (scope/get-current-project-id effective-dir)]
     (log/info "wrap-crystallize" (str "agent-id:" effective-agent " directory:" effective-dir))
-    (result/let-ok [harvested (harvest effective-dir)
+    (result/let-ok [harvested (harvest effective-dir effective-agent)
                     cr-result (crystallize-session-result harvested project-id)]
                    (let [safe-stats (or (when (map? (:stats cr-result)) (:stats cr-result)) {})
                          summary-id (:summary-id cr-result)
@@ -203,6 +236,9 @@
                          kg-result (when summary-id
                                      (ck-a summary-id harvested project-id effective-agent))]
                      (emit-wrap-notify! effective-agent cr-result project-id safe-stats)
+                     ;; Reset session-start for this agent so next session measures fresh
+                     (crystal/reset-session-start! effective-agent)
+                     (log/info "wrap-crystallize: reset session-start for" effective-agent)
                      (result/ok (cond-> (assoc cr-result :project-id project-id)
                                   kg-result (assoc :kg-edges kg-result)))))))
 

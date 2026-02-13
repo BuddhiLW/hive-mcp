@@ -140,5 +140,8 @@
    (->FSMAgenticBackend opts)))
 
 (defmethod backend/resolve-backend :fsm-agentic [context]
+  (when-not (get-run-drone-loop)
+    (throw (ex-info "FSM drone-loop not on classpath (step-8 pending)"
+                    {:backend :fsm-agentic :reason :unavailable})))
   (make-fsm-agentic-backend
    (select-keys context [:llm-backend-factory :tool-executor-fn])))

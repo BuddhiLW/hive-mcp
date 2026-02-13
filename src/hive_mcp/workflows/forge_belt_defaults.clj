@@ -84,22 +84,40 @@
            :survey-result result)))
 
 (defn- handle-spark*
-  "fb/h4: Spawn lings for tasks via (:spawn-fn (:agent-ops resources))."
+  "fb/h4: Spawn lings or dispatch drones via agent-ops.
+   When spawn-mode is :drone, delegates to :drone-dispatch-fn.
+   Otherwise delegates to :spawn-fn for ling spawning."
   [resources data]
   (let [{:keys [agent-ops kanban-ops config directory]} resources
-        {:keys [spawn-fn dispatch-fn wait-ready-fn]} agent-ops
+        {:keys [spawn-fn drone-dispatch-fn dispatch-fn wait-ready-fn]} agent-ops
         {:keys [update-fn]} kanban-ops
-        {:keys [max-slots presets spawn-mode model]} config
+        {:keys [max-slots presets spawn-mode model
+                preset seeds ctx-refs kg-node-ids]} config
         tasks (get-in data [:survey-result :tasks] [])
-        result (spawn-fn (cond-> {:directory directory
-                                  :max-slots (or max-slots 10)
-                                  :presets (or presets ["ling" "mcp-first" "saa"])
-                                  :tasks tasks
-                                  :dispatch-fn dispatch-fn
-                                  :wait-ready-fn wait-ready-fn
-                                  :update-fn update-fn}
-                           spawn-mode (assoc :spawn-mode spawn-mode)
-                           model (assoc :model model)))
+        result (if (and (= :drone spawn-mode) drone-dispatch-fn)
+                 (drone-dispatch-fn
+                  (cond-> {:directory directory
+                           :tasks     tasks}
+                    max-slots   (assoc :max_slots max-slots)
+                    model       (assoc :model model)
+                    preset      (assoc :preset preset)
+                    seeds       (assoc :seeds seeds)
+                    ctx-refs    (assoc :ctx_refs ctx-refs)
+                    kg-node-ids (assoc :kg_node_ids kg-node-ids)))
+                 (spawn-fn
+                  (cond-> {:directory      directory
+                           :max-slots      (or max-slots 10)
+                           :presets        (or presets ["ling" "mcp-first" "saa"])
+                           :tasks          tasks
+                           :dispatch-fn    dispatch-fn
+                           :wait-ready-fn  wait-ready-fn
+                           :update-fn      update-fn}
+                    spawn-mode   (assoc :spawn-mode spawn-mode)
+                    model        (assoc :model model)
+                    preset       (assoc :preset preset)
+                    seeds        (assoc :seeds seeds)
+                    ctx-refs     (assoc :ctx-refs ctx-refs)
+                    kg-node-ids  (assoc :kg-node-ids kg-node-ids))))
         clock-fn (or (:clock-fn resources) #(java.time.Instant/now))]
     (-> data
         (assoc :phase ::cycle-complete
@@ -243,4 +261,5 @@
     :fb/run     run-belt*
     :fb/strike  run-single-strike*
     :fb/cont    run-continuous-belt*})
+
   (log/info "Registered forge belt defaults (18 :fb/* extension points)"))

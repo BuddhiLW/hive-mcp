@@ -150,31 +150,47 @@
         tags))
 
 ;; =============================================================================
-;; Session Timestamp Tracking
+;; Session Timestamp Tracking (per-agent)
 ;; =============================================================================
 
 (defonce ^{:private true
-           :doc "Tracks session start time (java.time.Instant). Set on first tool call or server init. Reset on wrap."}
+           :doc "Per-agent session start times. Map of agent-id -> java.time.Instant.
+                 Set on first tool call per agent (idempotent CAS per key). Reset on wrap/complete.
+                 Global key \"_global\" used as fallback when agent-id is unknown."}
   session-start-tracker
-  (atom nil))
+  (atom {}))
+
+(def ^:private default-agent-key "_global")
 
 (defn record-session-start!
-  "Record session start timestamp. Idempotent — only records the first call.
+  "Record session start timestamp for an agent. Idempotent per agent-id —
+   only records the first call for each agent.
    Returns the recorded start time (existing or new)."
-  []
-  (let [now (java.time.Instant/now)]
-    (compare-and-set! session-start-tracker nil now)
-    @session-start-tracker))
+  ([] (record-session-start! nil))
+  ([agent-id]
+   (let [k (or agent-id default-agent-key)
+         now (java.time.Instant/now)]
+     (swap! session-start-tracker
+            (fn [m] (if (contains? m k) m (assoc m k now))))
+     (get @session-start-tracker k))))
 
 (defn get-session-start
-  "Get the recorded session start time, or nil if not yet started."
-  []
-  @session-start-tracker)
+  "Get the recorded session start time for an agent, or nil if not yet started.
+   Falls back to _global if agent-specific start not found."
+  ([] (get-session-start nil))
+  ([agent-id]
+   (let [k (or agent-id default-agent-key)]
+     (or (get @session-start-tracker k)
+         (when-not (= k default-agent-key)
+           (get @session-start-tracker default-agent-key))))))
 
 (defn reset-session-start!
-  "Reset session start tracker. Called after crystallization completes."
-  []
-  (reset! session-start-tracker nil))
+  "Reset session start tracker for an agent. Called after crystallization completes.
+   With no args, resets ALL agent timestamps (full reset)."
+  ([] (reset! session-start-tracker {}))
+  ([agent-id]
+   (let [k (or agent-id default-agent-key)]
+     (swap! session-start-tracker dissoc k))))
 
 (defn session-timing-metadata
   "Compute session timing metadata from start and end instants.
@@ -396,6 +412,22 @@
                      commit-summaries)
        :tags [(session-tag) "session-summary" "wrap-generated"]
        :duration :short})))
+
+(defn summarize-memory-activity
+  "Produce a session summary from memory activity alone.
+   For coordinator sessions that create/access memories without
+   generating progress-notes, tasks, or git commits.
+
+   Returns summary map or nil if no memory activity."
+  [{:keys [created accessed]}]
+  (when (pos? (+ (or created 0) (or accessed 0)))
+    {:type :note
+     :content (str "## Session Summary: " (session-id) "\n\n"
+                   "### Memory Activity\n"
+                   "- Memories created: " (or created 0) "\n"
+                   "- Memories accessed: " (or accessed 0) "\n")
+     :tags [(session-tag) "session-summary" "wrap-generated" "coordinator"]
+     :duration :short}))
 
 (comment
   ;; Example usage

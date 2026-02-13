@@ -38,6 +38,7 @@
               :presets {:mode :local :dir nil}
               :kg {:mode :local :backend :datalevin}
               :project {:mode :local :id nil :dir nil :src-dirs ["src"]}
+              :forge {:mode :local :legacy false :budget-routing false}
               :drone {:mode :local :default-model "devstral-small:24b" :default-backend :openrouter}
               :nats {:mode :local
                      :enabled false

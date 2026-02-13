@@ -12,8 +12,11 @@
             [hive-mcp.tools.docs :as docs]
             [hive-mcp.server.guards :as guards]
             [hive-mcp.agent.context :as ctx]
+            [hive-mcp.crystal.core :as crystal]
             [hive-mcp.channel.async-result :as async-buf]
             [hive-mcp.dsl.response :as compress]
+            [hive-mcp.extensions.registry :as ext]
+            [hive-mcp.addons.core :as addons]
             [taoensso.timbre :as log]
             [clojure.spec.alpha :as s]
             [clojure.walk :as walk]))
@@ -252,6 +255,9 @@
               project-id (extract-project-id args)
               directory (or (:directory args)
                             (System/getProperty "user.dir"))]
+          ;; Record session start on first tool call per agent (idempotent CAS).
+          ;; Enables accurate session-timing-metadata in wrap/crystallize.
+          (crystal/record-session-start! agent-id)
           (ctx/with-request-context {:agent-id agent-id
                                      :project-id project-id
                                      :directory directory}
@@ -501,20 +507,24 @@
    CRITICAL: context must wrap all piggybacks so ctx/current-directory is bound
    when extract-project-id runs."
   [{:keys [name description inputSchema handler deprecated]}]
-  (cond-> {:name name
-           :description description
-           :inputSchema inputSchema
-           :handler (-> handler
-                        wrap-handler-retry              ; Hot-reload resilience
-                        (wrap-handler-async name)       ; async:true → ack + future
-                        wrap-handler-normalize
-                        wrap-handler-compress           ; compact: true → compress JSON text
-                        wrap-handler-async-piggyback    ; async results channel
-                        wrap-handler-memory-piggyback   ; memory channel (needs ctx bound)
-                        wrap-handler-piggyback          ; hivemind channel (needs ctx bound)
-                        wrap-handler-context            ; binds ctx for all piggybacks
-                        wrap-handler-response)}
-    deprecated (assoc :deprecated true)))
+  (let [schema-ext (ext/get-schema-extensions name)
+        merged-schema (if schema-ext
+                        (update inputSchema :properties merge schema-ext)
+                        inputSchema)]
+    (cond-> {:name name
+             :description description
+             :inputSchema merged-schema
+             :handler (-> handler
+                          wrap-handler-retry              ; Hot-reload resilience
+                          (wrap-handler-async name)       ; async:true → ack + future
+                          wrap-handler-normalize
+                          wrap-handler-compress           ; compact: true → compress JSON text
+                          wrap-handler-async-piggyback    ; async results channel
+                          wrap-handler-memory-piggyback   ; memory channel (needs ctx bound)
+                          wrap-handler-piggyback          ; hivemind channel (needs ctx bound)
+                          wrap-handler-context            ; binds ctx for all piggybacks
+                          wrap-handler-response)}
+      deprecated (assoc :deprecated true))))
 
 ;; =============================================================================
 ;; Server Spec Building
@@ -542,26 +552,32 @@
    - INCLUDED in spec with :deprecated true (callable via tools/call)
    - FILTERED by server.clj multimethod override (hidden from tools/list)"
   []
-  (if-let [_ (when (guards/child-ling?) true)]
-    ;; Child ling: restricted tool set (no agent/wave/workflow/multi/delegate/olympus/emacs)
-    (let [child-tools (tools/get-child-ling-tools)
-          role (guards/get-role)
-          depth (guards/ling-depth)]
-      (log/info "Building CHILD LING server spec with" (count child-tools) "tools"
-                "(role:" role "depth:" depth
-                "excluded:" (count tools/child-excluded-tool-names) "tool categories)")
-      {:name "hive-mcp"
-       :version "0.1.0"
-       :tools (mapv make-tool (concat child-tools docs/docs-tools))})
-    ;; Coordinator: full tool set including deprecated shims
-    (let [all-tools (tools/get-all-tools :include-deprecated? true)
-          deprecated-count (count (filter :deprecated all-tools))
-          visible-count (- (count all-tools) deprecated-count)]
-      (log/info "Building server spec with" (count all-tools) "tools"
-                "(" visible-count "visible," deprecated-count "deprecated)")
-      {:name "hive-mcp"
-       :version "0.1.0"
-       :tools (mapv make-tool (concat all-tools docs/docs-tools))})))
+  (let [dynamic-tools (ext/get-registered-tools)
+        addon-tools   (addons/active-addon-tools)]
+    (if-let [_ (when (guards/child-ling?) true)]
+      ;; Child ling: restricted tool set (no agent/wave/workflow/multi/delegate/olympus/emacs)
+      (let [child-tools (tools/get-child-ling-tools)
+            role (guards/get-role)
+            depth (guards/ling-depth)]
+        (log/info "Building CHILD LING server spec with" (count child-tools) "tools"
+                  "(role:" role "depth:" depth
+                  "excluded:" (count tools/child-excluded-tool-names) "tool categories)"
+                  "dynamic:" (count dynamic-tools) "addon:" (count addon-tools))
+        {:name "hive-mcp"
+         :version "0.1.0"
+         :tools (mapv make-tool (concat child-tools docs/docs-tools
+                                        dynamic-tools addon-tools))})
+      ;; Coordinator: full tool set including deprecated shims
+      (let [all-tools (tools/get-all-tools :include-deprecated? true)
+            deprecated-count (count (filter :deprecated all-tools))
+            visible-count (- (count all-tools) deprecated-count)]
+        (log/info "Building server spec with" (count all-tools) "tools"
+                  "(" visible-count "visible," deprecated-count "deprecated)"
+                  "dynamic:" (count dynamic-tools) "addon:" (count addon-tools))
+        {:name "hive-mcp"
+         :version "0.1.0"
+         :tools (mapv make-tool (concat all-tools docs/docs-tools
+                                        dynamic-tools addon-tools))}))))
 
 ;; DEPRECATED: Static spec kept for backward compatibility with tests
 ;; Prefer build-server-spec for capability-aware tool list

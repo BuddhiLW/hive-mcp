@@ -431,3 +431,94 @@
           result (core/should-promote? entry)]
       (is (= 0.0 (:scope-boost-override result)))
       (is (false? (:promote? result))))))
+
+;; =============================================================================
+;; Session Timestamp Tracking Tests (crystal/core.clj per-agent tracker)
+;; =============================================================================
+
+(deftest record-session-start-returns-instant
+  (testing "record-session-start! returns a java.time.Instant"
+    (core/reset-session-start!)
+    (let [start (core/record-session-start! "test-agent")]
+      (is (instance? java.time.Instant start))
+      (core/reset-session-start!))))
+
+(deftest record-session-start-idempotent
+  (testing "record-session-start! only records the first call per agent"
+    (core/reset-session-start!)
+    (let [first-start (core/record-session-start! "ling-x")
+          _ (Thread/sleep 10)
+          second-start (core/record-session-start! "ling-x")]
+      (is (= first-start second-start)
+          "Second call should return same Instant as first")
+      (core/reset-session-start!))))
+
+(deftest record-session-start-per-agent-isolation
+  (testing "Different agents get independent timestamps"
+    (core/reset-session-start!)
+    (let [start-a (core/record-session-start! "agent-a")
+          _ (Thread/sleep 10)
+          start-b (core/record-session-start! "agent-b")]
+      (is (not= start-a start-b)
+          "Different agents should have different start times")
+      (core/reset-session-start!))))
+
+(deftest get-session-start-retrieval
+  (testing "get-session-start returns recorded start for agent"
+    (core/reset-session-start!)
+    (let [recorded (core/record-session-start! "ling-1")]
+      (is (= recorded (core/get-session-start "ling-1")))
+      (core/reset-session-start!)))
+  (testing "get-session-start returns nil for unknown agent without global fallback"
+    (core/reset-session-start!)
+    (is (nil? (core/get-session-start "never-seen"))))
+  (testing "get-session-start falls back to _global when agent not found"
+    (core/reset-session-start!)
+    (let [global-start (core/record-session-start!)]
+      (is (= global-start (core/get-session-start "unknown-ling"))
+          "Should fall back to _global start")
+      (core/reset-session-start!))))
+
+(deftest reset-session-start-per-agent
+  (testing "reset-session-start! with agent-id only clears that agent"
+    (core/reset-session-start!)
+    (core/record-session-start! "ling-1")
+    (core/record-session-start! "ling-2")
+    (core/reset-session-start! "ling-1")
+    (is (nil? (core/get-session-start "ling-1"))
+        "Cleared agent should be nil")
+    (is (some? (core/get-session-start "ling-2"))
+        "Other agent should still have start time")
+    (core/reset-session-start!)))
+
+(deftest reset-session-start-all
+  (testing "reset-session-start! with no args clears all agents"
+    (core/reset-session-start!)
+    (core/record-session-start! "ling-1")
+    (core/record-session-start! "ling-2")
+    (core/reset-session-start!)
+    (is (nil? (core/get-session-start "ling-1")))
+    (is (nil? (core/get-session-start "ling-2")))))
+
+(deftest session-timing-metadata-happy-path
+  (testing "session-timing-metadata computes correct duration"
+    (let [start (java.time.Instant/parse "2026-02-13T10:00:00Z")
+          end (java.time.Instant/parse "2026-02-13T11:30:00Z")
+          result (core/session-timing-metadata start end)]
+      (is (= "2026-02-13T10:00:00Z" (:session-start result)))
+      (is (= "2026-02-13T11:30:00Z" (:session-end result)))
+      (is (= 90 (:duration-minutes result))))))
+
+(deftest session-timing-metadata-nil-start
+  (testing "session-timing-metadata handles nil start gracefully"
+    (let [end (java.time.Instant/parse "2026-02-13T11:30:00Z")
+          result (core/session-timing-metadata nil end)]
+      (is (nil? (:session-start result)))
+      (is (= "2026-02-13T11:30:00Z" (:session-end result)))
+      (is (= 0 (:duration-minutes result))))))
+
+(deftest session-timing-metadata-zero-duration
+  (testing "session-timing-metadata returns 0 for same start and end"
+    (let [instant (java.time.Instant/parse "2026-02-13T10:00:00Z")
+          result (core/session-timing-metadata instant instant)]
+      (is (= 0 (:duration-minutes result))))))

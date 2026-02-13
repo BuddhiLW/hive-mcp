@@ -245,15 +245,18 @@
                              {:tasks [] :count 0 :ds-count 0 :emacs-count 0})))))
 
 (defn harvest-git-commits
-  "Harvest git commits since session start."
+  "Harvest git commits since session start (or midnight if no session-start recorded)."
   ([] (harvest-git-commits nil))
-  ([{:keys [directory]}]
+  ([{:keys [directory agent-id]}]
    (try
      (let [dir (or directory (ctx/current-directory))
+           since (if-let [start (crystal/get-session-start (or agent-id (ctx/current-agent-id)))]
+                   (.toString start)
+                   "midnight")
            elisp (if dir
-                   (format "(let ((default-directory %s)) (shell-command-to-string \"git log --since='midnight' --oneline 2>/dev/null\"))"
-                           (pr-str dir))
-                   "(shell-command-to-string \"git log --since='midnight' --oneline 2>/dev/null\")")
+                   (format "(let ((default-directory %s)) (shell-command-to-string \"git log --since='%s' --oneline 2>/dev/null\"))"
+                           (pr-str dir) since)
+                   (format "(shell-command-to-string \"git log --since='%s' --oneline 2>/dev/null\")" since))
            {:keys [success result error]} (eval-elisp-safe elisp 10000)]
        (if success
          (let [commits (when (and result (not (str/blank? result)))
@@ -276,19 +279,24 @@
   "Harvest all session data for wrap crystallization.
    Returns map with :progress-notes, :completed-tasks, :git-commits, :recalls,
    :session-timing, :session-temporal (alias), :memory-ids-created (flushed),
-   :memory-ids-accessed (recall buffer keys), :session, :directory, :summary, :errors."
+   :memory-ids-accessed (recall buffer keys), :session, :directory, :agent-id, :summary, :errors.
+
+   Opts:
+     :directory  -- working directory for project scoping
+     :agent-id   -- agent identity for per-agent session timing"
   ([] (harvest-all nil))
-  ([{:keys [directory] :as _opts}]
+  ([{:keys [directory agent-id] :as _opts}]
    (try
      (let [dir (or directory (ctx/current-directory))
+           effective-agent (or agent-id (ctx/current-agent-id))
            progress (harvest-session-progress {:directory dir})
            tasks (harvest-completed-tasks {:directory dir})
-           commits (harvest-git-commits {:directory dir})
+           commits (harvest-git-commits {:directory dir :agent-id effective-agent})
            recalls (safe-effect "buffered recalls"
                                 #(recall/get-buffered-recalls) {})
            session-timing (safe-effect "session timing"
                                        #(crystal/session-timing-metadata
-                                         (crystal/get-session-start)
+                                         (crystal/get-session-start effective-agent)
                                          (java.time.Instant/now))
                                        {:session-start nil :session-end nil :duration-minutes 0})
            ;; Auto-KG: memory IDs created this session (flushed — destructive read)
@@ -310,6 +318,7 @@
         :memory-ids-accessed memory-ids-accessed
         :session (crystal/session-id)
         :directory dir
+        :agent-id effective-agent
         :summary {:progress-count (:count progress)
                   :task-count (:count tasks)
                   :commit-count (:count commits)
@@ -423,16 +432,21 @@
 ;; =============================================================================
 
 (defn crystallize-session
-  "Crystallize session data into long-term memory."
+  "Crystallize session data into long-term memory.
+   Tries progress/task/commit summary first, falls back to memory-activity
+   summary for coordinator sessions."
   [{:keys [progress-notes completed-tasks git-commits directory _recalls] :as harvested}]
   (log/info "Crystallizing session:" (crystal/session-id) (when directory (str "directory:" directory)))
 
   (let [project-id (or (when directory (scope/get-current-project-id directory)) "global")
         session-timing (or (:session-timing harvested)
                            (crystal/session-timing-metadata nil (java.time.Instant/now)))
-        summary (crystal/summarize-session-progress
-                 (concat progress-notes completed-tasks)
-                 git-commits)]
+        summary (or (crystal/summarize-session-progress
+                     (concat progress-notes completed-tasks)
+                     git-commits)
+                    (crystal/summarize-memory-activity
+                     {:created  (count (or (:memory-ids-created harvested) []))
+                      :accessed (count (or (:memory-ids-accessed harvested) []))}))]
     (if (nil? summary)
       ;; No content — still run lifecycle ops for maintenance
       (let [lifecycle (run-lifecycle-ops! project-id directory)]
@@ -483,7 +497,8 @@
   (try
     ;; Try to get directory from event context or request context
     (let [dir (or (:directory event-ctx) (ctx/current-directory))
-          harvested (harvest-all {:directory dir})
+          agent-id (or (:agent-id event-ctx) (ctx/current-agent-id))
+          harvested (harvest-all {:directory dir :agent-id agent-id})
           result (crystallize-session harvested)]
       ;; Broadcast wrap completion if channel available
       (when (channel/server-connected?)

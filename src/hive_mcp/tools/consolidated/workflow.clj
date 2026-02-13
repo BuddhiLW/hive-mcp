@@ -17,6 +17,11 @@
             [hive-mcp.agent.headless :as headless]
             [hive-mcp.workflows.forge-belt :as forge-belt]
             [hive-mcp.scheduler.vulcan :as vulcan]
+            [hive-mcp.agent.routing :as routing]
+            [hive-mcp.agent.budget-router :as budget-router]
+            [hive-mcp.agent.task-classifier :as task-classifier]
+            [hive-mcp.swarm.datascript :as ds]
+            [hive-mcp.tools.swarm.wave.execution :as wave-execution]
             [clojure.data.json :as json]
             [taoensso.timbre :as log]
             [clojure.string :as str]))
@@ -192,93 +197,364 @@
             (Thread/sleep ling-ready-poll-ms)
             (recur (inc attempt))))))))
 
-(defn- spark!
-  "Spawn lings up to max_slots for ready tasks."
-  [{:keys [directory max_slots presets tasks spawn_mode spawn-mode model]}]
-  (let [max-slots (or max_slots 10)
-        effective-spawn-mode (or spawn_mode spawn-mode)
-        effective-dir (or directory
+(def ^:private vterm-max-slots
+  "Hard cap for vterm lings per Emacs daemon. 7+ crashes Emacs."
+  6)
+
+(defn- spawn-one-vterm!
+  "Spawn and dispatch a single ling via vterm route (Emacs-bound).
+   No spawn_mode param — defaults to vterm in spawn handler."
+  [{:keys [task effective-dir default-presets model]}]
+  (let [title   (or (:title task) (:id task) "untitled")
+        task-id (:id task)
+        agent-name (str "forja-vt-" (System/currentTimeMillis))]
+    (try
+      (let [spawn-result (spawn/handle-spawn
+                          (cond-> {:type "ling"
+                                   :name agent-name
+                                   :cwd effective-dir
+                                   :presets default-presets
+                                   :kanban_task_id task-id}
+                            model (assoc :model model)))
+            spawn-text   (when (map? spawn-result) (:text spawn-result))
+            spawn-parsed (when (string? spawn-text)
+                           (try (json/read-str spawn-text :key-fn keyword)
+                                (catch Exception _ nil)))
+            agent-id (or (:agent-id spawn-parsed) agent-name)]
+        (let [ready (wait-for-ling-ready agent-id :vterm)]
+          (when-not (:ready? ready)
+            (log/warn "SPARK[vterm]: dispatching despite readiness timeout"
+                      {:agent-id agent-id :elapsed-ms (:elapsed-ms ready)}))
+          (dispatch/handle-dispatch
+           {:agent_id agent-id
+            :prompt (str title
+                         (when-let [desc (:description task)]
+                           (str "\n\n" desc))
+                         "\n\nDO NOT spawn drones. Implement directly.")}))
+        (when task-id
+          (try (c-kanban/handle-kanban {:command "update" :task_id task-id
+                                        :new_status "inprogress"
+                                        :directory effective-dir})
+               (catch Exception _ nil)))
+        (log/info "SPARK[vterm]: spawned+dispatched" {:agent agent-id :task title})
+        {:agent-id agent-id :task-title title :task-id task-id :spawned true
+         :route :vterm :model (or model "claude")})
+      (catch Exception e
+        (log/warn "SPARK[vterm]: failed" {:task title :error (ex-message e)})
+        {:agent-id agent-name :task-title title :task-id task-id
+         :spawned false :error (ex-message e) :route :vterm}))))
+
+(defn- spawn-one-headless!
+  "Spawn and dispatch a single ling via headless route (Emacs-independent).
+   Explicitly sets spawn_mode so spawn handler picks the right backend."
+  [{:keys [task effective-dir default-presets effective-spawn-mode model]}]
+  (let [title   (or (:title task) (:id task) "untitled")
+        task-id (:id task)
+        agent-name (str "forja-hl-" (System/currentTimeMillis))]
+    (try
+      (let [spawn-result (spawn/handle-spawn
+                          (cond-> {:type "ling"
+                                   :name agent-name
+                                   :cwd effective-dir
+                                   :presets default-presets
+                                   :kanban_task_id task-id
+                                   :spawn_mode (name effective-spawn-mode)}
+                            model (assoc :model model)))
+            spawn-text   (when (map? spawn-result) (:text spawn-result))
+            spawn-parsed (when (string? spawn-text)
+                           (try (json/read-str spawn-text :key-fn keyword)
+                                (catch Exception _ nil)))
+            agent-id      (or (:agent-id spawn-parsed) agent-name)
+            reported-mode (keyword (or (:spawn-mode spawn-parsed)
+                                       (name effective-spawn-mode)))]
+        (let [ready (wait-for-ling-ready agent-id reported-mode)]
+          (when-not (:ready? ready)
+            (log/warn "SPARK[headless]: dispatching despite readiness timeout"
+                      {:agent-id agent-id :elapsed-ms (:elapsed-ms ready)
+                       :spawn-mode reported-mode}))
+          (dispatch/handle-dispatch
+           {:agent_id agent-id
+            :prompt (str title
+                         (when-let [desc (:description task)]
+                           (str "\n\n" desc))
+                         "\n\nDO NOT spawn drones. Implement directly.")}))
+        (when task-id
+          (try (c-kanban/handle-kanban {:command "update" :task_id task-id
+                                        :new_status "inprogress"
+                                        :directory effective-dir})
+               (catch Exception _ nil)))
+        (log/info "SPARK[headless]: spawned+dispatched"
+                  {:agent agent-id :task title :model (or model "claude")
+                   :spawn-mode effective-spawn-mode})
+        {:agent-id agent-id :task-title title :task-id task-id :spawned true
+         :route :headless :spawn-mode effective-spawn-mode
+         :model (or model "claude")})
+      (catch Exception e
+        (log/warn "SPARK[headless]: failed" {:task title :error (ex-message e)})
+        {:agent-id agent-name :task-title title :task-id task-id
+         :spawned false :error (ex-message e)
+         :route :headless :spawn-mode effective-spawn-mode}))))
+
+(defn- budget-route-model
+  "When :forge.budget-routing config gate is enabled, use budget-router
+   to select a tier-appropriate model based on fleet spend.
+   When disabled (default), returns the requested model unchanged."
+  [requested-model]
+  (if (config/get-service-value :forge :budget-routing :default false)
+    (let [suggestion (budget-router/suggest-model {:model requested-model})
+          selected   (:model suggestion)]
+      (when (:downgraded? suggestion false)
+        (log/info "SPARK: budget-router downgraded model"
+                  {:requested requested-model
+                   :selected  selected
+                   :tier      (:tier suggestion)
+                   :reason    (:reason suggestion)}))
+      (log/debug "SPARK: budget-routed" {:model selected :tier (:tier suggestion)})
+      selected)
+    requested-model))
+
+(defn- kanban-task->wave-tasks
+  "Convert a kanban task to wave task spec(s).
+   Returns empty vec if task lacks :file or :files reference."
+  [{:keys [title description file files]}]
+  (let [target-files (or (when file [file])
+                         (seq files)
+                         [])
+        task-text (str (or title "untitled")
+                       (when description (str "\n\n" description)))]
+    (mapv (fn [f] {:file f :task task-text}) target-files)))
+
+(defn- dispatch-drone-tasks!
+  "Dispatch kanban tasks as a drone wave. Tasks without :file are skipped.
+   Returns spark-compatible result with wave metadata."
+  [{:keys [directory tasks model preset seeds ctx_refs kg_node_ids max_slots]}]
+  (let [effective-dir (or directory
                           (ctx/current-directory)
                           (System/getProperty "user.dir"))
-        project-id (when effective-dir (scope/get-current-project-id effective-dir))
-        active-agents (queries/get-all-slaves)
-        active-lings (->> active-agents
-                          (filter #(= 1 (:slave/depth %)))
-                          (filter #(#{:active :running :working :idle :spawning} (:slave/status %)))
-                          (filter (fn [agent]
-                                    (if project-id
-                                      (= project-id (:slave/project-id agent))
-                                      true))))
-        active-count (count active-lings)
-        available-slots (max 0 (- max-slots active-count))
-        tasks-to-spawn (take available-slots tasks)
-        default-presets (or presets ["ling" "mcp-first" "saa"])]
-    (if (empty? tasks-to-spawn)
-      {:spawned [] :failed [] :count 0
-       :slots-used 0 :active-before active-count :max-slots max-slots}
-      (let [results
-            (doall
-             (for [task tasks-to-spawn]
-               (let [title (or (:title task) (:id task) "untitled")
-                     task-id (:id task)
-                     agent-name (str "forja-" (System/currentTimeMillis))]
-                 (try
-                   (let [spawn-result (spawn/handle-spawn
-                                       (cond-> {:type "ling"
-                                                :name agent-name
-                                                :cwd effective-dir
-                                                :presets default-presets
-                                                :kanban_task_id task-id}
-                                         effective-spawn-mode (assoc :spawn_mode (name effective-spawn-mode))
-                                         model (assoc :model model)))
-                         spawn-text (when (map? spawn-result) (:text spawn-result))
-                         spawn-parsed (when (string? spawn-text)
-                                        (try (json/read-str spawn-text :key-fn keyword)
-                                             (catch Exception _ nil)))
-                         agent-id (or (:agent-id spawn-parsed) agent-name)
-                         spawn-mode (keyword (or (:spawn-mode spawn-parsed) "vterm"))]
-                     (let [ready (wait-for-ling-ready agent-id spawn-mode)]
-                       (when-not (:ready? ready)
-                         (log/warn "SPARK: dispatching despite readiness timeout"
-                                   {:agent-id agent-id :elapsed-ms (:elapsed-ms ready)}))
-                       (dispatch/handle-dispatch
-                        {:agent_id agent-id
-                         :prompt (str title
-                                      (when-let [desc (:description task)]
-                                        (str "\n\n" desc))
-                                      "\n\nDO NOT spawn drones. Implement directly.")}))
-                     (when task-id
-                       (try (c-kanban/handle-kanban {:command "update" :task_id task-id
-                                                     :new_status "inprogress"
-                                                     :directory effective-dir})
-                            (catch Exception _ nil)))
-                     (log/info "SPARK: spawned+dispatched" {:agent agent-id :task title :model (or model "claude")})
-                     {:agent-id agent-id :task-title title :task-id task-id :spawned true
-                      :model (or model "claude")})
-                   (catch Exception e
-                     (log/warn "SPARK: failed" {:task title :error (ex-message e)})
-                     {:agent-id agent-name :task-title title :task-id task-id
-                      :spawned false :error (ex-message e)})))))]
-        {:spawned (filterv :spawned results)
-         :failed (filterv (complement :spawned) results)
-         :count (count (filter :spawned results))
-         :slots-used available-slots
-         :active-before active-count
-         :max-slots max-slots}))))
+        dispatchable  (filterv #(seq (kanban-task->wave-tasks %)) tasks)
+        skipped-tasks (filterv #(empty? (kanban-task->wave-tasks %)) tasks)
+        wave-tasks    (->> dispatchable
+                           (mapcat kanban-task->wave-tasks)
+                           (take (or max_slots 20))
+                           vec)]
+    (if (empty? wave-tasks)
+      {:spawned [] :failed [] :count 0 :route :drone
+       :skipped (count skipped-tasks)
+       :reason "No tasks with :file reference for drone dispatch"}
+      (try
+        (let [plan-id (ds/create-plan! wave-tasks (or preset "drone-worker"))
+              {:keys [wave-id item-count]}
+              (wave-execution/execute-wave-async!
+               plan-id
+               (cond-> {:cwd effective-dir :trace true}
+                 model              (assoc :model model)
+                 (seq seeds)        (assoc :seeds (vec seeds))
+                 (seq ctx_refs)     (assoc :ctx-refs ctx_refs)
+                 (seq kg_node_ids)  (assoc :kg-node-ids (vec kg_node_ids))))]
+          ;; Mark dispatched kanban tasks as inprogress
+          (doseq [task dispatchable
+                  :let [task-id (:id task)]
+                  :when task-id]
+            (try (c-kanban/handle-kanban {:command "update" :task_id task-id
+                                          :new_status "inprogress"
+                                          :directory effective-dir})
+                 (catch Exception _ nil)))
+          (log/info "SPARK[drone]: wave dispatched"
+                    {:wave-id wave-id :plan-id plan-id
+                     :count item-count :skipped (count skipped-tasks)
+                     :model (or model "default")})
+          {:spawned (mapv (fn [t] {:task-title (:title t) :task-id (:id t)
+                                   :spawned true :route :drone})
+                          dispatchable)
+           :failed []
+           :count item-count
+           :route :drone
+           :wave-id wave-id
+           :plan-id plan-id
+           :skipped (count skipped-tasks)
+           :model (or model "default")})
+        (catch Exception e
+          (log/warn "SPARK[drone]: wave dispatch failed" {:error (ex-message e)})
+          {:spawned [] :failed [{:error (ex-message e)}]
+           :count 0 :route :drone :skipped (count skipped-tasks)})))))
+
+(defn- classify-and-split-tasks
+  "When budget routing is enabled, classify each task via task-classifier
+   and split into drone-eligible and ling-eligible batches.
+   When disabled, all tasks route to :ling (safe default)."
+  [tasks]
+  (if-not (budget-router/enabled?)
+    {:drone-tasks [] :ling-tasks (vec tasks)}
+    (let [classified (mapv (fn [task]
+                             (let [route (:route (task-classifier/classify-task
+                                                  {:title       (or (:title task) "")
+                                                   :description (:description task)
+                                                   :files       (or (:files task)
+                                                                    (when-let [f (:file task)] [f]))}))]
+                               (assoc task ::route (or route :ling))))
+                           tasks)]
+      (log/debug "SPARK: task classification"
+                 {:total (count tasks)
+                  :drone (count (filter #(= :drone (::route %)) classified))
+                  :ling  (count (filter #(not= :drone (::route %)) classified))})
+      {:drone-tasks (filterv #(= :drone (::route %)) classified)
+       :ling-tasks  (filterv #(not= :drone (::route %)) classified)})))
+
+(defn- spark!
+  "Spawn lings or dispatch drones for ready tasks. Bifurcates by route:
+   - :vterm — Emacs-bound, capped at vterm-max-slots (daemon stability)
+   - :headless/:agent-sdk/:openrouter — subprocess, scales freely
+   - :mixed (default) — when budget-routing enabled, classify each task
+     via task-classifier and split drone-eligible tasks to wave dispatch,
+     ling-eligible tasks to vterm+headless overflow
+   - :drone — wave dispatch all tasks as drone wave"
+  [{:keys [directory max_slots presets tasks spawn_mode spawn-mode model
+           preset seeds ctx_refs kg_node_ids]}]
+  (let [model          (budget-route-model model)
+        effective-spawn-mode (keyword (or spawn_mode spawn-mode :mixed))]
+    (if (= :drone effective-spawn-mode)
+      ;; Explicit :drone — all tasks go to wave dispatch
+      (dispatch-drone-tasks! {:directory  directory
+                              :tasks      tasks
+                              :model      model
+                              :preset     (or preset (first presets) "drone-worker")
+                              :seeds      seeds
+                              :ctx_refs   ctx_refs
+                              :kg_node_ids kg_node_ids
+                              :max_slots  max_slots})
+      ;; Ling paths with optional drone bifurcation
+      (let [;; When :mixed, classify tasks and split by route
+            {:keys [drone-tasks ling-tasks]}
+            (if (= :mixed effective-spawn-mode)
+              (classify-and-split-tasks tasks)
+              {:drone-tasks [] :ling-tasks tasks})
+
+            ;; Dispatch drone-eligible tasks first (if any)
+            drone-result (when (seq drone-tasks)
+                           (dispatch-drone-tasks!
+                            {:directory   directory
+                             :tasks       drone-tasks
+                             :model       model
+                             :preset      (or preset (first presets) "drone-worker")
+                             :seeds       seeds
+                             :ctx_refs    ctx_refs
+                             :kg_node_ids kg_node_ids
+                             :max_slots   max_slots}))
+
+            headless-modes #{:headless :agent-sdk :openrouter}
+            effective-dir  (or directory
+                               (ctx/current-directory)
+                               (System/getProperty "user.dir"))
+            project-id     (when effective-dir (scope/get-current-project-id effective-dir))
+            active-agents  (queries/get-all-slaves)
+            project-lings  (->> active-agents
+                                (filter #(= 1 (:slave/depth %)))
+                                (filter #(#{:active :running :working :idle :spawning} (:slave/status %)))
+                                (filter (fn [agent]
+                                          (if project-id
+                                            (= project-id (:slave/project-id agent))
+                                            true))))
+            ;; Partition active lings by route for per-route slot accounting
+            active-vterm    (->> project-lings
+                                 (remove #(headless-modes (:ling/spawn-mode %)))
+                                 count)
+            active-headless (->> project-lings
+                                 (filter #(headless-modes (:ling/spawn-mode %)))
+                                 count)
+            active-total    (+ active-vterm active-headless)
+            default-presets (or presets ["ling" "mcp-first" "saa"])
+
+            ;; Route bifurcation — compute per-route ling task batches
+            ;; max_slots is always a GLOBAL cap (total active across all routes)
+            [vterm-tasks headless-tasks]
+            (case effective-spawn-mode
+              :vterm
+              (let [cap   (min (or max_slots vterm-max-slots) vterm-max-slots)
+                    avail (max 0 (- cap active-total))]
+                [(vec (take avail ling-tasks)) []])
+
+              (:headless :agent-sdk :openrouter)
+              (let [avail (max 0 (- (or max_slots 10) active-total))]
+                [[] (vec (take avail ling-tasks))])
+
+              ;; :mixed (default) — fill vterm up to daemon cap, overflow to headless
+              (let [total-cap   (or max_slots 10)
+                    total-avail (max 0 (- total-cap active-total))
+                    vt-avail    (min (max 0 (- vterm-max-slots active-vterm)) total-avail)
+                    vt-batch    (vec (take vt-avail ling-tasks))
+                    remaining   (drop vt-avail ling-tasks)
+                    hl-avail    (max 0 (- total-avail (count vt-batch)))
+                    hl-batch    (vec (take hl-avail remaining))]
+                [vt-batch hl-batch]))
+
+            headless-spawn-mode (if (headless-modes effective-spawn-mode)
+                                  effective-spawn-mode
+                                  :headless)]
+        (if (and (empty? vterm-tasks) (empty? headless-tasks) (nil? drone-result))
+          {:spawned [] :failed [] :count 0
+           :routes {:vterm    {:count 0 :active-before active-vterm    :max-slots vterm-max-slots}
+                    :headless {:count 0 :active-before active-headless :max-slots (or max_slots 10)}
+                    :drone    {:count 0}}
+           :slots-used 0 :active-before active-total :max-slots (or max_slots 10)}
+          (let [vt-results
+                (doall
+                 (for [task vterm-tasks]
+                   (spawn-one-vterm! {:task            task
+                                      :effective-dir   effective-dir
+                                      :default-presets default-presets
+                                      :model           model})))
+                hl-results
+                (doall
+                 (for [task headless-tasks]
+                   (spawn-one-headless! {:task                  task
+                                         :effective-dir         effective-dir
+                                         :default-presets       default-presets
+                                         :effective-spawn-mode  headless-spawn-mode
+                                         :model                 model})))
+                all-ling-results (concat vt-results hl-results)
+                ;; Merge drone results into unified response
+                drone-spawned  (get drone-result :spawned [])
+                drone-failed   (get drone-result :failed [])
+                all-results    (concat all-ling-results drone-spawned)]
+            {:spawned     (filterv :spawned all-results)
+             :failed      (into (filterv (complement :spawned) all-ling-results)
+                                drone-failed)
+             :count       (+ (count (filter :spawned all-ling-results))
+                             (get drone-result :count 0))
+             :routes      {:vterm    {:spawned (filterv :spawned vt-results)
+                                      :count   (count (filter :spawned vt-results))
+                                      :active-before active-vterm
+                                      :max-slots     vterm-max-slots}
+                           :headless {:spawned (filterv :spawned hl-results)
+                                      :count   (count (filter :spawned hl-results))
+                                      :active-before active-headless
+                                      :max-slots     (or max_slots 10)}
+                           :drone    {:count   (get drone-result :count 0)
+                                      :wave-id (:wave-id drone-result)
+                                      :spawned drone-spawned}}
+             :slots-used  (count (filter :spawned all-ling-results))
+             :active-before active-total
+             :max-slots   (or max_slots 10)}))))))
 
 (defn build-fsm-resources
   "Build the resources map for the Forge Belt FSM.
    Extra keys in params flow through to survey via kanban-ops/list-fn (OCP)."
-  [{:keys [directory max_slots presets spawn_mode model vulcan_mode] :as params}]
+  [{:keys [directory max_slots presets spawn_mode model vulcan_mode
+           preset seeds ctx_refs kg_node_ids] :as params}]
   (let [effective-spawn-mode (when spawn_mode (keyword spawn_mode))
         effective-vulcan? (boolean vulcan_mode)
-        survey-opts (dissoc params :directory :max_slots :presets :spawn_mode :model :vulcan_mode)]
+        survey-opts (dissoc params :directory :max_slots :presets :spawn_mode :model :vulcan_mode
+                            :preset :seeds :ctx_refs :kg_node_ids)]
     {:directory  directory
-     :config     {:max-slots  (or max_slots 10)
-                  :presets    (or presets ["ling" "mcp-first" "saa"])
-                  :spawn-mode effective-spawn-mode
-                  :model      model
-                  :vulcan-mode effective-vulcan?}
+     :config     {:max-slots    (or max_slots 10)
+                  :presets      (or presets ["ling" "mcp-first" "saa"])
+                  :spawn-mode   effective-spawn-mode
+                  :model        model
+                  :preset       preset
+                  :seeds        seeds
+                  :ctx-refs     ctx_refs
+                  :kg-node-ids  kg_node_ids
+                  :vulcan-mode  effective-vulcan?}
      :agent-ops  {:kill-fn  (fn [dir _project-id]
                               (smite! {:directory dir}))
                   :spawn-fn (fn [{:keys [directory max-slots presets tasks] :as opts}]
@@ -289,7 +565,30 @@
                                         (or (:spawn-mode opts) effective-spawn-mode)
                                         (assoc :spawn-mode (or (:spawn-mode opts) effective-spawn-mode))
                                         (or (:model opts) model)
-                                        (assoc :model (or (:model opts) model)))))
+                                        (assoc :model (or (:model opts) model))
+                                        ;; drone config passthrough
+                                        (or (:preset opts) preset)
+                                        (assoc :preset (or (:preset opts) preset))
+                                        (or (:seeds opts) seeds)
+                                        (assoc :seeds (or (:seeds opts) seeds))
+                                        (or (:ctx-refs opts) ctx_refs)
+                                        (assoc :ctx_refs (or (:ctx-refs opts) ctx_refs))
+                                        (or (:kg-node-ids opts) kg_node_ids)
+                                        (assoc :kg_node_ids (or (:kg-node-ids opts) kg_node_ids)))))
+                  :drone-dispatch-fn
+                  (fn [opts]
+                    (dispatch-drone-tasks!
+                     (cond-> opts
+                       (and (not (:preset opts)) preset)
+                       (assoc :preset preset)
+                       (and (not (:model opts)) model)
+                       (assoc :model model)
+                       (and (not (:seeds opts)) seeds)
+                       (assoc :seeds seeds)
+                       (and (not (:ctx_refs opts)) ctx_refs)
+                       (assoc :ctx_refs ctx_refs)
+                       (and (not (:kg_node_ids opts)) kg_node_ids)
+                       (assoc :kg_node_ids kg_node_ids))))
                   :dispatch-fn    (fn [_agent-id _task] true)
                   :wait-ready-fn  (fn [_agent-id] true)}
      :kanban-ops {:list-fn   (fn [dir]
@@ -423,13 +722,20 @@
           kanban-result (try
                           (c-kanban/handle-kanban {:command "status" :directory directory})
                           (catch Exception _ nil))]
-      (mcp-json {:forge (assoc state :modes {:fsm true
-                                             :legacy (boolean (config/get-service-value :forge :legacy :default false))})
-                 :lings {:total (count lings)
-                         :active (count active-lings)
-                         :terminal (count terminal-lings)
-                         :ids (mapv :slave/id active-lings)}
-                 :kanban kanban-result}))
+      (let [budget-routing? (boolean (config/get-service-value :forge :budget-routing :default false))
+            budget-summary  (when budget-routing?
+                              (try (budget-router/fleet-budget-summary)
+                                   (catch Exception e
+                                     {:error (ex-message e)})))]
+        (mcp-json (cond-> {:forge (assoc state :modes {:fsm true
+                                                       :legacy (boolean (config/get-service-value :forge :legacy :default false))
+                                                       :budget-routing budget-routing?})
+                           :lings {:total (count lings)
+                                   :active (count active-lings)
+                                   :terminal (count terminal-lings)
+                                   :ids (mapv :slave/id active-lings)}
+                           :kanban kanban-result}
+                    budget-summary (assoc :budget budget-summary)))))
     (catch Exception e
       (mcp-error (str "Forge status failed: " (ex-message e))))))
 
@@ -481,28 +787,11 @@
                                             :description "Git commit message (for complete)"}
                               "task_ids" {:type "array"
                                           :items {:type "string"}
-                                          :description "Kanban task IDs to mark done (for complete)"}
+                                          :description "Kanban task IDs. For complete: marks done. For forge-strike: survey whitelist (composable with vulcan_mode)."}
                               "agent_id" {:type "string"
                                           :description "Agent ID for session attribution"}
                               "directory" {:type "string"
-                                           :description "Working directory for project scoping"}
-                              "max_slots" {:type "integer"
-                                           :description "Max concurrent lings for forge-strike (default: 10)"}
-                              "presets" {:type "array"
-                                         :items {:type "string"}
-                                         :description "Ling presets for forge-strike (default: [ling, mcp-first, saa])"}
-                              "spawn_mode" {:type "string"
-                                            :enum ["vterm" "headless"]
-                                            :description "Spawn mode for lings: 'vterm' (default, Emacs buffer) or 'headless' (OS subprocess, no Emacs required). Note: 'headless' maps to :agent-sdk (Claude Agent SDK) since 0.12.0."}
-                              "model" {:type "string"
-                                       :description "Model override for spawned lings: 'claude' (default, Claude Code CLI) or OpenRouter model ID (e.g., 'moonshotai/kimi-k2.5'). Non-claude models auto-force headless/openrouter spawn mode for cost-efficient bulk work."}
-                              "vulcan_mode" {:type "boolean"
-                                             :description "When true, enables KG-aware dependency filtering in survey phase. Tasks blocked by incomplete KG :depends-on edges are excluded. Ready tasks sorted by priority > wave-number > creation-date. (default: false)"}
-                              "task_ids" {:type "array"
-                                          :items {:type "string"}
-                                          :description "Whitelist of kanban task IDs. When provided, survey only considers these tasks. Composable with vulcan_mode for targeted KG-aware strikes."}
-                              "restart" {:type "boolean"
-                                         :description "Pass true to unquench/restart the forge belt"}}
+                                           :description "Working directory for project scoping"}}
                  :required ["command"]}
    :handler handle-workflow})
 
