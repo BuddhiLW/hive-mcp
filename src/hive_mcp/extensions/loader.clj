@@ -318,16 +318,24 @@
 ;; All Extension Manifests
 ;; =============================================================================
 
-(def ^:private all-manifests
-  [;; Original groups (A-K: hive-knowledge, L-O: hive-agent)
-   ext-group-a ext-group-b ext-group-c ext-group-d ext-group-e
+(def hive-knowledge-manifests
+  "Manifests for hive-knowledge extension groups (A-K, P-AC).
+   Public so HiveKnowledgeAddon can resolve without direct registration."
+  [ext-group-a ext-group-b ext-group-c ext-group-d ext-group-e
    ext-group-f ext-group-g ext-group-h ext-group-i ext-group-j
-   ext-group-k ext-group-l ext-group-m ext-group-n ext-group-o
-   ext-group-p
+   ext-group-k ext-group-p
    ;; IP migration groups (Q-AC)
    ext-group-q ext-group-r ext-group-s ext-group-t ext-group-u
    ext-group-v ext-group-w ext-group-x ext-group-y ext-group-z
    ext-group-aa ext-group-ab ext-group-ac])
+
+(def hive-agent-manifests
+  "Manifests for hive-agent extension groups (L-O).
+   Public so HiveAgentAddon can resolve without direct registration."
+  [ext-group-l ext-group-m ext-group-n ext-group-o])
+
+(def ^:private all-manifests
+  (into hive-knowledge-manifests hive-agent-manifests))
 
 ;; =============================================================================
 ;; Extension Self-Registration
@@ -358,6 +366,20 @@
 ;; =============================================================================
 ;; Public API
 ;; =============================================================================
+
+(defn resolve-manifests
+  "Resolve a seq of extension manifests without registering in the registry.
+   Returns map of {registry-key resolved-fn} for all successfully resolved fns.
+
+   Use with hive-knowledge-manifests or hive-agent-manifests for addon-based loading:
+     (resolve-manifests hive-knowledge-manifests)
+   The caller (e.g. addon bridge) is responsible for registration."
+  [manifests]
+  (reduce
+   (fn [acc {:keys [ns fns]}]
+     (merge acc (resolve-extension-group ns fns)))
+   {}
+   manifests))
 
 (defn load-extensions!
   "Resolve and register all available extensions.
