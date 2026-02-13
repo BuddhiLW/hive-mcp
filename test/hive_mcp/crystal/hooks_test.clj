@@ -421,26 +421,65 @@
           "Duration should be 0 when start is nil"))))
 
 ;; =============================================================================
-;; Session start tracker (crystal/core.clj) tests
+;; Session start tracker (crystal/core.clj) — per-agent tests
 ;; =============================================================================
 
 (deftest session-start-tracker-idempotent
-  (testing "record-session-start! is idempotent - only records first call"
+  (testing "record-session-start! is idempotent per agent - only records first call"
     (crystal/reset-session-start!)
-    (let [first-start (crystal/record-session-start!)
+    (let [first-start (crystal/record-session-start! "ling-1")
           _ (Thread/sleep 10)
-          second-start (crystal/record-session-start!)]
+          second-start (crystal/record-session-start! "ling-1")]
       (is (some? first-start) "First call should return an Instant")
       (is (= first-start second-start) "Second call should return same Instant")
       (crystal/reset-session-start!))))
 
-(deftest session-start-tracker-reset
-  (testing "reset-session-start! clears the tracker"
+(deftest session-start-tracker-per-agent-isolation
+  (testing "Different agents get independent session timestamps"
     (crystal/reset-session-start!)
-    (crystal/record-session-start!)
-    (is (some? (crystal/get-session-start)) "Should have start time after recording")
+    (let [start-a (crystal/record-session-start! "ling-a")
+          _ (Thread/sleep 10)
+          start-b (crystal/record-session-start! "ling-b")]
+      (is (some? start-a) "Agent A should have a start time")
+      (is (some? start-b) "Agent B should have a start time")
+      (is (not= start-a start-b) "Different agents should have different timestamps")
+      (is (= start-a (crystal/get-session-start "ling-a"))
+          "Agent A's start should be retrievable")
+      (is (= start-b (crystal/get-session-start "ling-b"))
+          "Agent B's start should be retrievable")
+      (crystal/reset-session-start!))))
+
+(deftest session-start-tracker-reset-per-agent
+  (testing "reset-session-start! with agent-id only clears that agent"
     (crystal/reset-session-start!)
-    (is (nil? (crystal/get-session-start)) "Should be nil after reset")))
+    (crystal/record-session-start! "ling-1")
+    (crystal/record-session-start! "ling-2")
+    (is (some? (crystal/get-session-start "ling-1")))
+    (is (some? (crystal/get-session-start "ling-2")))
+    ;; Reset only ling-1
+    (crystal/reset-session-start! "ling-1")
+    (is (nil? (crystal/get-session-start "ling-1"))
+        "Agent 1 should be nil after per-agent reset")
+    (is (some? (crystal/get-session-start "ling-2"))
+        "Agent 2 should still have start time")
+    (crystal/reset-session-start!)))
+
+(deftest session-start-tracker-reset-all
+  (testing "reset-session-start! with no args clears all agents"
+    (crystal/reset-session-start!)
+    (crystal/record-session-start! "ling-1")
+    (crystal/record-session-start! "ling-2")
+    (crystal/reset-session-start!)
+    (is (nil? (crystal/get-session-start "ling-1")) "Agent 1 should be nil after full reset")
+    (is (nil? (crystal/get-session-start "ling-2")) "Agent 2 should be nil after full reset")))
+
+(deftest session-start-tracker-fallback-to-global
+  (testing "get-session-start falls back to _global when agent-specific not found"
+    (crystal/reset-session-start!)
+    (let [global-start (crystal/record-session-start!)] ;; no agent-id → _global
+      (is (= global-start (crystal/get-session-start "unknown-ling"))
+          "Unknown agent should fall back to _global start")
+      (crystal/reset-session-start!))))
 
 (deftest session-timing-metadata-computation
   (testing "session-timing-metadata computes correct duration"
@@ -586,7 +625,7 @@
                   hooks/harvest-git-commits (fn [_] {:commits [] :count 0})
                   hive-mcp.crystal.recall/get-buffered-recalls (fn [] {})
                   hive-mcp.crystal.recall/flush-created-ids! (fn [] [])
-                  crystal/get-session-start (fn [] (java.time.Instant/parse "2026-02-11T10:00:00Z"))
+                  crystal/get-session-start (fn [& _] (java.time.Instant/parse "2026-02-11T10:00:00Z"))
                   crystal/session-timing-metadata
                   (fn [start end]
                     {:session-start (some-> start .toString)
@@ -611,7 +650,7 @@
                   hive-mcp.crystal.recall/flush-created-ids!
                   (fn [] [{:id "note-abc" :timestamp "2026-02-11T10:05:00Z"}
                           {:id "note-def" :timestamp "2026-02-11T10:10:00Z"}])
-                  crystal/get-session-start (fn [] nil)
+                  crystal/get-session-start (fn [& _] nil)
                   crystal/session-timing-metadata
                   (fn [_ end] {:session-start nil :session-end (.toString end) :duration-minutes 0})
                   crystal/session-id (fn [] "test-session")]
@@ -636,7 +675,7 @@
                           "entry-222" [{:context :cross-session}]
                           "entry-333" [{:context :catchup-structural}]})
                   hive-mcp.crystal.recall/flush-created-ids! (fn [] [])
-                  crystal/get-session-start (fn [] nil)
+                  crystal/get-session-start (fn [& _] nil)
                   crystal/session-timing-metadata
                   (fn [_ end] {:session-start nil :session-end (.toString end) :duration-minutes 0})
                   crystal/session-id (fn [] "test-session")]
@@ -661,7 +700,7 @@
                   hooks/harvest-git-commits (fn [_] {:commits [] :count 0})
                   hive-mcp.crystal.recall/get-buffered-recalls (fn [] {})
                   hive-mcp.crystal.recall/flush-created-ids! (fn [] [])
-                  crystal/get-session-start (fn [] nil)
+                  crystal/get-session-start (fn [& _] nil)
                   crystal/session-timing-metadata
                   (fn [_ end] {:session-start nil :session-end (.toString end) :duration-minutes 0})
                   crystal/session-id (fn [] "test-session")]
@@ -684,7 +723,7 @@
                   hive-mcp.crystal.recall/get-buffered-recalls (fn [] {})
                   hive-mcp.crystal.recall/flush-created-ids!
                   (fn [] (throw (Exception. "Atom corrupted")))
-                  crystal/get-session-start (fn [] nil)
+                  crystal/get-session-start (fn [& _] nil)
                   crystal/session-timing-metadata
                   (fn [_ end] {:session-start nil :session-end (.toString end) :duration-minutes 0})
                   crystal/session-id (fn [] "test-session")]
