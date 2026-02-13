@@ -28,6 +28,12 @@
 (defonce ^:private registry
   (atom {}))
 
+(defonce ^:private schema-registry
+  (atom {}))
+
+(defonce ^:private tool-registry
+  (atom {}))
+
 ;; =============================================================================
 ;; Public API
 ;; =============================================================================
@@ -73,7 +79,63 @@
   k)
 
 (defn clear-all!
-  "Remove all registrations. Intended for testing only."
+  "Remove all registrations (fn + schema + tool). Intended for testing only."
   []
   (reset! registry {})
+  (reset! schema-registry {})
+  (reset! tool-registry {})
+  nil)
+
+;; =============================================================================
+;; Schema Extension Registry
+;; =============================================================================
+
+(defn register-schema!
+  "Register schema properties for a tool. Merges with existing.
+   Properties is a map of {\"param_name\" {:type ... :description ...}}.
+   Thread-safe, idempotent."
+  [tool-name properties]
+  {:pre [(string? tool-name) (map? properties)]}
+  (swap! schema-registry update tool-name merge properties)
+  tool-name)
+
+(defn get-schema-extensions
+  "Get merged schema property extensions for a tool. Returns map or nil."
+  [tool-name]
+  (get @schema-registry tool-name))
+
+(defn clear-all-schemas!
+  "Remove all schema registrations. Intended for testing only."
+  []
+  (reset! schema-registry {})
+  nil)
+
+;; =============================================================================
+;; Tool Registry (dynamic MCP tool definitions)
+;; =============================================================================
+
+(defn register-tool!
+  "Register a full MCP tool definition for dynamic discovery.
+   Tool-def must have :name (string) and :handler (ifn?).
+   Thread-safe, idempotent. Last-write-wins by tool name."
+  [tool-def]
+  {:pre [(string? (:name tool-def)) (ifn? (:handler tool-def))]}
+  (swap! tool-registry assoc (:name tool-def) tool-def)
+  (:name tool-def))
+
+(defn get-registered-tools
+  "Return seq of all dynamically registered tool definitions."
+  []
+  (vals @tool-registry))
+
+(defn deregister-tool!
+  "Remove a dynamically registered tool by name. Returns the name."
+  [tool-name]
+  (swap! tool-registry dissoc tool-name)
+  tool-name)
+
+(defn clear-all-tools!
+  "Remove all tool registrations. Intended for testing only."
+  []
+  (reset! tool-registry {})
   nil)
