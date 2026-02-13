@@ -416,6 +416,21 @@
       (log/warn "NATS init failed (non-fatal):" (.getMessage e)))))
 
 ;; =============================================================================
+;; Forge Belt Defaults
+;; =============================================================================
+
+(defn register-forge-belt-defaults!
+  "Register default implementations for forge belt :fb/* extension points.
+   Must run before load-extensions! so extensions can override."
+  []
+  (try
+    (require 'hive-mcp.workflows.forge-belt-defaults)
+    (when-let [register! (resolve 'hive-mcp.workflows.forge-belt-defaults/register-forge-belt-defaults!)]
+      (register!))
+    (catch Exception e
+      (log/warn "Forge belt defaults registration failed (non-fatal):" (.getMessage e)))))
+
+;; =============================================================================
 ;; Extension Loading
 ;; =============================================================================
 
