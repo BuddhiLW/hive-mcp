@@ -35,16 +35,38 @@ fi
 BACKUP_FILE="$BACKUP_DIR/kg-datahike-$(date +%Y%m%dT%H%M%S).edn"
 
 # Export KG via nREPL (hot JVM — no cold start, ~1s)
-# Uses bencode to send eval op to running nREPL server
-echo "(do (require '[hive-mcp.knowledge-graph.migration :as mig]) (let [r (mig/export-to-file! \"$BACKUP_FILE\")] (str \"Backup: \" (:counts r))))" | \
-    nrepl-client localhost "$NREPL_PORT" 2>/dev/null || {
-    # Fallback: use bb nrepl-client if available
-    echo "(do (require '[hive-mcp.knowledge-graph.migration :as mig]) (let [r (mig/export-to-file! \"$BACKUP_FILE\")] (str \"Backup: \" (:counts r))))" | \
-        bb -e "(require '[babashka.nrepl-client :as nrepl]) (let [r (nrepl/message {:host \"localhost\" :port $NREPL_PORT} {:op \"eval\" :code (slurp *in*)})] (doseq [m r] (when (:value m) (println (:value m)))))" 2>/dev/null || {
-        echo "Warning: No nREPL client available, falling back to MCP tool"
-        # Last resort: use the MCP migration tool via curl if server is running
-        exit 1
-    }
+# Uses bb + bencode for raw nREPL communication
+BB="${BB:-/home/linuxbrew/.linuxbrew/bin/bb}"
+NREPL_CODE="(binding [*out* (java.io.StringWriter.)] (require '[hive-mcp.knowledge-graph.migration :as mig]) (mig/export-to-file! \"${BACKUP_FILE}\") :done)"
+
+NREPL_PORT="$NREPL_PORT" NREPL_CODE="$NREPL_CODE" "$BB" -e '
+(require (quote [bencode.core :as b]))
+(import (quote [java.net Socket])
+        (quote [java.io PushbackInputStream]))
+(defn bytes->str [x] (if (bytes? x) (String. x) (str x)))
+(defn has-done? [status]
+  (and (sequential? status)
+       (some #(= "done" (bytes->str %)) status)))
+(let [port (Integer/parseInt (System/getenv "NREPL_PORT"))
+      code (System/getenv "NREPL_CODE")
+      sock (doto (Socket. "localhost" port) (.setSoTimeout 120000))
+      in (PushbackInputStream. (.getInputStream sock))
+      out (.getOutputStream sock)]
+  (b/write-bencode out {"op" "eval" "code" code})
+  (loop [result nil]
+    (let [msg (try (b/read-bencode in) (catch Exception _ nil))]
+      (if (nil? msg)
+        (do (println (or result "No response")) (.close sock))
+        (let [v (get msg "value")
+              e (get msg "err")
+              status (get msg "status")]
+          (when e (binding [*out* *err*] (print (bytes->str e))))
+          (if (has-done? status)
+            (do (println (bytes->str (or v result "done"))) (.close sock))
+            (recur (or v result))))))))
+' || {
+    echo "Error: bb nREPL eval failed" >&2
+    exit 1
 }
 
 # Verify backup was created and has content
