@@ -8,9 +8,10 @@
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 (defn delegate-drone!
-  "Delegate a task to a drone via the agentic path."
+  "Delegate a task to a drone. Forces :legacy-loop backend (OpenRouter)
+   when no explicit backend is specified, ensuring actual LLM execution."
   [opts]
-  (drone/delegate-agentic! opts))
+  (drone/delegate-agentic! (update opts :backend #(or % :legacy-loop))))
 
 (defn delegate-agentic-drone!
   "Delegate a task to an in-process agentic drone with session store."
