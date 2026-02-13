@@ -189,10 +189,10 @@
 ;; E2E Test: Full wrap_crystallize Handler Flow
 ;; =============================================================================
 
-(deftest wrap-crystallize-handler-noop-edges-e2e
-  (testing "handle-wrap-crystallize returns noop KG stats when :ck/a extension not registered"
-    ;; Without the :ck/a extension, edge creation is a no-op (IP migration stub).
-    ;; This test verifies the handler completes gracefully with noop defaults.
+(deftest wrap-crystallize-handler-foss-edges-e2e
+  (testing "handle-wrap-crystallize creates KG edges via FOSS default when :ck/a extension not registered"
+    ;; Without the :ck/a extension, the FOSS default creates :derived-from
+    ;; and :co-accessed edges using the L1/L2 kg-edges CRUD API.
     (let [source-id-1 (create-source-entry! "Work note 1" :tags ["session-progress"])
           source-id-2 (create-source-entry! "Work note 2" :tags ["session-progress"])]
 
@@ -216,12 +216,18 @@
           (is (not (:error result-json)) "Handler should not return error")
           (is (some? (:summary-id result-json)) "Handler should return summary-id")
 
-          ;; With noop stub, :kg-edges returns default empty stats
+          ;; FOSS default creates actual edges
           (let [kg-edges-result (:kg-edges result-json)]
-            (is (some? kg-edges-result) "Handler should still return :kg-edges (noop defaults)")
-            (is (= 0 (:total-edges kg-edges-result)) "Noop stub should report 0 total edges")
-            (is (nil? (:derived-from kg-edges-result)) "Noop stub should have nil :derived-from")
-            (is (false? (:capped? kg-edges-result)) "Noop stub should have false :capped?")))))))
+            (is (some? kg-edges-result) "Handler should return :kg-edges")
+            ;; 2 derived-from + 1 co-accessed = 3 total edges
+            (is (pos? (:total-edges kg-edges-result))
+                "FOSS default should create edges")
+            (is (some? (:derived-from kg-edges-result))
+                "FOSS default should have :derived-from result")
+            (is (= 2 (get-in kg-edges-result [:derived-from :created-count]))
+                "Should create 2 derived-from edges (one per source)")
+            (is (false? (:capped? kg-edges-result))
+                "Should not be capped with only 2 sources")))))))
 
 ;; =============================================================================
 ;; E2E Test: Edge Creation with Mixed Source Types

@@ -17,6 +17,7 @@
             [hive-mcp.events.effects]
             [hive-mcp.agent.context :as ctx]
             [hive-mcp.extensions.registry :as ext]
+            [hive-mcp.knowledge-graph.edges :as kg-edges]
             [clojure.data.json :as json]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -44,19 +45,6 @@
   (if (result/ok? r)
     (mcp-json (:ok r))
     (mcp-error (or (:message r) (:cause r) (str (:error r))))))
-
-;;; =============================================================================
-;;; Extension Delegation Helpers
-;;; =============================================================================
-
-(defn- delegate-or-noop
-  "Try to delegate to extension fn, fall back to default value."
-  [ext-key default-val args]
-  (if-let [f (ext/get-extension ext-key)]
-    (apply f args)
-    (do
-      (log/debug "Extension not available, returning default for" ext-key)
-      default-val)))
 
 ;;; =============================================================================
 ;;; Shared Helpers (pure calculations)
@@ -115,23 +103,83 @@
              (catch Exception _ nil))))))
 
 ;;; =============================================================================
-;;; Auto-KG Edge Creation — delegates to extension
+;;; Auto-KG Edge Creation — FOSS default with extension override
 ;;; =============================================================================
 
+(def ^:private ^:const max-derived-from-edges
+  "Maximum :derived-from edges per crystal summary.
+   Prevents quadratic explosion on large sessions."
+  50)
+
+(defn- foss-build-crystal-edges
+  "FOSS default for :ck/a — creates :derived-from and :co-accessed KG edges.
+
+   Creates basic KG edges linking a crystal summary to its source entries.
+   This is the L1/L2 (AGPL) implementation using existing kg-edges CRUD.
+   The proprietary extension may add scoring, similarity, or advanced logic.
+
+   Input:  {:summary-id str, :harvested map, :project-id str, :agent-id str}
+   Output: {:derived-from {:created-count N, :edge-ids [...]},
+            :co-accessed  {:count M},
+            :total-edges  T,
+            :capped?      bool}"
+  [{:keys [summary-id harvested project-id agent-id]}]
+  (let [source-ids (extract-source-ids harvested)
+        capped?    (> (count source-ids) max-derived-from-edges)
+        limited-ids (if capped?
+                      (vec (take max-derived-from-edges source-ids))
+                      source-ids)
+        ;; Create :derived-from edges (summary → each source)
+        derived-result
+        (when (and summary-id (seq limited-ids))
+          (reduce
+           (fn [acc source-id]
+             (try
+               (let [edge-id (kg-edges/add-edge!
+                              {:from        summary-id
+                               :to          source-id
+                               :relation    :derived-from
+                               :scope       project-id
+                               :created-by  agent-id
+                               :source-type :automated})]
+                 (-> acc
+                     (update :created-count inc)
+                     (update :edge-ids conj edge-id)))
+               (catch Exception e
+                 (log/debug "Failed to create derived-from edge to" source-id
+                            ":" (.getMessage e))
+                 acc)))
+           {:created-count 0 :edge-ids []}
+           limited-ids))
+
+        ;; Create :co-accessed edges between source entries
+        co-count (when (>= (count limited-ids) 2)
+                   (kg-edges/record-co-access!
+                    limited-ids
+                    {:scope      project-id
+                     :created-by agent-id}))
+
+        derived-count (or (:created-count derived-result) 0)
+        co-count-val  (or co-count 0)]
+    {:derived-from derived-result
+     :co-accessed  {:count co-count-val}
+     :total-edges  (+ derived-count co-count-val)
+     :capped?      capped?}))
+
 (defn- ck-a
-  "Delegates to extension if available.
+  "Delegates to extension if available, falls back to FOSS implementation.
    OCP: positional core args + & opts for extension-specific keys."
   [summary-id harvested project-id agent-id & {:as opts}]
-  (delegate-or-noop :ck/a
-                    {:derived-from nil
-                     :co-accessed nil
-                     :total-edges 0
-                     :capped? false}
-                    [(merge {:summary-id summary-id
-                             :harvested harvested
-                             :project-id project-id
-                             :agent-id agent-id}
-                            opts)]))
+  (let [args (merge {:summary-id summary-id
+                     :harvested  harvested
+                     :project-id project-id
+                     :agent-id   agent-id}
+                    opts)]
+    (if-let [f (ext/get-extension :ck/a)]
+      (f args)
+      (do
+        (log/info "Using FOSS crystal edge builder for" summary-id)
+        (foss-build-crystal-edges args)))))
 
 ;;; =============================================================================
 ;;; Harvest / Crystallize Helpers

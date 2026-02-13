@@ -17,7 +17,7 @@
    Resources map (injected at run time):
      :harvest-fn     -- (fn [directory] -> harvested-data)
      :crystallize-fn -- (fn [harvested] -> {:summary-id str, :stats map, ...})
-     :kg-edge-fn     -- (fn [summary-id source-ids project-id agent-id] -> {:created-count N})
+     :kg-edge-fn     -- (fn [{:keys [summary-id harvested project-id agent-id]}] -> {:derived-from .., :co-accessed .., :total-edges N, :capped? bool})
      :notify-fn      -- (fn [agent-id session-id project-id stats] -> nil)
      :evict-fn       -- (fn [agent-id] -> {:evicted N})
      :scope-fn       -- (fn [directory] -> project-id)
@@ -119,14 +119,21 @@
    EDN handler key: :kg-edges
 
    Uses resources:
-     :kg-edge-fn (fn [summary-id source-ids project-id agent-id] -> {:created-count N})"
+     :kg-edge-fn (fn [{:keys [summary-id harvested project-id agent-id]}]
+                   -> {:derived-from .., :co-accessed .., :total-edges N, :capped? bool})
+
+   Passes a single map to kg-edge-fn matching build-crystal-edges (:ck/a) signature.
+   The extension extracts source IDs from harvested data internally."
   [resources data]
-  (let [{:keys [project-id agent-id]} data
+  (let [{:keys [project-id agent-id harvested]} data
         summary-id (get-in data [:crystal-result :summary-id])
         source-ids (:source-ids data)
         kg-edge-fn (:kg-edge-fn resources)]
     (if (and kg-edge-fn summary-id (seq source-ids))
-      (let [result (kg-edge-fn summary-id source-ids project-id agent-id)]
+      (let [result (kg-edge-fn {:summary-id summary-id
+                                :harvested  harvested
+                                :project-id project-id
+                                :agent-id   agent-id})]
         (assoc data :kg-result result))
       (assoc data :kg-result {:created-count 0 :skipped true}))))
 
@@ -287,7 +294,7 @@
    (run-wrap-session
      {:harvest-fn     (fn [dir] (crystal-hooks/harvest-all {:directory dir}))
       :crystallize-fn (fn [h] (crystal-hooks/crystallize-session h))
-      :kg-edge-fn     create-derived-from-edges!
+      :kg-edge-fn     build-crystal-edges  ;; or (ext/get-extension :ck/a)
       :notify-fn      emit-wrap-notify!
       :evict-fn       evict-agent-context!
       :source-ids-fn  extract-source-ids

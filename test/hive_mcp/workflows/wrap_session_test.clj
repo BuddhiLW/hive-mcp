@@ -15,7 +15,7 @@
    Resource keys match the handler docstrings:
      :harvest-fn     -- (fn [directory] -> harvested-data)
      :crystallize-fn -- (fn [harvested] -> {:summary-id str, :stats map, ...})
-     :kg-edge-fn     -- (fn [summary-id source-ids project-id agent-id] -> {:created-count N})
+     :kg-edge-fn     -- (fn [{:keys [summary-id harvested project-id agent-id]}] -> {:derived-from .., :total-edges N})
      :source-ids-fn  -- (fn [harvested] -> [string])
      :notify-fn      -- (fn [agent-id session-id project-id stats] -> nil)
      :evict-fn       -- (fn [agent-id] -> {:evicted N})
@@ -29,7 +29,7 @@
                                  :summary {:notes 1 :tasks 1}})
      :crystallize-fn (fn [_harvested] {:summary-id "sum-123"
                                        :stats {:promoted 0 :flushed 1}})
-     :kg-edge-fn     (fn [_sid _sids _pid _aid] {:created-count 2 :edge-ids ["e1" "e2"]})
+     :kg-edge-fn     (fn [_m] {:created-count 2 :edge-ids ["e1" "e2"]})
      :source-ids-fn  (fn [harvested]
                        (->> (concat (:progress-notes harvested)
                                     (:completed-tasks harvested))
@@ -184,17 +184,21 @@
 (deftest test-handle-kg-edges-success
   (testing "handle-kg-edges creates edges when summary-id and source-ids present"
     (let [called-with (atom nil)
-          resources {:kg-edge-fn (fn [sid sids pid aid]
-                                    (reset! called-with {:sid sid :sids sids :pid pid :aid aid})
-                                    {:created-count 2})}
+          harvested-data {:progress-notes [{:id "n1"} {:id "n2"}]}
+          resources {:kg-edge-fn (fn [m]
+                                   (reset! called-with m)
+                                   {:created-count 2})}
           result (wrap/handle-kg-edges resources
-                                        {:crystal-result {:summary-id "sum-1"}
-                                         :source-ids ["n1" "n2"]
-                                         :project-id "proj-x"
-                                         :agent-id "ling-y"})]
+                                       {:crystal-result {:summary-id "sum-1"}
+                                        :source-ids ["n1" "n2"]
+                                        :harvested harvested-data
+                                        :project-id "proj-x"
+                                        :agent-id "ling-y"})]
       (is (= 2 (get-in result [:kg-result :created-count])))
-      (is (= "sum-1" (:sid @called-with)))
-      (is (= ["n1" "n2"] (:sids @called-with))))))
+      (is (= "sum-1" (:summary-id @called-with)))
+      (is (= harvested-data (:harvested @called-with)))
+      (is (= "proj-x" (:project-id @called-with)))
+      (is (= "ling-y" (:agent-id @called-with))))))
 
 (deftest test-handle-kg-edges-skipped
   (testing "handle-kg-edges skips when no summary-id"
@@ -210,12 +214,12 @@
   (testing "handle-notify calls notify-fn and sets notify-sent?"
     (let [notified (atom nil)
           resources {:notify-fn (fn [aid sid pid stats]
-                                   (reset! notified {:aid aid :sid sid :pid pid :stats stats}))}
+                                  (reset! notified {:aid aid :sid sid :pid pid :stats stats}))}
           result (wrap/handle-notify resources
-                                      {:agent-id "ling-x"
-                                       :project-id "proj-x"
-                                       :crystal-result {:session "sess-1"
-                                                        :stats {:promoted 1}}})]
+                                     {:agent-id "ling-x"
+                                      :project-id "proj-x"
+                                      :crystal-result {:session "sess-1"
+                                                       :stats {:promoted 1}}})]
       (is (true? (:notify-sent? result)))
       (is (= "ling-x" (:aid @notified)))
       (is (= "sess-1" (:sid @notified)))
