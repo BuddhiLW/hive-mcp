@@ -1,6 +1,13 @@
 (ns hive-mcp.addons.core
-  "Plugin architecture for hive-mcp addons."
+  "Plugin architecture for hive-mcp addons.
+
+   Addons implement the IAddon protocol to contribute tools, extensions,
+   and schema extensions. The addon-info map supports optional keys:
+   - :extensions     — {keyword fn} for opaque extension registry
+   - :schema-extensions — {tool-name-string {param-name {:type :description}}}
+   These are automatically registered/deregistered during addon lifecycle."
   (:require [clojure.set]
+            [hive-mcp.extensions.registry :as ext]
             [taoensso.timbre :as log]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -125,6 +132,18 @@
               (swap! addon-registry assoc-in [name-kw :init-time]
                      (java.time.Instant/now))
               (swap! addon-registry assoc-in [name-kw :init-result] result)
+              ;; Bridge: push addon extensions to opaque registry
+              (let [info (addon-info addon)]
+                (when-let [exts (:extensions info)]
+                  (ext/register-many! exts)
+                  (log/debug "Addon registered extensions" {:addon name-kw :keys (keys exts)}))
+                (when-let [schema-exts (:schema-extensions info)]
+                  (doseq [[tool-name props] schema-exts]
+                    (ext/register-schema! tool-name props))
+                  (log/debug "Addon registered schema extensions" {:addon name-kw :tools (keys schema-exts)}))
+                (doseq [t (addon-tools addon)]
+                  (ext/register-tool! t)))
+
               (log/info "Addon initialized" {:addon name-kw
                                              :elapsed-ms elapsed-ms})
               (assoc result :addon-name name-kw :elapsed-ms elapsed-ms))
@@ -153,6 +172,13 @@
         (log/info "Addon not active, skipping shutdown" {:addon name-kw :state state})
         {:success? true :addon-name name-kw :already-inactive? true})
       (try
+        ;; Bridge: deregister addon extensions from opaque registry
+        (let [info (addon-info addon)]
+          (when-let [exts (:extensions info)]
+            (doseq [k (keys exts)] (ext/deregister! k))
+            (log/debug "Addon deregistered extensions" {:addon name-kw :keys (keys exts)}))
+          (doseq [t (addon-tools addon)]
+            (ext/deregister-tool! (:name t))))
         (let [result (shutdown! addon)]
           (swap! addon-registry assoc-in [name-kw :state] :registered)
           (swap! addon-registry assoc-in [name-kw :init-time] nil)
