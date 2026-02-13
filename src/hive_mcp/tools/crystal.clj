@@ -119,14 +119,19 @@
 ;;; =============================================================================
 
 (defn- ck-a
-  "Delegates to extension if available."
-  [summary-id harvested project-id agent-id]
+  "Delegates to extension if available.
+   OCP: positional core args + & opts for extension-specific keys."
+  [summary-id harvested project-id agent-id & {:as opts}]
   (delegate-or-noop :ck/a
                     {:derived-from nil
                      :co-accessed nil
                      :total-edges 0
                      :capped? false}
-                    [summary-id harvested project-id agent-id]))
+                    [(merge {:summary-id summary-id
+                             :harvested harvested
+                             :project-id project-id
+                             :agent-id agent-id}
+                            opts)]))
 
 ;;; =============================================================================
 ;;; Harvest / Crystallize Helpers

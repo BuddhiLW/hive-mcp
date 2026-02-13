@@ -120,16 +120,24 @@
 ;; =============================================================================
 
 (defn prioritize-tasks
-  "Apply full vulcan prioritization pipeline to a list of todo tasks."
+  "Apply full vulcan prioritization pipeline to a list of todo tasks.
+   Opts map is open for extension (OCP). Known keys:
+   - :task_ids — set/seq of task IDs to whitelist (focus filter)
+   - :deps-fn  — override KG dependency lookup
+   - :exists-fn — override Chroma existence check"
   ([tasks] (prioritize-tasks tasks #{} {}))
   ([tasks completed-ids] (prioritize-tasks tasks completed-ids {}))
-  ([tasks completed-ids {:keys [deps-fn exists-fn]
+  ([tasks completed-ids {:keys [deps-fn exists-fn task_ids]
                          :or {deps-fn get-task-deps
                               exists-fn task-exists-in-chroma?}}]
-   (let [ready (filter-ready-tasks tasks completed-ids deps-fn exists-fn)
+   (let [scoped (if (seq task_ids)
+                  (filterv #(contains? (set task_ids) (:id %)) tasks)
+                  tasks)
+         ready (filter-ready-tasks scoped completed-ids deps-fn exists-fn)
          enriched (enrich-with-wave-numbers ready deps-fn)
          sorted (sort-vulcan enriched)
-         blocked-count (- (count tasks) (count ready))]
+         blocked-count (- (count scoped) (count ready))]
      {:tasks sorted
       :count (count sorted)
-      :blocked-count blocked-count})))
+      :blocked-count blocked-count
+      :scoped-count (count scoped)})))
