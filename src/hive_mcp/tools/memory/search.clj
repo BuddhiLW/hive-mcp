@@ -44,7 +44,7 @@
    HCR Wave 4: Pass include_descendants=true to include child project memories."
   [{:keys [query limit type directory include_descendants]}]
   (let [directory (or directory (ctx/current-directory))
-        plan? (= type "plan")]
+        openrouter? (plans/high-abstraction-type? type)]
     (log/info "mcp-memory-search-semantic:" query "type:" type "directory:" directory)
     (try
       (let [limit-val (coerce-int! limit :limit 10)
@@ -59,9 +59,10 @@
           (try
             (let [project-id (scope/get-current-project-id directory)
                   in-project? (and project-id (not= project-id "global"))]
-              (if plan?
+              (if openrouter?
                 (let [results (plans/search-plans query
                                                   :limit limit-val
+                                                  :type type
                                                   :project-id (when in-project? project-id))
                       formatted (mapv (fn [{:keys [id type tags project-id plan-status distance preview]}]
                                         {:id id
@@ -75,7 +76,7 @@
                       (try
                         (kg-edges/record-co-access!
                          (mapv :id formatted)
-                         {:scope project-id :created-by "system:plan-search"})
+                         {:scope project-id :created-by "system:high-abstraction-search"})
                         (catch Exception e
                           (log/debug "Co-access recording failed (non-fatal):" (.getMessage e))))))
                   {:type "text"

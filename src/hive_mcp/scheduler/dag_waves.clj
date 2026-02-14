@@ -1,6 +1,7 @@
 (ns hive-mcp.scheduler.dag-waves
   "DAGWave scheduler for dependency-ordered task dispatch."
-  (:require [hive-mcp.knowledge-graph.edges :as kg-edges]
+  (:require [hive-mcp.dns.result :as result]
+            [hive-mcp.knowledge-graph.edges :as kg-edges]
             [hive-mcp.tools.memory-kanban :as mem-kanban]
             [hive-mcp.chroma.core :as chroma]
             [hive-mcp.agent.ling :as ling]
@@ -37,23 +38,17 @@
 (defn- get-kanban-todos
   "Get all kanban tasks with status 'todo' for the given project."
   [directory]
-  (try
-    (let [result (mem-kanban/handle-mem-kanban-list-slim
-                  {:status "todo" :directory directory})]
-      (when-not (:isError result)
-        (let [parsed (json/read-str (:text result) :key-fn keyword)]
-          (if (sequential? parsed) parsed []))))
-    (catch Exception e
-      (log/warn "Failed to get kanban todos:" (.getMessage e))
-      [])))
+  (result/rescue []
+                 (let [r (mem-kanban/handle-mem-kanban-list-slim
+                          {:status "todo" :directory directory})]
+                   (when-not (:isError r)
+                     (let [parsed (json/read-str (:text r) :key-fn keyword)]
+                       (if (sequential? parsed) parsed []))))))
 
 (defn- get-kanban-task
   "Get a kanban task by ID from Chroma."
   [task-id]
-  (try
-    (chroma/get-entry-by-id task-id)
-    (catch Exception _
-      nil)))
+  (result/rescue nil (chroma/get-entry-by-id task-id)))
 
 (defn- kanban-task-done?
   "Check if a kanban task has been completed."
@@ -64,11 +59,9 @@
 (defn- move-kanban-done!
   "Move a kanban task to 'done' status."
   [task-id directory]
-  (try
-    (mem-kanban/handle-mem-kanban-move
-     {:task_id task-id :new_status "done" :directory directory})
-    (catch Exception e
-      (log/warn "Failed to move kanban task to done:" task-id (.getMessage e)))))
+  (result/rescue nil
+                 (mem-kanban/handle-mem-kanban-move
+                  {:task_id task-id :new_status "done" :directory directory})))
 
 ;; =============================================================================
 ;; KG Dependency Helpers
@@ -77,13 +70,10 @@
 (defn- get-task-dependencies
   "Get the task IDs that a given task depends on via KG edges."
   [task-id]
-  (try
-    (let [edges (kg-edges/get-edges-from task-id)
-          depends-on-edges (filter #(= :depends-on (:kg-edge/relation %)) edges)]
-      (set (map :kg-edge/to depends-on-edges)))
-    (catch Exception e
-      (log/warn "Failed to get dependencies for task:" task-id (.getMessage e))
-      #{})))
+  (result/rescue #{}
+                 (let [edges (kg-edges/get-edges-from task-id)
+                       depends-on-edges (filter #(= :depends-on (:kg-edge/relation %)) edges)]
+                   (set (map :kg-edge/to depends-on-edges)))))
 
 ;; =============================================================================
 ;; Core Pure Functions
@@ -113,11 +103,27 @@
 ;; Stateful Dispatch Functions
 ;; =============================================================================
 
+(defn- spawn-ling-for-task
+  "Attempt to spawn a ling for a single DAG task. Returns Result."
+  [task-id title {:keys [cwd presets project-id]}]
+  (let [safe-title (-> (or title "task")
+                       str/lower-case
+                       (str/replace #"[^a-z0-9]+" "-"))
+        truncated (subs safe-title 0 (min 30 (count safe-title)))
+        ling-id (str "swarm-dag-" truncated "-" (System/currentTimeMillis))]
+    (result/try-effect* :dag/spawn-failed
+                        (ling/create-ling! ling-id
+                                           {:cwd cwd
+                                            :presets (or presets ["ling"])
+                                            :project-id project-id
+                                            :kanban-task-id task-id
+                                            :task title})
+                        ling-id)))
+
 (defn dispatch-wave!
   "Dispatch lings for ready tasks up to available slots."
   [ready-tasks max-slots opts]
-  (let [{:keys [cwd presets project-id]} opts
-        current-dispatched (:dispatched @dag-state)
+  (let [current-dispatched (:dispatched @dag-state)
         available-slots (max 0 (- max-slots (count current-dispatched)))
         tasks-to-dispatch (take available-slots ready-tasks)
         skipped (- (count ready-tasks) (count tasks-to-dispatch))]
@@ -129,34 +135,23 @@
     (let [dispatched-results
           (doall
            (for [{:keys [task-id title]} tasks-to-dispatch]
-             (try
-               (let [safe-title (-> (or title "task")
-                                    str/lower-case
-                                    (str/replace #"[^a-z0-9]+" "-"))
-                     truncated (subs safe-title 0 (min 30 (count safe-title)))
-                     ling-id (str "swarm-dag-" truncated "-" (System/currentTimeMillis))
-                     ;; Spawn ling with kanban-task-id linking
-                     _ (ling/create-ling! ling-id
-                                          {:cwd cwd
-                                           :presets (or presets ["ling"])
-                                           :project-id project-id
-                                           :kanban-task-id task-id
-                                           :task title})]
-                 ;; Track dispatch in state
-                 (swap! dag-state update :dispatched assoc task-id ling-id)
-                 ;; Log wave progress
-                 (swap! dag-state update :wave-log conj
-                        {:event :dispatched
-                         :task-id task-id
-                         :ling-id ling-id
-                         :title title
-                         :timestamp (System/currentTimeMillis)})
-                 {:task-id task-id :ling-id ling-id :status :dispatched})
-               (catch Exception e
-                 (log/error "Failed to dispatch ling for task:" task-id (.getMessage e))
-                 ;; Mark as failed so we don't keep retrying
-                 (swap! dag-state update :failed conj task-id)
-                 {:task-id task-id :status :failed :error (.getMessage e)}))))]
+             (let [r (spawn-ling-for-task task-id title opts)]
+               (if-let [ling-id (:ok r)]
+                 (do
+                   ;; Track dispatch in state
+                   (swap! dag-state update :dispatched assoc task-id ling-id)
+                   ;; Log wave progress
+                   (swap! dag-state update :wave-log conj
+                          {:event :dispatched
+                           :task-id task-id
+                           :ling-id ling-id
+                           :title title
+                           :timestamp (System/currentTimeMillis)})
+                   {:task-id task-id :ling-id ling-id :status :dispatched})
+                 (do
+                   ;; Mark as failed so we don't keep retrying
+                   (swap! dag-state update :failed conj task-id)
+                   {:task-id task-id :status :failed :error (:message r)})))))]
 
       {:dispatched-count (count (filter #(= :dispatched (:status %)) dispatched-results))
        :dispatched-tasks dispatched-results
@@ -254,12 +249,10 @@
     (go-loop []
       (when-let [event (<! ch)]
         (when (:active @dag-state)
-          (try
-            (on-ling-complete {:agent-id  (:agent-id event)
-                               :project-id (:project-id event)
-                               :data       (:data event)})
-            (catch Exception e
-              (log/error "DAGWaves event listener error:" (.getMessage e)))))
+          (result/rescue nil
+                         (on-ling-complete {:agent-id  (:agent-id event)
+                                            :project-id (:project-id event)
+                                            :data       (:data event)})))
         (recur)))
     (log/info "DAGWaves event listener started")))
 
@@ -267,11 +260,10 @@
   "Stop the event listener go-loop."
   []
   (when-let [ch @dag-sub-channel]
-    (try
-      (channel/unsubscribe! :hivemind-completed ch)
-      (catch Exception _
-        ;; Fallback: just close the channel
-        (try (close! ch) (catch Exception _))))
+    (let [r (result/try-effect* :dag/unsubscribe-failed
+                                (channel/unsubscribe! :hivemind-completed ch))]
+      (when (result/err? r)
+        (result/rescue nil (close! ch))))
     (reset! dag-sub-channel nil)
     (log/info "DAGWaves event listener stopped")))
 
@@ -360,12 +352,11 @@
   (let [state @dag-state
         directory (get-in state [:opts :cwd])
         ready (when (:active state)
-                (try
-                  (find-ready-tasks directory
-                                    (:completed state)
-                                    (:dispatched state)
-                                    (:failed state))
-                  (catch Exception _ [])))]
+                (result/rescue []
+                               (find-ready-tasks directory
+                                                 (:completed state)
+                                                 (:dispatched state)
+                                                 (:failed state))))]
     {:active       (:active state)
      :plan-id      (:plan-id state)
      :max-slots    (:max-slots state)

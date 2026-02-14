@@ -1,0 +1,11 @@
+{:addon/id          "{{artifact/id}}"
+ :addon/type        :native
+ :addon/version     "0.1.0"
+ :addon/init-ns     "{{top/ns}}.{{main/ns}}.addon"
+ :addon/init-fn     "init-as-addon!"
+ :addon/config      {}
+ :addon/capabilities #{:tools}
+ :addon/dependencies #{}
+ :addon/description  "{{description}}"
+ :addon/author       "{{developer}}"
+ :addon/license      "AGPL-3.0-or-later"}

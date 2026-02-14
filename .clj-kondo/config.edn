@@ -8,6 +8,8 @@
            manifold.deferred/loop clojure.core/let
            ;; dns.result let-ok is railway-oriented let
            hive-mcp.dns.result/let-ok clojure.core/let
+           ;; pool with-connection binds like with-open
+           hive-mcp.addons.pool/with-connection clojure.core/with-open
            ;; test.check defspec defines test vars like deftest
            clojure.test.check.clojure-test/defspec clojure.test/deftest}
 

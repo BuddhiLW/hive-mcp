@@ -2,111 +2,134 @@
   "Consolidated Emacs CLI tool."
   (:require [hive-mcp.tools.cli :refer [make-cli-handler]]
             [hive-mcp.tools.core :refer [mcp-success mcp-error mcp-json]]
+            [hive-mcp.dns.result :as result]
             [hive-mcp.emacs.client :as ec]
             [hive-mcp.emacs.elisp :as el]
             [taoensso.timbre :as log]))
 
+;; ── result-dsl shared helpers (MCP TOOL HANDLER pattern) ─────────────────────
+
+(defn- try-result
+  "Execute f in try/catch, returning Result. f must return a Result ({:ok ...}).
+   Exceptions -> (result/err category {:message ...})."
+  [category f]
+  (try (f)
+       (catch clojure.lang.ExceptionInfo e
+         (result/err category {:message (ex-message e) :data (ex-data e)}))
+       (catch Exception e
+         (result/err category {:message (ex-message e) :class (str (class e))}))))
+
+(defn- result->mcp
+  "Convert a Result to MCP JSON response: ok -> mcp-json, err -> mcp-error."
+  [r]
+  (if (result/ok? r)
+    (mcp-json (:ok r))
+    (mcp-error (or (:message r) (str (:error r))))))
+
+(defn- result->mcp-text
+  "Convert a Result to MCP text response: ok -> mcp-success, err -> mcp-error."
+  [r]
+  (if (result/ok? r)
+    (mcp-success (:ok r))
+    (mcp-error (or (:message r) (str (:error r))))))
+
+(defn- elisp->result
+  "Convert emacs client response {:keys [success result error]} to Result."
+  [resp]
+  (if (:success resp)
+    (result/ok (:result resp))
+    (result/err :emacs/eval-error {:message (str (:error resp))})))
+
+;; ── logic* fns (pure Result-returning) ───────────────────────────────────────
+
+(defn- eval* [{:keys [code]}]
+  (elisp->result (ec/eval-elisp code)))
+
+(defn- buffers* [_]
+  (let [elisp "(json-encode (mapcar (lambda (b) (list :name (buffer-name b) :file (buffer-file-name b))) (buffer-list)))"]
+    (result/map-ok (elisp->result (ec/eval-elisp elisp))
+                   (fn [r] {:buffers r}))))
+
+(defn- notify* [{:keys [message level]}]
+  (let [level-kw (or level "info")
+        elisp (el/format-elisp "(message \"[%s] %s\")" level-kw message)]
+    (result/map-ok (elisp->result (ec/eval-elisp elisp))
+                   (constantly "Notification sent"))))
+
+(defn- status* [_]
+  (result/ok {:running (ec/emacs-running?)
+              :current-buffer (ec/current-buffer)
+              :current-file (ec/current-file)}))
+
+(defn- switch-buffer* [{:keys [buffer]}]
+  (let [elisp (el/format-elisp "(switch-to-buffer %s)" (pr-str buffer))]
+    (result/map-ok (elisp->result (ec/eval-elisp elisp))
+                   (constantly (str "Switched to " buffer)))))
+
+(defn- find-file* [{:keys [file]}]
+  (let [elisp (el/format-elisp "(find-file %s)" (pr-str file))]
+    (result/map-ok (elisp->result (ec/eval-elisp elisp))
+                   (constantly (str "Opened " file)))))
+
+(defn- save* [{:keys [all]}]
+  (let [elisp (if all "(save-some-buffers t)" "(save-buffer)")]
+    (result/map-ok (elisp->result (ec/eval-elisp elisp))
+                   (constantly (if all "All buffers saved" "Buffer saved")))))
+
+(defn- current-buffer* [_]
+  (let [elisp "(json-encode (list :name (buffer-name) :file (buffer-file-name) :modified (buffer-modified-p) :major-mode (symbol-name major-mode)))"]
+    (result/map-ok (elisp->result (ec/eval-elisp elisp))
+                   (fn [r] {:buffer r}))))
+
+;; ── public handlers (MCP boundary) ──────────────────────────────────────────
+
 (defn handle-eval
   "Evaluate Elisp code."
-  [{:keys [code]}]
+  [{:keys [code] :as params}]
   (log/info "emacs-eval" {:code-length (count code)})
-  (try
-    (let [{:keys [success result error]} (ec/eval-elisp code)]
-      (if success
-        (mcp-success result)
-        (mcp-error (str "Error: " error))))
-    (catch Exception e
-      (mcp-error (str "Failed: " (.getMessage e))))))
+  (result->mcp-text (try-result :emacs/eval-failed #(eval* params))))
 
 (defn handle-buffers
   "List Emacs buffers."
-  [_]
+  [params]
   (log/info "emacs-buffers")
-  (try
-    (let [elisp "(json-encode (mapcar (lambda (b) (list :name (buffer-name b) :file (buffer-file-name b))) (buffer-list)))"
-          {:keys [success result error]} (ec/eval-elisp elisp)]
-      (if success
-        (mcp-json {:buffers result})
-        (mcp-error (str "Error: " error))))
-    (catch Exception e
-      (mcp-error (str "Failed: " (.getMessage e))))))
+  (result->mcp (try-result :emacs/buffers-failed #(buffers* params))))
 
 (defn handle-notify
   "Send notification to Emacs."
-  [{:keys [message level]}]
+  [{:keys [message level] :as params}]
   (log/info "emacs-notify" {:message message :level level})
-  (try
-    (let [level-kw (or level "info")
-          elisp (el/format-elisp "(message \"[%s] %s\")" level-kw message)
-          {:keys [success error]} (ec/eval-elisp elisp)]
-      (if success
-        (mcp-success "Notification sent")
-        (mcp-error (str "Error: " error))))
-    (catch Exception e
-      (mcp-error (str "Failed: " (.getMessage e))))))
+  (result->mcp-text (try-result :emacs/notify-failed #(notify* params))))
 
 (defn handle-status
   "Get Emacs connection status."
-  [_]
+  [params]
   (log/info "emacs-status")
-  (try
-    (mcp-json {:running (ec/emacs-running?)
-               :current-buffer (ec/current-buffer)
-               :current-file (ec/current-file)})
-    (catch Exception e
-      (mcp-error (str "Failed: " (.getMessage e))))))
+  (result->mcp (try-result :emacs/status-failed #(status* params))))
 
 (defn handle-switch-buffer
   "Switch to a buffer."
-  [{:keys [buffer]}]
+  [{:keys [buffer] :as params}]
   (log/info "emacs-switch" {:buffer buffer})
-  (try
-    (let [elisp (el/format-elisp "(switch-to-buffer %s)" (pr-str buffer))
-          {:keys [success error]} (ec/eval-elisp elisp)]
-      (if success
-        (mcp-success (str "Switched to " buffer))
-        (mcp-error (str "Error: " error))))
-    (catch Exception e
-      (mcp-error (str "Failed: " (.getMessage e))))))
+  (result->mcp-text (try-result :emacs/switch-failed #(switch-buffer* params))))
 
 (defn handle-find-file
   "Open a file in Emacs."
-  [{:keys [file]}]
+  [{:keys [file] :as params}]
   (log/info "emacs-find-file" {:file file})
-  (try
-    (let [elisp (el/format-elisp "(find-file %s)" (pr-str file))
-          {:keys [success error]} (ec/eval-elisp elisp)]
-      (if success
-        (mcp-success (str "Opened " file))
-        (mcp-error (str "Error: " error))))
-    (catch Exception e
-      (mcp-error (str "Failed: " (.getMessage e))))))
+  (result->mcp-text (try-result :emacs/find-file-failed #(find-file* params))))
 
 (defn handle-save
   "Save current buffer or all buffers."
-  [{:keys [all]}]
+  [{:keys [all] :as params}]
   (log/info "emacs-save" {:all all})
-  (try
-    (let [elisp (if all "(save-some-buffers t)" "(save-buffer)")
-          {:keys [success error]} (ec/eval-elisp elisp)]
-      (if success
-        (mcp-success (if all "All buffers saved" "Buffer saved"))
-        (mcp-error (str "Error: " error))))
-    (catch Exception e
-      (mcp-error (str "Failed: " (.getMessage e))))))
+  (result->mcp-text (try-result :emacs/save-failed #(save* params))))
 
 (defn handle-current-buffer
   "Get current buffer info."
-  [_]
+  [params]
   (log/info "emacs-current-buffer")
-  (try
-    (let [elisp "(json-encode (list :name (buffer-name) :file (buffer-file-name) :modified (buffer-modified-p) :major-mode (symbol-name major-mode)))"
-          {:keys [success result error]} (ec/eval-elisp elisp)]
-      (if success
-        (mcp-json {:buffer result})
-        (mcp-error (str "Error: " error))))
-    (catch Exception e
-      (mcp-error (str "Failed: " (.getMessage e))))))
+  (result->mcp (try-result :emacs/current-buffer-failed #(current-buffer* params))))
 
 (def handlers
   {:eval    handle-eval

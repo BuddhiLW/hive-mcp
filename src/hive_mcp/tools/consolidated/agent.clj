@@ -8,6 +8,8 @@
             [hive-mcp.tools.agent.dispatch :as dispatch]
             [hive-mcp.tools.agent.dag :as dag]
             [hive-mcp.tools.agent.lifecycle :as lifecycle]
+            [hive-mcp.agent.type-registry :as agent-type-registry]
+            [hive-mcp.agent.spawn-mode-registry :as spawn-registry]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -84,7 +86,7 @@
                                          :description "Agent operation to perform"}
                               ;; spawn params
                               "type" {:type "string"
-                                      :enum ["ling" "drone"]
+                                      :enum (agent-type-registry/mcp-enum)
                                       :description "Agent type to spawn (required for spawn)"}
                               "name" {:type "string"
                                       :description "Agent name/ID (auto-generated if not provided)"}
@@ -98,7 +100,7 @@
                               "task" {:type "string"
                                       :description "Initial task to dispatch on spawn"}
                               "spawn_mode" {:type "string"
-                                            :enum ["vterm" "headless"]
+                                            :enum (spawn-registry/mcp-enum)
                                             :description "Spawn mode for lings: 'vterm' (default, Emacs buffer) or 'headless' (OS subprocess, no Emacs required). Headless mode captures stdout to ring buffer and supports stdin dispatch. Note: 'headless' maps to :agent-sdk (Claude Agent SDK) since 0.12.0."}
                               "agents" {:type "object"
                                         :description "[spawn] Subagent definitions for Claude Agent SDK sessions. Map of agent-name to agent definition object. Each definition: {description: string, prompt: string, tools?: string[], model?: 'sonnet'|'opus'|'haiku'|'inherit'}. Only effective with agent-sdk spawn mode (headless)."}

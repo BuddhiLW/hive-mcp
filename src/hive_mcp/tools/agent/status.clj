@@ -2,6 +2,7 @@
   "Agent status query handler with DataScript and elisp fallback."
   (:require [hive-mcp.tools.core :refer [mcp-error mcp-json]]
             [hive-mcp.tools.agent.helpers :as helpers]
+            [hive-mcp.agent.type-registry :as agent-type-registry]
             [hive-mcp.swarm.datascript.queries :as queries]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -20,7 +21,8 @@
           (mcp-error (str "Agent not found: " eid)))
         type
         (let [agent-type (keyword type)
-              depth (case agent-type :ling 1 :drone 2 nil)
+              depth (when (agent-type-registry/valid-type? agent-type)
+                      (agent-type-registry/type-depth agent-type))
               all-agents (if project_id
                            (queries/get-slaves-by-project project_id)
                            (if (= agent-type :ling)

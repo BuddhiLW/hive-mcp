@@ -105,10 +105,10 @@
 (defn build-catchup-response
   "Build the final catchup response as a vector of 4 content blocks."
   [{:keys [project-name project-id scopes git-info permeation
-           axioms-meta priority-meta sessions-meta decisions-meta
+           axioms-meta principles-meta priority-meta sessions-meta decisions-meta
            conventions-meta snippets-meta expiring-meta kg-insights
            project-tree-scan disc-decay context-refs]}]
-  (let [total-enqueued (+ (count axioms-meta) (count priority-meta))]
+  (let [total-enqueued (+ (count axioms-meta) (count principles-meta) (count priority-meta))]
     [(make-block "header"
                  {:_block "header"
                   :success true
@@ -117,6 +117,7 @@
                   :git git-info
                   :permeation permeation
                   :counts {:axioms (count axioms-meta)
+                           :principles (count principles-meta)
                            :priority-conventions (count priority-meta)
                            :sessions (count sessions-meta)
                            :decisions (count decisions-meta)
@@ -132,6 +133,7 @@
      (make-block "context"
                  {:_block "context"
                   :context {:sessions sessions-meta
+                            :principles principles-meta
                             :decisions decisions-meta
                             :conventions conventions-meta
                             :snippets snippets-meta

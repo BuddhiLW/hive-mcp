@@ -548,7 +548,7 @@
                  (assoc :waves (format-execution-waves waves))
                  errors (assoc :errors errors))
         compressed (if compact
-                     (compress/compress-batch-envelope output)
+                     (compress/format-results-compact output)
                      output)]
     {:type "text"
      :text (json/write-str compressed)}))

@@ -15,6 +15,7 @@
             [hive-mcp.agent.drone.errors :as errors]
             [hive-mcp.agent.routing :as routing]
             [hive-mcp.agent.cost :as cost]
+            [hive-mcp.dns.result :as result]
             [hive-mcp.protocols.kg :as kg]
             [hive-mcp.swarm.coordinator :as coordinator]
             [hive-mcp.swarm.datascript :as ds]
@@ -74,7 +75,7 @@
     (when (seq files)
       (let [result (coordinator/atomic-claim-files! task-id drone-id files)]
         (when-not (:acquired? result)
-          (try (ds/remove-slave! drone-id) (catch Exception _ nil))
+          (result/rescue nil (ds/remove-slave! drone-id))
 
           (log/error {:event :drone/error
                       :error-type :conflict
@@ -116,7 +117,7 @@
                              :invalid-files invalid-files})))
             file-contents-before (into {}
                                        (for [f files]
-                                         [f (try (slurp f) (catch Exception _ nil))]))]
+                                         [f (result/rescue nil (slurp f))]))]
 
         (-> ctx
             (domain/with-pre-validation pre-validation)
@@ -206,15 +207,16 @@
       (log/info {:event   :drone/explicit-backend-requested
                  :backend explicit-backend})
       (backend/resolve-backend (assoc task-context :backend explicit-backend)))
-    (let [best (ext-router/best-backend)]
-      (try
-        (backend/resolve-backend (assoc task-context :backend best))
-        (catch Exception e
-          (log/warn {:event   :drone/preferred-backend-unavailable
-                     :preferred best
-                     :error   (ex-message e)
-                     :message "Falling back to :legacy-loop backend"})
-          (backend/resolve-backend (assoc task-context :backend :legacy-loop)))))))
+    (let [best (ext-router/best-backend)
+          r (result/try-effect* :drone/backend-unavailable
+                                (backend/resolve-backend (assoc task-context :backend best)))]
+      (if (result/ok? r)
+        (:ok r)
+        (do (log/warn {:event   :drone/preferred-backend-unavailable
+                       :preferred best
+                       :error   (:message r)
+                       :message "Falling back to :legacy-loop backend"})
+            (backend/resolve-backend (assoc task-context :backend :legacy-loop)))))))
 
 (defn- dispatch-to-backend!
   "Dispatch task-context to a resolved IDroneExecutionBackend."
@@ -367,17 +369,14 @@
                                    :timestamp (System/currentTimeMillis)})
 
     (when-let [drone-store (:kg-store ctx)]
-      (try
-        (when (kg/store-set?)
-          (let [merge-result (kg-factory/merge-drone-results! drone-store (kg/get-store))]
-            (log/info {:event :drone/kg-merge
-                       :drone-id drone-id
-                       :edges-found (:edges-found merge-result)
-                       :edges-merged (:edges-merged merge-result)})))
-        (catch Exception e
-          (log/warn {:event :drone/kg-merge-failed
+      (let [merge-result (result/rescue nil
+                                        (when (kg/store-set?)
+                                          (kg-factory/merge-drone-results! drone-store (kg/get-store))))]
+        (when merge-result
+          (log/info {:event :drone/kg-merge
                      :drone-id drone-id
-                     :error (.getMessage e)}))))
+                     :edges-found (:edges-found merge-result)
+                     :edges-merged (:edges-merged merge-result)}))))
 
     (domain/success-result ctx {:result raw-result
                                 :diff-results diff-results
@@ -392,13 +391,9 @@
       (coordinator/release-task-claims! task-id)
       (log/info "Drone released file locks:" drone-id))
     (when (:kg-store ctx)
-      (try
-        (kg-factory/close-drone-store! drone-id)
-        (log/debug "Drone KG store closed:" drone-id)
-        (catch Exception e
-          (log/warn {:event :drone/kg-cleanup-failed
-                     :drone-id drone-id
-                     :error (.getMessage e)}))))
+      (result/rescue nil
+                     (kg-factory/close-drone-store! drone-id)
+                     (log/debug "Drone KG store closed:" drone-id)))
     (ds/remove-slave! drone-id)))
 
 (defn phase:handle-error!
@@ -452,13 +447,7 @@
                       (System/getenv "CLAUDE_SWARM_SLAVE_ID"))
         cwd (or (:cwd task-spec) (diff/get-project-root))
 
-        drone-kg-store (try
-                         (kg-factory/create-drone-store drone-id)
-                         (catch Exception e
-                           (log/warn {:event :drone/kg-store-creation-failed
-                                      :drone-id drone-id
-                                      :error (.getMessage e)})
-                           nil))
+        drone-kg-store (result/rescue nil (kg-factory/create-drone-store drone-id))
 
         ctx (domain/->execution-context
              {:drone-id drone-id
@@ -470,20 +459,17 @@
         config (phase:prepare task-spec)
         ctx (assoc ctx :model (:model config))]
 
-    (try
+    (try ; boundary — orchestration try/finally for cleanup
       (let [ctx (phase:register! ctx task-spec)
-            diffs-before (diff-mgmt/capture-diffs-before)]
+            diffs-before (diff-mgmt/capture-diffs-before)
+            ctx (phase:validate ctx task-spec)]
 
-        (let [ctx (phase:validate ctx task-spec)]
-
-          (try
-            (let [raw-result (phase:execute! ctx task-spec config delegate-fn)]
-
-              (phase:finalize! ctx task-spec config raw-result diffs-before))
-
-            (catch Throwable e
-              (phase:handle-error! ctx task-spec config e)
-              (throw e)))))
+        (try ; boundary — error reporting + re-throw
+          (let [raw-result (phase:execute! ctx task-spec config delegate-fn)]
+            (phase:finalize! ctx task-spec config raw-result diffs-before))
+          (catch Throwable e
+            (phase:handle-error! ctx task-spec config e)
+            (throw e))))
 
       (finally
         (phase:cleanup! ctx task-spec)))))
@@ -497,19 +483,8 @@
                       (System/getenv "CLAUDE_SWARM_SLAVE_ID"))
         cwd (or (:cwd task-spec) (diff/get-project-root))
 
-        session-kg-store (try
-                           (session-kg/create-session-kg! drone-id)
-                           (catch Exception e
-                             (log/warn {:event :drone/session-kg-creation-failed
-                                        :drone-id drone-id
-                                        :error (.getMessage e)})
-                             (try
-                               (kg-factory/create-drone-store drone-id)
-                               (catch Exception e2
-                                 (log/warn {:event :drone/kg-store-fallback-failed
-                                            :drone-id drone-id
-                                            :error (.getMessage e2)})
-                                 nil))))
+        session-kg-store (or (result/rescue nil (session-kg/create-session-kg! drone-id))
+                             (result/rescue nil (kg-factory/create-drone-store drone-id)))
 
         ctx (domain/->execution-context
              {:drone-id drone-id
@@ -521,27 +496,19 @@
         config (phase:prepare task-spec)
         ctx (assoc ctx :model (:model config))]
 
-    (try
+    (try ; boundary — orchestration try/finally for cleanup
       (let [ctx (phase:register! ctx task-spec)
-            diffs-before (diff-mgmt/capture-diffs-before)]
+            diffs-before (diff-mgmt/capture-diffs-before)
+            ctx (phase:validate ctx task-spec)]
 
-        (let [ctx (phase:validate ctx task-spec)]
-
-          (try
-            (let [raw-result (phase:execute-agentic! ctx task-spec config)]
-
-              (phase:finalize! ctx task-spec config raw-result diffs-before))
-
-            (catch Throwable e
-              (phase:handle-error! ctx task-spec config e)
-              (throw e)))))
+        (try ; boundary — error reporting + re-throw
+          (let [raw-result (phase:execute-agentic! ctx task-spec config)]
+            (phase:finalize! ctx task-spec config raw-result diffs-before))
+          (catch Throwable e
+            (phase:handle-error! ctx task-spec config e)
+            (throw e))))
 
       (finally
         (when session-kg-store
-          (try
-            (session-kg/close-session-kg! session-kg-store drone-id)
-            (catch Exception e
-              (log/warn {:event :drone/session-kg-cleanup-failed
-                         :drone-id drone-id
-                         :error (.getMessage e)}))))
+          (result/rescue nil (session-kg/close-session-kg! session-kg-store drone-id)))
         (phase:cleanup! ctx task-spec)))))

@@ -35,7 +35,8 @@
 
      ;; Register as addon — tools auto-discovered
      (register-addon! (->HaystackBridge (atom nil)))"
-  (:require [hive-mcp.addons.core :as addon]
+  (:require [hive-mcp.addons.protocol :as proto]
+            [hive-mcp.addons.core :as addon]
             [clojure.string :as str]
             [clojure.walk :as walk]
             [taoensso.timbre :as log]))
@@ -439,32 +440,29 @@
 (def ^:private noop-msg "NoopMcpBridge: No bridge configured.")
 
 (defrecord NoopMcpBridge [id]
-  addon/IAddon
+  proto/IAddon
 
-  (addon-name [_] id)
+  (addon-id [_] id)
 
-  (addon-version [_] "0.0.0")
+  (addon-type [_] :mcp-bridge)
 
-  (addon-info [_]
-    {:name        id
-     :version     "0.0.0"
-     :description "No-operation MCP bridge for testing"
-     :author      "hive-mcp"
-     :license     "AGPL-3.0-or-later"
-     :dependencies #{}
-     :capabilities #{:mcp-bridge}})
+  (capabilities [_] #{:mcp-bridge})
 
-  (init! [this opts]
+  (initialize! [this opts]
     (start-bridge! this opts))
 
   (shutdown! [this]
     (stop-bridge! this))
 
-  (addon-tools [this]
-    (proxy-tool-defs this (name id)))
+  (tools [this]
+    (proxy-tool-defs this (clojure.core/name id)))
 
-  (addon-capabilities [_]
-    #{:mcp-bridge})
+  (schema-extensions [_] {})
+
+  (health [_]
+    {:status :down
+     :details {:version "0.0.0"
+               :description "No-operation MCP bridge for testing"}})
 
   IMcpBridge
 
@@ -517,10 +515,10 @@
    Returns:
      {:success? bool :addon-name kw :bridge-prefix str}"
   [bridge & [opts]]
-  {:pre [(satisfies? addon/IAddon bridge)
+  {:pre [(satisfies? proto/IAddon bridge)
          (satisfies? IMcpBridge bridge)
          (contains? transport-types (transport-type bridge))]}
-  (let [name-kw      (addon/addon-name bridge)
+  (let [name-kw      (proto/addon-id bridge)
         prefix       (clojure.core/name name-kw)
         addon-result (addon/register-addon! bridge)]
     (if (:success? addon-result)
@@ -568,7 +566,7 @@
 (defn bridge-addon?
   "Check if object implements both IAddon and IMcpBridge."
   [x]
-  (and (satisfies? addon/IAddon x)
+  (and (satisfies? proto/IAddon x)
        (satisfies? IMcpBridge x)))
 
 (defn bridge-connected?

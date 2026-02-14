@@ -13,6 +13,7 @@
    - decay scheduler (periodic memory/edge/disc decay)"
   (:require [hive-mcp.chroma.core :as chroma]
             [hive-mcp.channel.websocket :as ws-channel]
+            [hive-mcp.dns.result :as result]
             [hive-mcp.embeddings.ollama :as ollama]
             [hive-mcp.embeddings.service :as embedding-service]
             [hive-mcp.embeddings.config :as embedding-config]
@@ -63,7 +64,7 @@
   3. Environment variables (OLLAMA_HOST, OPENROUTER_API_KEY, etc.) as fallback
   4. Built-in defaults"
   []
-  (try
+  (result/rescue false
     ;; Load global config to get :embeddings section
     (let [cfg (global-config/get-global-config)
           embed-cfg (get cfg :embeddings {})
@@ -89,55 +90,50 @@
 
         ;; Configure per-collection embedding providers
         ;; Memory collection: Ollama (fast, local, 768 dims)
-        (try
+        (result/rescue nil
           (embedding-service/configure-collection!
            "hive-mcp-memory"
-           (embedding-config/ollama-config {:host ollama-host :model ollama-model}))
-          (catch Exception e
-            (log/warn "Could not configure Ollama for memory:" (.getMessage e))))
+           (embedding-config/ollama-config {:host ollama-host :model ollama-model})))
 
         ;; Presets collection: OpenRouter (accurate, 4096 dims) if API key available
         (when (global-config/get-secret :openrouter-api-key)
-          (try
-            (embedding-service/configure-collection!
-             "hive-mcp-presets"
-             (embedding-config/openrouter-config {:model openrouter-model}))
-            (log/info "Presets collection configured with OpenRouter (4096 dims)")
-            (catch Exception e
-              (log/warn "Could not configure OpenRouter for presets, using Ollama fallback:"
-                        (.getMessage e))
+          (let [configured? (result/rescue false
+                              (embedding-service/configure-collection!
+                               "hive-mcp-presets"
+                               (embedding-config/openrouter-config {:model openrouter-model}))
+                              true)]
+            (if configured?
+              (log/info "Presets collection configured with OpenRouter (4096 dims)")
               ;; Fallback: use Ollama for presets too
-              (try
+              (result/rescue nil
                 (embedding-service/configure-collection!
                  "hive-mcp-presets"
-                 (embedding-config/ollama-config {:host ollama-host :model ollama-model}))
-                (catch Exception _ nil)))))
+                 (embedding-config/ollama-config {:host ollama-host :model ollama-model}))))))
 
         ;; Plans collection: OpenRouter (4096 dims) for large plan entries (1000-5000+ chars)
         ;; Plans exceed Ollama's ~1500 char embedding limit, so OpenRouter is preferred
         (if (global-config/get-secret :openrouter-api-key)
-          (try
-            (embedding-service/configure-collection!
-             "hive-mcp-plans"
-             (embedding-config/openrouter-config {:model openrouter-model}))
-            (log/info "Plans collection configured with OpenRouter (4096 dims)")
-            (catch Exception e
-              (log/warn "Could not configure OpenRouter for plans, using Ollama fallback:"
-                        (.getMessage e))
-              ;; Fallback: use Ollama (truncation risk for large plans, but works)
-              (try
-                (embedding-service/configure-collection!
-                 "hive-mcp-plans"
-                 (embedding-config/ollama-config {:host ollama-host :model ollama-model}))
-                (log/warn "Plans collection using Ollama - entries >1500 chars may be truncated")
-                (catch Exception _ nil))))
+          (let [configured? (result/rescue false
+                              (embedding-service/configure-collection!
+                               "hive-mcp-plans"
+                               (embedding-config/openrouter-config {:model openrouter-model}))
+                              true)]
+            (if configured?
+              (log/info "Plans collection configured with OpenRouter (4096 dims)")
+              (do
+                ;; Fallback: use Ollama (truncation risk for large plans, but works)
+                (result/rescue nil
+                  (embedding-service/configure-collection!
+                   "hive-mcp-plans"
+                   (embedding-config/ollama-config {:host ollama-host :model ollama-model})))
+                (log/warn "Plans collection using Ollama - entries >1500 chars may be truncated"))))
           ;; No OpenRouter key - use Ollama with warning
-          (try
-            (embedding-service/configure-collection!
-             "hive-mcp-plans"
-             (embedding-config/ollama-config {:host ollama-host :model ollama-model}))
-            (log/warn "Plans collection using Ollama (no OPENROUTER_API_KEY) - entries >1500 chars may be truncated")
-            (catch Exception _ nil)))
+          (do
+            (result/rescue nil
+              (embedding-service/configure-collection!
+               "hive-mcp-plans"
+               (embedding-config/ollama-config {:host ollama-host :model ollama-model})))
+            (log/warn "Plans collection using Ollama (no OPENROUTER_API_KEY) - entries >1500 chars may be truncated")))
 
         ;; Set global fallback provider (Ollama) for backward compatibility
         (let [provider (ollama/->provider {:host ollama-host})]
@@ -148,12 +144,7 @@
                                                        :ollama-model ollama-model
                                                        :openrouter-model openrouter-model})
         (log/info "EmbeddingService status:" (embedding-service/status))
-        true))
-    (catch Exception e
-      (log/warn "Could not initialize embedding provider:"
-                (.getMessage e)
-                "- Semantic search will be unavailable")
-      false)))
+        true))))
 
 ;; =============================================================================
 ;; Hot-Reload Auto-Healing
@@ -163,16 +154,14 @@
   "Emit health event via WebSocket channel after hot-reload.
    Lings can listen for this to confirm MCP is operational."
   [loaded-ns unloaded-ns ms]
-  (try
+  (result/rescue nil
     (ws-channel/emit! :mcp-health-restored
                       {:loaded (count loaded-ns)
                        :unloaded (count unloaded-ns)
                        :reload-ms ms
                        :timestamp (System/currentTimeMillis)
                        :status "healthy"})
-    (log/info "Emitted :mcp-health-restored event after hot-reload")
-    (catch Exception e
-      (log/warn "Failed to emit health event (non-fatal):" (.getMessage e)))))
+    (log/info "Emitted :mcp-health-restored event after hot-reload")))
 
 (defn- handle-hot-reload-success!
   "Handler for successful hot-reload - refreshes tools and emits health event.
@@ -183,12 +172,10 @@
   [server-context-atom {:keys [loaded unloaded ms]}]
   (log/info "Hot-reload completed:" (count loaded) "loaded," (count unloaded) "unloaded in" ms "ms")
   ;; Refresh MCP tool handlers to point to new var values
-  (try
+  (result/rescue nil
     (when @server-context-atom
       (routes/refresh-tools! server-context-atom)
-      (log/info "MCP tools refreshed after hot-reload"))
-    (catch Exception e
-      (log/error "Failed to refresh MCP tools after hot-reload:" (.getMessage e))))
+      (log/info "MCP tools refreshed after hot-reload")))
   ;; Emit health event for lings
   (emit-mcp-health-event! loaded unloaded ms))
 
@@ -201,7 +188,7 @@
      server-context-atom - atom containing MCP server context"
   [server-context-atom]
   (when-not @hot-reload-listener-registered?
-    (try
+    (result/rescue nil
       (require 'hive-hot.core)
       (let [add-listener! (resolve 'hive-hot.core/add-listener!)]
         (add-listener! :mcp-auto-heal
@@ -209,9 +196,7 @@
                          (when (= (:type event) :reload-success)
                            (handle-hot-reload-success! server-context-atom event))))
         (reset! hot-reload-listener-registered? true)
-        (log/info "Registered hot-reload listener for MCP auto-healing"))
-      (catch Exception e
-        (log/warn "Could not register hot-reload listener (non-fatal):" (.getMessage e))))))
+        (log/info "Registered hot-reload listener for MCP auto-healing")))))
 
 ;; =============================================================================
 ;; Event System Initialization
@@ -221,13 +206,11 @@
   "Initialize hive-events system (re-frame inspired event dispatch).
    EVENTS-01: Event system must init after hooks but before channel."
   []
-  (try
+  (result/rescue nil
     (ev/init!)
     (effects/register-effects!)
     (ev-handlers/register-handlers!)
-    (log/info "hive-events system initialized")
-    (catch Exception e
-      (log/warn "hive-events initialization failed (non-fatal):" (.getMessage e)))))
+    (log/info "hive-events system initialized")))
 
 ;; =============================================================================
 ;; Coordinator Registration
@@ -240,7 +223,7 @@
    Parameters:
      coordinator-id-atom - atom to store coordinator project-id"
   [coordinator-id-atom]
-  (try
+  (result/rescue nil
     (require 'hive-mcp.swarm.datascript)
     (require 'hive-mcp.swarm.datascript.lings)
     (let [register! (resolve 'hive-mcp.swarm.datascript/register-coordinator!)
@@ -256,9 +239,7 @@
                                  :project-id project-id
                                  :cwd cwd})
       (reset! coordinator-id-atom project-id)
-      (log/info "Coordinator registered:" project-id "(also as slave for bb-mcp compat)"))
-    (catch Exception e
-      (log/warn "Coordinator registration failed (non-fatal):" (.getMessage e)))))
+      (log/info "Coordinator registered:" project-id "(also as slave for bb-mcp compat)"))))
 
 ;; =============================================================================
 ;; Memory Store Wiring
@@ -268,12 +249,10 @@
   "Wire ChromaMemoryStore as active IMemoryStore backend (Phase 1 vectordb abstraction).
    Must run AFTER init-embedding-provider! since Chroma config is set there."
   []
-  (try
+  (result/rescue nil
     (let [store (chroma-store/create-store)]
       (mem-proto/set-store! store)
-      (log/info "ChromaMemoryStore wired as active IMemoryStore backend"))
-    (catch Exception e
-      (log/warn "ChromaMemoryStore initialization failed (non-fatal):" (.getMessage e)))))
+      (log/info "ChromaMemoryStore wired as active IMemoryStore backend"))))
 
 ;; =============================================================================
 ;; Channel Bridge + Sync
@@ -283,21 +262,17 @@
   "Initialize channel bridge - wires channel events to hive-events dispatch.
    EVENTS-01: Must init after both channel server and event system."
   []
-  (try
+  (result/rescue nil
     (channel-bridge/init!)
-    (log/info "Channel bridge initialized - channel events will dispatch to hive-events")
-    (catch Exception e
-      (log/warn "Channel bridge initialization failed (non-fatal):" (.getMessage e)))))
+    (log/info "Channel bridge initialized - channel events will dispatch to hive-events")))
 
 (defn start-swarm-sync!
   "Start swarm sync - bridges channel events to logic database.
    This enables: task-completed → release claims → process queue."
   []
-  (try
+  (result/rescue nil
     (sync/start-sync!)
-    (log/info "Swarm sync started - logic database will track swarm state")
-    (catch Exception e
-      (log/warn "Swarm sync failed to start (non-fatal):" (.getMessage e)))))
+    (log/info "Swarm sync started - logic database will track swarm state")))
 
 ;; =============================================================================
 ;; Hot-Reload Watcher
@@ -314,7 +289,7 @@
   [server-context-atom project-config]
   (let [hot-reload-enabled? (get project-config :hot-reload true)]
     (if hot-reload-enabled?
-      (try
+      (result/rescue nil
         (let [src-dirs (or (global-config/get-service-value :project :src-dirs
                                                             :env "HIVE_MCP_SRC_DIRS"
                                                             :parse #(str/split % #":"))
@@ -328,21 +303,15 @@
           ;; Register MCP auto-heal listener to refresh tools after reload
           (register-hot-reload-listener! server-context-atom)
           ;; Register state protection for DataScript state validation
-          (try
+          (result/rescue nil
             (require 'hive-mcp.hot.state)
             (let [register! (resolve 'hive-mcp.hot.state/register-with-hive-hot!)]
-              (register!))
-            (catch Exception e
-              (log/debug "Hot-state protection not registered:" (.getMessage e))))
+              (register!)))
           ;; Register SAA Silence strategy for hot-reload aware exploration
-          (try
+          (result/rescue nil
             (require 'hive-mcp.hot.silence)
             (let [register! (resolve 'hive-mcp.hot.silence/register-with-hive-hot!)]
-              (register!))
-            (catch Exception e
-              (log/debug "SAA Silence not registered:" (.getMessage e)))))
-        (catch Exception e
-          (log/warn "Hot-reload watcher failed to start (non-fatal):" (.getMessage e))))
+              (register!)))))
       (log/info "Hot-reload disabled via .hive-project.edn"))))
 
 ;; =============================================================================
@@ -353,11 +322,9 @@
   "Start lings registry sync - keeps Clojure registry in sync with elisp.
    ADR-001: Event-driven sync for lings_available to return accurate counts."
   []
-  (try
+  (result/rescue nil
     (swarm/start-registry-sync!)
-    (log/info "Lings registry sync started - lings_available will track elisp lings")
-    (catch Exception e
-      (log/warn "Lings registry sync failed to start (non-fatal):" (.getMessage e)))))
+    (log/info "Lings registry sync started - lings_available will track elisp lings")))
 
 ;; =============================================================================
 ;; =============================================================================
@@ -373,25 +340,22 @@
    Non-fatal: if scheduler fails to start, system continues without it.
    Decay still runs on wrap/catchup hooks as before."
   []
-  (try
+  (result/rescue nil
     (require 'hive-mcp.scheduler.decay)
     (let [start-fn (resolve 'hive-mcp.scheduler.decay/start!)]
       (when start-fn
         (let [result (start-fn)]
           (if (:started result)
             (log/info "Decay scheduler started:" result)
-            (log/info "Decay scheduler not started:" (:reason result))))))
-    (catch Exception e
-      (log/warn "Decay scheduler failed to start (non-fatal):" (.getMessage e)))))
+            (log/info "Decay scheduler not started:" (:reason result))))))))
 
 (defn stop-decay-scheduler!
   "Stop the periodic decay scheduler. Called during shutdown."
   []
-  (try
+  (result/rescue nil
     (require 'hive-mcp.scheduler.decay)
     (when-let [stop-fn (resolve 'hive-mcp.scheduler.decay/stop!)]
-      (stop-fn))
-    (catch Exception _)))
+      (stop-fn))))
 
 ;; =============================================================================
 ;; NATS Initialization
@@ -403,7 +367,7 @@
    Opt-in via config: services.nats.enabled = true.
    Non-fatal: system degrades to polling if NATS unavailable."
   []
-  (try
+  (result/rescue nil
     (let [nats-config (global-config/get-service-config :nats)]
       (when (:enabled nats-config)
         (let [start! (requiring-resolve 'hive-mcp.nats.client/start!)
@@ -411,9 +375,7 @@
           (start! nats-config)
           (bridge!)
           (when-let [cb-start (requiring-resolve 'hive-mcp.swarm.callback/start-listener!)]
-            (cb-start)))))
-    (catch Exception e
-      (log/warn "NATS init failed (non-fatal):" (.getMessage e)))))
+            (cb-start)))))))
 
 ;; =============================================================================
 ;; Forge Belt Defaults
@@ -423,32 +385,28 @@
   "Register default implementations for forge belt :fb/* extension points.
    Must run before load-extensions! so extensions can override."
   []
-  (try
+  (result/rescue nil
     (require 'hive-mcp.workflows.forge-belt-defaults)
     (when-let [register! (resolve 'hive-mcp.workflows.forge-belt-defaults/register-forge-belt-defaults!)]
-      (register!))
-    (catch Exception e
-      (log/warn "Forge belt defaults registration failed (non-fatal):" (.getMessage e)))))
+      (register!))))
 
 ;; =============================================================================
 ;; Extension Loading
 ;; =============================================================================
 
 (defn load-extensions!
-  "Load optional extension capabilities (hive-knowledge, hive-agent).
-   Uses dual strategy: self-registration init! functions + manifest fallback.
+  "Load optional extension capabilities discovered on the classpath.
+   Uses classpath manifest scanning + addon self-registration.
    Non-fatal: system works without extensions (noop defaults).
 
    Must run AFTER embedding/memory services (extensions may use Chroma)."
   []
-  (try
+  (result/rescue nil
     (require 'hive-mcp.extensions.loader)
     (let [load-fn (resolve 'hive-mcp.extensions.loader/load-extensions!)]
       (when load-fn
         (let [result (load-fn)]
-          (log/info "Extension loading complete:" result))))
-    (catch Exception e
-      (log/warn "Extension loading failed (non-fatal):" (.getMessage e)))))
+          (log/info "Extension loading complete:" result))))))
 
 ;; =============================================================================
 ;; Workflow Engine Initialization
@@ -463,7 +421,7 @@
    Must run AFTER embedding/memory services (handlers may need them at runtime).
    Non-fatal: if initialization fails, NoopWorkflowEngine remains as fallback."
   []
-  (try
+  (result/rescue nil
     (require 'hive-mcp.workflows.registry)
     (require 'hive-mcp.workflows.fsm-engine)
     (require 'hive-mcp.protocols.workflow)
@@ -472,6 +430,4 @@
           set-engine!    (resolve 'hive-mcp.protocols.workflow/set-workflow-engine!)]
       (registry-init!)
       (set-engine! (create-engine))
-      (log/info "FSM workflow engine initialized and wired as active IWorkflowEngine"))
-    (catch Exception e
-      (log/warn "Workflow engine initialization failed (non-fatal):" (.getMessage e)))))
+      (log/info "FSM workflow engine initialized and wired as active IWorkflowEngine"))))

@@ -9,6 +9,8 @@
             [hive-mcp.agent.protocol :as proto]
             [hive-mcp.agent.ling :as ling]
             [hive-mcp.agent.drone :as drone]
+            [hive-mcp.agent.type-registry :as agent-type-registry]
+            [hive-mcp.agent.spawn-mode-registry :as spawn-registry]
             [hive-mcp.swarm.datascript.queries :as queries]
             [hive-mcp.knowledge-graph.scope :as kg-scope]
             [hive-mcp.server.guards :as guards]
@@ -64,8 +66,9 @@
                 {:role (guards/get-role) :depth (guards/ling-depth)})
       (mcp-error (build-spawn-denied-message)))
     (let [agent-type (keyword type)]
-      (if-not (#{:ling :drone} agent-type)
-        (mcp-error "type must be 'ling' or 'drone'")
+      (if-not (and (agent-type-registry/valid-type? agent-type)
+                   (agent-type-registry/spawnable? agent-type))
+        (mcp-error (str "type must be one of: " (pr-str (agent-type-registry/mcp-enum))))
         (try
           (let [agent-id (or name (helpers/generate-agent-id agent-type))
                 effective-project-id (resolve-project-scope project_id cwd parent)]
@@ -77,8 +80,8 @@
                                   (sequential? presets) (vec presets)
                                   :else [presets])
                     effective-spawn-mode (keyword (or spawn_mode "vterm"))
-                    _ (when-not (#{:vterm :headless :agent-sdk} effective-spawn-mode)
-                        (throw (ex-info "spawn_mode must be 'vterm', 'headless', or 'agent-sdk'"
+                    _ (when-not (spawn-registry/valid-mode? effective-spawn-mode)
+                        (throw (ex-info (str "spawn_mode must be one of: " (pr-str spawn-registry/mcp-modes))
                                         {:spawn-mode spawn_mode})))
                     normalized-agents (when (map? agents)
                                         (reduce-kv

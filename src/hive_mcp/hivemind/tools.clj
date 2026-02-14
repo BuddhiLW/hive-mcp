@@ -4,6 +4,7 @@
   (:require [hive-mcp.hivemind.state :as state]
             [hive-mcp.hivemind.messaging :as messaging]
             [hive-mcp.hivemind.status :as status]
+            [hive-mcp.hivemind.event-registry :as event-registry]
             [hive-mcp.agent.context :as ctx]
             [hive-mcp.swarm.protocol :as proto]
             [hive-mcp.swarm.datascript.registry :as registry]
@@ -33,7 +34,7 @@ The env var fallback reads from MCP server process, NOT your ling process!"
                   :properties {"agent_id" {:type "string"
                                            :description "REQUIRED for lings: Pass your $CLAUDE_SWARM_SLAVE_ID. Without this, status sync will fail."}
                                "event_type" {:type "string"
-                                             :enum ["progress" "completed" "error" "blocked" "started"]
+                                             :enum (event-registry/mcp-enum)
                                              :description "Type of event"}
                                "task" {:type "string"
                                        :description "Current task description"}

@@ -93,3 +93,36 @@
      (catch Exception e#
        (err ~category {:message (.getMessage e#)
                        :class  (str (class e#))}))))
+
+;; --- rescue: best-effort fallback (replaces 780+ try-catch-log patterns) -----
+
+(defmacro rescue
+  "Try body. On exception return fallback — error info as metadata (data, not strings).
+   Eliminates the ubiquitous (try expr (catch Exception e (log ...) fallback)) nesting.
+   Zero dependencies — error context attached via Clojure metadata, not logging.
+
+   (rescue []  (traverse ids))        ;; => [] on failure, error in ^{::error {...}}
+   (rescue nil (get-entry id))        ;; => nil on failure (nil can't carry meta)
+   (rescue {}  (compute-stats data))  ;; => {} on failure, (::error (meta result)) for details
+
+   Error data shape: {::error {:message \"...\" :form \"(traverse ids)\"}}"
+  [fallback & body]
+  `(try ~@body
+        (catch Exception e#
+          (let [fb# ~fallback]
+            (if (instance? clojure.lang.IObj fb#)
+              (with-meta fb# {::error {:message (.getMessage e#)
+                                       :form    ~(str (first body))}})
+              fb#)))))
+
+(defn rescue-fn
+  "Wrap f: on exception return fallback (default nil). For keep/map pipelines.
+   Eliminates (keep (fn [x] (try (f x) (catch Exception _ nil))) coll).
+
+   (keep (rescue-fn #(parse %)) items)           ;; nil on error → filtered by keep
+   (map  (rescue-fn #(parse %) :not-found) items) ;; :not-found on error"
+  ([f] (rescue-fn f nil))
+  ([f fallback]
+   (fn [& args]
+     (try (apply f args)
+          (catch Exception _ fallback)))))

@@ -76,10 +76,12 @@
                          :errors (:errors gate-result)}))))))
 
 (defn- index-entry!
-  "Index entry in appropriate collection (plans or memory)."
-  [plan? {:keys [type content tags-with-scope content-hash duration-str
-                 expires project-id abstraction-level knowledge-gaps agent-id]}]
-  (if plan?
+  "Index entry in appropriate collection.
+   Plans → OpenRouter-backed plans collection.
+   Everything else → Ollama-backed memory collection."
+  [openrouter? {:keys [type content tags-with-scope content-hash duration-str
+                       expires project-id abstraction-level knowledge-gaps agent-id]}]
+  (if openrouter?
     (plans/index-plan!
      {:type type :content content :tags tags-with-scope
       :content-hash content-hash :duration duration-str
@@ -95,12 +97,12 @@
 
 (defn- finalize-entry!
   "Wire KG edges, fetch created entry, notify channel, and format response."
-  [entry-id plan? kg-params project-id agent-id
+  [entry-id openrouter? kg-params project-id agent-id
    {:keys [tags-with-scope type knowledge-gaps]}]
   (let [edge-ids (create-kg-edges! entry-id kg-params project-id agent-id)
-        _ (when (and (seq edge-ids) (not plan?))
+        _ (when (and (seq edge-ids) (not openrouter?))
             (chroma/update-entry! entry-id {:kg-outgoing edge-ids}))
-        created (if plan? (plans/get-plan entry-id) (chroma/get-entry-by-id entry-id))]
+        created (if openrouter? (plans/get-plan entry-id) (chroma/get-entry-by-id entry-id))]
     (log/info "Created memory entry:" entry-id
               (when (seq edge-ids) (str " with " (count edge-ids) " KG edges"))
               (when (seq knowledge-gaps) (str " gaps:" (count knowledge-gaps))))
@@ -143,20 +145,20 @@
                     updated (chroma/update-entry! (:id existing) {:tags merged-tags})]
                 (log/info "Duplicate found, merged tags:" (:id existing))
                 (mcp-json (fmt/entry->json-alist updated)))
-              (let [plan? (= type "plan")
-                    _ (when plan? (validate-plan-gate! content))
+              (let [openrouter? (plans/high-abstraction-type? type)
+                    _ (when (= type "plan") (validate-plan-gate! content))
                     entry-ctx {:type type :content content :tags-with-scope tags-with-scope
                                :content-hash content-hash :duration-str duration-str
                                :expires expires :project-id project-id
                                :abstraction-level abstraction-level
                                :knowledge-gaps knowledge-gaps :agent-id agent-id}
-                    entry-id (index-entry! plan? entry-ctx)
+                    entry-id (index-entry! openrouter? entry-ctx)
                     _ (recall/register-created-id! entry-id)
                     kg-params {:kg_implements (:kg-implements-vec kg-vecs)
                                :kg_supersedes (:kg-supersedes-vec kg-vecs)
                                :kg_depends_on (:kg-depends-on-vec kg-vecs)
                                :kg_refines    (:kg-refines-vec kg-vecs)}]
-                (finalize-entry! entry-id plan? kg-params project-id agent-id entry-ctx)))))))
+                (finalize-entry! entry-id openrouter? kg-params project-id agent-id entry-ctx)))))))
     (catch clojure.lang.ExceptionInfo e
       (if (#{:coercion-error :embedding-too-long :plan-gate-rejected} (:type (ex-data e)))
         (mcp-error (.getMessage e))

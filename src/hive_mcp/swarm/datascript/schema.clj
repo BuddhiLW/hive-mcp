@@ -7,7 +7,8 @@
    - Schema documentation
 
    DDD: Value Objects for status enums, schema as domain model."
-  (:require [clojure.string :as str]))
+  (:require [clojure.string :as str]
+            [hive-mcp.agent.spawn-mode-registry :as spawn-registry]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -97,12 +98,8 @@
   #{:ling :drone})
 
 (def spawn-modes
-  "Valid ling spawn mode values.
-   :vterm      - Spawned inside Emacs vterm buffer (default for interactive)
-   :headless   - Alias for :agent-sdk (ProcessBuilder legacy, auto-mapped since 0.12.0)
-   :openrouter - Direct OpenRouter API calls (multi-model, no CLI needed)
-   :agent-sdk  - Claude Agent SDK via libpython-clj (default for headless since 0.12.0)"
-  #{:vterm :headless :openrouter :agent-sdk})
+  "Valid ling spawn mode values. Derived from spawn-mode-registry."
+  spawn-registry/all-modes)
 
 (def ling-model-default
   "Default ling model. When set, uses Claude Code CLI."

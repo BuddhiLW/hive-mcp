@@ -1,6 +1,7 @@
 (ns hive-mcp.tools.agent.helpers
   "Shared helper functions for agent tool handlers."
   (:require [hive-mcp.tools.swarm.core :as swarm-core]
+            [hive-mcp.agent.type-registry :as agent-type-registry]
             [hive-mcp.emacs.client :as ec]
             [taoensso.timbre :as log]
             [clojure.data.json :as json]))
@@ -19,10 +20,7 @@
   (when agent-data
     (let [base {:id (:slave/id agent-data)
                 :status (:slave/status agent-data)
-                :type (case (:slave/depth agent-data)
-                        0 :coordinator
-                        1 :ling
-                        :drone)  ;; depth 2+ = drone
+                :type (agent-type-registry/depth->agent-type (:slave/depth agent-data))
                 :cwd (:slave/cwd agent-data)
                 :project-id (:slave/project-id agent-data)}]
       (cond-> base

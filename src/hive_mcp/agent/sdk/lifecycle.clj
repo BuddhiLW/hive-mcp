@@ -42,7 +42,15 @@
                                                 :mcp-servers mcp-servers
                                                 :agents agents
                                                 :env env})
-        client-var (event-loop/connect-session-client! safe-id base-opts loop-var)
+        client-var (try
+                     (event-loop/connect-session-client! safe-id base-opts loop-var)
+                     (catch Exception e
+                       (log/error "[sdk.lifecycle] Client connect failed, cleaning up"
+                                  {:ling-id ling-id :error (ex-message e)})
+                       (event-loop/stop-session-loop! safe-id loop-var)
+                       (close! message-ch)
+                       (close! result-ch)
+                       (throw e)))
         session-data {:ling-id ling-id
                       :phase :idle
                       :phase-history []

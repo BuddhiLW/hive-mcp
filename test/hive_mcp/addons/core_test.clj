@@ -2,16 +2,16 @@
   "Tests for the addon plugin architecture.
 
    Covers:
-   - IAddon protocol implementation
+   - IAddon protocol implementation (unified protocol from addons.protocol)
    - Registry operations (register, get, list, unregister)
    - Lifecycle management (init, shutdown)
    - Tool aggregation from active addons
    - Capability queries
    - Dependency checking
-   - Edge cases (double-register, shutdown-inactive, etc.)
-   - NoopAddon and ExampleAddon reference implementations"
+   - Edge cases (double-register, shutdown-inactive, etc.)"
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [clojure.string]
+            [hive-mcp.addons.protocol :as proto]
             [hive-mcp.addons.core :as addons]))
 
 ;; =============================================================================
@@ -28,25 +28,17 @@
 (use-fixtures :each reset-registry-fixture)
 
 ;; =============================================================================
-;; Custom Test Addon
+;; Test Addons — implement unified IAddon from addons.protocol
 ;; =============================================================================
 
 (defrecord TestAddon [id version-str init-count shutdown-count state deps]
-  addons/IAddon
+  proto/IAddon
 
-  (addon-name [_] id)
-  (addon-version [_] version-str)
+  (addon-id [_] id)
+  (addon-type [_] :native)
+  (capabilities [_] #{:tools :memory-store})
 
-  (addon-info [_]
-    {:name id
-     :version version-str
-     :description (str "Test addon: " (name id))
-     :author "test"
-     :license "MIT"
-     :dependencies deps
-     :capabilities #{:tools :memory-store}})
-
-  (init! [_ opts]
+  (initialize! [_ opts]
     (swap! init-count inc)
     (reset! state {:initialized true :opts opts})
     {:success? true
@@ -59,7 +51,7 @@
     {:success? true
      :errors []})
 
-  (addon-tools [_]
+  (tools [_]
     [{:name (str (name id) "_search")
       :description (str "Search from " (name id))
       :inputSchema {:type "object"
@@ -75,8 +67,12 @@
       :handler (fn [{:keys [path]}]
                  {:type "text" :text (str "indexed: " path)})}])
 
-  (addon-capabilities [_]
-    #{:tools :memory-store}))
+  (schema-extensions [_] {})
+
+  (health [_]
+    {:status (if @state :ok :down)
+     :details {:version version-str
+               :dependencies deps}}))
 
 (defn ->test-addon
   "Create a test addon with tracking atoms."
@@ -85,35 +81,104 @@
   ([id version deps]
    (->TestAddon id version (atom 0) (atom 0) (atom nil) deps)))
 
+;; NoopAddon — minimal addon with no capabilities
+(defrecord NoopAddon [id version-str]
+  proto/IAddon
+
+  (addon-id [_] id)
+  (addon-type [_] :native)
+  (capabilities [_] #{})
+
+  (initialize! [_ _opts]
+    {:success? true
+     :errors []
+     :metadata {:noop true}})
+
+  (shutdown! [_]
+    {:success? true
+     :errors []})
+
+  (tools [_] [])
+  (schema-extensions [_] {})
+
+  (health [_]
+    {:status :ok
+     :details {:version version-str}}))
+
+(defn ->noop-addon
+  "Create a NoopAddon for testing."
+  ([] (->noop-addon :noop "0.0.0"))
+  ([id] (->noop-addon id "0.0.0"))
+  ([id version] (->NoopAddon id version)))
+
+;; ExampleAddon — contributes one tool
+(defrecord ExampleAddon [id state]
+  proto/IAddon
+
+  (addon-id [_] id)
+  (addon-type [_] :native)
+  (capabilities [_] #{:tools})
+
+  (initialize! [_ opts]
+    (reset! state {:initialized true :config (:config opts)})
+    {:success? true
+     :errors []
+     :metadata {:config-keys (keys (:config opts))}})
+
+  (shutdown! [_]
+    (reset! state nil)
+    {:success? true
+     :errors []})
+
+  (tools [_]
+    [{:name (str (name id) "_ping")
+      :description (str "Ping tool from " (name id) " addon")
+      :inputSchema {:type "object"
+                    :properties {"message" {:type "string"
+                                            :description "Message to echo"}}
+                    :required ["message"]}
+      :handler (fn [{:keys [message]}]
+                 {:type "text"
+                  :text (str "pong: " message " (from " (name id) ")")})}])
+
+  (schema-extensions [_] {})
+
+  (health [_]
+    {:status (if @state :ok :down)
+     :details {:version "1.0.0"}}))
+
+(defn ->example-addon
+  "Create an ExampleAddon for testing."
+  ([] (->example-addon :example))
+  ([id] (->ExampleAddon id (atom nil))))
+
 ;; Addon that fails on init
 (defrecord FailingAddon [id]
-  addons/IAddon
-  (addon-name [_] id)
-  (addon-version [_] "0.1.0")
-  (addon-info [_]
-    {:name id :version "0.1.0" :description "Addon that fails"
-     :author "test" :license "MIT" :dependencies #{} :capabilities #{}})
-  (init! [_ _opts]
+  proto/IAddon
+  (addon-id [_] id)
+  (addon-type [_] :native)
+  (capabilities [_] #{})
+  (initialize! [_ _opts]
     {:success? false :errors ["Intentional init failure"]})
   (shutdown! [_]
     {:success? true :errors []})
-  (addon-tools [_] [])
-  (addon-capabilities [_] #{}))
+  (tools [_] [])
+  (schema-extensions [_] {})
+  (health [_] {:status :down :details {}}))
 
 ;; Addon that throws on init
 (defrecord ThrowingAddon [id]
-  addons/IAddon
-  (addon-name [_] id)
-  (addon-version [_] "0.1.0")
-  (addon-info [_]
-    {:name id :version "0.1.0" :description "Addon that throws"
-     :author "test" :license "MIT" :dependencies #{} :capabilities #{}})
-  (init! [_ _opts]
+  proto/IAddon
+  (addon-id [_] id)
+  (addon-type [_] :native)
+  (capabilities [_] #{})
+  (initialize! [_ _opts]
     (throw (ex-info "Boom!" {:addon id})))
   (shutdown! [_]
     {:success? true :errors []})
-  (addon-tools [_] [])
-  (addon-capabilities [_] #{}))
+  (tools [_] [])
+  (schema-extensions [_] {})
+  (health [_] {:status :down :details {}}))
 
 ;; =============================================================================
 ;; IAddon Protocol Tests
@@ -121,65 +186,60 @@
 
 (deftest test-iaddon-protocol-satisfaction
   (testing "NoopAddon satisfies IAddon"
-    (is (satisfies? addons/IAddon (addons/->noop-addon))))
+    (is (satisfies? proto/IAddon (->noop-addon))))
 
   (testing "ExampleAddon satisfies IAddon"
-    (is (satisfies? addons/IAddon (addons/->example-addon))))
+    (is (satisfies? proto/IAddon (->example-addon))))
 
   (testing "TestAddon satisfies IAddon"
-    (is (satisfies? addons/IAddon (->test-addon :test)))))
+    (is (satisfies? proto/IAddon (->test-addon :test)))))
 
 (deftest test-noop-addon
-  (let [addon (addons/->noop-addon :my-noop "2.0.0")]
-    (testing "name returns constructor arg"
-      (is (= :my-noop (addons/addon-name addon))))
+  (let [addon (->noop-addon :my-noop "2.0.0")]
+    (testing "id returns constructor arg"
+      (is (= :my-noop (proto/addon-id addon))))
 
-    (testing "version returns constructor arg"
-      (is (= "2.0.0" (addons/addon-version addon))))
+    (testing "type returns :native"
+      (is (= :native (proto/addon-type addon))))
 
-    (testing "info returns correct map"
-      (let [info (addons/addon-info addon)]
-        (is (= :my-noop (:name info)))
-        (is (= "2.0.0" (:version info)))
-        (is (string? (:description info)))
-        (is (= #{} (:capabilities info)))))
+    (testing "health returns correct status"
+      (let [h (proto/health addon)]
+        (is (= :ok (:status h)))
+        (is (= "2.0.0" (get-in h [:details :version])))))
 
     (testing "init succeeds"
-      (let [result (addons/init! addon {})]
+      (let [result (proto/initialize! addon {})]
         (is (true? (:success? result)))
         (is (empty? (:errors result)))))
 
     (testing "shutdown succeeds"
-      (let [result (addons/shutdown! addon)]
+      (let [result (proto/shutdown! addon)]
         (is (true? (:success? result)))
         (is (empty? (:errors result)))))
 
     (testing "tools returns empty vector"
-      (is (= [] (addons/addon-tools addon))))
+      (is (= [] (proto/tools addon))))
 
     (testing "capabilities returns empty set"
-      (is (= #{} (addons/addon-capabilities addon))))))
+      (is (= #{} (proto/capabilities addon))))))
 
 (deftest test-noop-addon-defaults
   (testing "zero-arg constructor defaults"
-    (let [addon (addons/->noop-addon)]
-      (is (= :noop (addons/addon-name addon)))
-      (is (= "0.0.0" (addons/addon-version addon)))))
+    (let [addon (->noop-addon)]
+      (is (= :noop (proto/addon-id addon)))))
 
   (testing "one-arg constructor"
-    (let [addon (addons/->noop-addon :custom)]
-      (is (= :custom (addons/addon-name addon)))
-      (is (= "0.0.0" (addons/addon-version addon))))))
+    (let [addon (->noop-addon :custom)]
+      (is (= :custom (proto/addon-id addon))))))
 
 (deftest test-example-addon
-  (let [addon (addons/->example-addon :my-example)]
+  (let [addon (->example-addon :my-example)]
     (testing "basic info"
-      (is (= :my-example (addons/addon-name addon)))
-      (is (= "1.0.0" (addons/addon-version addon)))
-      (is (= #{:tools} (addons/addon-capabilities addon))))
+      (is (= :my-example (proto/addon-id addon)))
+      (is (= #{:tools} (proto/capabilities addon))))
 
     (testing "contributes one tool"
-      (let [tools (addons/addon-tools addon)]
+      (let [tools (proto/tools addon)]
         (is (= 1 (count tools)))
         (is (= "my-example_ping" (:name (first tools))))
         (is (string? (:description (first tools))))
@@ -187,16 +247,16 @@
         (is (fn? (:handler (first tools))))))
 
     (testing "tool handler works"
-      (let [handler (:handler (first (addons/addon-tools addon)))
+      (let [handler (:handler (first (proto/tools addon)))
             result (handler {:message "hello"})]
         (is (= "text" (:type result)))
         (is (clojure.string/includes? (:text result) "hello"))
         (is (clojure.string/includes? (:text result) "my-example"))))
 
     (testing "lifecycle works"
-      (let [init-result (addons/init! addon {:config {:key "val"}})]
+      (let [init-result (proto/initialize! addon {:config {:key "val"}})]
         (is (true? (:success? init-result)))
-        (let [shutdown-result (addons/shutdown! addon)]
+        (let [shutdown-result (proto/shutdown! addon)]
           (is (true? (:success? shutdown-result))))))))
 
 ;; =============================================================================
@@ -204,7 +264,7 @@
 ;; =============================================================================
 
 (deftest test-register-addon
-  (let [addon (addons/->noop-addon :test-reg)]
+  (let [addon (->noop-addon :test-reg)]
     (testing "register succeeds"
       (let [result (addons/register-addon! addon)]
         (is (true? (:success? result)))
@@ -215,10 +275,10 @@
 
     (testing "can retrieve addon"
       (is (some? (addons/get-addon :test-reg)))
-      (is (= :test-reg (addons/addon-name (addons/get-addon :test-reg)))))
+      (is (= :test-reg (proto/addon-id (addons/get-addon :test-reg)))))
 
     (testing "double register fails"
-      (let [result (addons/register-addon! (addons/->noop-addon :test-reg))]
+      (let [result (addons/register-addon! (->noop-addon :test-reg))]
         (is (false? (:success? result)))
         (is (seq (:errors result)))))))
 
@@ -228,7 +288,7 @@
                  (addons/register-addon! {:not "an addon"})))))
 
 (deftest test-get-addon-entry
-  (let [addon (addons/->noop-addon :entry-test)]
+  (let [addon (->noop-addon :entry-test)]
     (addons/register-addon! addon)
 
     (testing "returns full entry with metadata"
@@ -247,8 +307,8 @@
     (is (= [] (addons/list-addons))))
 
   (testing "lists all registered addons"
-    (addons/register-addon! (addons/->noop-addon :addon-a "1.0.0"))
-    (addons/register-addon! (addons/->noop-addon :addon-b "2.0.0"))
+    (addons/register-addon! (->noop-addon :addon-a "1.0.0"))
+    (addons/register-addon! (->noop-addon :addon-b "2.0.0"))
 
     (let [addons-list (addons/list-addons)]
       (is (= 2 (count addons-list)))
@@ -371,7 +431,7 @@
       (is (= 1 @(.shutdown-count addon))))))
 
 (deftest test-shutdown-inactive
-  (let [addon (addons/->noop-addon :inactive-shutdown)]
+  (let [addon (->noop-addon :inactive-shutdown)]
     (addons/register-addon! addon)
 
     (testing "shutdown on non-active addon returns already-inactive"
@@ -474,11 +534,11 @@
     (is (= [] (addons/addon-tools-by-name :nonexistent))))
 
   (testing "returns empty for non-active addon"
-    (addons/register-addon! (addons/->noop-addon :not-active))
+    (addons/register-addon! (->noop-addon :not-active))
     (is (= [] (addons/addon-tools-by-name :not-active)))))
 
 (deftest test-noop-addon-no-tools-capability
-  (let [addon (addons/->noop-addon :no-cap)]
+  (let [addon (->noop-addon :no-cap)]
     (addons/register-addon! addon)
     (addons/init-addon! :no-cap)
 
@@ -492,7 +552,7 @@
 
 (deftest test-addons-with-capability
   (addons/register-addon! (->test-addon :cap-a))  ;; Has :tools, :memory-store
-  (addons/register-addon! (addons/->noop-addon :cap-b))  ;; Has #{}
+  (addons/register-addon! (->noop-addon :cap-b))  ;; Has #{}
   (addons/init-all!)
 
   (testing "finds addons with :tools capability"
@@ -506,7 +566,7 @@
 
 (deftest test-all-capabilities
   (addons/register-addon! (->test-addon :allcap-a))
-  (addons/register-addon! (addons/->example-addon :allcap-b))
+  (addons/register-addon! (->example-addon :allcap-b))
   (addons/init-all!)
 
   (testing "aggregates capabilities across addons"
@@ -519,7 +579,7 @@
 ;; =============================================================================
 
 (deftest test-check-dependencies
-  (addons/register-addon! (addons/->noop-addon :dep-base))
+  (addons/register-addon! (->noop-addon :dep-base))
   (addons/register-addon! (->test-addon :dep-child "1.0.0" #{:dep-base}))
 
   (testing "satisfied when all deps present"
@@ -593,12 +653,12 @@
 
 (deftest test-multiple-register-unregister-cycles
   (testing "can register, unregister, and re-register"
-    (let [addon (addons/->noop-addon :cycle)]
+    (let [addon (->noop-addon :cycle)]
       (is (true? (:success? (addons/register-addon! addon))))
       (is (true? (:success? (addons/unregister-addon! :cycle))))
       (is (false? (addons/addon-registered? :cycle)))
       ;; Re-register with new instance
-      (is (true? (:success? (addons/register-addon! (addons/->noop-addon :cycle))))))))
+      (is (true? (:success? (addons/register-addon! (->noop-addon :cycle))))))))
 
 (deftest test-get-addon-returns-nil-for-unknown
   (is (nil? (addons/get-addon :nonexistent))))

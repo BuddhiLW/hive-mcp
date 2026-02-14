@@ -99,12 +99,13 @@
                         vec)
           max-ts (when (seq new-msgs)
                    (apply max (map :timestamp new-msgs)))
-          formatted-msgs (mapv (fn [{:keys [agent-id event-type message]}]
-                                 {:a agent-id
-                                  :e (if (keyword? event-type)
-                                       (name event-type)
-                                       event-type)
-                                  :m message})
+          formatted-msgs (mapv (fn [{:keys [agent-id event-type message task]}]
+                                 (cond-> {:a agent-id
+                                          :e (if (keyword? event-type)
+                                               (name event-type)
+                                               event-type)
+                                          :m message}
+                                   task (assoc :t task)))
                                new-msgs)]
       (when max-ts
         (swap! agent-read-cursors assoc cursor-key max-ts))
@@ -124,14 +125,15 @@
          ;; Sort by timestamp BEFORE map for consistent FIFO order
          (sort-by :timestamp)
          (take limit)
-         (mapv (fn [{:keys [agent-id event-type message timestamp project-id]}]
-                 {:a agent-id
-                  :e (if (keyword? event-type)
-                       (name event-type)
-                       event-type)
-                  :m message
-                  :ts timestamp
-                  :p project-id})))
+         (mapv (fn [{:keys [agent-id event-type message task timestamp project-id]}]
+                 (cond-> {:a agent-id
+                          :e (if (keyword? event-type)
+                               (name event-type)
+                               event-type)
+                          :m message
+                          :ts timestamp
+                          :p project-id}
+                   task (assoc :t task)))))
     []))
 
 (defn reset-cursor!

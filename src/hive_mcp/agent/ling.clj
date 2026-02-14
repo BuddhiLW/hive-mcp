@@ -50,7 +50,11 @@
                      :openrouter
                      (or (:spawn-mode opts) spawn-mode :vterm))
           mode (if (= raw-mode :headless)
-                 (if (sdk-strat/sdk-available?) :agent-sdk :headless)
+                 (if (sdk-strat/sdk-available?)
+                   :agent-sdk
+                   (do (log/warn "Agent SDK unavailable, falling back to raw headless"
+                                 {:ling-id id :sdk-status (sdk-strat/sdk-status)})
+                       :headless))
                  raw-mode)
           strat (resolve-strategy mode)
           ctx (assoc (ling-ctx this) :model effective-model)
@@ -235,7 +239,11 @@
         effective-spawn-mode (if (and model-val (not (schema/claude-model? model-val)))
                                :openrouter
                                (if (= raw-spawn-mode :headless)
-                                 (if (sdk-strat/sdk-available?) :agent-sdk :headless)
+                                 (if (sdk-strat/sdk-available?)
+                                   :agent-sdk
+                                   (do (log/warn "Agent SDK unavailable at ling construction"
+                                                 {:ling-id id :sdk-status (sdk-strat/sdk-status)})
+                                       :headless))
                                  raw-spawn-mode))]
     (map->Ling (cond-> {:id id
                         :cwd (:cwd opts)

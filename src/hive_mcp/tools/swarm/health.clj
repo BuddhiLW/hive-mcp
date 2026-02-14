@@ -1,16 +1,46 @@
 (ns hive-mcp.tools.swarm.health
-  "Drone health monitoring - detect stuck/failed drones and auto-recover."
-  (:require [hive-mcp.swarm.coordinator :as coordinator]
+  "Drone health monitoring - detect stuck/failed drones and auto-recover.
+
+   Result DSL: Internal logic returns Result maps ({:ok val} or {:error category}).
+   Single try-result boundary at each handler level. Zero nested try-catch."
+  (:require [hive-mcp.dns.result :as result]
+            [hive-mcp.swarm.coordinator :as coordinator]
             [hive-mcp.swarm.datascript :as ds]
             [hive-mcp.swarm.datascript.lings :as lings]
             [hive-mcp.events.core :as ev]
-            [hive-mcp.tools.core :refer [mcp-json]]
+            [hive-mcp.tools.core :refer [mcp-json mcp-error]]
             [hive-mcp.telemetry.prometheus :as prom]
             [clojure.core.async :as async :refer [go-loop timeout]]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
+
+;;; =============================================================================
+;;; Result DSL Helpers (boundary pattern)
+;;; =============================================================================
+
+(defn- try-result
+  "Execute thunk f returning Result; catch unexpected exceptions as error Result.
+   Unlike try-effect, expects f to return a Result map directly."
+  [category f]
+  (try
+    (f)
+    (catch Exception e
+      (log/error e (str (name category) " failed"))
+      (result/err category {:message (.getMessage e)}))))
+
+(defn- result->mcp
+  "Convert Result to MCP response.
+   {:ok data} -> (mcp-json data), {:error ...} -> (mcp-error message)."
+  [r]
+  (if (result/ok? r)
+    (mcp-json (:ok r))
+    (mcp-error (or (:message r) (:cause r) (str (:error r))))))
+
+;;; =============================================================================
+;;; Constants & State
+;;; =============================================================================
 
 (def ^:const check-interval-ms
   "How often to check drone health (30 seconds)."
@@ -55,12 +85,10 @@
                     (when task {:task task})
                     (when files {:files files}))))
     (when (and refresh-claims? (or files had-files?))
-      (try
-        (when-let [claim-files (or files (get-in @drone-heartbeats [drone-id :files]))]
-          (doseq [f claim-files]
-            (lings/refresh-claim! f)))
-        (catch Exception e
-          (log/debug "Could not refresh claims:" (.getMessage e)))))
+      (result/rescue nil
+                     (when-let [claim-files (or files (get-in @drone-heartbeats [drone-id :files]))]
+                       (doseq [f claim-files]
+                         (lings/refresh-claim! f)))))
     (log/debug "Heartbeat recorded:" drone-id)))
 
 (defn clear-heartbeat!
@@ -85,10 +113,7 @@
   (when-let [heartbeat (get-heartbeat drone-id)]
     (when-let [files (:files heartbeat)]
       (doseq [f files]
-        (try
-          (lings/refresh-claim! f)
-          (catch Exception e
-            (log/debug "Could not refresh claim for" f (.getMessage e))))))))
+        (result/rescue nil (lings/refresh-claim! f))))))
 
 (defn queue-for-retry!
   "Queue a failed task for retry with attempt tracking."
@@ -178,26 +203,21 @@
     classified))
 
 (defn- release-drone-claims!
-  "Release any file claims held by a drone."
+  "Release any file claims held by a drone. Best-effort — errors in metadata."
   [drone-id]
-  (try
-    (let [task-id (str "task-" drone-id)]
-      (coordinator/release-task-claims! task-id)
-      (log/info "Released claims for stuck drone:" drone-id))
-    (catch Exception e
-      (log/warn "Failed to release claims for drone:" drone-id (.getMessage e)))))
+  (result/rescue nil
+                 (let [task-id (str "task-" drone-id)]
+                   (coordinator/release-task-claims! task-id)
+                   (log/info "Released claims for stuck drone:" drone-id))))
 
 (defn- kill-stuck-drone!
-  "Kill a drone process via DataScript."
+  "Kill a drone process via DataScript. Returns Result."
   [drone-id]
-  (try
-    (when (ds/get-slave drone-id)
-      (ds/remove-slave! drone-id)
-      (log/info "Killed stuck drone:" drone-id)
-      :killed)
-    (catch Exception e
-      (log/error "Failed to kill drone:" drone-id (.getMessage e))
-      :error)))
+  (result/try-effect* :drone/kill-failed
+                      (when (ds/get-slave drone-id)
+                        (ds/remove-slave! drone-id)
+                        (log/info "Killed stuck drone:" drone-id)
+                        :killed)))
 
 (defn recover-stuck-drone!
   "Recover from a stuck drone by releasing claims, killing, and optionally retrying."
@@ -208,7 +228,8 @@
 
     (release-drone-claims! drone-id)
 
-    (let [kill-result (kill-stuck-drone! drone-id)]
+    (let [kill-r       (kill-stuck-drone! drone-id)
+          kill-result  (if (result/ok? kill-r) (:ok kill-r) :error)]
 
       (ev/dispatch [:drone/recovered {:drone-id drone-id
                                       :kill-result kill-result
@@ -256,10 +277,7 @@
       (log/error "Drone stuck - auto-recovering after" (/ elapsed-ms 1000) "seconds:" drone-id)
       (recover-stuck-drone! drone-id {:retry? true :wave-id wave-id}))
 
-    (try
-      (check-and-release-stale-claims!)
-      (catch Exception e
-        (log/error e "Error checking stale claims")))))
+    (result/rescue nil (check-and-release-stale-claims!))))
 
 (defn start-monitoring!
   "Start the background health monitoring loop."
@@ -272,10 +290,7 @@
       (go-loop []
         (let [[_ ch] (async/alts! [ctrl-chan (timeout check-interval-ms)])]
           (when-not (= ch ctrl-chan)
-            (try
-              (run-health-check!)
-              (catch Exception e
-                (log/error e "Error in drone health check")))
+            (result/rescue nil (run-health-check!))
             (recur))))
 
       (log/info "Drone health monitoring started (interval:" (/ check-interval-ms 1000) "s)"))))
@@ -374,70 +389,69 @@
     (start-monitoring!))
   (log/info "Drone health monitoring initialized"))
 
+;;; =============================================================================
+;;; MCP Handler Logic (pure Result-returning functions)
+;;; =============================================================================
+
+(defn- health-status* [{:keys [wave_id]}]
+  (result/ok (get-wave-health wave_id)))
+
+(defn- recover-drone* [{:keys [drone_id retry]}]
+  (if-not drone_id
+    (result/err :drone/recover-failed {:message "drone_id is required"})
+    (result/ok (recover-stuck-drone! drone_id {:retry? retry}))))
+
+(defn- health-control* [{:keys [action]}]
+  (case action
+    "start" (do (start-monitoring!)
+                (result/ok {:status "started" :monitoring? true}))
+    "stop"  (do (stop-monitoring!)
+                (result/ok {:status "stopped" :monitoring? false}))
+    (result/err :drone/health-control-failed
+                {:message "action must be 'start' or 'stop'"})))
+
+(defn- retry-queue-status* [_]
+  (let [queue @retry-queue]
+    (result/ok {:queue-length (count queue)
+                :tasks (mapv #(-> %
+                                  (select-keys [:drone-id :attempt :wave-id :queued-at])
+                                  (assoc :task-preview (subs (:task %) 0 (min 50 (count (:task %))))))
+                             queue)
+                :max-retry-attempts max-retry-attempts})))
+
+(defn- pop-retry-task* [_]
+  (if-let [task (pop-retry-task!)]
+    (result/ok {:success true :task task :hint "Re-dispatch this task to a new drone"})
+    (result/ok {:success false :message "Retry queue is empty"})))
+
+;;; =============================================================================
+;;; MCP Tool Handlers (boundary layer)
+;;; =============================================================================
+
 (defn handle-drone-health-status
   "Get current drone health status."
-  [{:keys [wave_id]}]
-  (try
-    (let [health (get-wave-health wave_id)]
-      (mcp-json health))
-    (catch Exception e
-      (log/error e "Failed to get drone health status")
-      (mcp-json {:error (.getMessage e)}))))
+  [params]
+  (result->mcp (try-result :drone/health-status-failed #(health-status* params))))
 
 (defn handle-recover-drone
   "Manually recover a stuck drone."
-  [{:keys [drone_id retry]}]
-  (try
-    (if-not drone_id
-      (mcp-json {:error "drone_id is required"})
-      (let [result (recover-stuck-drone! drone_id {:retry? retry})]
-        (mcp-json result)))
-    (catch Exception e
-      (log/error e "Failed to recover drone:" drone_id)
-      (mcp-json {:error (.getMessage e)}))))
+  [params]
+  (result->mcp (try-result :drone/recover-failed #(recover-drone* params))))
 
 (defn handle-drone-health-control
   "Control drone health monitoring (start/stop)."
-  [{:keys [action]}]
-  (try
-    (case action
-      "start" (do (start-monitoring!)
-                  (mcp-json {:status "started" :monitoring? true}))
-      "stop" (do (stop-monitoring!)
-                 (mcp-json {:status "stopped" :monitoring? false}))
-      (mcp-json {:error "action must be 'start' or 'stop'"}))
-    (catch Exception e
-      (log/error e "Failed to control monitoring")
-      (mcp-json {:error (.getMessage e)}))))
+  [params]
+  (result->mcp (try-result :drone/health-control-failed #(health-control* params))))
 
 (defn handle-retry-queue-status
   "Get the current retry queue status."
-  [_params]
-  (try
-    (let [queue @retry-queue]
-      (mcp-json {:queue-length (count queue)
-                 :tasks (mapv #(-> %
-                                   (select-keys [:drone-id :attempt :wave-id :queued-at])
-                                   (assoc :task-preview (subs (:task %) 0 (min 50 (count (:task %))))))
-                              queue)
-                 :max-retry-attempts max-retry-attempts}))
-    (catch Exception e
-      (log/error e "Failed to get retry queue status")
-      (mcp-json {:error (.getMessage e)}))))
+  [params]
+  (result->mcp (try-result :drone/retry-queue-failed #(retry-queue-status* params))))
 
 (defn handle-pop-retry-task
   "Pop the next task from the retry queue for re-execution."
-  [_params]
-  (try
-    (if-let [task (pop-retry-task!)]
-      (mcp-json {:success true
-                 :task task
-                 :hint "Re-dispatch this task to a new drone"})
-      (mcp-json {:success false
-                 :message "Retry queue is empty"}))
-    (catch Exception e
-      (log/error e "Failed to pop retry task")
-      (mcp-json {:error (.getMessage e)}))))
+  [params]
+  (result->mcp (try-result :drone/pop-retry-failed #(pop-retry-task* params))))
 
 (def tools
   "MCP tool definitions for drone health monitoring."

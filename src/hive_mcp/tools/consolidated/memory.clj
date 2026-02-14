@@ -1,7 +1,8 @@
 (ns hive-mcp.tools.consolidated.memory
   "Consolidated memory tool using CLI dispatcher pattern."
   (:require [hive-mcp.tools.cli :refer [make-cli-handler make-batch-handler]]
-            [hive-mcp.tools.memory :as mem]))
+            [hive-mcp.tools.memory :as mem]
+            [hive-mcp.memory.type-registry :as type-registry]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -54,7 +55,7 @@
                                          :enum ["add" "query" "metadata" "get" "search" "duration" "promote" "demote" "log_access" "feedback" "helpfulness" "tags" "cleanup" "expiring" "expire" "migrate" "import" "decay" "xpoll" "rename" "batch-add" "batch-feedback" "batch-get" "help"]
                                          :description "Command to execute"}
                               "type" {:type "string"
-                                      :enum ["note" "snippet" "convention" "decision" "axiom"]
+                                      :enum (type-registry/mcp-enum)
                                       :description "[add/query] Type of memory entry"}
                               "content" {:type "string"
                                          :description "[add] Content of the memory entry"}

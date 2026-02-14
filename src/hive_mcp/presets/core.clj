@@ -26,6 +26,7 @@
      ;; Get specific preset
      (get-preset \"tdd\")"
   (:require [hive-mcp.chroma.core :as chroma]
+            [hive-mcp.dns.result :as result]
             [clojure-chroma-client.api :as chroma-api]
             [clojure.java.io :as io]
             [clojure.string :as str]
@@ -57,22 +58,17 @@
 (defn- try-get-existing-collection
   "Try to get existing collection. Returns nil on failure."
   []
-  (try
-    @(chroma-api/get-collection collection-name)
-    (catch Exception _ nil)))
+  (result/rescue nil @(chroma-api/get-collection collection-name)))
 
 (defn- delete-collection!
   "Delete the presets collection. Returns true on success."
   []
-  (try
-    ;; chroma-api/delete-collection expects a collection object, not just name
-    ;; It extracts (:name collection) from the object
-    (when-let [coll (try-get-existing-collection)]
-      @(chroma-api/delete-collection coll)
+  (result/rescue false
+                 (when-let [coll (try-get-existing-collection)]
+                   @(chroma-api/delete-collection coll)
       ;; Give Chroma time to process the deletion
-      (Thread/sleep 50))
-    true
-    (catch Exception _ false)))
+                   (Thread/sleep 50))
+                 true))
 
 (defn- create-collection-with-dimension
   "Create a new collection with the given dimension.
@@ -281,16 +277,17 @@
   (let [presets (scan-presets-dir dir-path)]
     (if (empty? presets)
       {:migrated [] :failed [] :message "No preset files found"}
-      (try
-        (let [ids (index-presets! presets)]
-          {:migrated ids
-           :failed []
-           :count (count ids)
-           :message (str "Successfully migrated " (count ids) " presets")})
-        (catch Exception e
+      (let [r (result/try-effect* :chroma/migrate-failed
+                                  (index-presets! presets))]
+        (if (result/ok? r)
+          (let [ids (:ok r)]
+            {:migrated ids
+             :failed []
+             :count (count ids)
+             :message (str "Successfully migrated " (count ids) " presets")})
           {:migrated []
-           :failed (mapv (fn [p] {:name (:name p) :error (str e)}) presets)
-           :message (str "Migration failed: " (.getMessage e))})))))
+           :failed (mapv (fn [p] {:name (:name p) :error (:message r)}) presets)
+           :message (str "Migration failed: " (:message r))})))))
 
 ;;; ============================================================
 ;;; Semantic Search
@@ -339,40 +336,34 @@
   "Get a specific preset by ID/name from Chroma.
    Returns full content or nil if not found."
   [preset-id]
-  (try
-    (let [coll (get-or-create-collection)
-          results @(chroma-api/get coll :ids [preset-id] :include #{:documents :metadatas})]
-      (when-let [{:keys [id document metadata]} (first results)]
-        {:id id
-         :name (get metadata :name)
-         :title (get metadata :title)
-         :category (get metadata :category)
-         :tags (when-let [t (get metadata :tags)]
-                 (when (not= t "")
-                   (str/split t #",")))
-         :source (get metadata :source)
-         :_content document}))
-    (catch Exception e
-      (log/debug "Failed to get preset from Chroma:" preset-id (.getMessage e))
-      nil)))
+  (result/rescue nil
+                 (let [coll (get-or-create-collection)
+                       results @(chroma-api/get coll :ids [preset-id] :include #{:documents :metadatas})]
+                   (when-let [{:keys [id document metadata]} (first results)]
+                     {:id id
+                      :name (get metadata :name)
+                      :title (get metadata :title)
+                      :category (get metadata :category)
+                      :tags (when-let [t (get metadata :tags)]
+                              (when (not= t "")
+                                (str/split t #",")))
+                      :source (get metadata :source)
+                      :_content document}))))
 
 (defn list-presets
   "List all presets in Chroma collection.
    Returns seq of {:id :name :title :category :source}"
   []
-  (try
-    (let [coll (get-or-create-collection)
-          results @(chroma-api/get coll :include [:metadatas])]
-      (mapv (fn [{:keys [id metadata]}]
-              {:id id
-               :name (get metadata :name)
-               :title (get metadata :title)
-               :category (get metadata :category)
-               :source (get metadata :source)})
-            results))
-    (catch Exception e
-      (log/warn "Failed to list presets:" (.getMessage e))
-      [])))
+  (result/rescue []
+                 (let [coll (get-or-create-collection)
+                       results @(chroma-api/get coll :include [:metadatas])]
+                   (mapv (fn [{:keys [id metadata]}]
+                           {:id id
+                            :name (get metadata :name)
+                            :title (get metadata :title)
+                            :category (get metadata :category)
+                            :source (get metadata :source)})
+                         results))))
 
 ;;; ============================================================
 ;;; Fallback (File-based)
@@ -395,14 +386,15 @@
   (let [base {:collection collection-name
               :chroma-configured? (chroma/embedding-configured?)}]
     (if (chroma/embedding-configured?)
-      (try
-        (let [presets (list-presets)]
-          (assoc base
-                 :count (count presets)
-                 :categories (frequencies (map :category presets))
-                 :sources (frequencies (map :source presets))))
-        (catch Exception e
-          (assoc base :error (str e))))
+      (let [r (result/try-effect* :chroma/status-failed
+                                  (list-presets))]
+        (if (result/ok? r)
+          (let [presets (:ok r)]
+            (assoc base
+                   :count (count presets)
+                   :categories (frequencies (map :category presets))
+                   :sources (frequencies (map :source presets))))
+          (assoc base :error (:message r))))
       base)))
 
 (defn delete-preset!
