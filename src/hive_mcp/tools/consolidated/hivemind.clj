@@ -2,6 +2,7 @@
   "Consolidated Hivemind coordination CLI tool."
   (:require [hive-mcp.tools.cli :refer [make-cli-handler]]
             [hive-mcp.hivemind.core :as hm]
+            [hive-mcp.hivemind.event-registry :as event-registry]
             [clojure.string :as str]))
 
 (def ^:private tools-by-name
@@ -27,7 +28,7 @@
                                          :enum ["shout" "ask" "status" "respond" "messages" "help"]
                                          :description "Hivemind operation to perform"}
                               "event_type" {:type "string"
-                                            :enum ["progress" "completed" "error" "blocked" "started"]
+                                            :enum (event-registry/mcp-enum)
                                             :description "Type of event for shout"}
                               "task" {:type "string"
                                       :description "Current task description"}

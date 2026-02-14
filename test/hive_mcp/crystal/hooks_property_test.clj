@@ -12,18 +12,18 @@
    - P5b: extract-task title extraction (string content)
    - P5c: extract-task legacy format defaults
 
-   Private helpers (controlled side-effects):
-   - P6:  safe-effect success path returns fn result
-   - P7:  safe-effect failure path returns fallback
-   - P8:  safe-effect failure + map fallback injects :error
-   - P9:  safe-effect totality (never throws)
+   Result DSL helpers:
+   - P6:  rescue success path returns fn result
+   - P7:  rescue failure path returns fallback
+   - P8:  rescue failure + map fallback — error in metadata
+   - P9:  rescue totality (never throws)
 
    JSON safety:
    - P10: parse-json-safe totality (never throws for any string)
    - P11: parse-json-safe valid JSON roundtrip
 
-   Error result structure:
-   - P12: harvest-error-result always has :error with :harvest-failed
+   Surface-rescue-error:
+   - P12: surface-rescue-error extracts ::result/error metadata into :error key
 
    Crystallize-session structure (mocked):
    - P13: result always contains all 4 lifecycle stat keys
@@ -32,8 +32,7 @@
    Memory access tracking:
    - P15: on-memory-accessed tracked count equals entry-ids count
    - P16: on-memory-accessed explicit? detection by source"
-  (:require [clojure.test :refer [deftest is testing]]
-            [clojure.test.check.generators :as gen]
+  (:require [clojure.test.check.generators :as gen]
             [clojure.test.check.properties :as prop]
             [clojure.test.check.clojure-test :refer [defspec]]
             [hive-mcp.crystal.hooks :as hooks]
@@ -43,7 +42,7 @@
             [hive-mcp.tools.memory.duration :as dur]
             [hive-mcp.chroma.core :as chroma]
             [hive-mcp.agent.context :as ctx]
-            [hive-mcp.events.core :as ev]
+            [hive-mcp.dns.result :as result]
             [clojure.data.json :as json]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -54,9 +53,8 @@
 ;; Private Var References (for testing private helpers)
 ;; =============================================================================
 
-(def safe-effect @#'hooks/safe-effect)
 (def parse-json-safe @#'hooks/parse-json-safe)
-(def harvest-error-result @#'hooks/harvest-error-result)
+(def surface-rescue-error @#'hooks/surface-rescue-error)
 
 ;; =============================================================================
 ;; Generators
@@ -219,57 +217,51 @@
                        (nil? (:started result))))))
 
 ;; =============================================================================
-;; P6: safe-effect success path — returns fn result, not fallback
+;; P6: rescue success path — returns body result, not fallback
 ;; =============================================================================
 
-(defspec p6-safe-effect-success-returns-fn-result 100
+(defspec p6-rescue-success-returns-body-result 100
   (prop/for-all [v gen/small-integer
                  fallback gen-fallback]
-                (let [result (safe-effect "test" (fn [] v) fallback)]
-                  (= v result))))
+                (let [r (result/rescue fallback v)]
+                  (= v r))))
 
 ;; =============================================================================
-;; P7: safe-effect failure path — returns fallback, not exception
+;; P7: rescue failure path — returns fallback, not exception
 ;; =============================================================================
 
-(defspec p7-safe-effect-failure-returns-fallback 100
+(defspec p7-rescue-failure-returns-fallback 100
   (prop/for-all [fallback gen/small-integer]
-                (let [result (safe-effect "test"
-                                          (fn [] (throw (Exception. "boom")))
-                                          fallback)]
-                  (= fallback result))))
+                (let [r (result/rescue fallback (throw (Exception. "boom")))]
+                  (= fallback r))))
 
 ;; =============================================================================
-;; P8: safe-effect failure + map fallback — :error key injected
+;; P8: rescue failure + map fallback — error in metadata, not in map
 ;; =============================================================================
 
-(defspec p8-safe-effect-failure-map-injects-error 100
+(defspec p8-rescue-failure-map-has-error-metadata 100
   (prop/for-all [fallback gen-fallback-map]
-                (let [result (safe-effect "test"
-                                          (fn [] (throw (Exception. "test-error")))
-                                          fallback)]
-                  (and (map? result)
-                       (contains? result :error)
-                       (= "test-error" (:error result))))))
+                (let [r (result/rescue fallback (throw (Exception. "test-error")))]
+                  (and (map? r)
+                       (some? (::result/error (meta r)))
+                       (= "test-error" (:message (::result/error (meta r))))))))
 
 ;; =============================================================================
-;; P9: safe-effect totality — never throws regardless of fn behavior
+;; P9: rescue totality — never throws regardless of body behavior
 ;; =============================================================================
 
-(defspec p9-safe-effect-totality-success 100
+(defspec p9-rescue-totality-success 100
   (prop/for-all [v gen/small-integer
                  fallback gen-fallback]
                 (try
-                  (safe-effect "test" (fn [] v) fallback)
+                  (result/rescue fallback v)
                   true
                   (catch Throwable _ false))))
 
-(defspec p9-safe-effect-totality-failure 100
+(defspec p9-rescue-totality-failure 100
   (prop/for-all [fallback gen-fallback]
                 (try
-                  (safe-effect "test"
-                               (fn [] (throw (Exception. "boom")))
-                               fallback)
+                  (result/rescue fallback (throw (Exception. "boom")))
                   true
                   (catch Throwable _ false))))
 
@@ -296,25 +288,26 @@
                   (= v parsed))))
 
 ;; =============================================================================
-;; P12: harvest-error-result structural invariant
-;;      Always returns map with :error containing {:type :harvest-failed}
-;;      Defaults are merged into result
+;; P12: surface-rescue-error extracts ::result/error metadata into :error key
+;;      When rescue metadata present, :error is surfaced as string message
+;;      When no metadata, map passes through unchanged
 ;; =============================================================================
 
-(defspec p12-harvest-error-result-structure 50
-  (prop/for-all [fn-name gen/string-alphanumeric
-                 msg gen/string-alphanumeric
-                 defaults gen-fallback-map]
-                (with-redefs [ev/dispatch (fn [_] nil)]
-                  (let [ex (Exception. msg)
-                        result (harvest-error-result fn-name ex defaults)]
-                    (and (map? result)
-                         (map? (:error result))
-                         (= :harvest-failed (:type (:error result)))
-                         (= fn-name (:fn (:error result)))
-                         (= msg (:msg (:error result)))
-             ;; defaults are merged into result
-                         (every? #(contains? result %) (keys defaults)))))))
+(defspec p12-surface-rescue-error-extracts-metadata 50
+  (prop/for-all [fallback gen-fallback-map
+                 msg gen/string-alphanumeric]
+                (let [with-meta-fb (with-meta fallback
+                                     {::result/error {:message msg :form "test"}})
+                      surfaced (surface-rescue-error with-meta-fb)]
+                  (and (map? surfaced)
+                       (= msg (:error surfaced))
+                       ;; original keys preserved
+                       (every? #(contains? surfaced %) (keys fallback))))))
+
+(defspec p12b-surface-rescue-error-no-metadata-passthrough 50
+  (prop/for-all [m gen-fallback-map]
+                (let [result (surface-rescue-error m)]
+                  (= m result))))
 
 ;; =============================================================================
 ;; Mock helper for crystallize-session property tests

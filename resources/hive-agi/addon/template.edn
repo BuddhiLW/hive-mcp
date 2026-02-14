@@ -1,0 +1,34 @@
+;; deps-new template for hive-mcp addon authoring.
+;;
+;; Usage:
+;;   clojure -Sdeps '{:deps {io.github.hive-agi/hive-mcp {:git/tag "vX.Y.Z" :git/sha "..."}}}' \
+;;     -Tnew create :template hive-agi/addon :name com.example/my-addon
+;;
+;; Or locally:
+;;   clojure -Sdeps '{:deps {hive-mcp {:local/root "/path/to/hive-mcp"}}}' \
+;;     -Tnew create :template hive-agi/addon :name com.example/my-addon
+;;
+;; Generated project structure:
+;;   my-addon/
+;;   +-- deps.edn                     ;; Project deps (depends on hive-mcp)
+;;   +-- .hive-project.edn            ;; Hive project descriptor
+;;   +-- README.md                    ;; Getting started guide
+;;   +-- src/<ns>/addon.clj           ;; IAddon implementation (defrecord)
+;;   +-- test/<ns>/addon_test.clj     ;; Unit tests
+;;   +-- resources/META-INF/hive-addons/<id>.edn  ;; Classpath manifest
+
+{:description "Hive-MCP addon project scaffold — IAddon protocol implementation with manifest, tests, and README."
+
+ :transform
+ [;; Source code: src/<top/file>/<main/file>/addon.clj
+  ["src" "src/{{top/file}}/{{main/file}}"
+   {"addon.clj" "addon.clj"}]
+
+  ;; Tests: test/<top/file>/<main/file>/addon_test.clj
+  ["test" "test/{{top/file}}/{{main/file}}"
+   {"addon_test.clj" "addon_test.clj"}]
+
+  ;; Manifest: resources/META-INF/hive-addons/<artifact-id>.edn
+  ["resources" "resources"
+   {"META-INF/hive-addons/addon-manifest.edn"
+    "META-INF/hive-addons/{{artifact/id}}.edn"}]]}

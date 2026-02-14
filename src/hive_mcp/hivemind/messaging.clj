@@ -2,6 +2,7 @@
   "Hivemind messaging — shout, ask, respond, and piggyback registration."
 
   (:require [hive-mcp.hivemind.state :as state]
+            [hive-mcp.hivemind.event-registry :as event-registry]
             [hive-mcp.channel.core :as channel]
             [hive-mcp.channel.websocket :as ws]
             [hive-mcp.channel.piggyback :as piggyback]
@@ -32,15 +33,10 @@
 (piggyback/register-message-source! all-hivemind-messages)
 
 (defn- event-type->slave-status
-  "Map hivemind event type to valid DataScript slave status."
+  "Map hivemind event type to valid DataScript slave status.
+   Derives from event-registry — no hardcoded case statement."
   [event-type]
-  (case event-type
-    :started   :working
-    :progress  :working
-    :completed :idle
-    :error     :error
-    :blocked   :blocked
-    :idle))
+  (event-registry/slave-status event-type))
 
 (defn shout!
   "Broadcast a message to the hivemind coordinator."

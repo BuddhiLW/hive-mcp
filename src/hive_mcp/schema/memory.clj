@@ -1,7 +1,8 @@
 (ns hive-mcp.schema.memory
   "Malli schemas for memory entries and related types."
 
-  (:require [malli.core :as m]))
+  (:require [malli.core :as m]
+            [hive-mcp.memory.type-registry :as type-registry]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -12,14 +13,8 @@
 ;; =============================================================================
 
 (def MemoryType
-  "Valid memory entry types."
-  [:enum
-   ;; Semantic level
-   "snippet" "note" "doc" "todo" "question" "answer" "warning" "error"
-   ;; Pattern level
-   "convention" "pattern" "lesson" "rule" "guideline" "workflow" "recipe"
-   ;; Intent level
-   "decision" "axiom" "principle"])
+  "Valid memory entry types. Derived from type-registry (SST)."
+  (into [:enum] type-registry/all-type-strings))
 
 (def MemoryDuration
   "Valid duration values for memory entries."

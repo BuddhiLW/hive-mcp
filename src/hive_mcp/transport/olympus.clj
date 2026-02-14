@@ -26,6 +26,7 @@
             [clojure.string :as str]
             [datascript.core :as d-core]
             [taoensso.timbre :as log]
+            [hive-mcp.dns.result :as result]
             [hive-mcp.config.core :as config]
             [hive-mcp.swarm.datascript.queries :as ds-queries]
             [hive-mcp.swarm.datascript.connection :as ds-conn]
@@ -89,73 +90,64 @@
    Returns vector of agent maps for Olympus UI.
    All values are JSON-serializable (dates as ISO strings, refs as IDs)."
   []
-  (try
-    (->> (ds-queries/get-all-slaves)
-         (map (fn [slave]
-                {:id (:slave/id slave)
-                 :name (:slave/name slave)
-                 :type (if (= 0 (:slave/depth slave)) :coordinator :ling)
-                 :status (some-> (:slave/status slave) name)
-                 :project-id (:slave/project-id slave)
-                 :cwd (:slave/cwd slave)
-                 :presets (vec (:slave/presets slave))
-                 :parent (:slave/parent slave)
-                 :current-task (:slave/current-task slave)
-                 :tasks-completed (or (:slave/tasks-completed slave) 0)
-                 :created-at (serialize-date (:slave/created-at slave))}))
-         vec)
-    (catch Exception e
-      (log/warn "Failed to build agents snapshot:" (.getMessage e))
-      [])))
+  (result/rescue []
+                 (->> (ds-queries/get-all-slaves)
+                      (map (fn [slave]
+                             {:id (:slave/id slave)
+                              :name (:slave/name slave)
+                              :type (if (= 0 (:slave/depth slave)) :coordinator :ling)
+                              :status (some-> (:slave/status slave) name)
+                              :project-id (:slave/project-id slave)
+                              :cwd (:slave/cwd slave)
+                              :presets (vec (:slave/presets slave))
+                              :parent (:slave/parent slave)
+                              :current-task (:slave/current-task slave)
+                              :tasks-completed (or (:slave/tasks-completed slave) 0)
+                              :created-at (serialize-date (:slave/created-at slave))}))
+                      vec)))
 
 (defn- build-waves-snapshot
   "Build waves snapshot from DataScript.
    Returns map of wave-id -> wave state.
    All values are JSON-serializable."
   []
-  (try
+  (result/rescue {}
     ;; Query all waves from DataScript
-    (let [c (ds-conn/ensure-conn)
-          db @c
-          wave-eids (d-core/q '[:find [?e ...]
-                                :where [?e :wave/id _]]
-                              db)]
-      (->> wave-eids
-           (map #(d-core/entity db %))
-           (map (fn [e]
-                  (let [wave-id (:wave/id e)]
-                    [wave-id
-                     {:id wave-id
-                      :plan-id (serialize-ref (:wave/plan e))
-                      :total-tasks (:wave/total-tasks e)
-                      :concurrency (:wave/concurrency e)
-                      :active-count (or (:wave/active-count e) 0)
-                      :completed-count (or (:wave/completed-count e) 0)
-                      :failed-count (or (:wave/failed-count e) 0)
-                      :status (some-> (:wave/status e) name)
-                      :started-at (serialize-date (:wave/started-at e))
-                      :completed-at (serialize-date (:wave/completed-at e))}])))
-           (into {})))
-    (catch Exception e
-      (log/warn "Failed to build waves snapshot:" (.getMessage e))
-      {})))
+                 (let [c (ds-conn/ensure-conn)
+                       db @c
+                       wave-eids (d-core/q '[:find [?e ...]
+                                             :where [?e :wave/id _]]
+                                           db)]
+                   (->> wave-eids
+                        (map #(d-core/entity db %))
+                        (map (fn [e]
+                               (let [wave-id (:wave/id e)]
+                                 [wave-id
+                                  {:id wave-id
+                                   :plan-id (serialize-ref (:wave/plan e))
+                                   :total-tasks (:wave/total-tasks e)
+                                   :concurrency (:wave/concurrency e)
+                                   :active-count (or (:wave/active-count e) 0)
+                                   :completed-count (or (:wave/completed-count e) 0)
+                                   :failed-count (or (:wave/failed-count e) 0)
+                                   :status (some-> (:wave/status e) name)
+                                   :started-at (serialize-date (:wave/started-at e))
+                                   :completed-at (serialize-date (:wave/completed-at e))}])))
+                        (into {})))))
 
 (defn- build-kg-snapshot
   "Build knowledge graph snapshot.
    Returns {:entries [...] :edges [...]} for recent KG state.
    Note: This is a lightweight snapshot - full KG may be too large."
   []
-  (try
+  (result/rescue {:entries [] :edges [] :entry-count 0}
     ;; Query recent memory entries (last 50) via memory tools
-    (let [query-fn (requiring-resolve 'hive-mcp.tools.memory.crud/query-by-metadata)
-          recent-entries (when query-fn
-                           (take 50 (query-fn {:limit 50})))]
-      {:entries (or recent-entries [])
-       :edges []  ;; KG edges would come from kg/edges query - simplified for now
-       :entry-count (count recent-entries)})
-    (catch Exception e
-      (log/warn "Failed to build KG snapshot:" (.getMessage e))
-      {:entries [] :edges [] :entry-count 0})))
+                 (let [query-fn (requiring-resolve 'hive-mcp.tools.memory.crud/query-by-metadata)
+                       recent-entries (when query-fn
+                                        (take 50 (query-fn {:limit 50})))]
+                   {:entries (or recent-entries [])
+                    :edges []  ;; KG edges would come from kg/edges query - simplified for now
+                    :entry-count (count recent-entries)})))
 
 (defn- build-project-tree-snapshot
   "Build project tree snapshot from project.tree DataScript.
@@ -163,33 +155,30 @@
 
    HCR Wave 5: Enables Olympus UI project tree navigator."
   []
-  (try
-    (let [all-projects (project-tree/query-all-projects)
-          tree-data (project-tree/build-project-tree all-projects)
+  (result/rescue {:projects [] :roots [] :children {} :total 0}
+                 (let [all-projects (project-tree/query-all-projects)
+                       tree-data (project-tree/build-project-tree all-projects)
           ;; Get agents to count lings per project
-          agents (build-agents-snapshot)
-          ling-counts (reduce (fn [acc a]
-                                (if-let [pid (:project-id a)]
-                                  (update acc pid (fnil inc 0))
-                                  acc))
-                              {}
-                              agents)]
-      {:projects (mapv (fn [p]
-                         {:id (:project/id p)
-                          :path (:project/path p)
-                          :type (some-> (:project/type p) name)
-                          :parent-id (:project/parent-id p)
-                          :tags (vec (or (:project/tags p) []))
-                          :git-root (:project/git-root p)
-                          :ling-count (get ling-counts (:project/id p) 0)
-                          :last-scanned (serialize-date (:project/last-scanned p))})
-                       all-projects)
-       :roots (:roots tree-data)
-       :children (:children tree-data)
-       :total (count all-projects)})
-    (catch Exception e
-      (log/warn "Failed to build project tree snapshot:" (.getMessage e))
-      {:projects [] :roots [] :children {} :total 0})))
+                       agents (build-agents-snapshot)
+                       ling-counts (reduce (fn [acc a]
+                                             (if-let [pid (:project-id a)]
+                                               (update acc pid (fnil inc 0))
+                                               acc))
+                                           {}
+                                           agents)]
+                   {:projects (mapv (fn [p]
+                                      {:id (:project/id p)
+                                       :path (:project/path p)
+                                       :type (some-> (:project/type p) name)
+                                       :parent-id (:project/parent-id p)
+                                       :tags (vec (or (:project/tags p) []))
+                                       :git-root (:project/git-root p)
+                                       :ling-count (get ling-counts (:project/id p) 0)
+                                       :last-scanned (serialize-date (:project/last-scanned p))})
+                                    all-projects)
+                    :roots (:roots tree-data)
+                    :children (:children tree-data)
+                    :total (count all-projects)})))
 
 (defn build-full-snapshot
   "Build complete state snapshot for new client connection.
@@ -233,17 +222,15 @@
    No-ops if no clients are connected (avoid wasted CPU)."
   [changed-domains]
   (when (and (seq changed-domains) (seq @clients))
-    (try
-      (let [data (cond-> {}
-                   (:agents changed-domains) (assoc :agents (build-agents-snapshot))
-                   (:waves changed-domains)  (assoc :waves (build-waves-snapshot)))]
-        (when (seq data)
-          (broadcast! {:type :state-patch
-                       :timestamp (System/currentTimeMillis)
-                       :data data
-                       :changed (vec changed-domains)})))
-      (catch Exception e
-        (log/debug "DS bridge flush failed:" (.getMessage e))))))
+    (result/rescue nil
+                   (let [data (cond-> {}
+                                (:agents changed-domains) (assoc :agents (build-agents-snapshot))
+                                (:waves changed-domains)  (assoc :waves (build-waves-snapshot)))]
+                     (when (seq data)
+                       (broadcast! {:type :state-patch
+                                    :timestamp (System/currentTimeMillis)
+                                    :data data
+                                    :changed (vec changed-domains)}))))))
 
 (defn- start-bridge-loop!
   "Start background daemon thread that batches DS changes and flushes to clients.
@@ -264,7 +251,7 @@
     (.clear ds-bridge-queue)
     (let [thread (Thread.
                   (fn []
-                    (try
+                    (try ; boundary — thread lifecycle with InterruptedException
                       (loop []
                         ;; Phase 1: Block until first change (no busy-wait)
                         (let [first-changes (.take ds-bridge-queue)]
@@ -323,25 +310,21 @@
 
    Called from wire-hivemind-events! during server startup."
   []
-  (try
-    (start-bridge-loop!)
-    (let [conn (ds-conn/ensure-conn)]
-      (d-core/listen! conn :olympus-state-bridge on-ds-transaction!)
-      (log/info "Olympus DS state bridge wired - auto-pushing DataScript changes"))
-    (catch Exception e
-      (log/warn "Failed to wire DS state bridge (non-fatal):" (.getMessage e)))))
+  (result/rescue nil
+                 (start-bridge-loop!)
+                 (let [conn (ds-conn/ensure-conn)]
+                   (d-core/listen! conn :olympus-state-bridge on-ds-transaction!)
+                   (log/info "Olympus DS state bridge wired - auto-pushing DataScript changes"))))
 
 (defn stop-ds-state-bridge!
   "Remove DataScript listener and stop bridge loop.
    Called from stop! during server shutdown."
   []
-  (try
-    (when-let [conn (try (ds-conn/get-conn) (catch Exception _ nil))]
-      (d-core/unlisten! conn :olympus-state-bridge))
-    (stop-bridge-loop!)
-    (log/debug "DS state bridge stopped")
-    (catch Exception e
-      (log/debug "DS bridge stop error (non-fatal):" (.getMessage e)))))
+  (result/rescue nil
+                 (when-let [conn (result/rescue nil (ds-conn/get-conn))]
+                   (d-core/unlisten! conn :olympus-state-bridge))
+                 (stop-bridge-loop!)
+                 (log/debug "DS state bridge stopped")))
 
 ;; =============================================================================
 ;; WebSocket Handler
@@ -364,28 +347,26 @@
    {:type :subscribe :views [:agents :waves]}  - Filter events (future)
    {:type :request-snapshot :view :kg}         - Request fresh snapshot"
   [client msg]
-  (try
-    (let [parsed (json/read-str msg :key-fn keyword)]
-      (case (:type parsed)
+  (result/rescue nil
+                 (let [parsed (json/read-str msg :key-fn keyword)]
+                   (case (:type parsed)
         ;; Request snapshot for specific view
-        "request-snapshot"
-        (let [view (keyword (:view parsed))
-              snapshot (case view
-                         :agents {:type :agents :data (build-agents-snapshot)}
-                         :waves {:type :waves :data (build-waves-snapshot)}
-                         :kg {:type :kg-snapshot :data (build-kg-snapshot)}
-                         :project-tree {:type :project-tree :data (build-project-tree-snapshot)}
-                         {:type :error :message (str "Unknown view: " view)})]
-          (send-to-client! client snapshot))
+                     "request-snapshot"
+                     (let [view (keyword (:view parsed))
+                           snapshot (case view
+                                      :agents {:type :agents :data (build-agents-snapshot)}
+                                      :waves {:type :waves :data (build-waves-snapshot)}
+                                      :kg {:type :kg-snapshot :data (build-kg-snapshot)}
+                                      :project-tree {:type :project-tree :data (build-project-tree-snapshot)}
+                                      {:type :error :message (str "Unknown view: " view)})]
+                       (send-to-client! client snapshot))
 
         ;; Ping/pong for keepalive
-        "ping"
-        (send-to-client! client {:type :pong :timestamp (System/currentTimeMillis)})
+                     "ping"
+                     (send-to-client! client {:type :pong :timestamp (System/currentTimeMillis)})
 
         ;; Unknown - log and ignore
-        (log/debug "Unknown Olympus message type:" (:type parsed))))
-    (catch Exception e
-      (log/debug "Failed to parse Olympus message:" (.getMessage e)))))
+                     (log/debug "Unknown Olympus message type:" (:type parsed))))))
 
 (defn- ws-connection-handler
   "Handle WebSocket connection from Olympus UI.
@@ -560,10 +541,9 @@
       (json-response 200
                      {:type :stats
                       :timestamp (System/currentTimeMillis)
-                      :data (try
-                              (ds-queries/db-stats)
-                              (catch Exception e
-                                {:error (.getMessage e)}))})
+                      :data (let [r (result/try-effect* :ds/stats-failed
+                                                        (ds-queries/db-stats))]
+                              (if (result/ok? r) (:ok r) {:error (:message r)}))})
 
       ;; Explicit WebSocket endpoint (for clients that prefer /ws path)
       (and (= method :get) (= uri "/ws"))
@@ -610,7 +590,7 @@
        (do
          (log/warn "Olympus WS server already running on port" (:port @server-atom))
          (:port @server-atom))
-       (try
+       (try ; boundary — network server lifecycle
          (let [server (http/start-server http-handler {:port port})
                actual-port (netty/port server)]
            (reset! server-atom {:server server :port actual-port})
@@ -730,40 +710,36 @@
    Also wires memory change hooks via channel pub/sub for events that
    bypass the re-frame event system (direct chroma writes)."
   []
-  (try
+  (result/rescue nil
     ;; 1. Register :olympus-broadcast effect (safety net)
     ;;    effects.clj also registers this, but wire! may be called first
     ;;    in some startup orderings. Safe to call reg-fx multiple times.
-    (when-let [reg-fx (requiring-resolve 'hive-mcp.events.core/reg-fx)]
-      (reg-fx :olympus-broadcast
-              (fn [event-data]
-                (broadcast! event-data))))
+                 (when-let [reg-fx (requiring-resolve 'hive-mcp.events.core/reg-fx)]
+                   (reg-fx :olympus-broadcast
+                           (fn [event-data]
+                             (broadcast! event-data))))
 
     ;; 2. Subscribe to memory-added events via channel pub/sub
     ;;    Memory CRUD (handle-add) publishes :memory-added events to channel.
     ;;    We subscribe and forward to Olympus.
-    (when-let [subscribe-fn (requiring-resolve 'hive-mcp.channel.core/subscribe!)]
-      (let [sub-ch (subscribe-fn :memory-added)]
-        (future
-          (loop []
-            (when-let [event (async/<!! sub-ch)]
-              (try
-                (emit-kg-event! :memory-entry-added
-                                {:entry-id (:id event)
-                                 :type (:type event)
-                                 :tags (:tags event)
-                                 :project-id (:project-id event)})
-                (catch Exception e
-                  (log/debug "Olympus memory event forward failed:" (.getMessage e))))
-              (recur))))))
+                 (when-let [subscribe-fn (requiring-resolve 'hive-mcp.channel.core/subscribe!)]
+                   (let [sub-ch (subscribe-fn :memory-added)]
+                     (future
+                       (loop []
+                         (when-let [event (async/<!! sub-ch)]
+                           (result/rescue nil
+                                          (emit-kg-event! :memory-entry-added
+                                                          {:entry-id (:id event)
+                                                           :type (:type event)
+                                                           :tags (:tags event)
+                                                           :project-id (:project-id event)}))
+                           (recur))))))
 
     ;; 3. Wire DataScript state bridge (auto-push DS changes to clients)
     ;;    Installs d/listen! on swarm conn, batches changes, pushes :state-patch.
-    (wire-ds-state-bridge!)
+                 (wire-ds-state-bridge!)
 
-    (log/info "Olympus event wiring complete - :olympus-broadcast effect + memory sub + DS state bridge")
-    (catch Exception e
-      (log/warn "Failed to wire Olympus events (non-fatal):" (.getMessage e)))))
+                 (log/info "Olympus event wiring complete - :olympus-broadcast effect + memory sub + DS state bridge")))
 
 (comment
   ;; REPL testing

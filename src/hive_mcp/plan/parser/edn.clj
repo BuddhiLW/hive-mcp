@@ -17,6 +17,7 @@
 
   (:require [clojure.string :as str]
             [clojure.edn :as edn]
+            [hive-mcp.dns.result :as result]
             [hive-mcp.plan.schema :as schema]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -69,12 +70,10 @@
 
 (defn- try-parse-edn
   "Safely attempt to parse EDN string.
-   Returns: {:success true :data ...} or {:success false :error ...}"
+   Returns: Result — {:ok data} or {:error :edn/parse-failed ...}"
   [edn-str]
-  (try
-    {:success true :data (edn/read-string edn-str)}
-    (catch Exception e
-      {:success false :error (.getMessage e)})))
+  (result/try-effect* :edn/parse-failed
+                      (edn/read-string edn-str)))
 
 ;; =============================================================================
 ;; Balanced Brace Extraction (State Machine)
@@ -299,7 +298,7 @@
   "Normalize and validate parsed EDN plan data.
 
    Applies defaults, normalization, and schema validation.
-   Returns {:success true :plan ...} or {:success false :error ...}"
+   Returns: Result — {:ok plan} or {:error :edn/validation-failed ...}"
   [plan-data]
   (let [normalized-edn (normalize-edn-plan plan-data)
         plan-with-defaults
@@ -312,10 +311,10 @@
         normalized (schema/normalize-plan
                     (assoc plan-with-defaults :source-format :edn))]
     (if-let [_ (schema/valid-plan? normalized)]
-      {:success true :plan normalized}
-      {:success false
-       :error "Plan failed schema validation"
-       :details (schema/explain-plan normalized)})))
+      (result/ok normalized)
+      (result/err :edn/validation-failed
+                  {:message "Plan failed schema validation"
+                   :details (schema/explain-plan normalized)}))))
 
 ;; =============================================================================
 ;; Parse Strategy Functions (Combinator Pattern)
@@ -324,25 +323,25 @@
 (defn- try-direct-parse
   "Strategy 1: Parse content directly as EDN plan."
   [content _opts]
-  (let [{:keys [success data]} (try-parse-edn content)]
-    (when-let [plan-data (and success (is-plan-edn? data) data)]
-      (finalize-edn-plan plan-data))))
+  (when-let [data (:ok (try-parse-edn content))]
+    (when-let [_ (is-plan-edn? data)]
+      (finalize-edn-plan data))))
 
 (defn- try-embedded-extraction
   "Strategy 2: Extract balanced {} containing :steps from mixed content."
   [content _opts]
   (when-let [extracted-edn (extract-edn-from-content content)]
-    (let [{:keys [success data]} (try-parse-edn extracted-edn)]
-      (when-let [plan-data (and success (is-plan-edn? data) data)]
-        (finalize-edn-plan plan-data)))))
+    (when-let [data (:ok (try-parse-edn extracted-edn))]
+      (when-let [_ (is-plan-edn? data)]
+        (finalize-edn-plan data)))))
 
 (defn- try-single-edn-block
   "Strategy 3: Find single ```edn block with :steps."
   [content _opts]
   (let [blocks (extract-edn-blocks content)]
     (when-let [plan-data (first (keep (fn [block]
-                                        (let [{:keys [success data]} (try-parse-edn block)]
-                                          (when-let [_ (and success (is-plan-edn? data))]
+                                        (when-let [data (:ok (try-parse-edn block))]
+                                          (when-let [_ (is-plan-edn? data)]
                                             data)))
                                       blocks))]
       (finalize-edn-plan plan-data))))
@@ -354,9 +353,7 @@
    flattens them into a single plan with :steps."
   [content {:keys [title]}]
   (let [blocks (extract-edn-blocks content)
-        parsed-blocks (keep (fn [block]
-                              (when-let [{:keys [success data]} (try-parse-edn block)]
-                                (when-let [_ success] data)))
+        parsed-blocks (keep (fn [block] (:ok (try-parse-edn block)))
                             blocks)
         phase-blocks (filter is-phase-edn? parsed-blocks)]
     (when-let [_ (when-not (< (count phase-blocks) 2) :enough)]
@@ -368,12 +365,22 @@
 
 (def ^:private parse-strategies
   "Ordered vector of parse strategy functions.
-   Each takes [content opts] and returns {:success true :plan ...} or nil.
+   Each takes [content opts] and returns Result or nil.
    First non-nil result wins (combinator pattern via `some`)."
   [try-direct-parse
    try-embedded-extraction
    try-single-edn-block
    try-phase-block-parse])
+
+(defn- result->success
+  "Convert Result to {:success true/false} for backward-compatible public API.
+   Preserves contract consumed by parser.clj, fsm.clj, and gate.clj."
+  [r]
+  (if-let [plan (:ok r)]
+    {:success true :plan plan}
+    {:success false
+     :error (or (:message r) (str (:error r)))
+     :details (:details r)}))
 
 (defn parse-edn-plan
   "Parse plan from EDN content or EDN blocks.
@@ -395,7 +402,7 @@
    - {:success false :error ...} if no valid plan found"
   ([content] (parse-edn-plan content {}))
   ([content opts]
-   (if-let [result (some #(% content opts) parse-strategies)]
-     result
+   (if-let [r (some #(% content opts) parse-strategies)]
+     (result->success r)
      {:success false
       :error "No EDN plan found (tried direct parse, embedded extraction, ```edn blocks, and phase blocks)"})))

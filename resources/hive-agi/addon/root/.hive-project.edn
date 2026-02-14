@@ -1,0 +1,5 @@
+{:project-id "{{artifact/id}}"
+ :parent "hive"
+ :description "{{description}}"
+ :language :clojure
+ :tags ["addon" "mcp"]}

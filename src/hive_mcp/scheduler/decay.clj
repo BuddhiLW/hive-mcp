@@ -1,6 +1,7 @@
 (ns hive-mcp.scheduler.decay
   "Periodic background decay for memory, edges, and discs."
   (:require [hive-mcp.config.core :as config]
+            [hive-mcp.dns.result :as result]
             [taoensso.timbre :as log])
   (:import [java.util.concurrent Executors ScheduledExecutorService TimeUnit]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -19,41 +20,45 @@
          :last-result nil}))
 
 ;; =============================================================================
+;; Helpers
+;; =============================================================================
+
+(defn- resolve-and-call
+  "Resolve sym via requiring-resolve; call (call-fn resolved-fn); rescue with
+   fallback on failure. Returns {:skipped true :reason ...} when sym cannot be
+   resolved."
+  [sym call-fn fallback]
+  (if-let [f (requiring-resolve sym)]
+    (result/rescue fallback (call-fn f))
+    {:skipped true :reason (str (name sym) " not available")}))
+
+;; =============================================================================
 ;; Decay Cycle (Pure Logic)
 ;; =============================================================================
 
 (defn- run-memory-decay!
   "Run memory staleness decay cycle."
   [opts]
-  (try
-    (if-let [run-fn (requiring-resolve 'hive-mcp.tools.memory.lifecycle/run-decay-cycle!)]
-      (run-fn opts)
-      {:skipped true :reason "lifecycle/run-decay-cycle! not available"})
-    (catch Exception e
-      (log/warn "Scheduler: memory decay failed (non-blocking):" (.getMessage e))
-      {:error (.getMessage e) :decayed 0 :expired 0 :total-scanned 0})))
+  (resolve-and-call
+   'hive-mcp.tools.memory.lifecycle/run-decay-cycle!
+   #(% opts)
+   {:decayed 0 :expired 0 :total-scanned 0}))
 
 (defn- run-edge-decay!
   "Run edge confidence decay cycle."
   [opts]
-  (try
-    (if-let [decay-fn (requiring-resolve 'hive-mcp.knowledge-graph.edges/decay-unverified-edges!)]
-      (decay-fn opts)
-      {:skipped true :reason "edges/decay-unverified-edges! not available"})
-    (catch Exception e
-      (log/warn "Scheduler: edge decay failed (non-blocking):" (.getMessage e))
-      {:error (.getMessage e) :decayed 0 :pruned 0 :fresh 0 :evaluated 0})))
+  (resolve-and-call
+   'hive-mcp.knowledge-graph.edges/decay-unverified-edges!
+   #(% opts)
+   {:decayed 0 :pruned 0 :fresh 0 :evaluated 0}))
 
 (defn- run-disc-decay!
   "Run disc certainty time-decay."
   [opts]
-  (try
-    (if-let [disc-fn (requiring-resolve 'hive-mcp.knowledge-graph.disc/apply-time-decay-to-all-discs!)]
-      (disc-fn :project-id (:project-id opts))
-      {:skipped true :reason "disc/apply-time-decay-to-all-discs! not available"})
-    (catch Exception e
-      (log/warn "Scheduler: disc decay failed (non-blocking):" (.getMessage e))
-      {:error (.getMessage e) :updated 0 :skipped 0 :errors 1})))
+  (resolve-and-call
+   'hive-mcp.knowledge-graph.disc/apply-time-decay-to-all-discs!
+   #(% :project-id (:project-id opts))
+   {:updated 0 :skipped 0 :errors 1}))
 
 (defn run-decay-cycle!
   "Run a complete decay cycle: memory + edges + discs."
@@ -67,11 +72,10 @@
 
          ;; Resolve project-id from directory if not explicit
          resolved-project-id (or project-id
-                                 (try
-                                   (when directory
-                                     (let [scope-fn (requiring-resolve 'hive-mcp.tools.memory.scope/get-current-project-id)]
-                                       (scope-fn directory)))
-                                   (catch Exception _ nil)))
+                                 (result/rescue nil
+                                                (when directory
+                                                  ((requiring-resolve 'hive-mcp.tools.memory.scope/get-current-project-id)
+                                                   directory))))
 
          ;; 1. Memory staleness decay
          memory-stats (run-memory-decay! {:directory directory
@@ -129,15 +133,14 @@
   [config]
   (reify Runnable
     (run [_]
+      ;; boundary — MUST catch Throwable: ScheduledExecutorService silently
+      ;; stops scheduling future executions if a Runnable throws.
       (try
         (run-decay-cycle! {:memory-limit (:memory-limit config)
                            :edge-limit (:edge-limit config)
                            :disc-enabled (:disc-enabled config)
                            :project-id (:project-id config)})
         (catch Throwable t
-          ;; CRITICAL: Must catch Throwable, not just Exception.
-          ;; If a Runnable throws, ScheduledExecutorService silently
-          ;; stops scheduling future executions.
           (log/error t "Scheduler: decay cycle threw (caught at boundary)"))))))
 
 (defn start!
@@ -156,6 +159,7 @@
         {:started false :reason "already-running"})
 
       :else
+      ;; boundary — executor creation + scheduling (Java interop)
       (try
         (let [^ScheduledExecutorService executor
               (Executors/newSingleThreadScheduledExecutor
@@ -190,6 +194,7 @@
   []
   (if-not (:running? @scheduler-state)
     {:stopped false :reason "not-running"}
+    ;; boundary — executor shutdown (Java interop)
     (try
       (let [^ScheduledExecutorService executor (:executor @scheduler-state)
             cycles (:cycle-count @scheduler-state)]

@@ -1,22 +1,23 @@
 (ns hive-mcp.graph.schema
   "Datascript schema for hive-mcp knowledge graph.
-   
+
    Defines the schema for:
    - Friction entries (ling-reported blockers, tool gaps, workflow issues)
    - Knowledge entries (conventions, decisions, patterns derived from friction)
    - Agents (hivemind, lings, drones with their relationships)
-   
+
    Schema follows Datascript conventions:
    - :db/valueType - Type of value (:db.type/string, :db.type/ref, etc.)
    - :db/cardinality - :db.cardinality/one or :db.cardinality/many
    - :db/unique - :db.unique/identity or :db.unique/value for uniqueness
    - :db/isComponent - true for owned refs (cascade delete)
-   
-   DDD: Value objects and entity definitions for graph domain.")
+
+   DDD: Value objects and entity definitions for graph domain."
+  (:require [hive-mcp.memory.type-registry :as type-registry]
+            [hive-mcp.agent.type-registry :as agent-type-registry]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
-
 
 (def friction-types
   "Valid friction types reported by lings.
@@ -26,7 +27,6 @@
    :workflow-blocker - Process/workflow impediment"
   #{:tool-missing :preset-gap :workflow-blocker})
 
-
 (def knowledge-types
   "Valid knowledge entry types.
    
@@ -35,17 +35,9 @@
    :pattern    - Reusable solution pattern extracted from experience"
   #{:convention :decision :pattern})
 
-
 (def memory-types
-  "Valid memory entry types (from Emacs memory store).
-
-   :note       - General notes and observations
-   :snippet    - Code snippets or examples
-   :convention - Agreed-upon practices
-   :decision   - Architectural or design decisions
-   :axiom      - Foundational, inviolable principles (loaded first by catchup)"
-  #{:note :snippet :convention :decision :axiom})
-
+  "Valid memory entry types. Derived from type-registry (SST)."
+  type-registry/all-types)
 
 (def duration-types
   "Valid duration/TTL categories for memory entries.
@@ -56,7 +48,6 @@
    :long       - 90 days TTL
    :permanent  - Never expires"
   #{:ephemeral :short :medium :long :permanent})
-
 
 (def recall-contexts
   "Valid recall context types for tracking access patterns.
@@ -70,15 +61,9 @@
   #{:catchup-structural :wrap-structural :explicit-reference
     :cross-session :cross-project :user-feedback})
 
-
 (def agent-types
-  "Valid agent types in the swarm.
-
-   :hivemind - Coordinator/orchestrator agent
-   :ling     - Worker agent spawned by hivemind
-   :drone    - Lightweight agent for simple tasks"
-  #{:hivemind :ling :drone})
-
+  "Valid agent types in the swarm. Derived from agent-type-registry (SST)."
+  agent-type-registry/all-types)
 
 (def change-plan-statuses
   "Valid statuses for change plans (batch drone execution).
@@ -89,7 +74,6 @@
    :partial-fail - Some items failed, others completed"
   #{:pending :executing :complete :partial-fail})
 
-
 (def change-item-statuses
   "Valid statuses for individual change items.
 
@@ -99,7 +83,6 @@
    :error      - Failed with error"
   #{:pending :dispatched :completed :error})
 
-
 (def wave-statuses
   "Valid statuses for execution waves (batch of concurrent drones).
 
@@ -107,7 +90,6 @@
    :complete     - All drones completed successfully
    :partial-fail - Some drones failed"
   #{:running :complete :partial-fail})
-
 
 (def schema
   "Datascript schema for knowledge graph.
@@ -267,8 +249,6 @@
    ;; Note: :wave/drone-count, :wave/completed-count, :wave/status
    ;; are schemaless (no special constraints needed)
    })
-
-
 (defn valid-friction-type?
   "Check if type is a valid friction type."
   [t]
@@ -280,9 +260,9 @@
   (contains? knowledge-types t))
 
 (defn valid-agent-type?
-  "Check if type is a valid agent type."
+  "Check if type is a valid agent type. Delegates to agent-type-registry."
   [t]
-  (contains? agent-types t))
+  (agent-type-registry/valid-type? t))
 
 (defn valid-memory-type?
   "Check if type is a valid memory type."
@@ -313,7 +293,6 @@
   "Check if status is a valid wave status."
   [s]
   (contains? wave-statuses s))
-
 
 (defn make-friction
   "Create a friction entity map.

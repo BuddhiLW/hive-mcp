@@ -2,7 +2,8 @@
   "Knowledge Graph schema for DataScript edge storage.
 
    Defines the schema for knowledge edges that connect memory entries,
-   enabling graph traversal, impact analysis, and knowledge promotion.")
+   enabling graph traversal, impact analysis, and knowledge promotion."
+  (:require [hive-mcp.memory.type-registry :as type-registry]))
 
 ;; Supported relation types for edges between knowledge nodes
 (def relation-types
@@ -275,43 +276,14 @@
 
 (def type->abstraction-level
   "Maps memory entry types to their default abstraction levels.
-
-   File-level:     Not stored as memory - use disc entities
-   Semantic: What things DO - snippets, notes, function docs
-   pattern-level:  Recurring structures - conventions, idioms
-   intent-level:   Why - ADRs, decisions, axioms"
-  {"snippet"    2  ; Code snippets describe what code does
-   "note"       2  ; Notes describe semantic understanding
-   "convention" 3  ; Conventions are patterns
-   "decision"   4  ; Decisions are intent-level
-   "axiom"      4  ; Axioms are foundational intent
-   "pattern"    3  ; Explicit patterns
-   "doc"        2  ; Documentation is semantic
-   "todo"       2  ; TODOs are semantic notes
-   "question"   2  ; Questions are semantic
-   "answer"     2  ; Answers are semantic
-   "warning"    2  ; Warnings are semantic
-   "error"      2  ; Errors are semantic
-   "lesson"     3  ; Lessons are pattern-level
-   "principle"  4  ; Principles are intent-level
-   "rule"       3  ; Rules are pattern-level
-   "guideline"  3  ; Guidelines are pattern-level
-   "workflow"   3  ; Workflows are patterns
-   "recipe"     3  ; Recipes are patterns
-   "plan"       4  ; Plans are intent-level (architectural plans, implementation strategies)
-   })
+   Derived from type-registry (SST)."
+  type-registry/type->abstraction)
 
 (defn derive-abstraction-level
   "Derive the default abstraction level for a memory entry type.
-   Returns integer 2-4, defaulting to 2 (Semantic) for unknown types.
-
-   Arguments:
-     entry-type - String type of the memory entry (e.g., \"decision\", \"snippet\")
-
-   Returns:
-     Integer abstraction level (2-4)"
+   Returns integer 2-4, defaulting to 2 (Semantic) for unknown types."
   [entry-type]
-  (get type->abstraction-level entry-type 2))
+  (type-registry/abstraction-level entry-type))
 
 (defn full-schema
   "Returns the combined KG schema (edges + knowledge abstraction + disc + synthetic)."

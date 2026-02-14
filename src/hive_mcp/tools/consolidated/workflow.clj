@@ -29,6 +29,8 @@
             [hive-mcp.swarm.datascript :as ds]
             [hive-mcp.tools.swarm.wave.execution :as wave-execution]
             [hive-mcp.server.guards :as guards]
+            [hive-mcp.agent.spawn-mode-registry :as spawn-registry]
+            [hive-mcp.dns.result :as result]
             [clojure.data.json :as json]
             [taoensso.timbre :as log]
             [clojure.string :as str]))
@@ -43,6 +45,24 @@
          :total-smited 0
          :total-sparked 0
          :total-strikes 0}))
+
+;; ── result-dsl shared helpers (MCP TOOL HANDLER pattern) ─────────────────────
+(defn- try-result
+  "Execute f in try/catch, returning Result. f must return a Result ({:ok ...}).
+   Exceptions → (result/err category {:message ...})."
+  [category f]
+  (try (f)
+       (catch clojure.lang.ExceptionInfo e
+         (result/err category {:message (ex-message e) :data (ex-data e)}))
+       (catch Exception e
+         (result/err category {:message (ex-message e) :class (str (class e))}))))
+
+(defn- result->mcp
+  "Convert a Result to MCP response: ok → mcp-json, err → mcp-error."
+  [r]
+  (if (result/ok? r)
+    (mcp-json (:ok r))
+    (mcp-error (or (:message r) (str (:error r))))))
 
 (defn- smite!
   "Kill completed, idle-done, or error lings in the current project."
@@ -65,18 +85,19 @@
       {:smited [] :failed [] :count 0}
       (let [results (doall
                      (for [agent candidates]
-                       (let [id (:slave/id agent)]
-                         (try
-                           (let [ling-agent (ling/->ling id {:cwd (:slave/cwd agent)
-                                                             :presets (or (:slave/presets agent) [])
-                                                             :project-id (:slave/project-id agent)
-                                                             :spawn-mode (or (:ling/spawn-mode agent) :vterm)})
-                                 _result (proto/kill! ling-agent)]
-                             (log/info "SMITE: killed" {:id id :status (:slave/status agent)})
-                             {:id id :status (name (:slave/status agent)) :killed true})
-                           (catch Exception e
-                             (log/warn "SMITE: failed to kill" {:id id :error (ex-message e)})
-                             {:id id :error (ex-message e) :killed false})))))]
+                       (let [id (:slave/id agent)
+                             r  (result/rescue
+                                 {:id id :killed false}
+                                 (let [ling-agent (ling/->ling id {:cwd (:slave/cwd agent)
+                                                                   :presets (or (:slave/presets agent) [])
+                                                                   :project-id (:slave/project-id agent)
+                                                                   :spawn-mode (or (:ling/spawn-mode agent) :vterm)})
+                                       _result (proto/kill! ling-agent)]
+                                   (log/info "SMITE: killed" {:id id :status (:slave/status agent)})
+                                   {:id id :status (name (:slave/status agent)) :killed true}))]
+                         (cond-> r
+                           (and (not (:killed r)) (not (:error r)) (::result/error (meta r)))
+                           (assoc :error (get-in (meta r) [::result/error :message] "unknown"))))))]
         {:smited (filterv :killed results)
          :failed (filterv (complement :killed) results)
          :count (count (filter :killed results))}))))
@@ -86,8 +107,7 @@
   [result]
   (let [text (if (map? result) (:text result) result)
         parsed (when (string? text)
-                 (try (json/read-str text :key-fn keyword)
-                      (catch Exception _ nil)))]
+                 (result/rescue nil (json/read-str text :key-fn keyword)))]
     (cond
       (sequential? parsed) parsed
       (map? parsed)        (or (:tasks parsed) [])
@@ -108,24 +128,29 @@
                tasks))))
 
 (defn- survey
-  "Query kanban for todo tasks, ranked and optionally filtered by KG dependencies.
+  "Query kanban for todo tasks, ranked by KG dependencies (vulcan always-on).
+   task_ids acts as an ID whitelist, task_filter as a title-prefix filter.
    Extra keys in opts are passed through to vulcan/prioritize-tasks (OCP)."
-  [{:keys [directory vulcan-mode] :as opts}]
-  (try
-    (let [result (c-kanban/handle-kanban {:command "list" :status "todo" :directory directory})
-          tasks (parse-kanban-tasks result)]
-      (if vulcan-mode
-        (let [prioritized (vulcan/prioritize-tasks tasks #{} (dissoc opts :directory :vulcan-mode))]
-          (log/info "SURVEY (vulcan): ready" (:count prioritized)
-                    "blocked" (:blocked-count prioritized)
-                    "of" (count tasks) "total")
-          prioritized)
-        (let [sorted-tasks (sort-by-priority-then-created tasks)]
-          {:tasks sorted-tasks
-           :count (count sorted-tasks)})))
-    (catch Exception e
-      (log/warn "SURVEY failed" {:error (ex-message e)})
-      {:tasks [] :count 0 :error (ex-message e)})))
+  [{:keys [directory task_ids task_filter] :as opts}]
+  (let [r (result/rescue
+           {:tasks [] :count 0}
+           (let [result (c-kanban/handle-kanban {:command "list" :status "todo" :directory directory})
+                 all-tasks (parse-kanban-tasks result)
+                 tasks (cond->> all-tasks
+                         (seq task_ids)
+                         (filterv #(contains? (set task_ids) (:id %)))
+                         (some? task_filter)
+                         (filterv #(str/starts-with? (or (:title %) "") task_filter)))
+                 prioritized (vulcan/prioritize-tasks tasks #{} (dissoc opts :directory :task_ids :task_filter))]
+             (log/info "SURVEY: ready" (:count prioritized)
+                       "blocked" (:blocked-count prioritized)
+                       "of" (count all-tasks) "total"
+                       (when (seq task_ids) (str "(id-whitelist: " (count task_ids) ")"))
+                       (when task_filter (str "(filter: " (pr-str task_filter) ")")))
+             prioritized))]
+    (cond-> r
+      (::result/error (meta r))
+      (assoc :error (get-in (meta r) [::result/error :message])))))
 
 (def ^:private ling-ready-timeout-ms 5000)
 
@@ -134,43 +159,34 @@
 (defn- vterm-ready?
   "Check if a vterm ling's CLI is ready for input."
   [agent-id]
-  (try
-    (let [elisp (format "(if (hive-mcp-swarm--slave-ready-p \"%s\") \"t\" \"nil\")" agent-id)
-          result (ec/eval-elisp-with-timeout elisp 2000)]
-      (and (:success result)
-           (= "t" (:result result))))
-    (catch Exception e
-      (log/debug "vterm-ready? check failed" {:agent-id agent-id :error (ex-message e)})
-      false)))
+  (result/rescue false
+                 (let [elisp (format "(if (hive-mcp-swarm--slave-ready-p \"%s\") \"t\" \"nil\")" agent-id)
+                       result (ec/eval-elisp-with-timeout elisp 2000)]
+                   (and (:success result)
+                        (= "t" (:result result))))))
 
 (defn- headless-ready?
   "Check if a headless ling's process is alive and has produced stdout."
   [agent-id]
-  (try
-    (when-let [status (headless/headless-status agent-id)]
-      (and (:alive? status)
-           (pos? (get-in status [:stdout :total-lines-seen] 0))))
-    (catch Exception _
-      false)))
+  (result/rescue false
+                 (when-let [status (headless/headless-status agent-id)]
+                   (and (:alive? status)
+                        (pos? (get-in status [:stdout :total-lines-seen] 0))))))
 
 (defn- agent-sdk-ready?
   "Check if an agent-sdk ling's session is idle and event loop thread is alive."
   [agent-id]
-  (try
-    (when-let [sess (sdk-session/get-session agent-id)]
-      (and (= :idle (:phase sess))
-           (some? (:client-ref sess))
-           (let [safe-id (:py-safe-id sess)]
-             (if safe-id
-               (let [thread-obj (sdk-py/py-get-global
-                                 (str "_hive_loop_thread_" safe-id))]
-                 (boolean (and thread-obj
-                               (sdk-py/py-call thread-obj "is_alive"))))
-               false))))
-    (catch Exception e
-      (log/debug "agent-sdk-ready? check failed"
-                 {:agent-id agent-id :error (ex-message e)})
-      false)))
+  (result/rescue false
+                 (when-let [sess (sdk-session/get-session agent-id)]
+                   (and (= :idle (:phase sess))
+                        (some? (:client-ref sess))
+                        (let [safe-id (:py-safe-id sess)]
+                          (if safe-id
+                            (let [thread-obj (sdk-py/py-get-global
+                                              (str "_hive_loop_thread_" safe-id))]
+                              (boolean (and thread-obj
+                                            (sdk-py/py-call thread-obj "is_alive"))))
+                            false))))))
 
 (defn- ling-cli-ready?
   "Mode-dispatch readiness check for a ling's CLI."
@@ -224,8 +240,8 @@
             (recur (inc attempt))))))))
 
 (def ^:private vterm-max-slots
-  "Hard cap for vterm lings per Emacs daemon. 7+ crashes Emacs."
-  6)
+  "Hard cap for vterm lings per Emacs daemon. Derived from spawn-mode registry."
+  (spawn-registry/slot-limit :vterm))
 
 (defn- spawn-one-vterm!
   "Spawn and dispatch a single ling via vterm route (Emacs-bound).
@@ -233,49 +249,49 @@
   [{:keys [task effective-dir default-presets model]}]
   (let [title   (or (:title task) (:id task) "untitled")
         task-id (:id task)
-        agent-name (str "forja-vt-" (System/currentTimeMillis))]
-    (try
-      (let [spawn-result (spawn/handle-spawn
-                          (cond-> {:type "ling"
-                                   :name agent-name
-                                   :cwd effective-dir
-                                   :presets default-presets
-                                   :kanban_task_id task-id}
-                            model (assoc :model model)))
-            spawn-text   (when (map? spawn-result) (:text spawn-result))
-            spawn-parsed (when (string? spawn-text)
-                           (try (json/read-str spawn-text :key-fn keyword)
-                                (catch Exception _ nil)))
-            agent-id (or (:agent-id spawn-parsed) agent-name)]
-        (let [ready (wait-for-ling-ready agent-id :vterm)]
-          (if (:ready? ready)
-            (do
-              (dispatch/handle-dispatch
-               {:agent_id agent-id
-                :prompt (str title
-                             (when-let [desc (:description task)]
-                               (str "\n\n" desc))
-                             "\n\nDO NOT spawn drones. Implement directly.")})
-              (when task-id
-                (try (c-kanban/handle-kanban {:command "update" :task_id task-id
-                                              :new_status "inprogress"
-                                              :directory effective-dir})
-                     (catch Exception _ nil)))
-              (log/info "SPARK[vterm]: spawned+dispatched" {:agent agent-id :task title})
-              {:agent-id agent-id :task-title title :task-id task-id :spawned true
-               :route :vterm :model (or model "claude")})
-            (do
-              (log/warn "SPARK[vterm]: ling not ready, skipping dispatch"
-                        {:agent-id agent-id :elapsed-ms (:elapsed-ms ready)
-                         :phase (:phase ready)})
-              {:agent-id agent-id :task-title title :task-id task-id
-               :spawned false
-               :error (str "Readiness timeout (" (name (or (:phase ready) :unknown)) ")")
-               :route :vterm}))))
-      (catch Exception e
-        (log/warn "SPARK[vterm]: failed" {:task title :error (ex-message e)})
-        {:agent-id agent-name :task-title title :task-id task-id
-         :spawned false :error (ex-message e) :route :vterm}))))
+        agent-name (str "forja-vt-" (System/currentTimeMillis))
+        r (result/rescue
+           {:agent-id agent-name :task-title title :task-id task-id
+            :spawned false :route :vterm}
+           (let [spawn-result (spawn/handle-spawn
+                               (cond-> {:type "ling"
+                                        :name agent-name
+                                        :cwd effective-dir
+                                        :presets default-presets
+                                        :kanban_task_id task-id}
+                                 model (assoc :model model)))
+                 spawn-text   (when (map? spawn-result) (:text spawn-result))
+                 spawn-parsed (when (string? spawn-text)
+                                (result/rescue nil (json/read-str spawn-text :key-fn keyword)))
+                 agent-id (or (:agent-id spawn-parsed) agent-name)]
+             (let [ready (wait-for-ling-ready agent-id :vterm)]
+               (if (:ready? ready)
+                 (do
+                   (dispatch/handle-dispatch
+                    {:agent_id agent-id
+                     :prompt (str title
+                                  (when-let [desc (:description task)]
+                                    (str "\n\n" desc))
+                                  "\n\nDO NOT spawn drones. Implement directly.")})
+                   (when task-id
+                     (result/rescue nil
+                                    (c-kanban/handle-kanban {:command "update" :task_id task-id
+                                                             :new_status "inprogress"
+                                                             :directory effective-dir})))
+                   (log/info "SPARK[vterm]: spawned+dispatched" {:agent agent-id :task title})
+                   {:agent-id agent-id :task-title title :task-id task-id :spawned true
+                    :route :vterm :model (or model "claude")})
+                 (do
+                   (log/warn "SPARK[vterm]: ling not ready, skipping dispatch"
+                             {:agent-id agent-id :elapsed-ms (:elapsed-ms ready)
+                              :phase (:phase ready)})
+                   {:agent-id agent-id :task-title title :task-id task-id
+                    :spawned false
+                    :error (str "Readiness timeout (" (name (or (:phase ready) :unknown)) ")")
+                    :route :vterm})))))]
+    (cond-> r
+      (and (not (:spawned r)) (not (:error r)) (::result/error (meta r)))
+      (assoc :error (get-in (meta r) [::result/error :message] "unknown")))))
 
 (defn- spawn-one-headless!
   "Spawn and dispatch a single ling via headless route (Emacs-independent).
@@ -283,56 +299,55 @@
   [{:keys [task effective-dir default-presets effective-spawn-mode model]}]
   (let [title   (or (:title task) (:id task) "untitled")
         task-id (:id task)
-        agent-name (str "forja-hl-" (System/currentTimeMillis))]
-    (try
-      (let [spawn-result (spawn/handle-spawn
-                          (cond-> {:type "ling"
-                                   :name agent-name
-                                   :cwd effective-dir
-                                   :presets default-presets
-                                   :kanban_task_id task-id
-                                   :spawn_mode (name effective-spawn-mode)}
-                            model (assoc :model model)))
-            spawn-text   (when (map? spawn-result) (:text spawn-result))
-            spawn-parsed (when (string? spawn-text)
-                           (try (json/read-str spawn-text :key-fn keyword)
-                                (catch Exception _ nil)))
-            agent-id      (or (:agent-id spawn-parsed) agent-name)
-            reported-mode (keyword (or (:spawn-mode spawn-parsed)
-                                       (name effective-spawn-mode)))]
-        (let [ready (wait-for-ling-ready agent-id reported-mode)]
-          (if (:ready? ready)
-            (do
-              (dispatch/handle-dispatch
-               {:agent_id agent-id
-                :prompt (str title
-                             (when-let [desc (:description task)]
-                               (str "\n\n" desc))
-                             "\n\nDO NOT spawn drones. Implement directly.")})
-              (when task-id
-                (try (c-kanban/handle-kanban {:command "update" :task_id task-id
-                                              :new_status "inprogress"
-                                              :directory effective-dir})
-                     (catch Exception _ nil)))
-              (log/info "SPARK[headless]: spawned+dispatched"
-                        {:agent agent-id :task title :model (or model "claude")
-                         :spawn-mode effective-spawn-mode})
-              {:agent-id agent-id :task-title title :task-id task-id :spawned true
-               :route :headless :spawn-mode effective-spawn-mode
-               :model (or model "claude")})
-            (do
-              (log/warn "SPARK[headless]: ling not ready, skipping dispatch"
-                        {:agent-id agent-id :elapsed-ms (:elapsed-ms ready)
-                         :phase (:phase ready) :spawn-mode reported-mode})
-              {:agent-id agent-id :task-title title :task-id task-id
-               :spawned false
-               :error (str "Readiness timeout (" (name (or (:phase ready) :unknown)) ")")
-               :route :headless :spawn-mode effective-spawn-mode}))))
-      (catch Exception e
-        (log/warn "SPARK[headless]: failed" {:task title :error (ex-message e)})
-        {:agent-id agent-name :task-title title :task-id task-id
-         :spawned false :error (ex-message e)
-         :route :headless :spawn-mode effective-spawn-mode}))))
+        agent-name (str "forja-hl-" (System/currentTimeMillis))
+        r (result/rescue
+           {:agent-id agent-name :task-title title :task-id task-id
+            :spawned false :route :headless :spawn-mode effective-spawn-mode}
+           (let [spawn-result (spawn/handle-spawn
+                               (cond-> {:type "ling"
+                                        :name agent-name
+                                        :cwd effective-dir
+                                        :presets default-presets
+                                        :kanban_task_id task-id
+                                        :spawn_mode (name effective-spawn-mode)}
+                                 model (assoc :model model)))
+                 spawn-text   (when (map? spawn-result) (:text spawn-result))
+                 spawn-parsed (when (string? spawn-text)
+                                (result/rescue nil (json/read-str spawn-text :key-fn keyword)))
+                 agent-id      (or (:agent-id spawn-parsed) agent-name)
+                 reported-mode (keyword (or (:spawn-mode spawn-parsed)
+                                            (name effective-spawn-mode)))]
+             (let [ready (wait-for-ling-ready agent-id reported-mode)]
+               (if (:ready? ready)
+                 (do
+                   (dispatch/handle-dispatch
+                    {:agent_id agent-id
+                     :prompt (str title
+                                  (when-let [desc (:description task)]
+                                    (str "\n\n" desc))
+                                  "\n\nDO NOT spawn drones. Implement directly.")})
+                   (when task-id
+                     (result/rescue nil
+                                    (c-kanban/handle-kanban {:command "update" :task_id task-id
+                                                             :new_status "inprogress"
+                                                             :directory effective-dir})))
+                   (log/info "SPARK[headless]: spawned+dispatched"
+                             {:agent agent-id :task title :model (or model "claude")
+                              :spawn-mode effective-spawn-mode})
+                   {:agent-id agent-id :task-title title :task-id task-id :spawned true
+                    :route :headless :spawn-mode effective-spawn-mode
+                    :model (or model "claude")})
+                 (do
+                   (log/warn "SPARK[headless]: ling not ready, skipping dispatch"
+                             {:agent-id agent-id :elapsed-ms (:elapsed-ms ready)
+                              :phase (:phase ready) :spawn-mode reported-mode})
+                   {:agent-id agent-id :task-title title :task-id task-id
+                    :spawned false
+                    :error (str "Readiness timeout (" (name (or (:phase ready) :unknown)) ")")
+                    :route :headless :spawn-mode effective-spawn-mode})))))]
+    (cond-> r
+      (and (not (:spawned r)) (not (:error r)) (::result/error (meta r)))
+      (assoc :error (get-in (meta r) [::result/error :message] "unknown")))))
 
 (defn- budget-route-model
   "When :forge.budget-routing config gate is enabled, use budget-router
@@ -380,42 +395,43 @@
       {:spawned [] :failed [] :count 0 :route :drone
        :skipped (count skipped-tasks)
        :reason "No tasks with :file reference for drone dispatch"}
-      (try
-        (let [plan-id (ds/create-plan! wave-tasks (or preset "drone-worker"))
-              {:keys [wave-id item-count]}
-              (wave-execution/execute-wave-async!
-               plan-id
-               (cond-> {:cwd effective-dir :trace true}
-                 model              (assoc :model model)
-                 (seq seeds)        (assoc :seeds (vec seeds))
-                 (seq ctx_refs)     (assoc :ctx-refs ctx_refs)
-                 (seq kg_node_ids)  (assoc :kg-node-ids (vec kg_node_ids))))]
-          ;; Mark dispatched kanban tasks as inprogress
-          (doseq [task dispatchable
-                  :let [task-id (:id task)]
-                  :when task-id]
-            (try (c-kanban/handle-kanban {:command "update" :task_id task-id
-                                          :new_status "inprogress"
-                                          :directory effective-dir})
-                 (catch Exception _ nil)))
-          (log/info "SPARK[drone]: wave dispatched"
-                    {:wave-id wave-id :plan-id plan-id
-                     :count item-count :skipped (count skipped-tasks)
-                     :model (or model "default")})
-          {:spawned (mapv (fn [t] {:task-title (:title t) :task-id (:id t)
-                                   :spawned true :route :drone})
-                          dispatchable)
-           :failed []
-           :count item-count
-           :route :drone
-           :wave-id wave-id
-           :plan-id plan-id
-           :skipped (count skipped-tasks)
-           :model (or model "default")})
-        (catch Exception e
-          (log/warn "SPARK[drone]: wave dispatch failed" {:error (ex-message e)})
-          {:spawned [] :failed [{:error (ex-message e)}]
-           :count 0 :route :drone :skipped (count skipped-tasks)})))))
+      (let [r (result/rescue
+               {:spawned [] :failed [] :count 0 :route :drone
+                :skipped (count skipped-tasks)}
+               (let [plan-id (ds/create-plan! wave-tasks (or preset "drone-worker"))
+                     {:keys [wave-id item-count]}
+                     (wave-execution/execute-wave-async!
+                      plan-id
+                      (cond-> {:cwd effective-dir :trace true}
+                        model              (assoc :model model)
+                        (seq seeds)        (assoc :seeds (vec seeds))
+                        (seq ctx_refs)     (assoc :ctx-refs ctx_refs)
+                        (seq kg_node_ids)  (assoc :kg-node-ids (vec kg_node_ids))))]
+                  ;; Mark dispatched kanban tasks as inprogress
+                 (doseq [task dispatchable
+                         :let [task-id (:id task)]
+                         :when task-id]
+                   (result/rescue nil
+                                  (c-kanban/handle-kanban {:command "update" :task_id task-id
+                                                           :new_status "inprogress"
+                                                           :directory effective-dir})))
+                 (log/info "SPARK[drone]: wave dispatched"
+                           {:wave-id wave-id :plan-id plan-id
+                            :count item-count :skipped (count skipped-tasks)
+                            :model (or model "default")})
+                 {:spawned (mapv (fn [t] {:task-title (:title t) :task-id (:id t)
+                                          :spawned true :route :drone})
+                                 dispatchable)
+                  :failed []
+                  :count item-count
+                  :route :drone
+                  :wave-id wave-id
+                  :plan-id plan-id
+                  :skipped (count skipped-tasks)
+                  :model (or model "default")}))]
+        (cond-> r
+          (and (empty? (:spawned r)) (::result/error (meta r)))
+          (assoc :failed [{:error (get-in (meta r) [::result/error :message] "unknown")}]))))))
 
 (defn- classify-and-split-tasks
   "When budget routing is enabled, classify each task via task-classifier
@@ -480,7 +496,7 @@
                              :kg_node_ids kg_node_ids
                              :max_slots   max_slots}))
 
-            headless-modes #{:headless :agent-sdk :openrouter}
+            headless-modes spawn-registry/headless-modes
             effective-dir  (or directory
                                (ctx/current-directory)
                                (System/getProperty "user.dir"))
@@ -578,11 +594,10 @@
 (defn build-fsm-resources
   "Build the resources map for the Forge Belt FSM.
    Extra keys in params flow through to survey via kanban-ops/list-fn (OCP)."
-  [{:keys [directory max_slots presets spawn_mode model vulcan_mode
+  [{:keys [directory max_slots presets spawn_mode model
            preset seeds ctx_refs kg_node_ids] :as params}]
   (let [effective-spawn-mode (when spawn_mode (keyword spawn_mode))
-        effective-vulcan? (boolean vulcan_mode)
-        survey-opts (dissoc params :directory :max_slots :presets :spawn_mode :model :vulcan_mode
+        survey-opts (dissoc params :directory :max_slots :presets :spawn_mode :model
                             :preset :seeds :ctx_refs :kg_node_ids)]
     {:directory  directory
      :config     {:max-slots    (or max_slots 10)
@@ -592,8 +607,7 @@
                   :preset       preset
                   :seeds        seeds
                   :ctx-refs     ctx_refs
-                  :kg-node-ids  kg_node_ids
-                  :vulcan-mode  effective-vulcan?}
+                  :kg-node-ids  kg_node_ids}
      :agent-ops  {:kill-fn  (fn [dir _project-id]
                               (smite! {:directory dir}))
                   :spawn-fn (fn [{:keys [directory max-slots presets tasks] :as opts}]
@@ -632,104 +646,106 @@
                   :wait-ready-fn  (fn [_agent-id] true)}
      :kanban-ops {:list-fn   (fn [dir]
                                (survey (merge survey-opts
-                                              {:directory dir
-                                               :vulcan-mode effective-vulcan?})))
+                                              {:directory dir})))
                   :update-fn (fn [_opts] nil)}
      :scope-fn   (fn [dir]
                    (when dir (scope/get-current-project-id dir)))
      :clock-fn   #(java.time.Instant/now)}))
 
+(defn- forge-strike-legacy*
+  "Logic for legacy forge cycle. Returns Result."
+  [{:keys [directory max_slots presets spawn_mode model task_ids task_filter] :as params}]
+  (log/info "FORGE STRIKE (legacy): Starting cycle" {:directory directory :max-slots max_slots
+                                                     :spawn-mode (or spawn_mode "vterm")
+                                                     :model (or model "claude")})
+  (let [smite-result (smite! params)
+        _ (log/info "FORGE STRIKE: SMITE complete" {:killed (:count smite-result)})
+
+        survey-result (survey (cond-> {:directory directory}
+                                (seq task_ids)    (assoc :task_ids task_ids)
+                                (some? task_filter) (assoc :task_filter task_filter)))
+        _ (log/info "FORGE STRIKE: SURVEY complete" {:tasks (:count survey-result)})
+
+        spark-result (spark! (assoc params
+                                    :tasks (:tasks survey-result)
+                                    :max_slots max_slots
+                                    :presets presets
+                                    :model model))
+        _ (log/info "FORGE STRIKE: SPARK complete" {:spawned (:count spark-result)})]
+
+    (swap! forge-state
+           (fn [s]
+             (-> s
+                 (update :total-smited + (:count smite-result))
+                 (update :total-sparked + (:count spark-result))
+                 (update :total-strikes inc)
+                 (assoc :last-strike (str (java.time.Instant/now))))))
+
+    (result/ok {:success true
+                :mode :imperative
+                :deprecated true
+                :spawn-mode (or spawn_mode "vterm")
+                :model (or model "claude")
+                :smite smite-result
+                :survey {:todo-count (:count survey-result)
+                         :task-titles (mapv :title (:tasks survey-result))}
+                :spark spark-result
+                :summary (str "DEPRECATED legacy: Smited " (:count smite-result)
+                              ", surveyed " (:count survey-result) " tasks"
+                              ", sparked " (:count spark-result) " lings"
+                              " (mode: " (or spawn_mode "vterm")
+                              ", model: " (or model "claude") ")")})))
+
 (defn handle-forge-strike-legacy
   "DEPRECATED: Execute ONE forge cycle via imperative smite!/survey/spark!."
-  [{:keys [directory max_slots presets spawn_mode model vulcan_mode] :as params}]
+  [params]
   (log/warn "DEPRECATED: forge strike-legacy called. Use 'forge strike' (FSM) instead."
-            {:directory directory})
+            {:directory (:directory params)})
   (if (:quenched? @forge-state)
     (mcp-json {:success false
                :message "Forge is quenched. Use forge-status to check or restart."
                :quenched? true})
-    (try
-      (log/info "FORGE STRIKE (legacy): Starting cycle" {:directory directory :max-slots max_slots
-                                                         :spawn-mode (or spawn_mode "vterm")
-                                                         :model (or model "claude")})
+    (result->mcp (try-result :forge/strike-legacy-failed
+                             #(forge-strike-legacy* params)))))
 
-      (let [smite-result (smite! params)
-            _ (log/info "FORGE STRIKE: SMITE complete" {:killed (:count smite-result)})
-
-            survey-result (survey {:directory directory
-                                   :vulcan-mode (boolean vulcan_mode)})
-            _ (log/info "FORGE STRIKE: SURVEY complete" {:tasks (:count survey-result)})
-
-            spark-result (spark! (assoc params
-                                        :tasks (:tasks survey-result)
-                                        :max_slots max_slots
-                                        :presets presets
-                                        :model model))
-            _ (log/info "FORGE STRIKE: SPARK complete" {:spawned (:count spark-result)})]
-
-        (swap! forge-state
-               (fn [s]
-                 (-> s
-                     (update :total-smited + (:count smite-result))
-                     (update :total-sparked + (:count spark-result))
-                     (update :total-strikes inc)
-                     (assoc :last-strike (str (java.time.Instant/now))))))
-
-        (mcp-json {:success true
-                   :mode :imperative
-                   :deprecated true
-                   :spawn-mode (or spawn_mode "vterm")
-                   :model (or model "claude")
-                   :smite smite-result
-                   :survey {:todo-count (:count survey-result)
-                            :task-titles (mapv :title (:tasks survey-result))}
-                   :spark spark-result
-                   :summary (str "DEPRECATED legacy: Smited " (:count smite-result)
-                                 ", surveyed " (:count survey-result) " tasks"
-                                 ", sparked " (:count spark-result) " lings"
-                                 " (mode: " (or spawn_mode "vterm")
-                                 ", model: " (or model "claude") ")")}))
-      (catch Exception e
-        (log/error "FORGE STRIKE (legacy) failed" {:error (ex-message e)})
-        (mcp-error (str "Forge strike (legacy) failed: " (ex-message e)))))))
+(defn- fsm-forge-strike*
+  "Logic for FSM forge strike. Returns Result."
+  [{:keys [directory max_slots spawn_mode model] :as params}]
+  (log/info "FORGE STRIKE: Starting FSM cycle" {:directory directory :max-slots max_slots
+                                                :spawn-mode (or spawn_mode "vterm")
+                                                :model (or model "claude")})
+  (let [resources (build-fsm-resources params)
+        fsm-result (forge-belt/run-single-strike resources)]
+    (swap! forge-state
+           (fn [s]
+             (-> s
+                 (update :total-smited + (:total-smited fsm-result 0))
+                 (update :total-sparked + (:total-sparked fsm-result 0))
+                 (update :total-strikes inc)
+                 (assoc :last-strike (:last-strike fsm-result)))))
+    (let [outcome (or (:outcome fsm-result) :clean)]
+      (result/ok {:success (:success fsm-result true)
+                  :outcome outcome
+                  :mode :fsm
+                  :spawn-mode (or spawn_mode "vterm")
+                  :model (or model "claude")
+                  :smite (:smite-result fsm-result)
+                  :survey {:todo-count (get-in fsm-result [:survey-result :count] 0)
+                           :task-titles (mapv :title (get-in fsm-result [:survey-result :tasks] []))}
+                  :spark (:spark-result fsm-result)
+                  :summary (str (when (= :partial outcome) "PARTIAL: ")
+                                (when (= :failure outcome) "FAILED: ")
+                                "Smited " (:total-smited fsm-result 0)
+                                ", surveyed " (get-in fsm-result [:survey-result :count] 0) " tasks"
+                                ", sparked " (:total-sparked fsm-result 0) " lings"
+                                " (mode: " (or spawn_mode "vterm")
+                                ", model: " (or model "claude") ")")}))))
 
 (defn- fsm-forge-strike
   "FSM-driven forge strike implementation.
    Extra keys in params flow through to survey (OCP)."
-  [{:keys [directory max_slots spawn_mode model] :as params}]
-  (try
-    (log/info "FORGE STRIKE: Starting FSM cycle" {:directory directory :max-slots max_slots
-                                                  :spawn-mode (or spawn_mode "vterm")
-                                                  :model (or model "claude")})
-    (let [resources (build-fsm-resources params)
-          result (forge-belt/run-single-strike resources)]
-      (swap! forge-state
-             (fn [s]
-               (-> s
-                   (update :total-smited + (:total-smited result 0))
-                   (update :total-sparked + (:total-sparked result 0))
-                   (update :total-strikes inc)
-                   (assoc :last-strike (:last-strike result)))))
-      (let [outcome (or (:outcome result) :clean)]
-        (mcp-json {:success (:success result true)
-                   :outcome outcome
-                   :mode :fsm
-                   :spawn-mode (or spawn_mode "vterm")
-                   :model (or model "claude")
-                   :smite (:smite-result result)
-                   :survey {:todo-count (get-in result [:survey-result :count] 0)
-                            :task-titles (mapv :title (get-in result [:survey-result :tasks] []))}
-                   :spark (:spark-result result)
-                   :summary (str (when (= :partial outcome) "PARTIAL: ")
-                                 (when (= :failure outcome) "FAILED: ")
-                                 "Smited " (:total-smited result 0)
-                                 ", surveyed " (get-in result [:survey-result :count] 0) " tasks"
-                                 ", sparked " (:total-sparked result 0) " lings"
-                                 " (mode: " (or spawn_mode "vterm")
-                                 ", model: " (or model "claude") ")")})))
-    (catch Exception e
-      (log/error "FORGE STRIKE failed" {:error (ex-message e)})
-      (mcp-error (str "Forge strike failed: " (ex-message e))))))
+  [params]
+  (result->mcp (try-result :forge/strike-failed #(fsm-forge-strike* params))))
 
 (defn handle-forge-strike
   "Execute ONE forge cycle, FSM-driven by default with legacy config gate.
@@ -768,35 +784,35 @@
   "DEPRECATED alias: renamed to handle-forge-strike-legacy."
   handle-forge-strike-legacy)
 
+(defn- forge-status*
+  "Logic for forge status dashboard. Returns Result."
+  [{:keys [directory]}]
+  (let [state @forge-state
+        all-agents (queries/get-all-slaves)
+        lings (->> all-agents
+                   (filter #(= 1 (:slave/depth %))))
+        active-lings (filter #(#{:active :running :idle :spawning} (:slave/status %)) lings)
+        terminal-lings (filter #(#{:completed :done :error :zombie} (:slave/status %)) lings)
+        kanban-result (result/rescue nil
+                                     (c-kanban/handle-kanban {:command "status" :directory directory}))
+        budget-routing? (boolean (config/get-service-value :forge :budget-routing :default false))
+        budget-summary (when budget-routing?
+                         (result/rescue {:error "budget-summary-failed"}
+                                        (budget-router/fleet-budget-summary)))]
+    (result/ok (cond-> {:forge (assoc state :modes {:fsm true
+                                                    :legacy (boolean (config/get-service-value :forge :legacy :default false))
+                                                    :budget-routing budget-routing?})
+                        :lings {:total (count lings)
+                                :active (count active-lings)
+                                :terminal (count terminal-lings)
+                                :ids (mapv :slave/id active-lings)}
+                        :kanban kanban-result}
+                 budget-summary (assoc :budget budget-summary)))))
+
 (defn handle-forge-status
   "Belt dashboard: show forge state, active lings, kanban summary."
-  [{:keys [directory] :as _params}]
-  (try
-    (let [state @forge-state
-          all-agents (queries/get-all-slaves)
-          lings (->> all-agents
-                     (filter #(= 1 (:slave/depth %))))
-          active-lings (filter #(#{:active :running :idle :spawning} (:slave/status %)) lings)
-          terminal-lings (filter #(#{:completed :done :error :zombie} (:slave/status %)) lings)
-          kanban-result (try
-                          (c-kanban/handle-kanban {:command "status" :directory directory})
-                          (catch Exception _ nil))]
-      (let [budget-routing? (boolean (config/get-service-value :forge :budget-routing :default false))
-            budget-summary  (when budget-routing?
-                              (try (budget-router/fleet-budget-summary)
-                                   (catch Exception e
-                                     {:error (ex-message e)})))]
-        (mcp-json (cond-> {:forge (assoc state :modes {:fsm true
-                                                       :legacy (boolean (config/get-service-value :forge :legacy :default false))
-                                                       :budget-routing budget-routing?})
-                           :lings {:total (count lings)
-                                   :active (count active-lings)
-                                   :terminal (count terminal-lings)
-                                   :ids (mapv :slave/id active-lings)}
-                           :kanban kanban-result}
-                    budget-summary (assoc :budget budget-summary)))))
-    (catch Exception e
-      (mcp-error (str "Forge status failed: " (ex-message e))))))
+  [params]
+  (result->mcp (try-result :forge/status-failed #(forge-status* params))))
 
 (defn handle-forge-quench
   "Gracefully stop or restart the forge belt."
@@ -846,7 +862,9 @@
                                             :description "Git commit message (for complete)"}
                               "task_ids" {:type "array"
                                           :items {:type "string"}
-                                          :description "Kanban task IDs. For complete: marks done. For forge-strike: survey whitelist (composable with vulcan_mode)."}
+                                          :description "Kanban task IDs. For complete: marks done. For forge-strike: survey whitelist."}
+                              "task_filter" {:type "string"
+                                             :description "Title prefix filter for survey. E.g. 'result-dsl:' matches all tasks starting with that prefix. More LLM-friendly than exact task_ids."}
                               "agent_id" {:type "string"
                                           :description "Agent ID for session attribution"}
                               "directory" {:type "string"

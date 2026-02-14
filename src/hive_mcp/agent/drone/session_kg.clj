@@ -3,6 +3,7 @@
   (:require [hive-mcp.knowledge-graph.store.datalevin :as dtlv-store]
             [hive-mcp.protocols.kg :as kg]
             [hive-mcp.extensions.registry :as ext]
+            [hive-mcp.dns.result :as result]
             [clojure.java.io :as io]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
@@ -89,36 +90,30 @@
   [drone-id]
   (let [db-path (session-db-path drone-id)]
     (log/info "Creating session store for drone" {:drone-id drone-id :path db-path})
-    (try
-      (let [store (dtlv-store/create-store {:db-path db-path
-                                            :extra-schema session-schema})]
-        (when store
-          (kg/ensure-conn! store)
-          (log/info "Session Store initialized" {:drone-id drone-id :path db-path
-                                                 :session-attrs (count session-schema)})
-          store))
-      (catch Exception e
-        (log/warn "Failed to create session store, drone will use in-memory fallback"
-                  {:drone-id drone-id :error (.getMessage e)})
-        nil))))
+    (result/rescue nil
+                   (let [store (dtlv-store/create-store {:db-path db-path
+                                                         :extra-schema session-schema})]
+                     (when store
+                       (kg/ensure-conn! store)
+                       (log/info "Session Store initialized" {:drone-id drone-id :path db-path
+                                                              :session-attrs (count session-schema)})
+                       store)))))
 
 (defn close-session-kg!
   "Close a session store and optionally clean up temp directory."
   [store drone-id & {:keys [cleanup?] :or {cleanup? true}}]
   (when store
-    (try
-      (kg/close! store)
-      (when cleanup?
-        (let [dir (io/file (session-db-path drone-id))]
-          (when (.exists dir)
-            (doseq [f (reverse (file-seq dir))]
-              (.delete f))
-            (let [parent (.getParentFile dir)]
-              (when (and (.exists parent) (empty? (.listFiles parent)))
-                (.delete parent))))))
-      (log/info "Session Store closed" {:drone-id drone-id :cleaned-up? cleanup?})
-      (catch Exception e
-        (log/warn "Error closing session store" {:drone-id drone-id :error (.getMessage e)})))))
+    (result/rescue nil
+                   (kg/close! store)
+                   (when cleanup?
+                     (let [dir (io/file (session-db-path drone-id))]
+                       (when (.exists dir)
+                         (doseq [f (reverse (file-seq dir))]
+                           (.delete f))
+                         (let [parent (.getParentFile dir)]
+                           (when (and (.exists parent) (empty? (.listFiles parent)))
+                             (.delete parent))))))
+                   (log/info "Session Store closed" {:drone-id drone-id :cleaned-up? cleanup?}))))
 
 (defn record-observation!
   "Record a tool execution result as a compressed observation in the session store."
@@ -128,21 +123,19 @@
       (ext-fn store turn tool result opts)
       (do
         (when store
-          (try
-            (let [summary (summarize-result tool result)
-                  key-facts (extract-key-facts tool result)
-                  obs-entity (cond-> {:obs/id obs-id
-                                      :obs/turn turn
-                                      :obs/tool tool
-                                      :obs/summary summary
-                                      :obs/success (boolean (:success result))
-                                      :obs/timestamp (java.util.Date.)}
-                               (seq key-facts) (assoc :obs/key-facts (set key-facts))
-                               (:file opts) (assoc :obs/file (:file opts)))]
-              (kg/transact! store [obs-entity])
-              (log/debug "Recorded observation" {:obs-id obs-id :turn turn :tool tool}))
-            (catch Exception e
-              (log/warn "Failed to record observation" {:obs-id obs-id :error (.getMessage e)}))))
+          (result/rescue nil
+                         (let [summary (summarize-result tool result)
+                               key-facts (extract-key-facts tool result)
+                               obs-entity (cond-> {:obs/id obs-id
+                                                   :obs/turn turn
+                                                   :obs/tool tool
+                                                   :obs/summary summary
+                                                   :obs/success (boolean (:success result))
+                                                   :obs/timestamp (java.util.Date.)}
+                                            (seq key-facts) (assoc :obs/key-facts (set key-facts))
+                                            (:file opts) (assoc :obs/file (:file opts)))]
+                           (kg/transact! store [obs-entity])
+                           (log/debug "Recorded observation" {:obs-id obs-id :turn turn :tool tool}))))
         obs-id))))
 
 (defn record-reasoning!
@@ -153,83 +146,69 @@
       (ext-fn store turn intent rationale)
       (do
         (when store
-          (try
-            (let [reason-entity {:reason/id reason-id
-                                 :reason/turn turn
-                                 :reason/intent (truncate intent 200)
-                                 :reason/rationale (truncate rationale 200)
-                                 :reason/timestamp (java.util.Date.)}]
-              (kg/transact! store [reason-entity])
-              (log/debug "Recorded reasoning" {:reason-id reason-id :turn turn}))
-            (catch Exception e
-              (log/warn "Failed to record reasoning" {:reason-id reason-id :error (.getMessage e)}))))
+          (result/rescue nil
+                         (let [reason-entity {:reason/id reason-id
+                                              :reason/turn turn
+                                              :reason/intent (truncate intent 200)
+                                              :reason/rationale (truncate rationale 200)
+                                              :reason/timestamp (java.util.Date.)}]
+                           (kg/transact! store [reason-entity])
+                           (log/debug "Recorded reasoning" {:reason-id reason-id :turn turn}))))
         reason-id))))
 
 (defn- query-recent-observations
   "Query the last N observations from the session store, ordered by turn."
   [store max-obs]
-  (try
-    (let [results (kg/query store
-                            '[:find ?id ?turn ?tool ?summary ?success
-                              :where
-                              [?e :obs/id ?id]
-                              [?e :obs/turn ?turn]
-                              [?e :obs/tool ?tool]
-                              [?e :obs/summary ?summary]
-                              [?e :obs/success ?success]])]
-      (->> results
-           (sort-by second >)
-           (take max-obs)
-           vec))
-    (catch Exception e
-      (log/debug "Failed to query observations" {:error (.getMessage e)})
-      [])))
+  (result/rescue []
+                 (let [results (kg/query store
+                                         '[:find ?id ?turn ?tool ?summary ?success
+                                           :where
+                                           [?e :obs/id ?id]
+                                           [?e :obs/turn ?turn]
+                                           [?e :obs/tool ?tool]
+                                           [?e :obs/summary ?summary]
+                                           [?e :obs/success ?success]])]
+                   (->> results
+                        (sort-by second >)
+                        (take max-obs)
+                        vec))))
 
 (defn- query-recent-reasoning
   "Query the last N reasoning nodes from the session store, ordered by turn."
   [store max-reasons]
-  (try
-    (let [results (kg/query store
-                            '[:find ?id ?turn ?intent
-                              :where
-                              [?e :reason/id ?id]
-                              [?e :reason/turn ?turn]
-                              [?e :reason/intent ?intent]])]
-      (->> results
-           (sort-by second >)
-           (take max-reasons)
-           vec))
-    (catch Exception e
-      (log/debug "Failed to query reasoning" {:error (.getMessage e)})
-      [])))
+  (result/rescue []
+                 (let [results (kg/query store
+                                         '[:find ?id ?turn ?intent
+                                           :where
+                                           [?e :reason/id ?id]
+                                           [?e :reason/turn ?turn]
+                                           [?e :reason/intent ?intent]])]
+                   (->> results
+                        (sort-by second >)
+                        (take max-reasons)
+                        vec))))
 
 (defn- query-all-key-facts
   "Query all accumulated key facts from observations."
   [store]
-  (try
-    (let [results (kg/query store
-                            '[:find ?fact
-                              :where
-                              [?e :obs/key-facts ?fact]])]
-      (into #{} (map first) results))
-    (catch Exception e
-      (log/debug "Failed to query key facts" {:error (.getMessage e)})
-      #{})))
+  (result/rescue #{}
+                 (let [results (kg/query store
+                                         '[:find ?fact
+                                           :where
+                                           [?e :obs/key-facts ?fact]])]
+                   (into #{} (map first) results))))
 
 (defn- query-goals
   "Query active goals from the session store."
   [store]
-  (try
-    (let [results (kg/query store
-                            '[:find ?id ?desc ?status
-                              :where
-                              [?e :goal/id ?id]
-                              [?e :goal/description ?desc]
-                              [?e :goal/status ?status]])]
-      (vec results))
-    (catch Exception e
-      (log/debug "Failed to query goals" {:error (.getMessage e)})
-      [])))
+  (result/rescue []
+                 (let [results (kg/query store
+                                         '[:find ?id ?desc ?status
+                                           :where
+                                           [?e :goal/id ?id]
+                                           [?e :goal/description ?desc]
+                                           [?e :goal/status ?status]])]
+                   (vec results))))
 
 (defn reconstruct-context
   "Reconstruct a compact context prompt from the session store state."
@@ -238,59 +217,53 @@
     (ext-fn store task turn)
     (if (or (nil? store) (zero? turn))
       task
-      (try
-        (let [recent-obs (query-recent-observations store 5)
-              recent-reasons (query-recent-reasoning store 3)
-              key-facts (query-all-key-facts store)
-              goals (query-goals store)
-              active-goals (filter #(= :active (nth % 2)) goals)
+      (result/rescue task
+                     (let [recent-obs (query-recent-observations store 5)
+                           recent-reasons (query-recent-reasoning store 3)
+                           key-facts (query-all-key-facts store)
+                           goals (query-goals store)
+                           active-goals (filter #(= :active (nth % 2)) goals)
 
-              sections (cond-> [(str "TASK: " task)]
+                           sections (cond-> [(str "TASK: " task)]
 
-                         (seq key-facts)
-                         (conj (str "\nKNOWN FACTS:\n"
-                                    (str/join "\n" (map #(str "- " %) (take 10 key-facts)))))
+                                      (seq key-facts)
+                                      (conj (str "\nKNOWN FACTS:\n"
+                                                 (str/join "\n" (map #(str "- " %) (take 10 key-facts)))))
 
-                         (seq recent-obs)
-                         (conj (str "\nRECENT OBSERVATIONS:\n"
-                                    (str/join "\n"
-                                              (map (fn [[_id turn _tool summary success]]
-                                                     (str "T" turn ": " (if success "[OK]" "[FAIL]") " " summary))
-                                                   recent-obs))))
+                                      (seq recent-obs)
+                                      (conj (str "\nRECENT OBSERVATIONS:\n"
+                                                 (str/join "\n"
+                                                           (map (fn [[_id turn _tool summary success]]
+                                                                  (str "T" turn ": " (if success "[OK]" "[FAIL]") " " summary))
+                                                                recent-obs))))
 
-                         (seq recent-reasons)
-                         (conj (str "\nRECENT REASONING:\n"
-                                    (str/join "\n"
-                                              (map (fn [[_id turn intent]]
-                                                     (str "T" turn ": " intent))
-                                                   recent-reasons))))
+                                      (seq recent-reasons)
+                                      (conj (str "\nRECENT REASONING:\n"
+                                                 (str/join "\n"
+                                                           (map (fn [[_id turn intent]]
+                                                                  (str "T" turn ": " intent))
+                                                                recent-reasons))))
 
-                         (seq active-goals)
-                         (conj (str "\nACTIVE GOALS:\n"
-                                    (str/join "\n"
-                                              (map (fn [[_id desc _status]]
-                                                     (str "- " desc))
-                                                   active-goals))))
+                                      (seq active-goals)
+                                      (conj (str "\nACTIVE GOALS:\n"
+                                                 (str/join "\n"
+                                                           (map (fn [[_id desc _status]]
+                                                                  (str "- " desc))
+                                                                active-goals))))
 
-                         true
-                         (conj (str "\nCurrent turn: " turn ". Continue working on the task.")))]
-          (str/join "\n" sections))
-        (catch Exception e
-          (log/warn "Context reconstruction failed, falling back to raw task"
-                    {:turn turn :error (.getMessage e)})
-          task)))))
+                                      true
+                                      (conj (str "\nCurrent turn: " turn ". Continue working on the task.")))]
+                       (str/join "\n" sections))))))
 
 (defn- extract-session-edges
   "Extract all KG edges from a session store."
   [store]
-  (try
-    (let [edge-eids (kg/query store '[:find ?e :where [?e :kg-edge/id _]])]
-      (mapv (fn [[eid]]
-              (-> (kg/pull-entity store '[*] eid)
-                  (dissoc :db/id)))
-            edge-eids))
-    (catch Exception _
-      [])))
+  (result/rescue []
+                 (let [edge-eids (kg/query store '[:find ?e :where [?e :kg-edge/id _]])]
+                   (mapv (fn [[eid]]
+                           (-> (kg/pull-entity store '[*] eid)
+                               (dissoc :db/id)))
+                         edge-eids))))
 
 (defn merge-session-to-global!
   "Merge valuable session facts into the global store."
@@ -307,46 +280,43 @@
                              edges)]
         (log/info "Merging session edges to global" {:total (count edges)
                                                      :after-filter (count filtered)})
-        (let [result (reduce
-                      (fn [acc edge]
-                        (try
-                          (kg/transact! global-store [edge])
-                          (update acc :merged-count inc)
-                          (catch Exception e
-                            (update acc :errors conj {:edge-id (:kg-edge/id edge)
-                                                      :error (.getMessage e)}))))
-                      {:merged-count 0 :errors []}
-                      filtered)]
-          (log/info "Session->global merge complete" (select-keys result [:merged-count]))
-          result)))))
+        (let [merge-result (reduce
+                            (fn [acc edge]
+                              (let [r (result/try-effect* :kg/backend-error
+                                                          (kg/transact! global-store [edge]))]
+                                (if-let [_ (:ok r)]
+                                  (update acc :merged-count inc)
+                                  (update acc :errors conj {:edge-id (:kg-edge/id edge)
+                                                            :error (:message r)}))))
+                            {:merged-count 0 :errors []}
+                            filtered)]
+          (log/info "Session->global merge complete" (select-keys merge-result [:merged-count]))
+          merge-result)))))
 
 (defn- extract-global-edges-for-files
   "Extract edges from global store that reference the given file paths."
   [global-store files]
-  (try
-    (let [all-edges (kg/query global-store
-                              '[:find ?e ?id ?from ?to ?rel
-                                :where
-                                [?e :kg-edge/id ?id]
-                                [?e :kg-edge/from ?from]
-                                [?e :kg-edge/to ?to]
-                                [?e :kg-edge/relation ?rel]])
-          file-set (set files)
-          relevant (filter (fn [[_e _id from to _rel]]
-                             (or (contains? file-set from)
-                                 (contains? file-set to)
-                                 (some (fn [f]
-                                         (or (str/includes? (str from) f)
-                                             (str/includes? (str to) f)))
-                                       files)))
-                           all-edges)]
-      (mapv (fn [[eid _id _from _to _rel]]
-              (-> (kg/pull-entity global-store '[*] eid)
-                  (dissoc :db/id)))
-            relevant))
-    (catch Exception e
-      (log/debug "Failed to extract global edges for seeding" {:error (.getMessage e)})
-      [])))
+  (result/rescue []
+                 (let [all-edges (kg/query global-store
+                                           '[:find ?e ?id ?from ?to ?rel
+                                             :where
+                                             [?e :kg-edge/id ?id]
+                                             [?e :kg-edge/from ?from]
+                                             [?e :kg-edge/to ?to]
+                                             [?e :kg-edge/relation ?rel]])
+                       file-set (set files)
+                       relevant (filter (fn [[_e _id from to _rel]]
+                                          (or (contains? file-set from)
+                                              (contains? file-set to)
+                                              (some (fn [f]
+                                                      (or (str/includes? (str from) f)
+                                                          (str/includes? (str to) f)))
+                                                    files)))
+                                        all-edges)]
+                   (mapv (fn [[eid _id _from _to _rel]]
+                           (-> (kg/pull-entity global-store '[*] eid)
+                               (dissoc :db/id)))
+                         relevant))))
 
 (defn seed-from-global!
   "Seed a session store with relevant context from the global store."
@@ -358,17 +328,9 @@
       (let [files (or (:files task-context) [])
             edges (when (seq files)
                     (extract-global-edges-for-files global-store files))
-            seeded (when (seq edges)
-                     (reduce
-                      (fn [acc edge]
-                        (try
-                          (kg/transact! session-store [edge])
-                          (inc acc)
-                          (catch Exception _
-                            acc)))
-                      0
-                      edges))
-            seeded-count (or seeded 0)]
+            seeded-count (count (keep (result/rescue-fn
+                                       #(kg/transact! session-store [%]))
+                                      edges))]
         (log/info "Seeded session store from global" {:files (clojure.core/count files)
                                                       :edges-seeded seeded-count})
         seeded-count))))

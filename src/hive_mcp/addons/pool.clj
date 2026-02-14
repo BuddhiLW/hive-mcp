@@ -26,6 +26,7 @@
    - hive-mcp.addons.stdio-bridge — Concrete stdio bridge"
   (:require [hive-mcp.addons.mcp-bridge :as bridge]
             [hive-mcp.addons.protocol :as proto]
+            [hive-mcp.dns.result :as result]
             [taoensso.timbre :as log])
   (:import [java.util.concurrent
             ArrayBlockingQueue
@@ -87,12 +88,9 @@
 (defn- conn-healthy?
   "Check if a pooled connection's underlying bridge is still alive."
   [^PooledConnection conn]
-  (try
-    (let [status (bridge/bridge-status (:bridge conn))]
-      (:connected? status))
-    (catch Exception e
-      (log/debug "Health check failed" {:error (.getMessage e)})
-      false)))
+  (result/rescue false
+                 (let [status (bridge/bridge-status (:bridge conn))]
+                   (:connected? status))))
 
 (defn- conn-idle-ms
   "Milliseconds since this connection was last returned to pool."
@@ -126,21 +124,17 @@
 
    Returns PooledConnection on success, nil on failure."
   [factory-fn pool-id]
-  (try
-    (let [bridge (factory-fn)]
-      (if (bridge/bridge? bridge)
-        (do
-          (log/debug "Pool spawned connection"
-                     {:pool pool-id
-                      :transport (try (bridge/transport-type bridge)
-                                      (catch Exception _ :unknown))})
-          (make-pooled-conn bridge))
-        (do
-          (log/warn "Pool factory returned non-bridge object" {:pool pool-id})
-          nil)))
-    (catch Exception e
-      (log/error e "Pool connection factory failed" {:pool pool-id})
-      nil)))
+  (result/rescue nil
+                 (let [bridge (factory-fn)]
+                   (if (bridge/bridge? bridge)
+                     (do
+                       (log/debug "Pool spawned connection"
+                                  {:pool pool-id
+                                   :transport (result/rescue :unknown (bridge/transport-type bridge))})
+                       (make-pooled-conn bridge))
+                     (do
+                       (log/warn "Pool factory returned non-bridge object" {:pool pool-id})
+                       nil)))))
 
 ;; =============================================================================
 ;; Core Pool Operations
@@ -183,7 +177,7 @@
              (swap! (:all-conns pool) disj conn)
              (swap! (:stats pool) update :evictions (fnil inc 0))
              ;; Try to stop the dead bridge (best effort)
-             (try (bridge/stop-bridge! (:bridge conn)) (catch Exception _))
+             (result/rescue nil (bridge/stop-bridge! (:bridge conn)))
              ;; Spawn replacement if configured
              (when (get-in pool [:opts :replace-on-evict])
                (when-let [fresh (spawn-connection! (:factory-fn pool) :pool)]
@@ -233,10 +227,7 @@
   [pool conn]
   (swap! (:all-conns pool) disj conn)
   (swap! (:stats pool) update :evictions (fnil inc 0))
-  (try
-    (bridge/stop-bridge! (:bridge conn))
-    (catch Exception e
-      (log/debug "Error stopping evicted connection" {:error (.getMessage e)})))
+  (result/rescue nil (bridge/stop-bridge! (:bridge conn)))
   (let [replaced? (when (and (get-in pool [:opts :replace-on-evict])
                              (not @(:drained? pool)))
                     (when-let [fresh (spawn-connection! (:factory-fn pool) :pool)]
@@ -288,19 +279,19 @@
   (reset! (:drained? pool) true)
   ;; Cancel health check scheduler
   (when-let [^ScheduledFuture hf @(:health-future pool)]
-    (try (.cancel hf false) (catch Exception _)))
+    (result/rescue nil (.cancel hf false)))
   (when-let [^ScheduledExecutorService sched @(:scheduler pool)]
-    (try (.shutdownNow sched) (catch Exception _)))
+    (result/rescue nil (.shutdownNow sched)))
   ;; Drain queue
   (.clear ^ArrayBlockingQueue (:queue pool))
   ;; Stop all connections
   (let [conns @(:all-conns pool)
         errors (atom [])]
     (doseq [conn conns]
-      (try
-        (bridge/stop-bridge! (:bridge conn))
-        (catch Exception e
-          (swap! errors conj (.getMessage e)))))
+      (let [r (result/try-effect* :pool/stop-failed
+                                  (bridge/stop-bridge! (:bridge conn)))]
+        (when (result/err? r)
+          (swap! errors conj (:message r)))))
     (reset! (:all-conns pool) #{})
     (log/info "Pool drained" {:stopped (count conns)
                               :errors (count @errors)})
@@ -334,7 +325,7 @@
                      :idle-ms    (conn-idle-ms c)})
           (swap! (:all-conns pool) disj c)
           (swap! (:stats pool) update :evictions (fnil inc 0))
-          (try (bridge/stop-bridge! (:bridge c)) (catch Exception _))
+          (result/rescue nil (bridge/stop-bridge! (:bridge c)))
           (when (get-in pool [:opts :replace-on-evict])
             (when-let [fresh (spawn-connection! (:factory-fn pool) :pool)]
               (swap! (:all-conns pool) conj fresh)
@@ -350,9 +341,7 @@
     (let [scheduler (Executors/newSingleThreadScheduledExecutor)
           future    (.scheduleAtFixedRate
                      scheduler
-                     ^Runnable (fn [] (try (run-health-check! pool)
-                                           (catch Exception e
-                                             (log/error e "Health check error"))))
+                     ^Runnable (fn [] (result/rescue nil (run-health-check! pool)))
                      interval-ms
                      interval-ms
                      TimeUnit/MILLISECONDS)]

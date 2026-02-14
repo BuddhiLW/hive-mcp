@@ -73,6 +73,7 @@
 
               ;; Query entries (use project-id for scoping, aligned with crud.clj)
               axioms (catchup-scope/query-axioms project-id)
+              principles (catchup-scope/query-scoped-entries "principle" nil project-id 50)
               priority-conventions (catchup-scope/query-scoped-entries "convention" ["catchup-priority"]
                                                                        project-id 50)
               sessions (catchup-scope/query-scoped-entries "note" ["session-summary"] project-id 10)
@@ -86,6 +87,7 @@
 
               ;; Convert to metadata
               axioms-meta (mapv fmt/entry->axiom-meta axioms)
+              principles-meta (mapv #(fmt/entry->catchup-meta % 80) principles)
               priority-meta (mapv fmt/entry->priority-meta priority-conventions)
               sessions-meta (mapv #(fmt/entry->catchup-meta % 80) sessions)
 
@@ -103,7 +105,7 @@
 
               ;; Phase 3: Co-access suggestions
               ;; Surface entries frequently recalled alongside current context
-              all-entry-ids (mapv :id (concat axioms priority-conventions
+              all-entry-ids (mapv :id (concat axioms principles priority-conventions
                                               decisions conventions sessions))
               co-access-suggestions (enrichment/find-co-accessed-suggestions
                                      all-entry-ids all-entry-ids)
@@ -153,7 +155,7 @@
               piggyback-agent-id (if project-id
                                    (str caller-id "-" project-id)
                                    caller-id)
-              piggyback-entries (into (vec axioms) priority-conventions)
+              piggyback-entries (into (into (vec axioms) principles) priority-conventions)
 
               ;; Dual-write: Cache entry categories in context-store for pass-by-ref mode.
               ;; Each category gets its own ctx-id with 'catchup' + category tags.
@@ -168,6 +170,11 @@
                                              axioms
                                              :tags #{"catchup" "axioms" (or project-id "global")}
                                              :ttl-ms catchup-ttl))
+                             (seq principles)
+                             (assoc :principles (context-store/context-put!
+                                                 principles
+                                                 :tags #{"catchup" "principles" (or project-id "global")}
+                                                 :ttl-ms catchup-ttl))
                              (seq priority-conventions)
                              (assoc :priority-conventions (context-store/context-put!
                                                            priority-conventions
@@ -207,7 +214,8 @@
           (fmt/build-catchup-response
            {:project-name project-name :project-id project-id
             :scopes scopes :git-info git-info :permeation permeation-result
-            :axioms-meta axioms-meta :priority-meta priority-meta
+            :axioms-meta axioms-meta :principles-meta principles-meta
+            :priority-meta priority-meta
             :sessions-meta sessions-meta :decisions-meta decisions-enriched
             :conventions-meta conventions-enriched :snippets-meta snippets-meta
             :expiring-meta expiring-meta :kg-insights kg-insights

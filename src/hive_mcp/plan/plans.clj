@@ -43,6 +43,7 @@
      ;; Query plans by project
      (query-plans :project-id \"hive-mcp\" :limit 10)"
   (:require [hive-mcp.chroma.core :as chroma]
+            [hive-mcp.dns.result :as result]
             [clojure-chroma-client.api :as chroma-api]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
@@ -73,19 +74,17 @@
 (defn- try-get-existing-collection
   "Try to get existing collection. Returns nil on failure."
   []
-  (try
-    @(chroma-api/get-collection collection-name)
-    (catch Exception _ nil)))
+  (result/rescue nil
+                 @(chroma-api/get-collection collection-name)))
 
 (defn- delete-collection!
   "Delete the plans collection. Returns true on success."
   []
-  (try
-    (when-let [coll (try-get-existing-collection)]
-      @(chroma-api/delete-collection coll)
-      (Thread/sleep 50))
-    true
-    (catch Exception _ false)))
+  (result/rescue false
+                 (when-let [coll (try-get-existing-collection)]
+                   @(chroma-api/delete-collection coll)
+                   (Thread/sleep 50))
+                 true))
 
 (defn- create-collection-with-dimension
   "Create a new collection with the given dimension.
@@ -226,31 +225,25 @@
    Returns: entry ID string on success.
 
    COLLECTION-AWARE: Uses collection-specific embedding provider."
-  [{:keys [id content type] :as entry}]
-  (try
-    (let [coll (get-or-create-collection)
-          provider (chroma/get-provider-for collection-name)
-          entry-id (or id (let [ts (java.time.LocalDateTime/now)
-                                fmt (java.time.format.DateTimeFormatter/ofPattern "yyyyMMddHHmmss")]
-                            (str (.format ts fmt) "-" (subs (str (java.util.UUID/randomUUID)) 0 8))))
-          doc-text (entry-to-document entry)
-          embedding (chroma/embed-text provider doc-text)
-          metadata (extract-entry-metadata entry)]
-      @(chroma-api/add coll [{:id entry-id
-                              :embedding embedding
-                              :document doc-text
-                              :metadata metadata}]
-                       :upsert? true)
-      (log/info "Indexed" (or type "plan") "in plans collection:" entry-id
-                (when (:plan-status metadata) (str "status:" (:plan-status metadata)))
-                (when (:steps-count metadata) (str "steps:" (:steps-count metadata))))
-      entry-id)
-    (catch Exception e
-      (log/error "Failed to index entry in plans collection:" (.getMessage e))
-      (throw (ex-info (str "High-abstraction entry indexing failed: " (.getMessage e))
-                      {:type :plan-index-error
-                       :entry-type (or type "plan")
-                       :content-length (count (str content))})))))
+  [{:keys [id type] :as entry}]
+  (result/try-effect* :plan/index-failed
+                      (let [coll (get-or-create-collection)
+                            provider (chroma/get-provider-for collection-name)
+                            entry-id (or id (let [ts (java.time.LocalDateTime/now)
+                                                  fmt (java.time.format.DateTimeFormatter/ofPattern "yyyyMMddHHmmss")]
+                                              (str (.format ts fmt) "-" (subs (str (java.util.UUID/randomUUID)) 0 8))))
+                            doc-text (entry-to-document entry)
+                            embedding (chroma/embed-text provider doc-text)
+                            metadata (extract-entry-metadata entry)]
+                        @(chroma-api/add coll [{:id entry-id
+                                                :embedding embedding
+                                                :document doc-text
+                                                :metadata metadata}]
+                                         :upsert? true)
+                        (log/info "Indexed" (or type "plan") "in plans collection:" entry-id
+                                  (when (:plan-status metadata) (str "status:" (:plan-status metadata)))
+                                  (when (:steps-count metadata) (str "steps:" (:steps-count metadata))))
+                        entry-id)))
 
 (defn search-plans
   "Search plan entries using semantic similarity.
@@ -298,31 +291,28 @@
   "Get a specific plan by ID from the plans collection.
    Returns full plan map or nil if not found."
   [plan-id]
-  (try
-    (let [coll (get-or-create-collection)
-          results @(chroma-api/get coll :ids [plan-id] :include #{:documents :metadatas})]
-      (when-let [{:keys [id document metadata]} (first results)]
-        {:id id
-         :type (get metadata :type "plan")
-         :content document
-         :tags (when-let [t (get metadata :tags)]
-                 (when (not= t "")
-                   (str/split t #",")))
-         :project-id (get metadata :project-id)
-         :duration (get metadata :duration)
-         :expires (get metadata :expires)
-         :plan-status (get metadata :plan-status)
-         :steps-count (when-let [s (get metadata :steps-count)]
-                        (when (not= s "") (parse-long s)))
-         :decision-id (get metadata :decision-id)
-         :wave-count (when-let [w (get metadata :wave-count)]
-                       (when (not= w "") (parse-long w)))
-         :abstraction-level (when-let [a (get metadata :abstraction-level)]
-                              (if (string? a) (parse-long a) a))
-         :content-hash (get metadata :content-hash)}))
-    (catch Exception e
-      (log/debug "Failed to get plan from Chroma:" plan-id (.getMessage e))
-      nil)))
+  (result/rescue nil
+                 (let [coll (get-or-create-collection)
+                       results @(chroma-api/get coll :ids [plan-id] :include #{:documents :metadatas})]
+                   (when-let [{:keys [id document metadata]} (first results)]
+                     {:id id
+                      :type (get metadata :type "plan")
+                      :content document
+                      :tags (when-let [t (get metadata :tags)]
+                              (when (not= t "")
+                                (str/split t #",")))
+                      :project-id (get metadata :project-id)
+                      :duration (get metadata :duration)
+                      :expires (get metadata :expires)
+                      :plan-status (get metadata :plan-status)
+                      :steps-count (when-let [s (get metadata :steps-count)]
+                                     (when (not= s "") (parse-long s)))
+                      :decision-id (get metadata :decision-id)
+                      :wave-count (when-let [w (get metadata :wave-count)]
+                                    (when (not= w "") (parse-long w)))
+                      :abstraction-level (when-let [a (get metadata :abstraction-level)]
+                                           (if (string? a) (parse-long a) a))
+                      :content-hash (get metadata :content-hash)}))))
 
 (defn query-plans
   "Query plan entries with metadata filtering.
@@ -336,42 +326,39 @@
 
    Returns seq of entry maps (without full content for efficiency)."
   [& {:keys [project-id type plan-status limit tags] :or {limit 20}}]
-  (try
-    (let [coll (get-or-create-collection)
-          where-clause (cond-> {}
-                         type (assoc :type type)
-                         project-id (assoc :project-id project-id)
-                         plan-status (assoc :plan-status plan-status))
-          results @(chroma-api/get coll
-                                   :where where-clause
-                                   :include #{:metadatas :documents}
-                                   :limit limit)]
-      (->> results
-           (map (fn [{:keys [id metadata document]}]
-                  {:id id
-                   :type (get metadata :type "plan")
-                   :tags (when-let [t (get metadata :tags)]
-                           (when (not= t "")
-                             (str/split t #",")))
-                   :project-id (get metadata :project-id)
-                   :plan-status (get metadata :plan-status)
-                   :steps-count (when-let [s (get metadata :steps-count)]
-                                  (when (not= s "") (parse-long s)))
-                   :decision-id (get metadata :decision-id)
-                   :duration (get metadata :duration)
-                   :preview (when document
-                              (subs document 0 (min 200 (count document))))}))
+  (result/rescue []
+                 (let [coll (get-or-create-collection)
+                       where-clause (cond-> {}
+                                      type (assoc :type type)
+                                      project-id (assoc :project-id project-id)
+                                      plan-status (assoc :plan-status plan-status))
+                       results @(chroma-api/get coll
+                                                :where where-clause
+                                                :include #{:metadatas :documents}
+                                                :limit limit)]
+                   (->> results
+                        (map (fn [{:keys [id metadata document]}]
+                               {:id id
+                                :type (get metadata :type "plan")
+                                :tags (when-let [t (get metadata :tags)]
+                                        (when (not= t "")
+                                          (str/split t #",")))
+                                :project-id (get metadata :project-id)
+                                :plan-status (get metadata :plan-status)
+                                :steps-count (when-let [s (get metadata :steps-count)]
+                                               (when (not= s "") (parse-long s)))
+                                :decision-id (get metadata :decision-id)
+                                :duration (get metadata :duration)
+                                :preview (when document
+                                           (subs document 0 (min 200 (count document))))}))
            ;; Apply tag filter in memory (Chroma where doesn't support substring matching on tags)
-           (filter (fn [entry]
-                     (if (seq tags)
-                       (let [entry-tags (set (:tags entry))]
-                         (every? #(contains? entry-tags %) tags))
-                       true)))
-           (take limit)
-           (vec)))
-    (catch Exception e
-      (log/warn "Failed to query plans:" (.getMessage e))
-      [])))
+                        (filter (fn [entry]
+                                  (if (seq tags)
+                                    (let [entry-tags (set (:tags entry))]
+                                      (every? #(contains? entry-tags %) tags))
+                                    true)))
+                        (take limit)
+                        (vec)))))
 
 (defn update-plan-status!
   "Update the status of a plan.
@@ -382,15 +369,12 @@
                          ". Valid: " (str/join ", " valid-plan-statuses))
                     {:type :invalid-plan-status
                      :status new-status})))
-  (try
-    (let [coll (get-or-create-collection)]
-      @(chroma-api/update coll [{:id plan-id
-                                 :metadata {:plan-status new-status}}])
-      (log/info "Updated plan status:" plan-id "->" new-status)
-      plan-id)
-    (catch Exception e
-      (log/error "Failed to update plan status:" (.getMessage e))
-      nil)))
+  (result/rescue nil
+                 (let [coll (get-or-create-collection)]
+                   @(chroma-api/update coll [{:id plan-id
+                                              :metadata {:plan-status new-status}}])
+                   (log/info "Updated plan status:" plan-id "->" new-status)
+                   plan-id)))
 
 (defn delete-plan!
   "Delete a plan from the plans collection."
@@ -406,12 +390,12 @@
   (let [base {:collection collection-name
               :chroma-configured? (chroma/embedding-configured?)}]
     (if (chroma/embedding-configured?)
-      (try
-        (let [plans (query-plans)]
+      (let [plans (query-plans)
+            rescue-err (some-> plans meta ::result/error)]
+        (if rescue-err
+          (assoc base :error (:message rescue-err))
           (assoc base
                  :count (count plans)
                  :statuses (frequencies (map :plan-status plans))
-                 :projects (frequencies (map :project-id plans))))
-        (catch Exception e
-          (assoc base :error (str e))))
+                 :projects (frequencies (map :project-id plans)))))
       base)))
