@@ -1,5 +1,9 @@
 (ns hive-mcp.tools.consolidated.workflow
-  "Consolidated Workflow CLI tool for Forja Belt automation."
+  "Consolidated Workflow CLI tool for Forja Belt automation.
+
+   Includes defense-in-depth guard: child lings (spawned agents) are
+   denied from executing forge-strike to prevent recursive self-call
+   chains."
   (:require [hive-mcp.tools.cli :refer [make-cli-handler]]
             [hive-mcp.tools.core :refer [mcp-error mcp-json]]
             [hive-mcp.tools.consolidated.session :as c-session]
@@ -15,6 +19,8 @@
             [hive-mcp.config.core :as config]
             [hive-mcp.emacs.client :as ec]
             [hive-mcp.agent.headless :as headless]
+            [hive-mcp.agent.sdk.session :as sdk-session]
+            [hive-mcp.agent.sdk.python :as sdk-py]
             [hive-mcp.workflows.forge-belt :as forge-belt]
             [hive-mcp.scheduler.vulcan :as vulcan]
             [hive-mcp.agent.routing :as routing]
@@ -22,6 +28,7 @@
             [hive-mcp.agent.task-classifier :as task-classifier]
             [hive-mcp.swarm.datascript :as ds]
             [hive-mcp.tools.swarm.wave.execution :as wave-execution]
+            [hive-mcp.server.guards :as guards]
             [clojure.data.json :as json]
             [taoensso.timbre :as log]
             [clojure.string :as str]))
@@ -146,13 +153,32 @@
     (catch Exception _
       false)))
 
+(defn- agent-sdk-ready?
+  "Check if an agent-sdk ling's session is idle and event loop thread is alive."
+  [agent-id]
+  (try
+    (when-let [sess (sdk-session/get-session agent-id)]
+      (and (= :idle (:phase sess))
+           (some? (:client-ref sess))
+           (let [safe-id (:py-safe-id sess)]
+             (if safe-id
+               (let [thread-obj (sdk-py/py-get-global
+                                 (str "_hive_loop_thread_" safe-id))]
+                 (boolean (and thread-obj
+                               (sdk-py/py-call thread-obj "is_alive"))))
+               false))))
+    (catch Exception e
+      (log/debug "agent-sdk-ready? check failed"
+                 {:agent-id agent-id :error (ex-message e)})
+      false)))
+
 (defn- ling-cli-ready?
   "Mode-dispatch readiness check for a ling's CLI."
   [agent-id spawn-mode]
   (case spawn-mode
     :headless   (headless-ready? agent-id)
     :openrouter true
-    :agent-sdk  true
+    :agent-sdk  (agent-sdk-ready? agent-id)
     ;; default: vterm
     (vterm-ready? agent-id)))
 
@@ -222,23 +248,30 @@
                                 (catch Exception _ nil)))
             agent-id (or (:agent-id spawn-parsed) agent-name)]
         (let [ready (wait-for-ling-ready agent-id :vterm)]
-          (when-not (:ready? ready)
-            (log/warn "SPARK[vterm]: dispatching despite readiness timeout"
-                      {:agent-id agent-id :elapsed-ms (:elapsed-ms ready)}))
-          (dispatch/handle-dispatch
-           {:agent_id agent-id
-            :prompt (str title
-                         (when-let [desc (:description task)]
-                           (str "\n\n" desc))
-                         "\n\nDO NOT spawn drones. Implement directly.")}))
-        (when task-id
-          (try (c-kanban/handle-kanban {:command "update" :task_id task-id
-                                        :new_status "inprogress"
-                                        :directory effective-dir})
-               (catch Exception _ nil)))
-        (log/info "SPARK[vterm]: spawned+dispatched" {:agent agent-id :task title})
-        {:agent-id agent-id :task-title title :task-id task-id :spawned true
-         :route :vterm :model (or model "claude")})
+          (if (:ready? ready)
+            (do
+              (dispatch/handle-dispatch
+               {:agent_id agent-id
+                :prompt (str title
+                             (when-let [desc (:description task)]
+                               (str "\n\n" desc))
+                             "\n\nDO NOT spawn drones. Implement directly.")})
+              (when task-id
+                (try (c-kanban/handle-kanban {:command "update" :task_id task-id
+                                              :new_status "inprogress"
+                                              :directory effective-dir})
+                     (catch Exception _ nil)))
+              (log/info "SPARK[vterm]: spawned+dispatched" {:agent agent-id :task title})
+              {:agent-id agent-id :task-title title :task-id task-id :spawned true
+               :route :vterm :model (or model "claude")})
+            (do
+              (log/warn "SPARK[vterm]: ling not ready, skipping dispatch"
+                        {:agent-id agent-id :elapsed-ms (:elapsed-ms ready)
+                         :phase (:phase ready)})
+              {:agent-id agent-id :task-title title :task-id task-id
+               :spawned false
+               :error (str "Readiness timeout (" (name (or (:phase ready) :unknown)) ")")
+               :route :vterm}))))
       (catch Exception e
         (log/warn "SPARK[vterm]: failed" {:task title :error (ex-message e)})
         {:agent-id agent-name :task-title title :task-id task-id
@@ -268,27 +301,33 @@
             reported-mode (keyword (or (:spawn-mode spawn-parsed)
                                        (name effective-spawn-mode)))]
         (let [ready (wait-for-ling-ready agent-id reported-mode)]
-          (when-not (:ready? ready)
-            (log/warn "SPARK[headless]: dispatching despite readiness timeout"
-                      {:agent-id agent-id :elapsed-ms (:elapsed-ms ready)
-                       :spawn-mode reported-mode}))
-          (dispatch/handle-dispatch
-           {:agent_id agent-id
-            :prompt (str title
-                         (when-let [desc (:description task)]
-                           (str "\n\n" desc))
-                         "\n\nDO NOT spawn drones. Implement directly.")}))
-        (when task-id
-          (try (c-kanban/handle-kanban {:command "update" :task_id task-id
-                                        :new_status "inprogress"
-                                        :directory effective-dir})
-               (catch Exception _ nil)))
-        (log/info "SPARK[headless]: spawned+dispatched"
-                  {:agent agent-id :task title :model (or model "claude")
-                   :spawn-mode effective-spawn-mode})
-        {:agent-id agent-id :task-title title :task-id task-id :spawned true
-         :route :headless :spawn-mode effective-spawn-mode
-         :model (or model "claude")})
+          (if (:ready? ready)
+            (do
+              (dispatch/handle-dispatch
+               {:agent_id agent-id
+                :prompt (str title
+                             (when-let [desc (:description task)]
+                               (str "\n\n" desc))
+                             "\n\nDO NOT spawn drones. Implement directly.")})
+              (when task-id
+                (try (c-kanban/handle-kanban {:command "update" :task_id task-id
+                                              :new_status "inprogress"
+                                              :directory effective-dir})
+                     (catch Exception _ nil)))
+              (log/info "SPARK[headless]: spawned+dispatched"
+                        {:agent agent-id :task title :model (or model "claude")
+                         :spawn-mode effective-spawn-mode})
+              {:agent-id agent-id :task-title title :task-id task-id :spawned true
+               :route :headless :spawn-mode effective-spawn-mode
+               :model (or model "claude")})
+            (do
+              (log/warn "SPARK[headless]: ling not ready, skipping dispatch"
+                        {:agent-id agent-id :elapsed-ms (:elapsed-ms ready)
+                         :phase (:phase ready) :spawn-mode reported-mode})
+              {:agent-id agent-id :task-title title :task-id task-id
+               :spawned false
+               :error (str "Readiness timeout (" (name (or (:phase ready) :unknown)) ")")
+               :route :headless :spawn-mode effective-spawn-mode}))))
       (catch Exception e
         (log/warn "SPARK[headless]: failed" {:task title :error (ex-message e)})
         {:agent-id agent-name :task-title title :task-id task-id
@@ -671,35 +710,55 @@
                    (update :total-sparked + (:total-sparked result 0))
                    (update :total-strikes inc)
                    (assoc :last-strike (:last-strike result)))))
-      (mcp-json {:success true
-                 :mode :fsm
-                 :spawn-mode (or spawn_mode "vterm")
-                 :model (or model "claude")
-                 :smite (:smite-result result)
-                 :survey {:todo-count (get-in result [:survey-result :count] 0)
-                          :task-titles (mapv :title (get-in result [:survey-result :tasks] []))}
-                 :spark (:spark-result result)
-                 :summary (str "Smited " (:total-smited result 0)
-                               ", surveyed " (get-in result [:survey-result :count] 0) " tasks"
-                               ", sparked " (:total-sparked result 0) " lings"
-                               " (mode: " (or spawn_mode "vterm")
-                               ", model: " (or model "claude") ")")}))
+      (let [outcome (or (:outcome result) :clean)]
+        (mcp-json {:success (:success result true)
+                   :outcome outcome
+                   :mode :fsm
+                   :spawn-mode (or spawn_mode "vterm")
+                   :model (or model "claude")
+                   :smite (:smite-result result)
+                   :survey {:todo-count (get-in result [:survey-result :count] 0)
+                            :task-titles (mapv :title (get-in result [:survey-result :tasks] []))}
+                   :spark (:spark-result result)
+                   :summary (str (when (= :partial outcome) "PARTIAL: ")
+                                 (when (= :failure outcome) "FAILED: ")
+                                 "Smited " (:total-smited result 0)
+                                 ", surveyed " (get-in result [:survey-result :count] 0) " tasks"
+                                 ", sparked " (:total-sparked result 0) " lings"
+                                 " (mode: " (or spawn_mode "vterm")
+                                 ", model: " (or model "claude") ")")})))
     (catch Exception e
       (log/error "FORGE STRIKE failed" {:error (ex-message e)})
       (mcp-error (str "Forge strike failed: " (ex-message e))))))
 
 (defn handle-forge-strike
-  "Execute ONE forge cycle, FSM-driven by default with legacy config gate."
+  "Execute ONE forge cycle, FSM-driven by default with legacy config gate.
+
+   Defense-in-depth: denies forge-strike when called from a child ling process
+   (HIVE_MCP_ROLE=child-ling). Forge-strike spawns agents, which must be
+   restricted to the coordinator to prevent recursive self-call chains."
   [params]
-  (if (:quenched? @forge-state)
-    (mcp-json {:success false
-               :message "Forge is quenched. Use forge-status to check or restart."
-               :quenched? true})
-    (if (config/get-service-value :forge :legacy :default false)
-      (do
-        (log/warn "FORGE STRIKE: legacy mode enabled via config. Using imperative path.")
-        (handle-forge-strike-legacy params))
-      (fsm-forge-strike params))))
+  ;; Layer 3: Defense-in-depth forge-strike guard
+  (if (guards/child-ling?)
+    (do
+      (log/warn "Forge-strike denied: child ling attempted forge-strike"
+                {:role (guards/get-role) :depth (guards/ling-depth)})
+      (mcp-error (str "FORGE DENIED: Child lings cannot execute forge strikes.\n\n"
+                      "You are running as a child ling (HIVE_MCP_ROLE=child-ling, depth="
+                      (guards/ling-depth) ").\n"
+                      "Forge-strike spawns agents, which is restricted to the coordinator\n"
+                      "to prevent recursive self-call chains (Ling→forge→spawn→Ling→∞).\n\n"
+                      "If you need forge work, use hivemind_shout to request the coordinator\n"
+                      "to execute forge-strike on your behalf.")))
+    (if (:quenched? @forge-state)
+      (mcp-json {:success false
+                 :message "Forge is quenched. Use forge-status to check or restart."
+                 :quenched? true})
+      (if (config/get-service-value :forge :legacy :default false)
+        (do
+          (log/warn "FORGE STRIKE: legacy mode enabled via config. Using imperative path.")
+          (handle-forge-strike-legacy params))
+        (fsm-forge-strike params)))))
 
 (def handle-forge-strike-fsm
   "DEPRECATED alias: FSM is now the default path via handle-forge-strike."

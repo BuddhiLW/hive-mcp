@@ -10,7 +10,7 @@
      (bridge/list-remote-tools (bridge/get-bridge :bridge/echo))
      (bridge/call-tool (bridge/get-bridge :bridge/echo) \"echo\" {\"message\" \"hi\"})
      (bridge/unregister-bridge! :bridge/echo)"
-  (:require [hive-mcp.addons.core :as addon]
+  (:require [hive-mcp.addons.protocol :as proto]
             [hive-mcp.addons.mcp-bridge :as bridge]
             [clojure.data.json :as json]
             [taoensso.timbre :as log])
@@ -75,32 +75,32 @@
 ;; =============================================================================
 
 (defrecord StdioBridge [id state]
-  addon/IAddon
+  proto/IAddon
 
-  (addon-name [_] id)
+  (addon-id [_] id)
 
-  (addon-version [_] "0.1.0")
+  (addon-type [_] :mcp-bridge)
 
-  (addon-info [_]
-    {:name         id
-     :version      "0.1.0"
-     :description  "Stdio MCP bridge — spawns external server as subprocess"
-     :author       "hive-mcp"
-     :license      "AGPL-3.0-or-later"
-     :dependencies #{}
-     :capabilities #{:mcp-bridge :tools}})
+  (capabilities [_] #{:mcp-bridge :tools})
 
-  (init! [this opts]
+  (initialize! [this opts]
     (bridge/start-bridge! this opts))
 
   (shutdown! [this]
     (bridge/stop-bridge! this))
 
-  (addon-tools [this]
-    (bridge/proxy-tool-defs this (name id)))
+  (tools [this]
+    (bridge/proxy-tool-defs this (clojure.core/name id)))
 
-  (addon-capabilities [_]
-    #{:mcp-bridge :tools})
+  (schema-extensions [_] {})
+
+  (health [_]
+    (if-let [s @state]
+      {:status (if (.isAlive ^Process (:process s)) :ok :down)
+       :details {:version "0.1.0"
+                 :uptime-ms (- (System/currentTimeMillis) (:started-at s))}}
+      {:status :down
+       :details {:version "0.1.0"}}))
 
   bridge/IMcpBridge
 

@@ -96,7 +96,7 @@
     ;; Phase 4.4: Forge belt defaults (extensions can override)
     (init/register-forge-belt-defaults!)
 
-    ;; Phase 4.5: Extension loading (hive-knowledge, hive-agent capabilities)
+    ;; Phase 4.5: Extension loading (classpath addon discovery)
     ;; Must run AFTER embedding/memory (extensions may use Chroma).
     ;; Must run BEFORE workflow engine (handlers may use extensions).
     (init/load-extensions!)

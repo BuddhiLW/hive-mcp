@@ -13,6 +13,7 @@
    CC-optimized: if-let/when-let/when-not/cond->/case are 0 CC in scc."
   (:require [hive-mcp.tools.core :refer [mcp-json mcp-error]]
             [hive-mcp.crystal.hooks :as crystal-hooks]
+            [hive-mcp.extensions.registry :as ext]
             [hive-mcp.tools.memory.crud :as mem-crud]
             [hive-mcp.tools.memory.scope :as scope]
             [hive-mcp.tools.memory.core :refer [with-chroma]]
@@ -180,26 +181,34 @@
     (mcp-json (sort-by-priority-then-created slim-entries))))
 
 (defn- archive-to-done-archive!
-  "Archive task data to Datahike done-archive before deletion.
-   Non-blocking, non-fatal. If hive-knowledge not available, logs and continues."
+  "Archive task data via extension registry before deletion.
+   Non-blocking, non-fatal. Delegates to extension if available."
   [entry task-id]
   (try
-    (when-let [archive-fn (requiring-resolve 'hive-knowledge.done-archive/archive-done-task!)]
+    (when-let [archive-fn (ext/get-extension :da/archive!)]
       (let [content (:content entry)
+            scope (some-> entry :tags
+                          (->> (filter #(str/starts-with? % "scope:project:"))
+                               first
+                               (str/replace "scope:project:" "")))
             task-data {:id task-id
                        :title (or (get content :title)
                                   (get content :description)
                                   (str task-id))
-                       :scope (some-> entry :tags
-                                      (->> (filter #(str/starts-with? % "scope:project:"))
-                                           first
-                                           (str/replace "scope:project:" "")))
+                       :scope scope
                        :agent-id (get content :agent-id)
-                       :files (get content :files)}]
+                       :files (get content :files)
+                       :completed-at (java.util.Date.)
+                       :session-id (try (when-let [sid (requiring-resolve 'hive-mcp.crystal.core/session-id)]
+                                          (sid))
+                                        (catch Exception _ nil))
+                       :context (get content :context)
+                       :tags (filterv #(not (str/starts-with? % "scope:"))
+                                      (or (:tags entry) []))}]
         (archive-fn task-data)
-        (log/info "Archived done task to Datahike:" task-id)))
+        (log/info "Archived done task via extension:" task-id)))
     (catch Exception e
-      (log/debug "Done-archive not available (non-fatal):" (.getMessage e)))))
+      (log/debug "Done-archive extension not available (non-fatal):" (.getMessage e)))))
 
 (defn- move-to-done! [entry task-id]
   (when-let [task-data (crystal-hooks/extract-task-from-kanban-entry entry)]

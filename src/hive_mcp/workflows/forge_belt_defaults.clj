@@ -16,7 +16,7 @@
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 ;; =============================================================================
-;; Dispatch Predicates (q1-q5) — Pure data lookups on FSM data map
+;; Dispatch Predicates (q1-q6) — Pure data lookups on FSM data map
 ;; =============================================================================
 
 (defn- quenched?*
@@ -43,6 +43,16 @@
   "fb/q5: Check if the belt should end after one cycle."
   [data]
   (not (:continuous? data)))
+
+(defn- spark-all-failed?*
+  "fb/q6: Check if spark phase had zero successes but failures exist.
+   Prevents infinite looping in continuous mode when ALL spawns fail.
+   Partial success (some spawned, some failed) does NOT trigger this —
+   the belt loops and next survey picks up remaining tasks."
+  [data]
+  (let [spawned (get-in data [:spark-result :count] 0)
+        failed  (seq (get-in data [:spark-result :failed]))]
+    (and (zero? spawned) (some? failed))))
 
 ;; =============================================================================
 ;; Handlers (h1-h7) — Call resources ops, stay decoupled from workflow.clj
@@ -117,22 +127,22 @@
                     preset       (assoc :preset preset)
                     seeds        (assoc :seeds seeds)
                     ctx-refs     (assoc :ctx-refs ctx-refs)
-                    kg-node-ids  (assoc :kg-node-ids kg-node-ids))))
-        clock-fn (or (:clock-fn resources) #(java.time.Instant/now))]
+                    kg-node-ids  (assoc :kg-node-ids kg-node-ids))))]
     (-> data
         (assoc :phase ::cycle-complete
-               :spark-result result
-               :last-strike (str (clock-fn)))
+               :spark-result result)
         (update :total-sparked + (:count result 0))
         (update :strike-count (fnil inc 0)))))
 
 (defn- handle-end*
-  "fb/h5: Terminal state — select-keys summary + :success true."
+  "fb/h5: Terminal state — select-keys summary."
   [_resources {:keys [data]}]
-  (merge (select-keys data [:strike-count :total-smited :total-sparked
-                            :last-strike :smite-result :survey-result
-                            :spark-result :quenched? :continuous?])
-         {:success true}))
+  (let [any-succeeded? (or (pos? (get-in data [:smite-result :count] 0))
+                           (pos? (get-in data [:spark-result :count] 0)))]
+    (merge (select-keys data [:strike-count :total-smited :total-sparked
+                              :smite-result :survey-result
+                              :spark-result :quenched? :continuous?])
+           {:success any-succeeded?})))
 
 (defn- handle-halt*
   "fb/h6: Halt state for quench — return FSM state for resume."
@@ -165,10 +175,18 @@
 
 ;; =============================================================================
 ;; FSM Spec — State graph:
-;;   ::start → ::smite → ::survey → ::spark →─┬─ ::end   (single-shot)
-;;                                              ├─ ::halt  (quenched)
-;;                                              ├─ ::start (continuous, loop)
-;;                                              └─ ::end   (fallback)
+;;   ::start → ::smite → ::survey →─┬─ ::end   (no tasks — kanban exhausted)
+;;                                   └─ ::spark →─┬─ ::end   (single-shot)
+;;                                                 ├─ ::halt  (quenched)
+;;                                                 ├─ ::end   (all sparked failed)
+;;                                                 ├─ ::start (continuous, loop)
+;;                                                 └─ ::end   (fallback)
+;;
+;; Mixed results: when some lings succeed and some fail:
+;;   - single-shot: goes to ::end, outcome = :partial, success = true
+;;   - continuous:  loops via ::start (next survey picks up remaining tasks)
+;;   - all-failed:  goes to ::end even in continuous mode (no point looping)
+;;   - no-tasks:    exits from ::survey when kanban has 0 todo tasks
 ;; =============================================================================
 
 (def ^:private forge-belt-spec
@@ -180,11 +198,13 @@
                  :dispatches [[::survey (constantly true)]]}
 
     ::survey    {:handler    handle-survey*
-                 :dispatches [[::spark (constantly true)]]}
+                 :dispatches [[::fsm/end no-tasks?*]
+                              [::spark   (constantly true)]]}
 
     ::spark     {:handler    handle-spark*
                  :dispatches [[::fsm/end   single-shot?*]
                               [::fsm/halt  quenched?*]
+                              [::fsm/end   spark-all-failed?*]
                               [::fsm/start continuous?*]
                               [::fsm/end   (constantly true)]]}
 
@@ -239,12 +259,13 @@
    Called at startup before load-extensions! so extensions can override."
   []
   (ext/register-many!
-   {;; Predicates (q1-q5)
+   {;; Predicates (q1-q6)
     :fb/q1 quenched?*
     :fb/q2 has-tasks?*
     :fb/q3 no-tasks?*
     :fb/q4 continuous?*
     :fb/q5 single-shot?*
+    :fb/q6 spark-all-failed?*
     ;; Handlers (h1-h7)
     :fb/h1 handle-start*
     :fb/h2 handle-smite*
@@ -262,4 +283,4 @@
     :fb/strike  run-single-strike*
     :fb/cont    run-continuous-belt*})
 
-  (log/info "Registered forge belt defaults (18 :fb/* extension points)"))
+  (log/info "Registered forge belt defaults (19 :fb/* extension points)"))

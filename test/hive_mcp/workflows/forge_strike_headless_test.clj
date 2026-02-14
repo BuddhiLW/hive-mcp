@@ -585,6 +585,39 @@
         (is (pos? (count (:failed (:spark result))))
             "Should report the failed spawn")))))
 
+(deftest headless-forge-strike-mixed-results
+  (testing "Deprecated imperative forge-strike reports partial outcome when some spawns fail"
+    (let [spawn-count (atom 0)]
+      (with-redefs [scope/get-current-project-id (constantly "test-project")
+                    c-kanban/handle-kanban
+                    (fn [params]
+                      (case (:command params)
+                        "list" {:text (json/write-str [{:id "t1" :title "Good task" :priority "high"}
+                                                       {:id "t2" :title "Bad task" :priority "medium"}])}
+                        "update" nil
+                        nil))
+                    spawn/handle-spawn
+                    (fn [_]
+                      (let [n (swap! spawn-count inc)]
+                        (if (= 2 n)
+                          (throw (ex-info "Spawn failed: OOM" {}))
+                          {:text (json/write-str {:agent-id "forja-mixed-1"
+                                                  :spawn-mode "headless"
+                                                  :success true})})))
+                    workflow/ling-cli-ready? (constantly true)
+                    dispatch/handle-dispatch (fn [_] {:text (json/write-str {:success true})})]
+        (let [result (parse-mcp-result
+                      (workflow/handle-forge-strike-imperative
+                       {:directory "/tmp/mixed"
+                        :spawn_mode "headless"
+                        :max_slots 5}))]
+          (is (true? (:success result))
+              "Partial success is still success=true")
+          (is (= 1 (:count (:spark result)))
+              "One spawned")
+          (is (pos? (count (:failed (:spark result))))
+              "One failed"))))))
+
 ;; =============================================================================
 ;; Section 6: Forge State Accumulation
 ;;

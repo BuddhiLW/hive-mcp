@@ -1,16 +1,38 @@
 (ns hive-mcp.tools.consolidated.wave
-  "Consolidated Wave CLI tool for drone wave operations."
+  "Consolidated Wave CLI tool for drone wave operations.
+
+   Includes defense-in-depth guard: child lings (spawned agents) are
+   denied from dispatching drone waves to prevent recursive self-call
+   chains."
   (:require [hive-mcp.tools.cli :refer [make-cli-handler]]
+            [hive-mcp.tools.core :refer [mcp-error]]
             [hive-mcp.tools.swarm :as swarm-handlers]
             [hive-mcp.tools.diff :as diff-handlers]
+            [hive-mcp.server.guards :as guards]
             [taoensso.timbre :as log]))
 
 (defn- handle-dispatch-unified
-  "Route to validated or plain dispatch based on validate param."
+  "Route to validated or plain dispatch based on validate param.
+
+   Defense-in-depth: denies dispatch when called from a child ling process
+   (HIVE_MCP_ROLE=child-ling). This prevents recursive agent spawning
+   via drone wave dispatch."
   [{:keys [validate] :as params}]
-  (if validate
-    (swarm-handlers/handle-dispatch-validated-wave params)
-    (swarm-handlers/handle-dispatch-drone-wave params)))
+  ;; Layer 3: Defense-in-depth wave dispatch guard
+  (if (guards/child-ling?)
+    (do
+      (log/warn "Wave dispatch denied: child ling attempted drone wave dispatch"
+                {:role (guards/get-role) :depth (guards/ling-depth)})
+      (mcp-error (str "DISPATCH DENIED: Child lings cannot dispatch drone waves.\n\n"
+                      "You are running as a child ling (HIVE_MCP_ROLE=child-ling, depth="
+                      (guards/ling-depth) ").\n"
+                      "Wave dispatch is restricted to the coordinator to prevent recursive\n"
+                      "self-call chains.\n\n"
+                      "If you need drone work, use hivemind_shout to request the coordinator\n"
+                      "to dispatch waves on your behalf.")))
+    (if validate
+      (swarm-handlers/handle-dispatch-validated-wave params)
+      (swarm-handlers/handle-dispatch-drone-wave params))))
 
 (defn- handle-dispatch-validated-shim
   "DEPRECATED: Use dispatch with validate:true instead."

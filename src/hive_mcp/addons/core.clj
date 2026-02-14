@@ -1,12 +1,14 @@
 (ns hive-mcp.addons.core
-  "Plugin architecture for hive-mcp addons.
+  "Addon registry — domain operations on addon instances.
 
-   Addons implement the IAddon protocol to contribute tools, extensions,
-   and schema extensions. The addon-info map supports optional keys:
-   - :extensions     — {keyword fn} for opaque extension registry
-   - :schema-extensions — {tool-name-string {param-name {:type :description}}}
-   These are automatically registered/deregistered during addon lifecycle."
+   Addons implement the IAddon protocol from addons.protocol.
+   This module provides the registry lifecycle:
+   - register-addon! / unregister-addon!
+   - init-addon! / shutdown-addon! / init-all! / shutdown-all!
+   - list-addons / active-addon-tools / addons-with-capability
+   - registry-status / reset-registry!"
   (:require [clojure.set]
+            [hive-mcp.addons.protocol :as proto]
             [hive-mcp.extensions.registry :as ext]
             [taoensso.timbre :as log]))
 
@@ -14,223 +16,202 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-(defprotocol IAddon
-  "Protocol for hive-mcp addons."
-
-  (addon-name [this]
-    "Return unique keyword identifier for this addon.")
-
-  (addon-version [this]
-    "Return semantic version string.")
-
-  (addon-info [this]
-    "Return metadata map about this addon.")
-
-  (init! [this opts]
-    "Initialize the addon with config options.")
-
-  (shutdown! [this]
-    "Shutdown the addon and release resources.")
-
-  (addon-tools [this]
-    "Return MCP tool definitions contributed by this addon.")
-
-  (addon-capabilities [this]
-    "Return set of capability keywords this addon provides."))
-
 (defonce ^:private addon-registry (atom {}))
 
 (defn register-addon!
   "Register an addon in the global registry."
   [addon]
-  {:pre [(satisfies? IAddon addon)]}
-  (let [name-kw (addon-name addon)]
-    (if (contains? @addon-registry name-kw)
+  {:pre [(satisfies? proto/IAddon addon)]}
+  (let [id (proto/addon-id addon)]
+    (if (contains? @addon-registry id)
       (do
-        (log/warn "Addon already registered" {:addon name-kw})
+        (log/warn "Addon already registered" {:addon id})
         {:success? false
-         :addon-name name-kw
-         :errors [(str "Addon " name-kw " is already registered")]})
+         :addon-name id
+         :errors [(str "Addon " id " is already registered")]})
       (do
-        (swap! addon-registry assoc name-kw
+        (swap! addon-registry assoc id
                {:addon addon
                 :state :registered
                 :registered-at (java.time.Instant/now)
                 :init-time nil
                 :init-result nil})
-        (log/info "Addon registered" {:addon name-kw
-                                      :version (addon-version addon)
-                                      :capabilities (addon-capabilities addon)})
+        (log/info "Addon registered" {:addon id
+                                      :type (proto/addon-type addon)
+                                      :capabilities (proto/capabilities addon)})
         {:success? true
-         :addon-name name-kw}))))
+         :addon-name id}))))
 
 (defn get-addon
-  "Get addon by name from the registry."
-  [name-kw]
-  (get-in @addon-registry [name-kw :addon]))
+  "Get addon by id from the registry."
+  [id]
+  (get-in @addon-registry [id :addon]))
 
 (defn get-addon-entry
   "Get full addon registry entry with state metadata."
-  [name-kw]
-  (get @addon-registry name-kw))
+  [id]
+  (get @addon-registry id))
 
 (defn addon-registered?
   "Check if an addon is registered."
-  [name-kw]
-  (contains? @addon-registry name-kw))
+  [id]
+  (contains? @addon-registry id))
 
 (defn list-addons
   "List all registered addons with their state."
   []
   (->> @addon-registry
-       (mapv (fn [[name-kw {:keys [addon state registered-at init-time]}]]
-               {:name name-kw
-                :version (addon-version addon)
+       (mapv (fn [[id {:keys [addon state registered-at init-time]}]]
+               {:name id
+                :type (proto/addon-type addon)
                 :state state
                 :registered-at registered-at
                 :init-time init-time
-                :capabilities (addon-capabilities addon)
-                :info (addon-info addon)}))))
+                :capabilities (proto/capabilities addon)}))))
 
 (defn unregister-addon!
   "Unregister an addon, calling shutdown! first if active."
-  [name-kw]
-  (if-let [{:keys [addon state]} (get-addon-entry name-kw)]
+  [id]
+  (if-let [{:keys [addon state]} (get-addon-entry id)]
     (do
       (when (= state :active)
         (try
-          (let [result (shutdown! addon)]
+          (let [result (proto/shutdown! addon)]
             (when-not (:success? result)
               (log/warn "Addon shutdown had errors during unregister"
-                        {:addon name-kw :errors (:errors result)})))
+                        {:addon id :errors (:errors result)})))
           (catch Exception e
-            (log/error e "Addon shutdown failed during unregister" {:addon name-kw}))))
-      (swap! addon-registry dissoc name-kw)
-      (log/info "Addon unregistered" {:addon name-kw})
-      {:success? true :addon-name name-kw})
+            (log/error e "Addon shutdown failed during unregister" {:addon id}))))
+      (swap! addon-registry dissoc id)
+      (log/info "Addon unregistered" {:addon id})
+      {:success? true :addon-name id})
     (do
-      (log/warn "Addon not found for unregister" {:addon name-kw})
+      (log/warn "Addon not found for unregister" {:addon id})
       {:success? false
-       :addon-name name-kw
-       :errors [(str "Addon " name-kw " is not registered")]})))
+       :addon-name id
+       :errors [(str "Addon " id " is not registered")]})))
 
 (defn init-addon!
   "Initialize a registered addon."
-  [name-kw & [opts]]
-  (if-let [{:keys [addon state]} (get-addon-entry name-kw)]
+  [id & [opts]]
+  (if-let [{:keys [addon state]} (get-addon-entry id)]
     (if (= state :active)
       (do
-        (log/info "Addon already active, skipping init" {:addon name-kw})
-        {:success? true :addon-name name-kw :already-active? true})
+        (log/info "Addon already active, skipping init" {:addon id})
+        {:success? true :addon-name id :already-active? true})
       (try
         (let [start-time (System/nanoTime)
-              result (init! addon (or opts {}))
+              result (proto/initialize! addon (or opts {}))
               elapsed-ms (/ (- (System/nanoTime) start-time) 1e6)]
           (if (:success? result)
             (do
-              (swap! addon-registry assoc-in [name-kw :state] :active)
-              (swap! addon-registry assoc-in [name-kw :init-time]
+              (swap! addon-registry assoc-in [id :state] :active)
+              (swap! addon-registry assoc-in [id :init-time]
                      (java.time.Instant/now))
-              (swap! addon-registry assoc-in [name-kw :init-result] result)
-              ;; Bridge: push addon extensions to opaque registry
-              (let [info (addon-info addon)]
-                (when-let [exts (:extensions info)]
-                  (ext/register-many! exts)
-                  (log/debug "Addon registered extensions" {:addon name-kw :keys (keys exts)}))
-                (when-let [schema-exts (:schema-extensions info)]
+              (swap! addon-registry assoc-in [id :init-result] result)
+              ;; Register schema extensions from protocol method
+              (let [schema-exts (proto/schema-extensions addon)]
+                (when (seq schema-exts)
                   (doseq [[tool-name props] schema-exts]
                     (ext/register-schema! tool-name props))
-                  (log/debug "Addon registered schema extensions" {:addon name-kw :tools (keys schema-exts)}))
-                (doseq [t (addon-tools addon)]
-                  (ext/register-tool! t)))
+                  (log/debug "Addon registered schema extensions"
+                             {:addon id :tools (keys schema-exts)})))
+              ;; Register extensions from init result metadata (opaque fn registry)
+              (when-let [exts (:extensions (:metadata result))]
+                (ext/register-many! exts)
+                (log/debug "Addon registered extensions"
+                           {:addon id :keys (keys exts)}))
+              ;; Register tools
+              (doseq [t (proto/tools addon)]
+                (ext/register-tool! t))
 
-              (log/info "Addon initialized" {:addon name-kw
+              (log/info "Addon initialized" {:addon id
                                              :elapsed-ms elapsed-ms})
-              (assoc result :addon-name name-kw :elapsed-ms elapsed-ms))
+              (assoc result :addon-name id :elapsed-ms elapsed-ms))
             (do
-              (swap! addon-registry assoc-in [name-kw :state] :error)
-              (swap! addon-registry assoc-in [name-kw :init-result] result)
-              (log/warn "Addon init failed" {:addon name-kw
+              (swap! addon-registry assoc-in [id :state] :error)
+              (swap! addon-registry assoc-in [id :init-result] result)
+              (log/warn "Addon init failed" {:addon id
                                              :errors (:errors result)})
-              (assoc result :addon-name name-kw))))
+              (assoc result :addon-name id))))
         (catch Exception e
-          (swap! addon-registry assoc-in [name-kw :state] :error)
-          (log/error e "Addon init threw exception" {:addon name-kw})
+          (swap! addon-registry assoc-in [id :state] :error)
+          (log/error e "Addon init threw exception" {:addon id})
           {:success? false
-           :addon-name name-kw
+           :addon-name id
            :errors [(.getMessage e)]})))
     {:success? false
-     :addon-name name-kw
-     :errors [(str "Addon " name-kw " is not registered")]}))
+     :addon-name id
+     :errors [(str "Addon " id " is not registered")]}))
 
 (defn shutdown-addon!
   "Shutdown an active addon."
-  [name-kw]
-  (if-let [{:keys [addon state]} (get-addon-entry name-kw)]
+  [id]
+  (if-let [{:keys [addon state init-result]} (get-addon-entry id)]
     (if (not= state :active)
       (do
-        (log/info "Addon not active, skipping shutdown" {:addon name-kw :state state})
-        {:success? true :addon-name name-kw :already-inactive? true})
+        (log/info "Addon not active, skipping shutdown" {:addon id :state state})
+        {:success? true :addon-name id :already-inactive? true})
       (try
-        ;; Bridge: deregister addon extensions from opaque registry
-        (let [info (addon-info addon)]
-          (when-let [exts (:extensions info)]
-            (doseq [k (keys exts)] (ext/deregister! k))
-            (log/debug "Addon deregistered extensions" {:addon name-kw :keys (keys exts)}))
-          (doseq [t (addon-tools addon)]
-            (ext/deregister-tool! (:name t))))
-        (let [result (shutdown! addon)]
-          (swap! addon-registry assoc-in [name-kw :state] :registered)
-          (swap! addon-registry assoc-in [name-kw :init-time] nil)
-          (log/info "Addon shut down" {:addon name-kw})
-          (assoc result :addon-name name-kw))
+        ;; Deregister extensions stored during init
+        (when-let [exts (:extensions (:metadata init-result))]
+          (doseq [k (keys exts)] (ext/deregister! k))
+          (log/debug "Addon deregistered extensions" {:addon id :keys (keys exts)}))
+        ;; Deregister tools
+        (doseq [t (proto/tools addon)]
+          (ext/deregister-tool! (:name t)))
+        (let [result (proto/shutdown! addon)]
+          (swap! addon-registry assoc-in [id :state] :registered)
+          (swap! addon-registry assoc-in [id :init-time] nil)
+          (log/info "Addon shut down" {:addon id})
+          (assoc result :addon-name id))
         (catch Exception e
-          (swap! addon-registry assoc-in [name-kw :state] :error)
-          (log/error e "Addon shutdown threw exception" {:addon name-kw})
+          (swap! addon-registry assoc-in [id :state] :error)
+          (log/error e "Addon shutdown threw exception" {:addon id})
           {:success? false
-           :addon-name name-kw
+           :addon-name id
            :errors [(.getMessage e)]})))
     {:success? false
-     :addon-name name-kw
-     :errors [(str "Addon " name-kw " is not registered")]}))
+     :addon-name id
+     :errors [(str "Addon " id " is not registered")]}))
 
 (defn init-all!
   "Initialize all registered addons that are not yet active."
   [& [opts]]
   (->> @addon-registry
-       (filter (fn [[_name {:keys [state]}]] (not= state :active)))
-       (map (fn [[name-kw _]]
-              [name-kw (init-addon! name-kw opts)]))
+       (filter (fn [[_id {:keys [state]}]] (not= state :active)))
+       (map (fn [[id _]]
+              [id (init-addon! id opts)]))
        (into {})))
 
 (defn shutdown-all!
   "Shutdown all active addons."
   []
   (->> @addon-registry
-       (filter (fn [[_name {:keys [state]}]] (= state :active)))
-       (map (fn [[name-kw _]]
-              [name-kw (shutdown-addon! name-kw)]))
+       (filter (fn [[_id {:keys [state]}]] (= state :active)))
+       (map (fn [[id _]]
+              [id (shutdown-addon! id)]))
        (into {})))
 
 (defn active-addon-tools
   "Get all MCP tools from active addons."
   []
   (->> @addon-registry
-       (filter (fn [[_name {:keys [state addon]}]]
+       (filter (fn [[_id {:keys [state addon]}]]
                  (and (= state :active)
-                      (contains? (addon-capabilities addon) :tools))))
-       (mapcat (fn [[name-kw {:keys [addon]}]]
-                 (->> (addon-tools addon)
-                      (map #(assoc % :addon-source name-kw)))))
+                      (contains? (proto/capabilities addon) :tools))))
+       (mapcat (fn [[id {:keys [addon]}]]
+                 (->> (proto/tools addon)
+                      (map #(assoc % :addon-source id)))))
        vec))
 
 (defn addon-tools-by-name
   "Get MCP tools contributed by a specific addon."
-  [name-kw]
-  (if-let [{:keys [addon state]} (get-addon-entry name-kw)]
+  [id]
+  (if-let [{:keys [addon state]} (get-addon-entry id)]
     (if (and (= state :active)
-             (contains? (addon-capabilities addon) :tools))
-      (vec (addon-tools addon))
+             (contains? (proto/capabilities addon) :tools))
+      (vec (proto/tools addon))
       [])
     []))
 
@@ -238,35 +219,37 @@
   "Find all active addons providing a specific capability."
   [capability]
   (->> @addon-registry
-       (filter (fn [[_name {:keys [state addon]}]]
+       (filter (fn [[_id {:keys [state addon]}]]
                  (and (= state :active)
-                      (contains? (addon-capabilities addon) capability))))
+                      (contains? (proto/capabilities addon) capability))))
        (mapv first)))
 
 (defn all-capabilities
   "Get capability summary from all active addons."
   []
   (let [active (->> @addon-registry
-                    (filter (fn [[_name {:keys [state]}]] (= state :active))))]
+                    (filter (fn [[_id {:keys [state]}]] (= state :active))))]
     (->> active
-         (mapcat (fn [[name-kw {:keys [addon]}]]
-                   (map (fn [cap] [cap name-kw]) (addon-capabilities addon))))
-         (reduce (fn [acc [cap name-kw]]
-                   (update acc cap (fnil conj []) name-kw))
+         (mapcat (fn [[id {:keys [addon]}]]
+                   (map (fn [cap] [cap id]) (proto/capabilities addon))))
+         (reduce (fn [acc [cap id]]
+                   (update acc cap (fnil conj []) id))
                  {}))))
 
 (defn check-dependencies
-  "Check if all dependencies for an addon are satisfied."
-  [name-kw]
-  (if-let [addon (get-addon name-kw)]
-    (let [deps (or (:dependencies (addon-info addon)) #{})
+  "Check if all dependencies for an addon are satisfied.
+   Dependencies come from health details: {:details {:dependencies #{...}}}"
+  [id]
+  (if-let [addon (get-addon id)]
+    (let [h (try (proto/health addon) (catch Exception _ {}))
+          deps (or (get-in h [:details :dependencies]) #{})
           available (set (keys @addon-registry))
           missing (clojure.set/difference deps available)]
       {:satisfied? (empty? missing)
        :missing missing
        :available (clojure.set/intersection deps available)})
     {:satisfied? false
-     :missing #{name-kw}
+     :missing #{id}
      :available #{}}))
 
 (defn reset-registry!
@@ -289,86 +272,3 @@
      :tool-count (count (active-addon-tools))
      :capabilities (all-capabilities)
      :addons (list-addons)}))
-
-(defrecord NoopAddon [id version-str]
-  IAddon
-
-  (addon-name [_] id)
-
-  (addon-version [_] version-str)
-
-  (addon-info [_]
-    {:name id
-     :version version-str
-     :description "No-operation addon for testing and development"
-     :author "hive-mcp"
-     :license "AGPL-3.0-or-later"
-     :dependencies #{}
-     :capabilities #{}})
-
-  (init! [_ _opts]
-    {:success? true
-     :errors []
-     :metadata {:noop true}})
-
-  (shutdown! [_]
-    {:success? true
-     :errors []})
-
-  (addon-tools [_]
-    [])
-
-  (addon-capabilities [_]
-    #{}))
-
-(defn ->noop-addon
-  "Create a NoopAddon for testing."
-  ([] (->noop-addon :noop "0.0.0"))
-  ([id] (->noop-addon id "0.0.0"))
-  ([id version] (->NoopAddon id version)))
-
-(defrecord ExampleAddon [id state]
-  IAddon
-
-  (addon-name [_] id)
-
-  (addon-version [_] "1.0.0")
-
-  (addon-info [_]
-    {:name id
-     :version "1.0.0"
-     :description "Example addon demonstrating tool contribution"
-     :author "hive-mcp"
-     :license "AGPL-3.0-or-later"
-     :dependencies #{}
-     :capabilities #{:tools}})
-
-  (init! [_ opts]
-    (reset! state {:initialized true :config (:config opts)})
-    {:success? true
-     :errors []
-     :metadata {:config-keys (keys (:config opts))}})
-
-  (shutdown! [_]
-    (reset! state nil)
-    {:success? true
-     :errors []})
-
-  (addon-tools [_]
-    [{:name (str (name id) "_ping")
-      :description (str "Ping tool from " (name id) " addon")
-      :inputSchema {:type "object"
-                    :properties {"message" {:type "string"
-                                            :description "Message to echo"}}
-                    :required ["message"]}
-      :handler (fn [{:keys [message]}]
-                 {:type "text"
-                  :text (str "pong: " message " (from " (name id) ")")})}])
-
-  (addon-capabilities [_]
-    #{:tools}))
-
-(defn ->example-addon
-  "Create an ExampleAddon for testing."
-  ([] (->example-addon :example))
-  ([id] (->ExampleAddon id (atom nil))))

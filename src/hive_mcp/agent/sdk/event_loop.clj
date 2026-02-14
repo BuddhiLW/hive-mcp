@@ -50,7 +50,9 @@
                     "_hive_connect_future_" safe-id ".result(timeout=60)\n"))
     (try (py/py-run (str "globals().pop('_hive_spawn_options', None)\n"
                          "globals().pop('_hive_connect_future_" safe-id "', None)\n"))
-         (catch Exception _ nil))
+         (catch Exception e
+           (log/warn "[sdk.event-loop] Post-connect cleanup failed"
+                     {:safe-id safe-id :error (ex-message e)})))
     (log/info "[sdk.event-loop] Client connected on persistent loop" {:safe-id safe-id})
     client-var))
 

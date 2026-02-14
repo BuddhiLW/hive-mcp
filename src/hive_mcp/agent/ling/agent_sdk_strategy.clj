@@ -2,6 +2,7 @@
   "Agent SDK spawn strategy for Claude Code SDK ling lifecycle."
   (:require [hive-mcp.agent.ling.strategy :refer [ILingStrategy]]
             [hive-mcp.agent.headless-sdk :as sdk]
+            [hive-mcp.server.guards :as guards]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -24,21 +25,29 @@
                                  :no-sdk "Run: pip install claude-code-sdk"
                                  :not-initialized "Python initialization failed"
                                  "Unknown SDK issue")})))
-      (let [system-prompt (str "Agent " id " in project. Use hive-mcp tools for coordination.")
+      (let [guard-env (guards/child-ling-env)
+            system-prompt (str "Agent " id " in project. Use hive-mcp tools for coordination.")
             mcp-servers {"hive" {"type" "stdio"
                                  "command" "bb"
                                  "args" ["-cp" (str cwd "/src") "-m" "hive-mcp.server.core"]
-                                 "env" {"BB_MCP_PROJECT_DIR" cwd}}}
-            spawn-env (cond-> {"CLAUDE_SWARM_SLAVE_ID" id
-                               "BB_MCP_PROJECT_DIR" cwd}
+                                 "env" (merge {"BB_MCP_PROJECT_DIR" cwd} guard-env)}}
+            spawn-env (cond-> (merge {"CLAUDE_SWARM_SLAVE_ID" id
+                                      "BB_MCP_PROJECT_DIR" cwd}
+                                     guard-env)
                         (and model (not= model "claude"))
                         (assoc "OPENROUTER_MODEL" model))
-            result (sdk/spawn-headless-sdk! id (cond-> {:cwd cwd
-                                                        :system-prompt system-prompt
-                                                        :mcp-servers mcp-servers
-                                                        :presets presets
-                                                        :env spawn-env}
-                                                 effective-agents (assoc :agents effective-agents)))]
+            result (try
+                     (sdk/spawn-headless-sdk! id (cond-> {:cwd cwd
+                                                          :system-prompt system-prompt
+                                                          :mcp-servers mcp-servers
+                                                          :presets presets
+                                                          :env spawn-env}
+                                                   effective-agents (assoc :agents effective-agents)))
+                     (catch Exception e
+                       (log/error "Agent SDK spawn failed, cleaning up"
+                                  {:ling-id id :error (ex-message e)})
+                       (try (sdk/kill-headless-sdk! id) (catch Exception _ nil))
+                       (throw e)))]
         (log/info "Ling spawned via Agent SDK" {:id id :cwd cwd :model (or model "claude")
                                                 :backend :agent-sdk :phase (:phase result)
                                                 :agents-count (count effective-agents)})
@@ -107,3 +116,8 @@
   "Check if the Agent SDK backend is available."
   []
   (sdk/available?))
+
+(defn sdk-status
+  "Get the SDK availability status keyword."
+  []
+  (sdk/sdk-status))

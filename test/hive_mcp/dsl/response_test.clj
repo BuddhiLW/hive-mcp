@@ -320,3 +320,84 @@
 (deftest resolve-mode-explicit-full-with-ling-caller
   (testing "compact:full with ling caller gives :full (explicit override)"
     (is (= :full (r/resolve-compress-mode {:compact "full" :_caller_id "swarm-worker-123"})))))
+
+;; =============================================================================
+;; Tests: format-results-compact — batch envelope compression
+;; =============================================================================
+
+(deftest format-results-compact-basic-execution
+  (testing "flattens waves into :r, abbreviates envelope and summary keys"
+    (let [result (r/format-results-compact sample-batch-envelope)]
+      (is (true? (:ok result)))
+      (is (= {:t 3 :ok 2 :f 1 :w 2} (:s result)))
+      (is (= 3 (count (:r result))))
+      (is (nil? (:success result)) "original :success key should not appear")
+      (is (nil? (:summary result)) "original :summary key should not appear")
+      (is (nil? (:waves result)) "original :waves key should not appear"))))
+
+(deftest format-results-compact-op-result-shape
+  (testing "each compacted op has :id :ok and optional :d/:e"
+    (let [ops (:r (r/format-results-compact sample-batch-envelope))
+          op-1 (first ops)
+          op-fail (last ops)]
+      (is (= "op-1" (:id op-1)))
+      (is (true? (:ok op-1)))
+      (is (= "{\"id\":\"mem-123\"}" (:d op-1)))
+      (is (nil? (:e op-1)))
+      (is (false? (:ok op-fail)))
+      (is (= "Tool not found: bogus" (:e op-fail))))))
+
+(deftest format-results-compact-wave-ordering
+  (testing "results from wave_1 appear before wave_2"
+    (let [ops (:r (r/format-results-compact sample-batch-envelope))]
+      ;; wave_1 has op-1 and op-2(success), wave_2 has op-2(failure)
+      (is (= ["op-1" "op-2"] (mapv :id (take 2 ops))))
+      (is (= "op-1" (:id (first ops))))
+      (is (true? (:ok (second ops))))
+      (is (false? (:ok (nth ops 2)))))))
+
+(deftest format-results-compact-dry-run
+  (testing "dry-run includes :dr and :p, no :r"
+    (let [input {:success true
+                 :summary {:total 2 :success 0 :failed 0 :waves 1}
+                 :dry_run true
+                 :plan {"wave_1" [{:id "a" :tool "memory" :command "add"}]}}
+          result (r/format-results-compact input)]
+      (is (true? (:ok result)))
+      (is (true? (:dr result)))
+      (is (some? (:p result)))
+      (is (nil? (:r result))))))
+
+(deftest format-results-compact-errors
+  (testing "validation errors appear under :E"
+    (let [input {:success false
+                 :summary {:total 1 :success 0 :failed 0 :waves 0}
+                 :errors ["Op missing :id" "Op missing :tool"]}
+          result (r/format-results-compact input)]
+      (is (false? (:ok result)))
+      (is (= ["Op missing :id" "Op missing :tool"] (:E result)))
+      (is (nil? (:r result))))))
+
+(deftest format-results-compact-empty-waves
+  (testing "empty waves produces empty :r"
+    (let [input {:success true
+                 :summary {:total 0 :success 0 :failed 0 :waves 0}
+                 :waves {}}
+          result (r/format-results-compact input)]
+      (is (= [] (:r result)))
+      (is (= {:t 0 :ok 0 :f 0 :w 0} (:s result))))))
+
+(deftest format-results-compact-nil-summary
+  (testing "nil summary becomes empty abbreviated map"
+    (let [input {:success true :summary nil :waves {}}
+          result (r/format-results-compact input)]
+      (is (= {} (:s result))))))
+
+(deftest format-results-compact-preserves-unknown-summary-keys
+  (testing "unknown summary keys pass through unabbreviated"
+    (let [input {:success true
+                 :summary {:total 1 :success 1 :failed 0 :waves 1 :custom "extra"}
+                 :waves {}}
+          result (r/format-results-compact input)]
+      (is (= "extra" (:custom (:s result))))
+      (is (= 1 (:t (:s result)))))))

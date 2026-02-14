@@ -435,8 +435,8 @@
 ;; =============================================================================
 
 (defn load-extensions!
-  "Load optional extension capabilities (hive-knowledge, hive-agent).
-   Uses dual strategy: self-registration init! functions + manifest fallback.
+  "Load optional extension capabilities discovered on the classpath.
+   Uses classpath manifest scanning + addon self-registration.
    Non-fatal: system works without extensions (noop defaults).
 
    Must run AFTER embedding/memory services (extensions may use Chroma)."

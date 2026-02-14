@@ -88,12 +88,14 @@
       (vec (distinct (concat visible descendants))))))
 
 (defn- fetch-entries
-  "Fetch entries from Chroma or plans collection with over-fetch factor."
+  "Fetch entries from Chroma or plans collection with over-fetch factor.
+   Plans route to OpenRouter-backed plans collection. Everything else → Ollama."
   [type project-ids-for-db tags limit-val include-descendants?]
-  (let [plan? (= type "plan")
+  (let [openrouter? (plans/high-abstraction-type? type)
         over-fetch-factor (if include-descendants? 4 3)]
-    (if plan?
+    (if openrouter?
       (plans/query-plans :project-id (first project-ids-for-db)
+                         :type type
                          :limit (* limit-val over-fetch-factor)
                          :tags tags)
       (chroma/query-entries :type type

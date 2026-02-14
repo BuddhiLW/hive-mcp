@@ -10,6 +10,7 @@
      via scripts/echo-mcp-server.py"
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [clojure.string :as str]
+            [hive-mcp.addons.protocol :as proto]
             [hive-mcp.addons.core :as addon]
             [hive-mcp.addons.mcp-bridge :as bridge]
             [hive-mcp.addons.stdio-bridge :as stdio]))
@@ -77,11 +78,11 @@
 (deftest test-noop-bridge-defaults
   (testing "zero-arg constructor"
     (let [b (bridge/->noop-bridge)]
-      (is (= :bridge/noop (addon/addon-name b)))))
+      (is (= :bridge/noop (proto/addon-id b)))))
 
   (testing "one-arg constructor"
     (let [b (bridge/->noop-bridge :bridge/custom)]
-      (is (= :bridge/custom (addon/addon-name b))))))
+      (is (= :bridge/custom (proto/addon-id b))))))
 
 ;; =============================================================================
 ;; Proxy Tool Generation Tests
@@ -159,8 +160,17 @@
 
 (deftest test-bridge-register-validates
   (testing "non-bridge throws assertion"
-    (is (thrown? AssertionError
-                 (bridge/register-bridge! (addon/->noop-addon :not-bridge))))))
+    (let [non-bridge (reify proto/IAddon
+                       (addon-id [_] :not-bridge)
+                       (addon-type [_] :native)
+                       (capabilities [_] #{})
+                       (initialize! [_ _] {:success? true :errors []})
+                       (shutdown! [_] nil)
+                       (tools [_] [])
+                       (schema-extensions [_] {})
+                       (health [_] {:status :ok :details {}}))]
+      (is (thrown? AssertionError
+                   (bridge/register-bridge! non-bridge))))))
 
 ;; =============================================================================
 ;; StdioBridge Protocol Tests
@@ -172,7 +182,7 @@
       (is (bridge/bridge? b)))
 
     (testing "satisfies IAddon"
-      (is (satisfies? addon/IAddon b)))
+      (is (satisfies? proto/IAddon b)))
 
     (testing "bridge-addon? true"
       (is (bridge/bridge-addon? b)))
@@ -180,12 +190,12 @@
     (testing "transport-type is :stdio"
       (is (= :stdio (bridge/transport-type b))))
 
-    (testing "addon-name correct"
-      (is (= :bridge/proto (addon/addon-name b))))
+    (testing "addon-id correct"
+      (is (= :bridge/proto (proto/addon-id b))))
 
-    (testing "addon-capabilities include :mcp-bridge and :tools"
-      (is (contains? (addon/addon-capabilities b) :mcp-bridge))
-      (is (contains? (addon/addon-capabilities b) :tools)))))
+    (testing "capabilities include :mcp-bridge and :tools"
+      (is (contains? (proto/capabilities b) :mcp-bridge))
+      (is (contains? (proto/capabilities b) :tools)))))
 
 ;; =============================================================================
 ;; StdioBridge Integration Tests — Full Lifecycle
@@ -243,8 +253,8 @@
     ;; Start bridge
     (bridge/start-bridge! b {:command echo-server-command})
 
-    (testing "addon-tools generates proxy tool-defs"
-      (let [tools (addon/addon-tools b)]
+    (testing "tools generates proxy tool-defs"
+      (let [tools (proto/tools b)]
         (is (= 2 (count tools)))
         (is (= #{"proxy-test:echo" "proxy-test:add"}
                (set (map :name tools))))
@@ -255,14 +265,14 @@
 
     (testing "proxy handler for echo works"
       (let [echo-tool (first (filter #(= "proxy-test:echo" (:name %))
-                                     (addon/addon-tools b)))
+                                     (proto/tools b)))
             result    ((:handler echo-tool) {"message" "proxied!"})]
         (is (= "text" (:type result)))
         (is (= "proxied!" (:text result)))))
 
     (testing "proxy handler for add works"
       (let [add-tool (first (filter #(= "proxy-test:add" (:name %))
-                                    (addon/addon-tools b)))
+                                    (proto/tools b)))
             result   ((:handler add-tool) {"a" 100 "b" 200})]
         (is (= "text" (:type result)))
         (is (= "300" (:text result)))))

@@ -72,6 +72,11 @@
   [data]
   (delegate-or-noop :fb/q5 true [data]))
 
+(defn- spark-all-failed?
+  "Delegates to extension if available."
+  [data]
+  (delegate-or-noop :fb/q6 false [data]))
+
 (defn always
   "Trivial predicate. Returns true for any input."
   [_data]

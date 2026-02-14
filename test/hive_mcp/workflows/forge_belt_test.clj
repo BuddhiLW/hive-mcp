@@ -10,7 +10,9 @@
    CLARITY: T — Telemetry via test assertions."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [hive-mcp.workflows.forge-belt :as belt]
-            [hive-mcp.extensions.registry :as ext]))
+            [hive-mcp.workflows.forge-belt-defaults :as fbd]
+            [hive-mcp.extensions.registry :as ext]
+            [hive.events.fsm :as fsm]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -19,17 +21,23 @@
 ;; Fixtures
 ;; =============================================================================
 
+(def ^:private all-fb-keys
+  "All :fb/* extension keys for cleanup."
+  [:fb/q1 :fb/q2 :fb/q3 :fb/q4 :fb/q5 :fb/q6
+   :fb/h1 :fb/h2 :fb/h3 :fb/h4 :fb/h5 :fb/h6 :fb/h7
+   :fb/s1 :fb/s2 :fb/spec :fb/compile
+   :fb/run :fb/strike :fb/cont])
+
 (defn clean-extensions-fixture
-  "Clear extension registry between tests to isolate delegation tests."
+  "Clear extension registry before AND after each test.
+   Before: removes leftover registrations from prior tests or REPL work.
+   After: cleans up registrations made during the test."
   [f]
+  (doseq [k all-fb-keys] (ext/deregister! k))
   (try
     (f)
     (finally
-      (doseq [k [:fb/q1 :fb/q2 :fb/q3 :fb/q4 :fb/q5
-                  :fb/h1 :fb/h2 :fb/h3 :fb/h4 :fb/h5 :fb/h6 :fb/h7
-                  :fb/s1 :fb/s2 :fb/spec :fb/compile
-                  :fb/run :fb/strike :fb/cont]]
-        (ext/deregister! k)))))
+      (doseq [k all-fb-keys] (ext/deregister! k)))))
 
 (use-fixtures :each clean-extensions-fixture)
 
@@ -148,6 +156,8 @@
       (is (= 0 (:total-smited result)))
       (is (= 0 (:total-sparked result)))
       (is (nil? (:last-strike result)))
+      (is (false? (:quenched? result)))
+      (is (false? (:continuous? result)))
       (is (= {:smited [] :failed [] :count 0} (:smite-result result)))
       (is (= {:tasks [] :count 0} (:survey-result result)))
       (is (= {:spawned [] :failed [] :count 0} (:spark-result result))))))
@@ -197,7 +207,7 @@
   (testing "Handlers delegate to extensions when registered"
     (ext/register! :fb/h1 (fn [resources data]
                             (assoc data :phase :started
-                                        :cycle-start "2026-01-01T00:00:00Z")))
+                                   :cycle-start "2026-01-01T00:00:00Z")))
     (let [result (belt/handle-start {} {:strike-count 0})]
       (is (= :started (:phase result)))
       (is (= "2026-01-01T00:00:00Z" (:cycle-start result)))
@@ -207,12 +217,46 @@
   (testing "handle-smite delegates to extension"
     (let [kill-result {:smited [{:id "a1"}] :failed [] :count 1}]
       (ext/register! :fb/h2 (fn [_resources data]
-                               (-> data
-                                   (assoc :smite-result kill-result)
-                                   (update :total-smited + (:count kill-result)))))
+                              (-> data
+                                  (assoc :smite-result kill-result)
+                                  (update :total-smited + (:count kill-result)))))
       (let [result (belt/handle-smite {} {:total-smited 3})]
         (is (= kill-result (:smite-result result)))
         (is (= 4 (:total-smited result)))))))
+
+(deftest test-end-handler-outcome-delegation
+  (testing "Extension handle-end computes outcome from result data"
+    (ext/register! :fb/h5
+                   (fn [_resources {:keys [data]}]
+                     (let [smite-failed   (seq (get-in data [:smite-result :failed]))
+                           spark-failed   (seq (get-in data [:spark-result :failed]))
+                           any-failed?    (or smite-failed spark-failed)
+                           smite-count    (get-in data [:smite-result :count] 0)
+                           spark-count    (get-in data [:spark-result :count] 0)
+                           any-succeeded? (or (pos? smite-count) (pos? spark-count))
+                           outcome (cond
+                                     (not any-failed?)                :clean
+                                     (and any-failed? any-succeeded?) :partial
+                                     :else                            :failure)]
+                       {:success (not= :failure outcome) :outcome outcome})))
+
+    ;; Clean: no failures
+    (let [r (belt/handle-end nil {:data {:smite-result {:smited [{:id "a"}] :failed [] :count 1}
+                                         :spark-result {:spawned [{:id "b"}] :failed [] :count 1}}})]
+      (is (true? (:success r)))
+      (is (= :clean (:outcome r))))
+
+    ;; Partial: some spawns failed
+    (let [r (belt/handle-end nil {:data {:smite-result {:smited [{:id "a"}] :failed [] :count 1}
+                                         :spark-result {:spawned [{:id "b"}] :failed [{:id "c" :error "x"}] :count 1}}})]
+      (is (true? (:success r)))
+      (is (= :partial (:outcome r))))
+
+    ;; Failure: nothing succeeded but failures exist
+    (let [r (belt/handle-end nil {:data {:smite-result {:smited [] :failed [{:id "d" :error "y"}] :count 0}
+                                         :spark-result {:spawned [] :failed [{:id "e" :error "z"}] :count 0}}})]
+      (is (false? (:success r)))
+      (is (= :failure (:outcome r))))))
 
 ;; =============================================================================
 ;; 7. Extension Delegation — Execution API
@@ -299,4 +343,142 @@
       (is (map? (:smite-result result)) "smite-result is a map")
       (is (number? (get-in result [:survey-result :count] 0)) "survey-result :count accessible")
       (is (vector? (get-in result [:survey-result :tasks] [])) "survey-result :tasks accessible")
-      (is (map? (:spark-result result)) "spark-result is a map"))))
+      (is (map? (:spark-result result)) "spark-result is a map")
+      (is (boolean? (:success result)) "success key exists"))))
+
+;; =============================================================================
+;; 10. FSM Integration — Default Implementations (forge_belt_defaults)
+;; =============================================================================
+
+(defn- make-test-resources
+  "Build minimal resources map for FSM integration tests.
+   Accepts overrides for spawn-fn, kill-fn, list-fn."
+  [{:keys [kill-fn spawn-fn list-fn update-fn]}]
+  {:agent-ops  {:kill-fn  (or kill-fn (fn [_ _] {:smited [] :failed [] :count 0}))
+                :spawn-fn (or spawn-fn (fn [_] {:spawned [] :failed [] :count 0}))}
+   :kanban-ops {:list-fn   (or list-fn (fn [_] {:tasks [] :count 0}))
+                :update-fn (or update-fn (fn [_ _] nil))}
+   :config     {:max-slots 5 :presets ["ling"] :spawn-mode :headless}
+   :directory  "/tmp/test"
+   :clock-fn   (constantly (java.time.Instant/parse "2026-01-01T00:00:00Z"))})
+
+(defn- run-fsm-no-subscriptions
+  "Compile and run the default FSM spec without subscriptions.
+   Works around Timbre classloader issues in REPL."
+  [resources opts]
+  (let [spec     (update @#'fbd/forge-belt-spec :opts dissoc :subscriptions)
+        compiled (fsm/compile spec)]
+    (fsm/run compiled resources
+             {:data (merge {:quenched?     false
+                            :continuous?   false
+                            :strike-count  0
+                            :total-smited  0
+                            :total-sparked 0}
+                           opts)})))
+
+(deftest test-fsm-single-shot-clean
+  (testing "FSM single-shot with all spawns succeeding"
+    (let [resources (make-test-resources
+                     {:kill-fn  (fn [_ _] {:smited ["a"] :failed [] :count 1})
+                      :spawn-fn (fn [_] {:spawned ["ling-1"] :failed [] :count 1})
+                      :list-fn  (fn [_] {:tasks [{:id "t1"}] :count 1})})
+          result (run-fsm-no-subscriptions resources {:continuous? false})]
+      (is (true? (:success result)))
+      (is (= 1 (:strike-count result))))))
+
+(deftest test-fsm-single-shot-partial
+  (testing "FSM single-shot with mixed results — partial success"
+    (let [resources (make-test-resources
+                     {:kill-fn  (fn [_ _] {:smited ["a"] :failed [] :count 1})
+                      :spawn-fn (fn [_] {:spawned ["ling-1"] :failed ["ling-2"] :count 1})
+                      :list-fn  (fn [_] {:tasks [{:id "t1"} {:id "t2"}] :count 2})})
+          result (run-fsm-no-subscriptions resources {:continuous? false})]
+      (is (true? (:success result)) "Partial is still success")
+      (is (= 1 (:strike-count result))))))
+
+(deftest test-fsm-single-shot-total-failure
+  (testing "FSM single-shot with all spawns failing"
+    (let [resources (make-test-resources
+                     {:kill-fn  (fn [_ _] {:smited [] :failed [] :count 0})
+                      :spawn-fn (fn [_] {:spawned [] :failed ["ling-1"] :count 0})
+                      :list-fn  (fn [_] {:tasks [{:id "t1"}] :count 1})})
+          result (run-fsm-no-subscriptions resources {:continuous? false})]
+      (is (false? (:success result))))))
+
+(deftest test-fsm-continuous-total-failure-exits
+  (testing "FSM continuous mode exits on total spark failure (no infinite loop)"
+    (let [resources (make-test-resources
+                     {:kill-fn  (fn [_ _] {:smited [] :failed [] :count 0})
+                      :spawn-fn (fn [_] {:spawned [] :failed ["ling-1"] :count 0})
+                      :list-fn  (fn [_] {:tasks [{:id "t1"}] :count 1})})
+          result (run-fsm-no-subscriptions resources {:continuous? true})]
+      (is (false? (:success result)))
+      (is (= 1 (:strike-count result)) "Exits after 1 strike, no looping"))))
+
+(deftest test-fsm-continuous-no-tasks-exits
+  (testing "FSM continuous mode exits cleanly when kanban has no tasks"
+    (let [resources (make-test-resources
+                     {:kill-fn  (fn [_ _] {:smited ["z"] :failed [] :count 1})
+                      :list-fn  (fn [_] {:tasks [] :count 0})})
+          result (run-fsm-no-subscriptions resources {:continuous? true})]
+      (is (true? (:success result)))
+      (is (nil? (:spark-result result)) "Spark phase was skipped")
+      (is (= 0 (:strike-count result)) "No strikes executed"))))
+
+(deftest test-fsm-continuous-mixed-then-exhausted
+  (testing "FSM continuous loops on mixed result, exits when kanban exhausted"
+    (let [spawn-count (atom 0)
+          resources (make-test-resources
+                     {:kill-fn  (fn [_ _] {:smited ["z"] :failed [] :count 1})
+                      :spawn-fn (fn [_]
+                                  (let [n (swap! spawn-count inc)]
+                                    (if (= n 1)
+                                      {:spawned ["ling-1"] :failed ["ling-2"] :count 1}
+                                      {:spawned ["ling-3"] :failed [] :count 1})))
+                      :list-fn  (fn [_]
+                                  (if (< @spawn-count 2)
+                                    {:tasks [{:id "t1"}] :count 1}
+                                    {:tasks [] :count 0}))})
+          result (run-fsm-no-subscriptions resources {:continuous? true})]
+      (is (true? (:success result)))
+      (is (= 2 (:strike-count result)) "Ran 2 cycles before exhausting tasks"))))
+
+(deftest test-fsm-quench-halts
+  (testing "FSM halts when quenched? is true after spark"
+    (let [resources (make-test-resources
+                     {:kill-fn  (fn [_ _] {:smited ["a"] :failed [] :count 1})
+                      :spawn-fn (fn [_] {:spawned ["ling-1"] :failed [] :count 1})
+                      :list-fn  (fn [_] {:tasks [{:id "t1"}] :count 1})})
+          result (run-fsm-no-subscriptions resources {:continuous? true
+                                                      :quenched? true})]
+      ;; FSM compiler overrides ::halt handler with (dissoc fsm :fsm).
+      ;; Result is full FSM state minus :fsm graph, resumable.
+      (is (some? (:data result)) "Returns FSM state for resume")
+      (is (nil? (:fsm result)) "FSM graph removed (halt semantics)")
+      (is (= :hive-mcp.workflows.forge-belt-defaults/cycle-complete
+             (get-in result [:data :phase]))
+          "Phase is cycle-complete from spark handler")
+      (is (true? (get-in result [:data :quenched?]))
+          "Quenched flag preserved"))))
+
+;; =============================================================================
+;; 11. Default Predicate Unit Tests
+;; =============================================================================
+
+(deftest test-spark-all-failed-predicate
+  (testing "spark-all-failed?* returns true only when 0 spawned + failures exist"
+    ;; Zero spawned, failures exist → true
+    (is (true? (@#'fbd/spark-all-failed?*
+                {:spark-result {:count 0 :failed ["err"]}})))
+    ;; Some spawned, failures exist → false (partial, not total failure)
+    (is (false? (@#'fbd/spark-all-failed?*
+                 {:spark-result {:count 1 :failed ["err"]}})))
+    ;; Zero spawned, no failures → false (nothing happened)
+    (is (false? (@#'fbd/spark-all-failed?*
+                 {:spark-result {:count 0 :failed nil}})))
+    (is (false? (@#'fbd/spark-all-failed?*
+                 {:spark-result {:count 0}})))
+    ;; All spawned, no failures → false (clean)
+    (is (false? (@#'fbd/spark-all-failed?*
+                 {:spark-result {:count 2 :failed nil}})))))
+

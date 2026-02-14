@@ -1,22 +1,24 @@
 (ns hive-mcp.plan.plans
   "Chroma vector database integration for plan memory entries.
 
-   Plans are large memory entries (1000-5000+ chars) that exceed the
-   Ollama embedding limit (~1500 chars). They get their own Chroma
-   collection backed by OpenRouter embeddings (4096 dims, ~8K+ context).
+   Plan memory entries benefit from larger embedding models.
+   They get their own Chroma collection backed by OpenRouter
+   embeddings (4096 dims, ~8K+ context).
 
    Architecture:
    ```
    hive-mcp-memory  -> Ollama (768 dims, ~1500 char, free)
+                        Stores: ALL types except plans (notes, decisions, snippets, etc.)
    hive-mcp-plans   -> OpenRouter (4096 dims, ~8K+ context, cheap)
+                        Stores: plans ONLY
    hive-mcp-presets -> OpenRouter (4096 dims, already working)
    ```
 
    Collection Schema:
      id: memory entry ID (timestamp-based, same as hive-mcp-memory)
-     content: full plan text (can be 1000-5000+ chars)
+     content: full entry text (can be 1000-5000+ chars)
      metadata:
-       - type: always 'plan'
+       - type: 'plan'
        - tags: comma-separated tags
        - project-id: project scope
        - duration: TTL category
@@ -49,6 +51,18 @@
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 (def ^:private collection-name "hive-mcp-plans")
+
+(def high-abstraction-types
+  "Memory types routed to OpenRouter-backed plans collection.
+   Plans are long-form content that benefits from larger embedding
+   models (4096 dims vs Ollama's 768 dims).
+   Only plans route here — everything else (decisions, notes, etc.) → Ollama."
+  #{"plan"})
+
+(defn high-abstraction-type?
+  "Returns true if the memory type should use the OpenRouter-backed plans collection."
+  [type]
+  (contains? high-abstraction-types type))
 
 (def ^:private valid-plan-statuses
   "Valid plan-status values."
@@ -143,17 +157,19 @@
   []
   (reset! collection-cache nil))
 
-(defn- plan-to-document
+(defn- entry-to-document
   "Convert plan entry to searchable document string.
    Includes structured metadata header for better semantic search."
   [{:keys [type content tags project-id plan-status steps-count decision-id]}]
-  (str "Plan Entry [" (or plan-status "draft") "]\n"
-       "Type: " (or type "plan") "\n"
-       "Project: " (or project-id "unknown") "\n"
-       (when steps-count (str "Steps: " steps-count "\n"))
-       (when decision-id (str "Decision: " decision-id "\n"))
-       "Tags: " (if (sequential? tags) (str/join ", " tags) (or tags "")) "\n\n"
-       content))
+  (let [entry-type (or type "plan")
+        label (str "Plan Entry [" (or plan-status "draft") "]")]
+    (str label "\n"
+         "Type: " entry-type "\n"
+         "Project: " (or project-id "unknown") "\n"
+         (when steps-count (str "Steps: " steps-count "\n"))
+         (when decision-id (str "Decision: " decision-id "\n"))
+         "Tags: " (if (sequential? tags) (str/join ", " tags) (or tags "")) "\n\n"
+         content)))
 
 (defn- count-plan-steps
   "Heuristic to count steps in plan content.
@@ -164,21 +180,23 @@
           step-headers (count (re-seq #"(?m)^#+\s*[Ss]tep\s+\d+" content))]
       (max numbered step-headers))))
 
-(defn- extract-plan-metadata
-  "Extract plan-specific metadata from entry map.
+(defn- extract-entry-metadata
+  "Extract metadata from plan entry map.
    Returns metadata map suitable for Chroma storage."
   [{:keys [type content tags project-id duration expires content-hash
            steps-count decision-id wave-count plan-status
            abstraction-level knowledge-gaps agent-id]}]
-  (let [auto-steps (or steps-count (count-plan-steps content))]
-    (cond-> {:type (or type "plan")
+  (let [entry-type (or type "plan")
+        is-plan? (= entry-type "plan")
+        auto-steps (when is-plan? (or steps-count (count-plan-steps content)))]
+    (cond-> {:type entry-type
              :tags (if (sequential? tags) (str/join "," tags) (or tags ""))
              :project-id (or project-id "")
              :duration (or duration "long")
              :expires (or expires "")
              :content-hash (or content-hash "")
-             :plan-status (or plan-status "draft")
              :abstraction-level (or abstraction-level 4)}
+      is-plan?          (assoc :plan-status (or plan-status "draft"))
       auto-steps        (assoc :steps-count (str auto-steps))
       decision-id       (assoc :decision-id decision-id)
       wave-count        (assoc :wave-count (str wave-count))
@@ -192,62 +210,66 @@
   "Index a plan entry in the plans Chroma collection.
 
    Entry map keys:
-     :type       - Always 'plan' (auto-set if missing)
-     :content    - Full plan text (can be 1000-5000+ chars)
+     :type       - 'plan' (default: 'plan')
+     :content    - Full entry text (can be 1000-5000+ chars)
      :tags       - Vector of tag strings
      :project-id - Project scope
      :duration   - TTL category (default: 'long')
      :expires    - ISO timestamp for expiration
      :content-hash - SHA256 of content
-     :steps-count  - Number of plan steps (auto-detected if nil)
+     :steps-count  - Number of plan steps (auto-detected if nil, plan only)
      :decision-id  - Linked decision entry ID (optional)
-     :wave-count   - Number of wave dispatches planned (optional)
-     :plan-status  - draft | active | completed | superseded (default: draft)
+     :wave-count   - Number of wave dispatches planned (optional, plan only)
+     :plan-status  - draft | active | completed | superseded (plan only)
      :id           - Pre-generated ID (optional, auto-generated if nil)
 
    Returns: entry ID string on success.
 
    COLLECTION-AWARE: Uses collection-specific embedding provider."
-  [{:keys [id content] :as entry}]
+  [{:keys [id content type] :as entry}]
   (try
     (let [coll (get-or-create-collection)
           provider (chroma/get-provider-for collection-name)
           entry-id (or id (let [ts (java.time.LocalDateTime/now)
                                 fmt (java.time.format.DateTimeFormatter/ofPattern "yyyyMMddHHmmss")]
                             (str (.format ts fmt) "-" (subs (str (java.util.UUID/randomUUID)) 0 8))))
-          doc-text (plan-to-document entry)
+          doc-text (entry-to-document entry)
           embedding (chroma/embed-text provider doc-text)
-          metadata (extract-plan-metadata entry)]
+          metadata (extract-entry-metadata entry)]
       @(chroma-api/add coll [{:id entry-id
                               :embedding embedding
                               :document doc-text
                               :metadata metadata}]
                        :upsert? true)
-      (log/info "Indexed plan:" entry-id "status:" (:plan-status metadata)
-                "steps:" (:steps-count metadata))
+      (log/info "Indexed" (or type "plan") "in plans collection:" entry-id
+                (when (:plan-status metadata) (str "status:" (:plan-status metadata)))
+                (when (:steps-count metadata) (str "steps:" (:steps-count metadata))))
       entry-id)
     (catch Exception e
-      (log/error "Failed to index plan:" (.getMessage e))
-      (throw (ex-info (str "Plan indexing failed: " (.getMessage e))
+      (log/error "Failed to index entry in plans collection:" (.getMessage e))
+      (throw (ex-info (str "High-abstraction entry indexing failed: " (.getMessage e))
                       {:type :plan-index-error
+                       :entry-type (or type "plan")
                        :content-length (count (str content))})))))
 
 (defn search-plans
-  "Search plans using semantic similarity.
+  "Search plan entries using semantic similarity.
 
    Options:
      :limit       - Max results (default: 5)
      :project-id  - Filter by project
+     :type        - Filter by type (default: 'plan')
      :plan-status - Filter by status (draft, active, completed, superseded)
 
    COLLECTION-AWARE: Uses collection-specific embedding provider.
 
    Returns seq of {:id, :type, :tags, :project-id, :plan-status, :distance, :preview}"
-  [query-text & {:keys [limit project-id plan-status] :or {limit 5}}]
+  [query-text & {:keys [limit project-id type plan-status] :or {limit 5}}]
   (let [coll (get-or-create-collection)
         provider (chroma/get-provider-for collection-name)
         query-embedding (chroma/embed-text provider query-text)
         where-clause (cond-> nil
+                       type (assoc :type type)
                        project-id (assoc :project-id project-id)
                        plan-status (assoc :plan-status plan-status))
         results @(chroma-api/query coll query-embedding
@@ -303,19 +325,21 @@
       nil)))
 
 (defn query-plans
-  "Query plans with metadata filtering.
+  "Query plan entries with metadata filtering.
 
    Options:
      :project-id  - Filter by project
+     :type        - Filter by type (default: 'plan')
      :plan-status - Filter by status
      :limit       - Max results (default: 20)
      :tags        - Filter by tags (entries must contain ALL tags)
 
-   Returns seq of plan maps (without full content for efficiency)."
-  [& {:keys [project-id plan-status limit tags] :or {limit 20}}]
+   Returns seq of entry maps (without full content for efficiency)."
+  [& {:keys [project-id type plan-status limit tags] :or {limit 20}}]
   (try
     (let [coll (get-or-create-collection)
-          where-clause (cond-> {:type "plan"}
+          where-clause (cond-> {}
+                         type (assoc :type type)
                          project-id (assoc :project-id project-id)
                          plan-status (assoc :plan-status plan-status))
           results @(chroma-api/get coll
