@@ -142,7 +142,7 @@
                    :created-ids created-ids
                    :stats safe-stats}
      :shout {:agent-id agent-id
-             :event-type "wrap_notify"
+             :event-type :wrap_notify
              :data {:session-id session-id
                     :project-id project-id
                     :stats safe-stats

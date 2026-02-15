@@ -1,9 +1,13 @@
 (ns hive-mcp.tools.memory.lifecycle
   "Lifecycle handlers for memory entry duration management.
+
    Focused modules:
    - This ns: duration, promote, demote, cleanup, expire, expiring-soon
    - decay.clj: staleness decay (handle-decay, run-decay-cycle!)
-   - promotion.clj: xpoll auto-promotion (handle-xpoll-promote, run-xpoll-cycle!)"
+   - promotion.clj: xpoll auto-promotion (handle-xpoll-promote, run-xpoll-cycle!)
+
+   Re-exports handle-decay and handle-xpoll-promote for backward compatibility
+   with tools/memory.clj facade."
   (:require [hive-mcp.tools.memory.core :refer [with-chroma with-entry]]
             [hive-mcp.tools.memory.scope :as scope]
             [hive-mcp.tools.memory.format :as fmt]
@@ -20,6 +24,10 @@
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
+
+;; =============================================================================
+;; Duration Management
+;; =============================================================================
 
 (defn handle-set-duration
   "Set duration category for a memory entry."
@@ -58,6 +66,10 @@
   (log/info "mcp-memory-demote:" id)
   (shift-entry-duration id -1 "Already at minimum duration"))
 
+;; =============================================================================
+;; Cleanup & Expiry
+;; =============================================================================
+
 (defn handle-cleanup-expired
   "Remove all expired memory entries and clean up their KG edges."
   [_]
@@ -86,21 +98,23 @@
       {:type "text" :text (json/write-str {:expired id
                                            :kg_edges_removed edges-removed})})))
 
+;; =============================================================================
+;; Expiring-Soon Query
+;; =============================================================================
+
 (defn- worth-promoting?
-  "Filter for entries worth alerting about expiration."
+  "Filter for entries worth alerting about expiration.
+   Uses MemoryType promotion-worthy-types for type-safe dispatch."
   [entry]
-  (let [duration (:duration entry)
-        entry-type (:type entry)]
-    (or (contains? mt/promotion-worthy-types (keyword entry-type))
-        (contains? #{"medium" "long" "permanent"} duration))))
+  (or (contains? mt/promotion-worthy-types (keyword (or (:type entry) "note")))
+      (contains? #{"medium" "long" "permanent"} (:duration entry))))
 
 (defn- entry->expiring-meta
   "Convert entry to expiring-alert format with duration/expires info."
   [entry]
-  (let [base (fmt/entry->metadata entry 150)]
-    (assoc base
-           :duration (:duration entry)
-           :expires (:expires entry))))
+  (assoc (fmt/entry->metadata entry 150)
+         :duration (:duration entry)
+         :expires (:expires entry)))
 
 (defn handle-expiring-soon
   "List memory entries expiring within N days, filtered by project scope."
@@ -124,10 +138,26 @@
         (mcp-error (.getMessage e))
         (throw e)))))
 
-;; --- Re-exports for backward compatibility ---
-;; tools/memory.clj and scheduler/decay.clj reference these via this ns.
+;; =============================================================================
+;; Re-exports (backward compatibility for tools/memory.clj facade)
+;; =============================================================================
 
-(def handle-decay decay/handle-decay)
-(def run-decay-cycle! decay/run-decay-cycle!)
-(def handle-xpoll-promote promo/handle-xpoll-promote)
-(def run-xpoll-cycle! promo/run-xpoll-cycle!)
+(def handle-decay
+  "Run scheduled staleness decay on memory entries.
+   Delegated to hive-mcp.tools.memory.decay."
+  decay/handle-decay)
+
+(def handle-xpoll-promote
+  "Scan and auto-promote entries accessed across multiple projects.
+   Delegated to hive-mcp.tools.memory.promotion."
+  promo/handle-xpoll-promote)
+
+(def run-decay-cycle!
+  "Bounded, idempotent decay cycle for crystallize-session hooks.
+   Delegated to hive-mcp.tools.memory.decay."
+  decay/run-decay-cycle!)
+
+(def run-xpoll-cycle!
+  "Run bounded xpoll auto-promotion cycle for crystallize-session hooks.
+   Delegated to hive-mcp.tools.memory.promotion."
+  promo/run-xpoll-cycle!)
