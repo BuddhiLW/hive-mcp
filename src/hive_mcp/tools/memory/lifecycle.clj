@@ -1,18 +1,22 @@
 (ns hive-mcp.tools.memory.lifecycle
-  "Lifecycle handlers for memory entry duration management and decay."
+  "Lifecycle handlers for memory entry duration management.
+   Focused modules:
+   - This ns: duration, promote, demote, cleanup, expire, expiring-soon
+   - decay.clj: staleness decay (handle-decay, run-decay-cycle!)
+   - promotion.clj: xpoll auto-promotion (handle-xpoll-promote, run-xpoll-cycle!)"
   (:require [hive-mcp.tools.memory.core :refer [with-chroma with-entry]]
             [hive-mcp.tools.memory.scope :as scope]
             [hive-mcp.tools.memory.format :as fmt]
             [hive-mcp.tools.memory.duration :as dur]
-            [hive-mcp.tools.core :refer [mcp-error mcp-json coerce-int!]]
-            [hive-mcp.crystal.core :as crystal]
+            [hive-mcp.tools.memory.decay :as decay]
+            [hive-mcp.tools.memory.promotion :as promo]
+            [hive-mcp.tools.core :refer [mcp-error coerce-int!]]
+            [hive-mcp.memory.types :as mt]
             [hive-mcp.chroma.core :as chroma]
             [hive-mcp.knowledge-graph.edges :as kg-edges]
             [hive-mcp.agent.context :as ctx]
             [clojure.data.json :as json]
-            [taoensso.timbre :as log])
-  (:import [java.time ZonedDateTime]
-           [java.time.temporal ChronoUnit]))
+            [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -87,8 +91,7 @@
   [entry]
   (let [duration (:duration entry)
         entry-type (:type entry)]
-    (or (= entry-type "axiom")
-        (= entry-type "decision")
+    (or (contains? mt/promotion-worthy-types (keyword entry-type))
         (contains? #{"medium" "long" "permanent"} duration))))
 
 (defn- entry->expiring-meta
@@ -121,203 +124,10 @@
         (mcp-error (.getMessage e))
         (throw e)))))
 
-(defn- apply-decay!
-  "Apply staleness decay to a single entry."
-  [entry opts]
-  (when (crystal/decay-candidate? entry opts)
-    (let [delta (crystal/calculate-decay-delta entry opts)]
-      (when (> delta 0.0)
-        (let [old-beta (or (:staleness-beta entry) 1)
-              new-beta (+ old-beta delta)]
-          (chroma/update-staleness! (:id entry)
-                                    {:beta new-beta
-                                     :source :time-decay})
-          {:id (:id entry)
-           :delta delta
-           :old-beta old-beta
-           :new-beta new-beta})))))
+;; --- Re-exports for backward compatibility ---
+;; tools/memory.clj and scheduler/decay.clj reference these via this ns.
 
-(defn handle-decay
-  "Run scheduled staleness decay on memory entries."
-  [{:keys [directory access_threshold recency_days limit dry_run]}]
-  (log/info "mcp-memory-decay: starting scheduled decay cycle")
-  (with-chroma
-    (let [directory (or directory (ctx/current-directory))
-          limit-val (or (some-> limit int) 200)
-          opts {:access-threshold (or (some-> access_threshold int) 3)
-                :recency-days (or (some-> recency_days int) 7)}
-          all-entries (chroma/query-entries :limit limit-val
-                                            :include-expired? false)
-          project-id (scope/get-current-project-id directory)
-          scope-filter (scope/make-scope-tag project-id)
-          scoped-entries (filter #(scope/matches-scope? % scope-filter) all-entries)
-          candidates (filter #(crystal/decay-candidate? % opts) scoped-entries)
-          decay-plans (for [entry candidates
-                            :let [delta (crystal/calculate-decay-delta entry opts)]
-                            :when (> delta 0.0)]
-                        {:id (:id entry)
-                         :type (:type entry)
-                         :duration (:duration entry)
-                         :access-count (:access-count entry)
-                         :old-beta (or (:staleness-beta entry) 1)
-                         :delta delta
-                         :new-beta (+ (or (:staleness-beta entry) 1) delta)})
-          applied (if dry_run
-                    (vec decay-plans)
-                    (vec (keep #(apply-decay! (chroma/get-entry-by-id (:id %)) opts)
-                               decay-plans)))
-          summary {:decayed (count applied)
-                   :skipped (- (count scoped-entries) (count decay-plans))
-                   :total_scanned (count scoped-entries)
-                   :dry_run (boolean dry_run)
-                   :entries (mapv #(select-keys % [:id :delta :new-beta]) applied)}]
-      (log/info "mcp-memory-decay: decayed" (:decayed summary)
-                "of" (:total_scanned summary) "entries"
-                (when dry_run "(dry run)"))
-      (mcp-json summary))))
-
-(defn run-decay-cycle!
-  "Bounded, idempotent decay cycle for crystallize-session hooks."
-  [{:keys [directory limit]}]
-  (try
-    (let [directory (or directory (ctx/current-directory))
-          limit-val (or (some-> limit int) 50)
-          cleanup-result (try
-                           (chroma/cleanup-expired!)
-                           (catch Exception e
-                             {:count 0 :deleted-ids []
-                              :error (.getMessage e)}))
-          expired-count (or (:count cleanup-result) 0)
-          cleanup-error (:error cleanup-result)
-          all-entries (chroma/query-entries :limit limit-val
-                                            :include-expired? false)
-          project-id (scope/get-current-project-id directory)
-          scope-filter (scope/make-scope-tag project-id)
-          scoped-entries (filter #(scope/matches-scope? % scope-filter) all-entries)
-          opts {:access-threshold 3 :recency-days 7}
-          applied (vec (keep #(apply-decay! % opts) scoped-entries))
-          result (cond-> {:decayed (count applied)
-                          :expired expired-count
-                          :total-scanned (count scoped-entries)
-                          :error nil}
-                   cleanup-error (assoc :cleanup-error cleanup-error))]
-      result)
-    (catch Exception e
-      {:decayed 0 :expired 0 :total-scanned 0
-       :error (.getMessage e)})))
-
-(defn- promote-entry-by-tiers!
-  "Promote an entry by N duration tiers."
-  [entry tiers]
-  (let [id (:id entry)
-        original-duration (:duration entry)]
-    (loop [current-duration original-duration
-           remaining tiers]
-      (if (or (zero? remaining) (= current-duration "permanent"))
-        (if (= current-duration original-duration)
-          {:id id :promoted false :duration current-duration}
-          (let [expires (dur/calculate-expires current-duration)
-                _updated (chroma/update-entry! id {:duration current-duration
-                                                   :expires (or expires "")})]
-            (log/info "Cross-pollination auto-promote:" id
-                      original-duration "->" current-duration
-                      "(tiers:" tiers ")")
-            {:id id
-             :promoted true
-             :old_duration original-duration
-             :new_duration current-duration
-             :tiers_promoted (- tiers remaining)}))
-        (let [{:keys [new-duration changed?]} (dur/shift-duration current-duration +1)]
-          (if changed?
-            (recur new-duration (dec remaining))
-            (if (= current-duration original-duration)
-              {:id id :promoted false :duration current-duration}
-              (let [expires (dur/calculate-expires current-duration)
-                    updated (chroma/update-entry! id {:duration current-duration
-                                                      :expires (or expires "")})]
-                (log/info "Cross-pollination auto-promote:" id
-                          original-duration "->" current-duration
-                          "(tiers:" (- tiers remaining) "hit ceiling)")
-                {:id id
-                 :promoted true
-                 :old_duration original-duration
-                 :new_duration current-duration
-                 :tiers_promoted (- tiers remaining)}))))))))
-
-(defn handle-xpoll-promote
-  "Scan and auto-promote entries accessed across multiple projects."
-  [{:keys [_directory min_projects limit dry_run]}]
-  (log/info "mcp-memory-xpoll-promote: scanning for cross-project knowledge")
-  (with-chroma
-    (let [limit-val (or (some-> limit int) 500)
-          opts {:min-projects (or (some-> min_projects int) 2)}
-          all-entries (chroma/query-entries :limit limit-val
-                                            :include-expired? false)
-          candidates (filter #(crystal/scope-eligible? % opts) all-entries)
-          plans (for [entry candidates]
-                  (let [xpoll-projects (crystal/extract-xpoll-projects entry)
-                        tiers (crystal/scope-tiers entry)]
-                    {:id (:id entry)
-                     :type (:type entry)
-                     :duration (:duration entry)
-                     :cross_projects (vec xpoll-projects)
-                     :cross_project_count (count xpoll-projects)
-                     :tiers_to_promote tiers
-                     :next_duration (name (reduce (fn [d _] (crystal/current-duration->next d))
-                                                  (keyword (:duration entry))
-                                                  (range tiers)))}))
-          results (if dry_run
-                    (vec plans)
-                    (vec (for [plan plans
-                               :let [entry (chroma/get-entry-by-id (:id plan))]
-                               :when entry]
-                           (promote-entry-by-tiers! entry (:tiers_to_promote plan)))))
-          promoted-count (count (filter #(or (:promoted %) (not dry_run)) results))
-          summary {:promoted (if dry_run 0 promoted-count)
-                   :candidates (count candidates)
-                   :total_scanned (count all-entries)
-                   :dry_run (boolean dry_run)
-                   :entries (vec (if dry_run
-                                   (mapv #(select-keys % [:id :duration :cross_projects
-                                                          :cross_project_count :next_duration])
-                                         plans)
-                                   (mapv #(select-keys % [:id :promoted :old_duration
-                                                          :new_duration :tiers_promoted])
-                                         results)))}]
-      (log/info "mcp-memory-xpoll-promote:"
-                (:promoted summary) "promoted of" (:candidates summary)
-                "candidates from" (:total_scanned summary) "entries"
-                (when dry_run "(dry run)"))
-      (mcp-json summary))))
-
-(defn run-xpoll-cycle!
-  "Run bounded xpoll auto-promotion cycle for crystallize-session hooks."
-  [{:keys [directory limit]}]
-  (try
-    (if-not (chroma/embedding-configured?)
-      {:promoted 0 :candidates 0 :total-scanned 0 :error "chroma-not-configured"}
-      (let [limit-val (or (some-> limit int) 100)
-            all-entries (chroma/query-entries :limit limit-val
-                                              :include-expired? false)
-            candidates (filter #(crystal/scope-eligible? %) all-entries)
-            results (vec (for [entry candidates
-                               :let [tiers (crystal/scope-tiers entry)]
-                               :when (pos? tiers)]
-                           (try
-                             (promote-entry-by-tiers! entry tiers)
-                             (catch Exception e
-                               (log/warn "run-xpoll-cycle!: failed to promote" (:id entry)
-                                         ":" (.getMessage e))
-                               {:id (:id entry) :promoted false :error (.getMessage e)}))))
-            promoted-count (count (filter :promoted results))]
-        (when (pos? promoted-count)
-          (log/info "Xpoll auto-promote:" promoted-count
-                    "of" (count candidates) "candidates promoted"))
-        {:promoted promoted-count
-         :candidates (count candidates)
-         :total-scanned (count all-entries)
-         :entries (mapv #(select-keys % [:id :promoted :old_duration :new_duration :tiers_promoted])
-                        results)}))
-    (catch Exception e
-      (log/warn "run-xpoll-cycle! failed (non-blocking):" (.getMessage e))
-      {:error (.getMessage e) :promoted 0 :candidates 0 :total-scanned 0})))
+(def handle-decay decay/handle-decay)
+(def run-decay-cycle! decay/run-decay-cycle!)
+(def handle-xpoll-promote promo/handle-xpoll-promote)
+(def run-xpoll-cycle! promo/run-xpoll-cycle!)
