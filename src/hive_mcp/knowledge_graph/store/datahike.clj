@@ -3,6 +3,7 @@
   (:require [datahike.api :as d]
             [hive-mcp.protocols.kg :as kg]
             [hive-mcp.knowledge-graph.schema :as schema]
+            [hive-mcp.dns.result :refer [rescue]]
             [clojure.java.io :as io]
             [taoensso.timbre :as log]))
 
@@ -103,11 +104,7 @@
   (reset-conn! [this]
     (log/info "Resetting Datahike KG store" {:cfg cfg})
     (when-let [c @conn-atom]
-      (try
-        (d/release c)
-        (catch Exception e
-          (log/warn "Failed to release Datahike conn during reset"
-                    {:error (.getMessage e)}))))
+      (rescue nil (d/release c)))
     (when (d/database-exists? cfg)
       (d/delete-database cfg))
     (reset! conn-atom nil)
@@ -116,11 +113,7 @@
   (close! [_this]
     (when-let [c @conn-atom]
       (log/info "Closing Datahike KG store" {:cfg cfg})
-      (try
-        (d/release c)
-        (catch Exception e
-          (log/warn "Failed to release Datahike connection"
-                    {:error (.getMessage e)})))
+      (rescue nil (d/release c))
       (reset! conn-atom nil)))
 
   kg/ITemporalKGStore
@@ -137,14 +130,10 @@
 (defn create-store
   "Create a new Datahike-backed graph store."
   [& [opts]]
-  (try
-    (let [cfg (make-config opts)]
-      (log/info "Creating Datahike graph store" {:cfg cfg})
-      (->DatahikeStore (atom nil) cfg))
-    (catch Exception e
-      (log/error "Failed to create Datahike store, falling back to DataScript"
-                 {:error (.getMessage e) :opts opts})
-      nil)))
+  (rescue nil
+          (let [cfg (make-config opts)]
+            (log/info "Creating Datahike graph store" {:cfg cfg})
+            (->DatahikeStore (atom nil) cfg))))
 
 (defn history-db
   "Get full history database for temporal queries."

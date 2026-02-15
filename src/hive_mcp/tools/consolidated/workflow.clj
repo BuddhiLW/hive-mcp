@@ -12,12 +12,12 @@
    chains."
   (:require [hive-mcp.tools.cli :refer [make-cli-handler]]
             [hive-mcp.tools.core :refer [mcp-error mcp-json]]
+            [hive-mcp.tools.result-bridge :as rb]
             [hive-mcp.tools.consolidated.session :as c-session]
             [hive-mcp.tools.consolidated.workflow.forge-ops :as forge-ops]
             [hive-mcp.tools.consolidated.workflow.forge-cycle :as forge-cycle]
             [hive-mcp.config.core :as config]
             [hive-mcp.server.guards :as guards]
-            [hive-mcp.dns.result :as result]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -33,25 +33,6 @@
          :total-sparked   0
          :total-strikes   0}))
 
-;; ── Result Helpers ──────────────────────────────────────────────────────────
-
-(defn- try-result
-  "Execute f in try/catch, returning Result. f must return a Result ({:ok ...}).
-   Exceptions -> (result/err category {:message ...})."
-  [category f]
-  (try (f)
-       (catch clojure.lang.ExceptionInfo e
-         (result/err category {:message (ex-message e) :data (ex-data e)}))
-       (catch Exception e
-         (result/err category {:message (ex-message e) :class (str (class e))}))))
-
-(defn- result->mcp
-  "Convert a Result to MCP response: ok -> mcp-json, err -> mcp-error."
-  [r]
-  (if (result/ok? r)
-    (mcp-json (:ok r))
-    (mcp-error (or (:message r) (str (:error r))))))
-
 ;; ── Forge Strike Handlers ───────────────────────────────────────────────────
 
 (defn handle-forge-strike-legacy
@@ -63,14 +44,14 @@
     (mcp-json {:success false
                :message "Forge is quenched. Use forge-status to check or restart."
                :quenched? true})
-    (result->mcp (try-result :forge/strike-legacy-failed
-                             #(forge-cycle/forge-strike-legacy* params forge-state)))))
+    (rb/result->mcp (rb/try-result :forge/strike-legacy-failed
+                                   #(forge-cycle/forge-strike-legacy* params forge-state)))))
 
 (defn- do-forge-strike-fsm
   "FSM-driven forge strike."
   [params]
-  (result->mcp (try-result :forge/strike-failed
-                           #(forge-cycle/fsm-forge-strike* params forge-state))))
+  (rb/result->mcp (rb/try-result :forge/strike-failed
+                                 #(forge-cycle/fsm-forge-strike* params forge-state))))
 
 (defn handle-forge-strike
   "Execute ONE forge cycle, FSM-driven by default with legacy config gate.
@@ -106,8 +87,8 @@
 (defn handle-forge-status
   "Belt dashboard: show forge state, active lings, kanban summary."
   [params]
-  (result->mcp (try-result :forge/status-failed
-                           #(forge-ops/forge-status* params forge-state))))
+  (rb/result->mcp (rb/try-result :forge/status-failed
+                                 #(forge-ops/forge-status* params forge-state))))
 
 ;; ── Forge Quench ────────────────────────────────────────────────────────────
 

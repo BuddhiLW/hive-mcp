@@ -10,8 +10,6 @@
 
   (:require [hive-mcp.tools.core :refer [mcp-json mcp-error]]
             [hive-mcp.tools.memory-kanban :as mem-kanban]
-            [hive-mcp.plan.schema :as schema]
-            [hive-mcp.plan.parser :as parser]
             [hive-mcp.plan.fsm :as plan-fsm]
             [hive-mcp.chroma.core :as chroma]
             [hive-mcp.plan.plans :as plans]
@@ -23,7 +21,6 @@
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
-
 
 (defn compute-waves
   "Compute DAG wave numbers for plan steps based on dependencies.
@@ -71,7 +68,6 @@
                              (recur new-assigned new-remaining)))))]
     (assign-waves {} (map :id steps))))
 
-
 (defn- create-kanban-task!
   "Create a kanban task for a plan step.
    Returns {:ok task-id} or {:error message}"
@@ -92,7 +88,6 @@
             {:error "Failed to get task ID from kanban create response"}))))
     (catch Exception e
       {:error (str "Failed to create kanban task: " (.getMessage e))})))
-
 
 (defn- create-plan-decision-edge!
   "Create KG edge: Plan --derived-from--> Decision.
@@ -168,7 +163,6 @@
          :source-type :automated
          :created-by (str "plan_to_kanban" (when agent-id (str ":" agent-id)))})))))
 
-
 (defn- build-execute-fn
   "Build the execute function for the Plan FSM.
 
@@ -228,7 +222,6 @@
          :waves waves
          :step-mapping step-id-to-task-id
          :decision-id decision-id}))))
-
 
 (defn plan-to-kanban
   "Convert a plan memory entry (or file) to kanban tasks with KG edges.
@@ -320,7 +313,6 @@
                     :directory directory
                     :plan-path plan_path
                     :auto-assign? auto_assign)))
-
 
 (def tools
   [{:name "plan_to_kanban"

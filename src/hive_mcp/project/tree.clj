@@ -15,6 +15,7 @@
             [clojure.edn :as edn]
             [clojure.string :as str]
             [datascript.core :as d]
+            [hive-mcp.dns.result :refer [rescue]]
             [hive-mcp.knowledge-graph.scope :as scope]
             [taoensso.timbre :as log])
   (:import [java.time Instant]))
@@ -92,13 +93,10 @@
   "Read and parse .hive-project.edn from directory.
    Returns nil on failure or if file doesn't exist."
   [dir]
-  (try
-    (let [config-file (io/file dir ".hive-project.edn")]
-      (when (.exists config-file)
-        (-> config-file slurp edn/read-string)))
-    (catch Exception e
-      (log/debug "Failed to read .hive-project.edn:" dir (.getMessage e))
-      nil)))
+  (rescue nil
+          (let [config-file (io/file dir ".hive-project.edn")]
+            (when (.exists config-file)
+              (-> config-file slurp edn/read-string)))))
 
 (defn- find-git-root
   "Find git root directory from path.
@@ -233,12 +231,9 @@
 (defn query-all-projects
   "Query all project entities from DataScript."
   []
-  (try
-    (query '[:find [(pull ?e [*]) ...]
-             :where [?e :project/id _]])
-    (catch Exception _
-      ;; Schema might not be registered yet or no data
-      [])))
+  (rescue []
+          (query '[:find [(pull ?e [*]) ...]
+                   :where [?e :project/id _]])))
 
 (defn query-project-by-id
   "Query a single project by ID."
@@ -418,28 +413,25 @@
    - Any project was scanned > staleness-threshold-hours ago
    - Root path doesn't match any existing project paths"
   [root-path]
-  (try
-    (let [projects (query-all-projects)]
-      (cond
+  (rescue true
+          (let [projects (query-all-projects)]
+            (cond
         ;; No projects - definitely stale
-        (empty? projects)
-        true
+              (empty? projects)
+              true
 
         ;; Check if root path is covered
-        (not-any? #(str/starts-with? (:project/path %) root-path) projects)
-        true
+              (not-any? #(str/starts-with? (:project/path %) root-path) projects)
+              true
 
         ;; Check timestamp staleness
-        :else
-        (let [now (System/currentTimeMillis)
-              threshold-ms (* staleness-threshold-hours 60 60 1000)]
-          (some (fn [p]
-                  (when-let [scanned (:project/last-scanned p)]
-                    (> (- now (.getTime scanned)) threshold-ms)))
-                projects))))
-    (catch Exception e
-      (log/debug "Staleness check failed, assuming stale:" (.getMessage e))
-      true)))
+              :else
+              (let [now (System/currentTimeMillis)
+                    threshold-ms (* staleness-threshold-hours 60 60 1000)]
+                (some (fn [p]
+                        (when-let [scanned (:project/last-scanned p)]
+                          (> (- now (.getTime scanned)) threshold-ms)))
+                      projects))))))
 
 (defn maybe-scan-project-tree!
   "Scan project tree if stale.

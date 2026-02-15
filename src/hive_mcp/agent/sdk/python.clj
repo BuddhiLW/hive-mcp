@@ -1,6 +1,7 @@
 (ns hive-mcp.agent.sdk.python
   "Python bridge helpers for libpython-clj interop."
-  (:require [taoensso.timbre :as log]))
+  (:require [hive-mcp.dns.result :refer [rescue]]
+            [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -8,13 +9,9 @@
 (defn py-import
   "Safely import a Python module via libpython-clj."
   [module-name]
-  (try
-    (let [import-fn (requiring-resolve 'libpython-clj2.python/import-module)]
-      (import-fn module-name))
-    (catch Exception e
-      (log/warn "[sdk.python] Failed to import Python module"
-                {:module module-name :error (ex-message e)})
-      nil)))
+  (rescue nil
+          (let [import-fn (requiring-resolve 'libpython-clj2.python/import-module)]
+            (import-fn module-name))))
 
 (defn py-call
   "Call a Python method/attribute with args."
@@ -32,13 +29,9 @@
 (defn py-attr
   "Get a Python object attribute."
   [obj attr]
-  (try
-    (let [attr-fn (requiring-resolve 'libpython-clj2.python/get-attr)]
-      (attr-fn obj attr))
-    (catch Exception e
-      (log/warn "[sdk.python] Failed to get Python attribute"
-                {:attr attr :error (ex-message e)})
-      nil)))
+  (rescue nil
+          (let [attr-fn (requiring-resolve 'libpython-clj2.python/get-attr)]
+            (attr-fn obj attr))))
 
 (defn py-call-kw
   "Call a Python callable with positional and keyword arguments."
@@ -83,10 +76,6 @@
 (defn py-get-global
   "Get a variable from Python's __main__ namespace."
   [var-name]
-  (try
-    (let [main-mod (py-import "__main__")]
-      (py-attr main-mod var-name))
-    (catch Exception e
-      (log/warn "[sdk.python] Failed to get Python global"
-                {:var-name var-name :error (ex-message e)})
-      nil)))
+  (rescue nil
+          (let [main-mod (py-import "__main__")]
+            (py-attr main-mod var-name))))

@@ -5,7 +5,8 @@
             [hive-mcp.emacs.client :as ec]
             [hive-mcp.dns.validation :as v]
             [clojure.data.json :as json]
-            [taoensso.timbre :as log]))
+            [taoensso.timbre :as log]
+            [hive-mcp.dns.result :refer [rescue]]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -56,11 +57,8 @@
 (defn- parse-collect-result
   "Parse elisp collect result, returns parsed map or nil on failure."
   [result]
-  (try
-    (json/read-str result :key-fn keyword)
-    (catch Exception e
-      (log/warn "Failed to parse collect result:" result "Error:" (.getMessage e))
-      nil)))
+  (rescue nil
+          (json/read-str result :key-fn keyword)))
 
 (defn- poll-once
   "Execute single poll to elisp, returns {:continue bool, :response response}."

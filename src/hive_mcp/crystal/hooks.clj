@@ -328,6 +328,9 @@
 (def ^:private empty-memory-decay-stats
   {:decayed 0 :expired 0 :total-scanned 0})
 
+(def ^:private empty-file-provenance-stats
+  {:files-captured 0})
+
 ;; =============================================================================
 ;; Lifecycle Operations — delegates to extensions
 ;; =============================================================================
@@ -335,8 +338,10 @@
 (defn- run-lifecycle-ops!
   "Run post-crystallization lifecycle operations. Delegates to extensions.
    All non-blocking. Returns map with :promotion-stats :decay-stats
-   :xpoll-stats :memory-decay-stats."
-  [project-id directory]
+   :xpoll-stats :memory-decay-stats :file-provenance-stats.
+
+   Optional harvested map is passed through to :ch/e for provenance capture."
+  [project-id directory & {:keys [harvested]}]
   (let [promo   (surface-rescue-error
                  (result/rescue empty-promotion-stats
                                 (delegate-or-noop :ch/a empty-promotion-stats
@@ -352,11 +357,18 @@
         mdecay  (surface-rescue-error
                  (result/rescue empty-memory-decay-stats
                                 (delegate-or-noop :ch/d empty-memory-decay-stats
-                                                  [{:directory directory :limit 50}])))]
-    {:promotion-stats    (select-keys promo  [:promoted :skipped :below :evaluated :error])
-     :decay-stats        (select-keys decay  [:decayed :pruned :fresh :evaluated :error])
-     :xpoll-stats        (select-keys xpoll  [:promoted :candidates :total-scanned :error])
-     :memory-decay-stats (select-keys mdecay [:decayed :expired :total-scanned :error])}))
+                                                  [{:directory directory :limit 50}])))
+        fprov   (surface-rescue-error
+                 (result/rescue empty-file-provenance-stats
+                                (delegate-or-noop :ch/e empty-file-provenance-stats
+                                                  [{:directory directory
+                                                    :project-id project-id
+                                                    :harvested harvested}])))]
+    {:promotion-stats       (select-keys promo  [:promoted :skipped :below :evaluated :error])
+     :decay-stats           (select-keys decay  [:decayed :pruned :fresh :evaluated :error])
+     :xpoll-stats           (select-keys xpoll  [:promoted :candidates :total-scanned :error])
+     :memory-decay-stats    (select-keys mdecay [:decayed :expired :total-scanned :error])
+     :file-provenance-stats (select-keys fprov  [:files-captured :files-skipped :edges-created :error])}))
 
 ;; =============================================================================
 ;; Temporal Block Formatting (Step-5: Auto-KG wrap metadata)
@@ -400,7 +412,7 @@
                       :accessed (count (or (:memory-ids-accessed harvested) []))}))]
     (if (nil? summary)
       ;; No content — still run lifecycle ops for maintenance
-      (let [lifecycle (run-lifecycle-ops! project-id directory)]
+      (let [lifecycle (run-lifecycle-ops! project-id directory :harvested harvested)]
         (log/info "No content to crystallize for session:" (crystal/session-id))
         (merge {:skipped true
                 :reason "no-content"
@@ -426,7 +438,7 @@
                                           :content-hash (chroma/content-hash content)}))]
         (if (result/ok? store-r)
           (let [entry-id (:ok store-r)
-                lifecycle (run-lifecycle-ops! project-id directory)]
+                lifecycle (run-lifecycle-ops! project-id directory :harvested harvested)]
             (log/info "Created session summary in Chroma:" entry-id "project:" project-id)
             (merge {:summary-id entry-id
                     :session (crystal/session-id)

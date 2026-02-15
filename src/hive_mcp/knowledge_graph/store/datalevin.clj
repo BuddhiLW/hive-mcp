@@ -3,6 +3,7 @@
   (:require [datalevin.core :as dtlv]
             [hive-mcp.protocols.kg :as kg]
             [hive-mcp.knowledge-graph.schema :as schema]
+            [hive-mcp.dns.result :refer [rescue]]
             [clojure.java.io :as io]
             [taoensso.timbre :as log]))
 
@@ -112,11 +113,7 @@
   (reset-conn! [this]
     (log/info "Resetting Datalevin KG store" {:path db-path})
     (when-let [c @conn-atom]
-      (try
-        (dtlv/close c)
-        (catch Exception e
-          (log/warn "Failed to close Datalevin conn during reset"
-                    {:error (.getMessage e)}))))
+      (rescue nil (dtlv/close c)))
     (let [dir (io/file db-path)]
       (when (.exists dir)
         (doseq [f (reverse (file-seq dir))]
@@ -127,11 +124,7 @@
   (close! [_this]
     (when-let [c @conn-atom]
       (log/info "Closing Datalevin KG store" {:path db-path})
-      (try
-        (dtlv/close c)
-        (catch Exception e
-          (log/warn "Failed to close Datalevin connection"
-                    {:error (.getMessage e)})))
+      (rescue nil (dtlv/close c))
       (reset! conn-atom nil))))
 
 (def ^:private default-db-path "data/kg/datalevin")
@@ -139,11 +132,7 @@
 (defn create-store
   "Create a new Datalevin-backed graph store."
   [& [{:keys [db-path extra-schema] :or {db-path default-db-path}}]]
-  (try
-    (log/info "Creating Datalevin graph store" {:path db-path
-                                                :extra-schema? (some? extra-schema)})
-    (->DatalevinStore (atom nil) db-path extra-schema)
-    (catch Exception e
-      (log/error "Failed to create Datalevin store, falling back to DataScript"
-                 {:error (.getMessage e) :path db-path})
-      nil)))
+  (rescue nil
+          (log/info "Creating Datalevin graph store" {:path db-path
+                                                      :extra-schema? (some? extra-schema)})
+          (->DatalevinStore (atom nil) db-path extra-schema)))

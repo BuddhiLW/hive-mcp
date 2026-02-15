@@ -54,7 +54,8 @@
    (execute! [:forge/cycle-complete {:agent-id \"ling-1\" :results {...}}])
    ```"
 
-  (:require [taoensso.timbre :as log]))
+  (:require [hive-mcp.dns.result :refer [rescue]]
+            [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -138,18 +139,12 @@
   "Lazily resolve hive-mcp.events.core/dispatch to avoid circular deps.
    Returns the dispatch function or nil."
   []
-  (try
-    (requiring-resolve 'hive-mcp.events.core/dispatch)
-    (catch Exception _
-      nil)))
+  (rescue nil (requiring-resolve 'hive-mcp.events.core/dispatch)))
 
 (defn- resolve-handler-registered-fn
   "Lazily resolve hive-mcp.events.core/handler-registered? to avoid circular deps."
   []
-  (try
-    (requiring-resolve 'hive-mcp.events.core/handler-registered?)
-    (catch Exception _
-      nil)))
+  (rescue nil (requiring-resolve 'hive-mcp.events.core/handler-registered?)))
 
 (defn- execute-effects!
   "Execute effects from an orchestration result through hive-events fx system.
@@ -164,17 +159,14 @@
     (when (seq fx-map)
       (let [event-id (first event)]
         (doseq [[fx-id fx-data] fx-map]
-          (try
-            (if-let [get-fx (requiring-resolve 'hive.events.fx/get-fx)]
-              (if-let [handler (get-fx fx-id)]
-                (do
-                  (handler fx-data)
-                  (log/trace "[multi] Effect executed:" fx-id))
-                (log/warn "[multi] No fx handler for:" fx-id "in orchestration of" event-id))
-              (log/warn "[multi] Cannot resolve hive.events.fx/get-fx"))
-            (catch Exception e
-              (log/error "[multi] Effect" fx-id "failed in orchestration of" event-id
-                         ":" (.getMessage e)))))))))
+          (rescue nil
+                  (if-let [get-fx (requiring-resolve 'hive.events.fx/get-fx)]
+                    (if-let [handler (get-fx fx-id)]
+                      (do
+                        (handler fx-data)
+                        (log/trace "[multi] Effect executed:" fx-id))
+                      (log/warn "[multi] No fx handler for:" fx-id "in orchestration of" event-id))
+                    (log/warn "[multi] Cannot resolve hive.events.fx/get-fx"))))))))
 
 (defn- dispatch-event!
   "Dispatch a single event through the core event system.
@@ -188,10 +180,7 @@
       (if (and handler-registered? (handler-registered? (first event)))
         ;; Delegate to core dispatch (has interceptors, metrics, etc.)
         (when dispatch-fn
-          (try
-            (dispatch-fn event)
-            (catch Exception e
-              (log/error "[multi] Core dispatch failed for" (first event) ":" (.getMessage e)))))
+          (rescue nil (dispatch-fn event)))
         ;; Try orchestration (recursive, for multi-only events)
         (let [result (orchestrate event)]
           (when result
@@ -260,12 +249,7 @@
   [event]
   {:pre [(valid-event? event)]}
   (future
-    (try
-      (execute! event)
-      (catch Exception e
-        (log/error "[multi] Async orchestration failed for" (first event)
-                   ":" (.getMessage e))
-        nil))))
+    (rescue nil (execute! event))))
 
 ;; =============================================================================
 ;; Middleware / Wrapping

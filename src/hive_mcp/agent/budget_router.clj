@@ -19,6 +19,7 @@
      :services.forge.budget-routing  — enable/disable (default false)
      :services.forge.fleet-budget    — fleet-wide USD cap (default 20.0)"
   (:require [hive-mcp.config.core :as config]
+            [hive-mcp.dns.result :refer [rescue]]
             [taoensso.timbre :as log]))
 
 ;; ---------------------------------------------------------------------------
@@ -102,12 +103,9 @@
 (defn- resolve-budget-status
   "Resolve budget status for an agent via hooks.budget."
   [agent-id]
-  (try
-    (when-let [status-fn (requiring-resolve 'hive-mcp.agent.hooks.budget/get-budget-status)]
-      (status-fn agent-id))
-    (catch Exception e
-      (log/debug "[budget-router] Could not resolve budget status" {:error (ex-message e)})
-      nil)))
+  (rescue nil
+          (when-let [status-fn (requiring-resolve 'hive-mcp.agent.hooks.budget/get-budget-status)]
+            (status-fn agent-id))))
 
 (defn- resolve-all-budget-statuses
   "Get all agent budget statuses."

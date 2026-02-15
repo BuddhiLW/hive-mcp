@@ -7,7 +7,8 @@
             [hive-mcp.chroma.core :as chroma]
             [hive-mcp.config.core :as config]
             [hive-mcp.tools.swarm.prompt :as prompt]
-            [clojure.data.json :as json]
+            [hive-mcp.tools.result-bridge :as rb]
+            [hive-mcp.dns.result :as result]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -15,159 +16,63 @@
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 ;;; ============================================================
-;;; Handlers
+;;; Pure Result-returning functions
 ;;; ============================================================
 
-(defn handle-preset-search
-  "Search presets using semantic similarity.
-   Returns presets matching the natural language query."
-  [{:keys [query limit category]}]
-  (log/info "preset-search:" query)
-  (if-not (chroma/embedding-configured?)
-    {:type "text"
-     :text (json/write-str
-            {:error "Chroma not configured"
-             :message "Semantic search requires Chroma with embedding provider."
-             :fallback "Use preset_list to see available presets by name."})
-     :isError true}
-    (try
-      (let [results (presets/search-presets query
-                                            :limit (or limit 5)
-                                            :category category)]
-        {:type "text"
-         :text (json/write-str {:results results
-                                :count (count results)
-                                :query query})})
-      (catch Exception e
-        {:type "text"
-         :text (json/write-str {:error (str "Search failed: " (.getMessage e))})
-         :isError true}))))
+(defn- file-fallback-preset
+  "Try to get a preset from file-based fallback."
+  [name]
+  (let [preset-dir (or (config/get-service-value :presets :dir :env "HIVE_MCP_PRESETS_DIR")
+                       (str (System/getProperty "user.dir") "/presets"))]
+    (presets/get-preset-from-file preset-dir name)))
 
-(defn handle-preset-get
-  "Get full content of a specific preset by name."
-  [{:keys [name]}]
-  (log/info "preset-get:" name)
+(defn- search* [{:keys [query limit category]}]
   (if-not (chroma/embedding-configured?)
-    ;; Fallback to file-based
-    (let [preset-dir (config/get-service-value :presets :dir :env "HIVE_MCP_PRESETS_DIR")
-          preset-dir (or preset-dir
-                         (str (System/getProperty "user.dir") "/presets"))]
-      (if-let [preset (presets/get-preset-from-file preset-dir name)]
-        {:type "text"
-         :text (json/write-str {:preset preset
-                                :source "file-fallback"})}
-        {:type "text"
-         :text (json/write-str {:error (str "Preset not found: " name)})
-         :isError true}))
-    (try
-      (if-let [preset (presets/get-preset name)]
-        {:type "text"
-         :text (json/write-str {:preset preset})}
-        ;; Chroma lookup failed - try file-based fallback
-        (let [preset-dir (or (config/get-service-value :presets :dir :env "HIVE_MCP_PRESETS_DIR")
-                             (str (System/getProperty "user.dir") "/presets"))]
-          (if-let [preset (presets/get-preset-from-file preset-dir name)]
-            {:type "text"
-             :text (json/write-str {:preset preset
-                                    :source "file-fallback"})}
-            {:type "text"
-             :text (json/write-str {:error (str "Preset not found: " name)
-                                    :hint "Try preset_list to see available presets"})
-             :isError true})))
-      (catch Exception e
-        {:type "text"
-         :text (json/write-str {:error (str "Failed to get preset: " (.getMessage e))})
-         :isError true}))))
+    (result/err :preset/chroma-not-configured
+                {:message "Chroma not configured. Semantic search requires Chroma with embedding provider."})
+    (let [results (presets/search-presets query :limit (or limit 5) :category category)]
+      (result/ok {:results results :count (count results) :query query}))))
 
-(defn handle-preset-list
-  "List all available presets."
-  [_]
-  (log/info "preset-list")
+(defn- get* [{:keys [name]}]
   (if-not (chroma/embedding-configured?)
-    {:type "text"
-     :text (json/write-str {:error "Chroma not configured"
-                            :message "Use file-based presets via swarm_list_presets"})}
-    (try
-      (let [presets (presets/list-presets)]
-        {:type "text"
-         :text (json/write-str {:presets presets
-                                :count (count presets)})})
-      (catch Exception e
-        {:type "text"
-         :text (json/write-str {:error (str "Failed to list presets: " (.getMessage e))})
-         :isError true}))))
+    (if-let [preset (file-fallback-preset name)]
+      (result/ok {:preset preset :source "file-fallback"})
+      (result/err :preset/not-found {:message (str "Preset not found: " name)}))
+    (if-let [preset (presets/get-preset name)]
+      (result/ok {:preset preset})
+      (if-let [preset (file-fallback-preset name)]
+        (result/ok {:preset preset :source "file-fallback"})
+        (result/err :preset/not-found
+                    {:message (str "Preset not found: " name ". Try preset_list to see available presets")})))))
 
-(defn handle-preset-list-slim
-  "List presets with minimal info (name + category only).
-  Optimized for lazy-loading context - minimal token usage."
-  [_]
-  (log/info "preset list_slim")
-  (try
+(defn- list-presets* [_]
+  (if-not (chroma/embedding-configured?)
+    (result/ok {:error "Chroma not configured"
+                :message "Use file-based presets via swarm_list_presets"})
     (let [presets (presets/list-presets)]
-      {:type "text"
-       :text (json/write-str
-              {:presets (mapv #(select-keys % [:name :category]) presets)
-               :count (count presets)})})
-    (catch Exception e
-      {:type "text"
-       :text (json/write-str {:error (str "Failed: " (.getMessage e))})
-       :isError true})))
+      (result/ok {:presets presets :count (count presets)}))))
 
-(defn handle-preset-core
-  "Get minimal summary of a preset for lazy loading.
-   Returns ~200 tokens instead of full ~1500 token content.
-   Use this when you need preset info but not the full instructions."
-  [{:keys [name]}]
-  (log/info "preset core:" name)
+(defn- list-presets-slim* [_]
+  (let [presets (presets/list-presets)]
+    (result/ok {:presets (mapv #(select-keys % [:name :category]) presets)
+                :count (count presets)})))
+
+(defn- core* [{:keys [name]}]
   (if-not (chroma/embedding-configured?)
-    ;; Fallback to file-based
-    (let [preset-dir (config/get-service-value :presets :dir :env "HIVE_MCP_PRESETS_DIR")
-          preset-dir (or preset-dir
-                         (str (System/getProperty "user.dir") "/presets"))]
-      (if-let [preset (presets/get-preset-from-file preset-dir name)]
-        {:type "text"
-         :text (json/write-str {:core (presets/extract-preset-core preset)
-                                :name name
-                                :source "file-fallback"})}
-        {:type "text"
-         :text (json/write-str {:error (str "Preset not found: " name)})
-         :isError true}))
-    (try
-      (if-let [preset (presets/get-preset name)]
-        {:type "text"
-         :text (json/write-str {:core (presets/extract-preset-core preset)
-                                :name name
-                                :source "chroma"})}
-        ;; Chroma lookup failed - try file-based fallback
-        (let [preset-dir (or (config/get-service-value :presets :dir :env "HIVE_MCP_PRESETS_DIR")
-                             (str (System/getProperty "user.dir") "/presets"))]
-          (if-let [preset (presets/get-preset-from-file preset-dir name)]
-            {:type "text"
-             :text (json/write-str {:core (presets/extract-preset-core preset)
-                                    :name name
-                                    :source "file-fallback"})}
-            {:type "text"
-             :text (json/write-str {:error (str "Preset not found: " name)
-                                    :hint "Try preset_list to see available presets"})
-             :isError true})))
-      (catch Exception e
-        {:type "text"
-         :text (json/write-str {:error (str "Failed to get preset core: " (.getMessage e))})
-         :isError true}))))
+    (if-let [preset (file-fallback-preset name)]
+      (result/ok {:core (presets/extract-preset-core preset)
+                  :name name :source "file-fallback"})
+      (result/err :preset/not-found {:message (str "Preset not found: " name)}))
+    (if-let [preset (presets/get-preset name)]
+      (result/ok {:core (presets/extract-preset-core preset)
+                  :name name :source "chroma"})
+      (if-let [preset (file-fallback-preset name)]
+        (result/ok {:core (presets/extract-preset-core preset)
+                    :name name :source "file-fallback"})
+        (result/err :preset/not-found
+                    {:message (str "Preset not found: " name ". Try preset_list to see available presets")})))))
 
-(defn handle-preset-header
-  "Generate preset header for system prompt.
-
-   When lazy=true (default): returns compact header with names + query instructions (~300 tokens)
-   When lazy=false: returns full preset content concatenated
-
-   Params:
-   - presets: vector of preset names
-   - lazy: boolean (default true)
-
-   Use case: elisp calls this to build system prompts for spawned lings."
-  [{:keys [presets lazy]}]
-  (log/info "preset header:" presets "lazy:" lazy)
+(defn- header* [{:keys [presets lazy]}]
   (let [lazy? (if (nil? lazy) true lazy)
         preset-names (cond
                        (nil? presets) []
@@ -175,118 +80,118 @@
                        :else [presets])]
     (when (empty? preset-names)
       (log/warn "preset header called with no presets"))
-    (try
-      (if lazy?
-        ;; Lazy mode: compact header with fetch instructions
-        {:type "text"
-         :text (json/write-str {:header (prompt/build-lazy-preset-header preset-names)
-                                :mode "lazy"
-                                :preset-count (count preset-names)
-                                :approx-tokens 300})}
-        ;; Full mode: concatenate all preset content
-        (let [preset-contents
-              (for [name preset-names]
-                (if-let [preset (or (presets/get-preset name)
-                                    (let [dir (or (config/get-service-value :presets :dir :env "HIVE_MCP_PRESETS_DIR")
-                                                  (str (System/getProperty "user.dir") "/presets"))]
-                                      (presets/get-preset-from-file dir name)))]
-                  {:name name :content (:content preset)}
-                  {:name name :error "not found"}))
-              full-content (->> preset-contents
-                                (filter :content)
-                                (map :content)
-                                (str/join "\n\n---\n\n"))
-              missing (->> preset-contents
-                           (filter :error)
-                           (map :name))]
-          {:type "text"
-           :text (json/write-str {:header full-content
-                                  :mode "full"
-                                  :preset-count (count preset-names)
-                                  :approx-tokens (* 1500 (count preset-names))
-                                  :missing (when (seq missing) missing)})}))
-      (catch Exception e
-        {:type "text"
-         :text (json/write-str {:error (str "Failed to build header: " (.getMessage e))})
-         :isError true}))))
+    (if lazy?
+      (result/ok {:header (prompt/build-lazy-preset-header preset-names)
+                  :mode "lazy"
+                  :preset-count (count preset-names)
+                  :approx-tokens 300})
+      (let [preset-contents (for [pname preset-names]
+                              (if-let [preset (or (presets/get-preset pname)
+                                                  (file-fallback-preset pname))]
+                                {:name pname :content (:content preset)}
+                                {:name pname :error "not found"}))
+            full-content (->> preset-contents
+                              (filter :content)
+                              (map :content)
+                              (str/join "\n\n---\n\n"))
+            missing (->> preset-contents
+                         (filter :error)
+                         (map :name))]
+        (result/ok {:header full-content
+                    :mode "full"
+                    :preset-count (count preset-names)
+                    :approx-tokens (* 1500 (count preset-names))
+                    :missing (when (seq missing) missing)})))))
+
+(defn- migrate* [{:keys [directory]}]
+  (if-not (chroma/embedding-configured?)
+    (result/err :preset/chroma-not-configured
+                {:message "Chroma not configured. Configure Chroma with embedding provider before migration."})
+    (result/ok (presets/migrate-presets-from-dir! directory))))
+
+(defn- status* [_]
+  (result/ok (presets/status)))
+
+(defn- add* [{:keys [name content category tags]}]
+  (if-not (chroma/embedding-configured?)
+    (result/err :preset/chroma-not-configured {:message "Chroma not configured"})
+    (let [preset {:id name :name name :title name
+                  :content content
+                  :category (or category "custom")
+                  :tags (if (coll? tags) (str/join "," tags) (or tags name))
+                  :source "custom"}
+          id (presets/index-preset! preset)]
+      (result/ok {:success true :id id :message (str "Added preset: " name)}))))
+
+(defn- delete* [{:keys [name]}]
+  (if-not (chroma/embedding-configured?)
+    (result/err :preset/chroma-not-configured {:message "Chroma not configured"})
+    (do (presets/delete-preset! name)
+        (result/ok {:success true :message (str "Deleted preset: " name)}))))
+
+;;; ============================================================
+;;; Handlers (MCP boundary)
+;;; ============================================================
+
+(defn handle-preset-search
+  "Search presets using semantic similarity."
+  [params]
+  (log/info "preset-search:" (:query params))
+  (rb/result->mcp (rb/try-result :preset/search #(search* params))))
+
+(defn handle-preset-get
+  "Get full content of a specific preset by name."
+  [params]
+  (log/info "preset-get:" (:name params))
+  (rb/result->mcp (rb/try-result :preset/get #(get* params))))
+
+(defn handle-preset-list
+  "List all available presets."
+  [params]
+  (log/info "preset-list")
+  (rb/result->mcp (rb/try-result :preset/list #(list-presets* params))))
+
+(defn handle-preset-list-slim
+  "List presets with minimal info (name + category only)."
+  [params]
+  (log/info "preset list_slim")
+  (rb/result->mcp (rb/try-result :preset/list-slim #(list-presets-slim* params))))
+
+(defn handle-preset-core
+  "Get minimal summary of a preset for lazy loading."
+  [params]
+  (log/info "preset core:" (:name params))
+  (rb/result->mcp (rb/try-result :preset/core #(core* params))))
+
+(defn handle-preset-header
+  "Generate preset header for system prompt."
+  [params]
+  (log/info "preset header:" (:presets params) "lazy:" (:lazy params))
+  (rb/result->mcp (rb/try-result :preset/header #(header* params))))
 
 (defn handle-preset-migrate
-  "Migrate presets from .md files to Chroma.
-   Requires preset directory path."
-  [{:keys [directory]}]
-  (log/info "preset-migrate:" directory)
-  (if-not (chroma/embedding-configured?)
-    {:type "text"
-     :text (json/write-str {:error "Chroma not configured"
-                            :message "Configure Chroma with embedding provider before migration."})
-     :isError true}
-    (try
-      (let [result (presets/migrate-presets-from-dir! directory)]
-        {:type "text"
-         :text (json/write-str result)})
-      (catch Exception e
-        {:type "text"
-         :text (json/write-str {:error (str "Migration failed: " (.getMessage e))})
-         :isError true}))))
+  "Migrate presets from .md files to Chroma."
+  [params]
+  (log/info "preset-migrate:" (:directory params))
+  (rb/result->mcp (rb/try-result :preset/migrate #(migrate* params))))
 
 (defn handle-preset-status
   "Get presets integration status."
-  [_]
+  [params]
   (log/info "preset-status")
-  (try
-    (let [status (presets/status)]
-      {:type "text"
-       :text (json/write-str status)})
-    (catch Exception e
-      {:type "text"
-       :text (json/write-str {:error (str "Status check failed: " (.getMessage e))})
-       :isError true})))
+  (rb/result->mcp (rb/try-result :preset/status #(status* params))))
 
 (defn handle-preset-add
-  "Add a custom preset to Chroma (not file-based)."
-  [{:keys [name content category tags]}]
-  (log/info "preset-add:" name)
-  (if-not (chroma/embedding-configured?)
-    {:type "text"
-     :text (json/write-str {:error "Chroma not configured"})
-     :isError true}
-    (try
-      (let [preset {:id name
-                    :name name
-                    :title name
-                    :content content
-                    :category (or category "custom")
-                    :tags (if (coll? tags)
-                            (str/join "," tags)
-                            (or tags name))
-                    :source "custom"}
-            id (presets/index-preset! preset)]
-        {:type "text"
-         :text (json/write-str {:success true
-                                :id id
-                                :message (str "Added preset: " name)})})
-      (catch Exception e
-        {:type "text"
-         :text (json/write-str {:error (str "Failed to add preset: " (.getMessage e))})
-         :isError true}))))
+  "Add a custom preset to Chroma."
+  [params]
+  (log/info "preset-add:" (:name params))
+  (rb/result->mcp (rb/try-result :preset/add #(add* params))))
 
 (defn handle-preset-delete
   "Delete a preset from Chroma."
-  [{:keys [name]}]
-  (log/info "preset-delete:" name)
-  (if-not (chroma/embedding-configured?)
-    {:type "text"
-     :text (json/write-str {:error "Chroma not configured"})
-     :isError true}
-    (try
-      (presets/delete-preset! name)
-      {:type "text"
-       :text (json/write-str {:success true
-                              :message (str "Deleted preset: " name)})}
-      (catch Exception e
-        {:type "text"
-         :text (json/write-str {:error (str "Failed to delete preset: " (.getMessage e))})
-         :isError true}))))
+  [params]
+  (log/info "preset-delete:" (:name params))
+  (rb/result->mcp (rb/try-result :preset/delete #(delete* params))))
 
 ;;; ============================================================
 ;;; Tool Definitions

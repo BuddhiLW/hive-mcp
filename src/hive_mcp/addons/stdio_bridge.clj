@@ -12,6 +12,7 @@
      (bridge/unregister-bridge! :bridge/echo)"
   (:require [hive-mcp.addons.protocol :as proto]
             [hive-mcp.addons.mcp-bridge :as bridge]
+            [hive-mcp.dns.result :refer [rescue]]
             [clojure.data.json :as json]
             [taoensso.timbre :as log])
   (:import [java.io BufferedReader InputStreamReader OutputStreamWriter BufferedWriter]
@@ -122,37 +123,36 @@
             reader     (BufferedReader.
                         (InputStreamReader. (.getInputStream process) "UTF-8"))
             id-counter (AtomicLong. 1)
-            started-at (System/currentTimeMillis)]
+            started-at (System/currentTimeMillis)
+            init-resp  (send-request! writer reader id-counter
+                                      "initialize"
+                                      {"protocolVersion" "2024-11-05"
+                                       "capabilities"    {}
+                                       "clientInfo"      {"name"    "hive-mcp-bridge"
+                                                          "version" "0.1.0"}})]
 
-        ;; MCP initialize handshake
-        (let [init-resp (send-request! writer reader id-counter
-                                       "initialize"
-                                       {"protocolVersion" "2024-11-05"
-                                        "capabilities"    {}
-                                        "clientInfo"      {"name"    "hive-mcp-bridge"
-                                                           "version" "0.1.0"}})]
-          (when-not (get-in init-resp [:result :protocolVersion])
-            (throw (ex-info "MCP initialize handshake failed"
-                            {:response init-resp :bridge id})))
+        (when-not (get-in init-resp [:result :protocolVersion])
+          (throw (ex-info "MCP initialize handshake failed"
+                          {:response init-resp :bridge id})))
 
-          ;; Send initialized notification
-          (send-notification! writer "notifications/initialized" nil)
+        ;; Send initialized notification
+        (send-notification! writer "notifications/initialized" nil)
 
-          ;; Store process state
-          (reset! state {:process    process
-                         :writer     writer
-                         :reader     reader
-                         :id-counter id-counter
-                         :started-at started-at
-                         :init-resp  init-resp})
+        ;; Store process state
+        (reset! state {:process    process
+                       :writer     writer
+                       :reader     reader
+                       :id-counter id-counter
+                       :started-at started-at
+                       :init-resp  init-resp})
 
-          (log/info "Stdio bridge started"
-                    {:bridge id
-                     :server-info (get-in init-resp [:result :serverInfo])})
+        (log/info "Stdio bridge started"
+                  {:bridge id
+                   :server-info (get-in init-resp [:result :serverInfo])})
 
-          {:success? true
-           :errors   []
-           :metadata {:server-info (get-in init-resp [:result :serverInfo])}}))
+        {:success? true
+         :errors   []
+         :metadata {:server-info (get-in init-resp [:result :serverInfo])}})
       (catch Exception e
         (log/error e "Failed to start stdio bridge" {:bridge id})
         {:success? false
@@ -161,8 +161,8 @@
   (stop-bridge! [_]
     (try
       (when-let [{:keys [^Process process ^BufferedWriter writer ^BufferedReader reader]} @state]
-        (try (.close writer) (catch Exception _))
-        (try (.close reader) (catch Exception _))
+        (rescue nil (.close writer))
+        (rescue nil (.close reader))
         (.destroyForcibly process)
         (.waitFor process 5 TimeUnit/SECONDS))
       (reset! state nil)

@@ -2,8 +2,7 @@
   "Ephemeral context store for pass-by-reference agent communication with TTL auto-eviction."
   (:require [taoensso.timbre :as log])
   (:import [java.util.concurrent ConcurrentHashMap ScheduledExecutorService
-            Executors TimeUnit]
-           [java.util.function BiFunction]))
+            Executors TimeUnit]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later

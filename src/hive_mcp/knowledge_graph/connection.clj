@@ -14,8 +14,8 @@
             [hive-mcp.knowledge-graph.store.datascript :as ds-store]
             [hive-mcp.knowledge-graph.scope :as scope]
             [hive-mcp.config.core :as config]
+            [hive-mcp.dns.result :refer [rescue]]
             [clojure.java.io :as io]
-            [clojure.edn :as edn]
             [taoensso.timbre :as log]))
 
 ;; =============================================================================
@@ -27,30 +27,27 @@
    Parent is more authoritative than child — first match walking UP wins.
    Returns keyword or nil."
   []
-  (try
-    (let [cwd (System/getProperty "user.dir")
-          home (System/getProperty "user.home")]
-      (loop [dir (io/file cwd)
+  (rescue nil
+          (let [cwd (System/getProperty "user.dir")
+                home (System/getProperty "user.home")]
+            (loop [dir (io/file cwd)
              ;; Collect configs child→parent, then reverse for parent-first
-             configs []]
-        (cond
-          (nil? dir) nil
-          (= (.getAbsolutePath dir) home)
+                   configs []]
+              (cond
+                (nil? dir) nil
+                (= (.getAbsolutePath dir) home)
           ;; Check home dir then stop
-          (let [all-configs (if-let [cfg (scope/read-direct-project-config (.getAbsolutePath dir))]
-                              (conj configs cfg)
-                              configs)
+                (let [all-configs (if-let [cfg (scope/read-direct-project-config (.getAbsolutePath dir))]
+                                    (conj configs cfg)
+                                    configs)
                 ;; Parent-first: last found = most ancestral = highest authority
-                parent-first (reverse all-configs)]
-            (some :kg-backend parent-first))
+                      parent-first (reverse all-configs)]
+                  (some :kg-backend parent-first))
 
-          :else
-          (let [cfg (scope/read-direct-project-config (.getAbsolutePath dir))]
-            (recur (.getParentFile dir)
-                   (if cfg (conj configs cfg) configs))))))
-    (catch Exception e
-      (log/debug "Failed hierarchy walk for KG backend" {:error (.getMessage e)})
-      nil)))
+                :else
+                (let [cfg (scope/read-direct-project-config (.getAbsolutePath dir))]
+                  (recur (.getParentFile dir)
+                         (if cfg (conj configs cfg) configs))))))))
 
 (defn- detect-backend
   "Detect the desired KG backend from configuration sources.

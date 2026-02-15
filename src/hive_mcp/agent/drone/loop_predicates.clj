@@ -138,5 +138,5 @@
 
 (defn determine-final-status
   "Determine the loop's final status from termination state."
-  [{:keys [turn last-response-type]} max-turns]
+  [{:keys [turn _last-response-type]} max-turns]
   (if (>= turn max-turns) :max_steps :completed))

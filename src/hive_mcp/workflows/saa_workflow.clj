@@ -52,6 +52,7 @@
    State data shape: See resources/fsm/saa-workflow.edn for full spec."
 
   (:require [hive.events.fsm :as fsm]
+            [hive-mcp.dns.result :refer [rescue]]
             [taoensso.timbre :as log]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -166,9 +167,7 @@
   "Call shout-fn if available. Non-critical side effect."
   [resources agent-id phase message]
   (when-let [shout-fn (:shout-fn resources)]
-    (try
-      (shout-fn agent-id phase message)
-      (catch Exception _ nil))))
+    (rescue nil (shout-fn agent-id phase message))))
 
 (defn- now-str
   "Get current time as ISO string using clock-fn from resources."
@@ -198,10 +197,7 @@
     (maybe-shout! resources agent-id :start (str "SAA starting: " task))
     (if (and agent-id task)
       (let [project-id (when (and scope-fn directory)
-                         (try (scope-fn directory)
-                              (catch Exception e
-                                (log/warn "[saa-fsm] scope-fn failed" {:error (ex-message e)})
-                                nil)))]
+                         (rescue nil (scope-fn directory)))]
         (assoc data
                :agent-id agent-id
                :directory directory

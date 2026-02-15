@@ -39,6 +39,7 @@
             [hive-mcp.channel.websocket :as ws]
             [hive-mcp.telemetry.prometheus :as prom]
             [hive-mcp.server.guards :as guards]
+            [hive-mcp.dns.result :refer [rescue]]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -540,10 +541,7 @@
     ;;                :histogram {:name :drone_duration_seconds :value 5.0}}
     (reg-fx :prometheus
             (fn [effect-data]
-              (try
-                (prom/handle-prometheus-effect! effect-data)
-                (catch Exception e
-                  (log/warn "Prometheus effect failed:" (.getMessage e))))))
+              (rescue nil (prom/handle-prometheus-effect! effect-data))))
 
     ;; Handles :log effects from event handlers for structured logging
     ;; Effect shape: {:level :info :message "Drone started: drone-123"}

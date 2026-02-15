@@ -3,7 +3,7 @@
   (:require [hive-mcp.tools.swarm.wave.domain :as domain]
             [hive-mcp.swarm.logic :as logic]
             [hive-mcp.events.core :as ev]
-            [clojure.core.async :as async :refer [go go-loop <! >! chan close!]]
+            [clojure.core.async :as async :refer [go <! chan close!]]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
 

@@ -160,6 +160,8 @@
         ;; Deregister tools
         (doseq [t (proto/tools addon)]
           (ext/deregister-tool! (:name t)))
+        ;; Retract composite tool contributions
+        (ext/retract-all-by-addon! id)
         (let [result (proto/shutdown! addon)]
           (swap! addon-registry assoc-in [id :state] :registered)
           (swap! addon-registry assoc-in [id :init-time] nil)
@@ -253,7 +255,8 @@
      :available #{}}))
 
 (defn reset-registry!
-  "Reset the addon registry, shutting down active addons first."
+  "Reset the addon registry, shutting down active addons first.
+   Also clears all composite tool contributions."
   []
   (let [shutdown-results (shutdown-all!)]
     (reset! addon-registry {})

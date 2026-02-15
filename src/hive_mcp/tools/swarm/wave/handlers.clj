@@ -6,7 +6,8 @@
             [hive-mcp.swarm.datascript :as ds]
             [hive-mcp.agent.context :as ctx]
             [clojure.data.json :as json]
-            [taoensso.timbre :as log]))
+            [taoensso.timbre :as log]
+            [hive-mcp.dns.result :refer [rescue]]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -20,38 +21,35 @@
 (defn- try-validated-wave-status
   "Fallback lookup for validated wave sessions (vw-* / rw-* prefixes)."
   [wave-id]
-  (try
-    (when-let [get-session (requiring-resolve
-                            'hive-mcp.tools.swarm.validated-wave/get-validated-wave-session)]
-      (when-let [session (get-session wave-id)]
-        (let [running? (= :running (:status session))]
-          {:type "text"
-           :text (json/write-str
-                  (cond-> {:wave_id wave-id
-                           :type "validated-wave"
-                           :status (if running? "running" (name (:status session)))
-                           :task_count (:task-count session)
-                           :started_at (:started-at session)}
-                    (:completed-at session) (assoc :completed_at (:completed-at session))
-                    (:iterations session)  (assoc :iterations (:iterations session))
-                    (:final-wave-id session) (assoc :final_wave_id (:final-wave-id session))
-                    (:final-plan-id session) (assoc :final_plan_id (:final-plan-id session))
-                    (seq (:modified-files session)) (assoc :modified_files (:modified-files session))
-                    (:execution-failures session) (assoc :execution_failures (:execution-failures session))
-                    (:error session) (assoc :error (:error session))
-                    (:message session) (assoc :message (:message session))
-                    (:wave-id session) (assoc :inner_wave_id (:wave-id session))
-                    (:plan-id session) (assoc :plan_id (:plan-id session))
-                    (:completed-tasks session) (assoc :completed_tasks (:completed-tasks session))
-                    (:failed-tasks session) (assoc :failed_tasks (:failed-tasks session))
-                    (seq (:next-steps session)) (assoc :next_steps (:next-steps session))
-                    (seq (:history session))
-                    (assoc :iteration_history
-                           (mapv #(select-keys % [:iteration :wave-id :finding-count :execution-failures])
-                                 (:history session)))))})))
-    (catch Exception e
-      (log/debug "Validated wave session lookup failed" {:wave-id wave-id :error (ex-message e)})
-      nil)))
+  (rescue nil
+          (when-let [get-session (requiring-resolve
+                                  'hive-mcp.tools.swarm.validated-wave/get-validated-wave-session)]
+            (when-let [session (get-session wave-id)]
+              (let [running? (= :running (:status session))]
+                {:type "text"
+                 :text (json/write-str
+                        (cond-> {:wave_id wave-id
+                                 :type "validated-wave"
+                                 :status (if running? "running" (name (:status session)))
+                                 :task_count (:task-count session)
+                                 :started_at (:started-at session)}
+                          (:completed-at session) (assoc :completed_at (:completed-at session))
+                          (:iterations session)  (assoc :iterations (:iterations session))
+                          (:final-wave-id session) (assoc :final_wave_id (:final-wave-id session))
+                          (:final-plan-id session) (assoc :final_plan_id (:final-plan-id session))
+                          (seq (:modified-files session)) (assoc :modified_files (:modified-files session))
+                          (:execution-failures session) (assoc :execution_failures (:execution-failures session))
+                          (:error session) (assoc :error (:error session))
+                          (:message session) (assoc :message (:message session))
+                          (:wave-id session) (assoc :inner_wave_id (:wave-id session))
+                          (:plan-id session) (assoc :plan_id (:plan-id session))
+                          (:completed-tasks session) (assoc :completed_tasks (:completed-tasks session))
+                          (:failed-tasks session) (assoc :failed_tasks (:failed-tasks session))
+                          (seq (:next-steps session)) (assoc :next_steps (:next-steps session))
+                          (seq (:history session))
+                          (assoc :iteration_history
+                                 (mapv #(select-keys % [:iteration :wave-id :finding-count :execution-failures])
+                                       (:history session)))))})))))
 
 (defn handle-get-wave-status
   "Handle get_wave_status MCP tool call, checking both DataScript and validated wave sessions."

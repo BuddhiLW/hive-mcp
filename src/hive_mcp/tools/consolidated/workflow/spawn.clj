@@ -209,6 +209,19 @@
      :active-before (:active-total active-counts)
      :max-slots     (or max-slots 10)}))
 
+(defn- empty-spark-response
+  "Empty spark response when no tasks to spawn."
+  [active-counts max-slots]
+  {:spawned [] :failed [] :count 0
+   :routes {:vterm {:count 0 :active-before (:active-vterm active-counts)
+                    :max-slots vterm-max-slots}
+            :headless {:count 0 :active-before (:active-headless active-counts)
+                       :max-slots (or max-slots 10)}
+            :drone {:count 0}}
+   :slots-used 0
+   :active-before (:active-total active-counts)
+   :max-slots (or max-slots 10)})
+
 ;; ── Spark! Orchestrator ─────────────────────────────────────────────────────
 
 (defn spark!
@@ -245,19 +258,12 @@
             headless-spawn-mode (if (headless-modes effective-spawn-mode)
                                   effective-spawn-mode :headless)]
         (if (and (empty? vterm-tasks) (empty? headless-tasks) (nil? drone-result))
-          {:spawned [] :failed [] :count 0
-           :routes {:vterm {:count 0 :active-before (:active-vterm active-counts)
-                            :max-slots vterm-max-slots}
-                    :headless {:count 0 :active-before (:active-headless active-counts)
-                               :max-slots (or max_slots 10)}
-                    :drone {:count 0}}
-           :slots-used 0 :active-before (:active-total active-counts)
-           :max-slots (or max_slots 10)}
+          (empty-spark-response active-counts max_slots)
           (let [batch-results (execute-spawn-batches
                                {:vterm-tasks vterm-tasks :headless-tasks headless-tasks
                                 :effective-dir effective-dir :default-presets default-presets
                                 :model model :headless-spawn-mode headless-spawn-mode})]
             (build-spark-response (assoc batch-results
-                                        :drone-result drone-result
-                                        :active-counts active-counts
-                                        :max-slots max_slots))))))))
+                                         :drone-result drone-result
+                                         :active-counts active-counts
+                                         :max-slots max_slots))))))))

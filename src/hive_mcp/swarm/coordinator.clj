@@ -272,32 +272,32 @@
             changed? (and exists?
                           prior-hash
                           hash
-                          (not= prior-hash hash))]
-        ;; CC.5: Wire to propagate-staleness! when content changed
-        (let [propagation-result
-              (when changed?
-                (log/info "File changed during claim, propagating staleness"
-                          {:file file-path
-                           :prior-hash (when prior-hash (subs prior-hash 0 8))
-                           :current-hash (when hash (subs hash 0 8))})
-                (disc/propagate-staleness! file-path
-                                           (:hash-mismatch disc/base-staleness-values)
-                                           :hash-mismatch))
-              ;; CC.6: Archive to claim-history when changed
-              archived? (when changed?
-                          (lings/archive-claim-to-history!
-                           file-path
-                           {:slave-id slave-id
-                            :prior-hash prior-hash
-                            :released-hash hash})
-                          true)]
+                          (not= prior-hash hash))
+            ;; CC.5: Wire to propagate-staleness! when content changed
+            propagation-result
+            (when changed?
+              (log/info "File changed during claim, propagating staleness"
+                        {:file file-path
+                         :prior-hash (when prior-hash (subs prior-hash 0 8))
+                         :current-hash (when hash (subs hash 0 8))})
+              (disc/propagate-staleness! file-path
+                                         (:hash-mismatch disc/base-staleness-values)
+                                         :hash-mismatch))
+            ;; CC.6: Archive to claim-history when changed
+            archived? (when changed?
+                        (lings/archive-claim-to-history!
+                         file-path
+                         {:slave-id slave-id
+                          :prior-hash prior-hash
+                          :released-hash hash})
+                        true)]
           ;; Release the claim (also releases from logic-db via lings)
-          (lings/release-claim! file-path)
-          (claim-tools/remove-claim-timestamp! file-path)
-          {:released? true
-           :changed? (boolean changed?)
-           :propagated propagation-result
-           :archived? (boolean archived?)})))))
+        (lings/release-claim! file-path)
+        (claim-tools/remove-claim-timestamp! file-path)
+        {:released? true
+         :changed? (boolean changed?)
+         :propagated propagation-result
+         :archived? (boolean archived?)}))))
 
 (defn register-task-claims!
   "Register file claims for a dispatched task.

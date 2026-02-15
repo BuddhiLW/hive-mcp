@@ -590,15 +590,12 @@
        (do
          (log/warn "Olympus WS server already running on port" (:port @server-atom))
          (:port @server-atom))
-       (try ; boundary — network server lifecycle
-         (let [server (http/start-server http-handler {:port port})
-               actual-port (netty/port server)]
-           (reset! server-atom {:server server :port actual-port})
-           (log/info "Olympus WebSocket server started on port" actual-port)
-           actual-port)
-         (catch Exception e
-           (log/error "Failed to start Olympus WS server:" (.getMessage e))
-           nil))))))
+       (result/rescue nil
+                      (let [server (http/start-server http-handler {:port port})
+                            actual-port (netty/port server)]
+                        (reset! server-atom {:server server :port actual-port})
+                        (log/info "Olympus WebSocket server started on port" actual-port)
+                        actual-port))))))
 
 (defn stop!
   "Stop the Olympus WebSocket server and DS state bridge."

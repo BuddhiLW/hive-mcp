@@ -6,7 +6,8 @@
             [hive-mcp.emacs.client :as ec]
             [hive-mcp.dns.validation :as v]
             [clojure.data.json :as json]
-            [taoensso.timbre :as log]))
+            [taoensso.timbre :as log]
+            [hive-mcp.dns.result :refer [rescue]]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -19,13 +20,10 @@
           (ec/eval-elisp-with-timeout
            "(json-encode (hive-mcp-swarm-list-lings))" 3000)]
       (when (and success (not timed-out))
-        (try
-          (let [parsed (json/read-str result :key-fn keyword)]
-            (when (sequential? parsed)
-              parsed))
-          (catch Exception e
-            (log/debug "Failed to parse elisp lings:" (ex-message e))
-            nil))))))
+        (rescue nil
+                (let [parsed (json/read-str result :key-fn keyword)]
+                  (when (sequential? parsed)
+                    parsed)))))))
 
 (defn format-lings-for-response
   "Format lings data for MCP response."

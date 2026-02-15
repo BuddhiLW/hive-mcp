@@ -193,7 +193,7 @@
 (def standard-capabilities
   "Set of standard capability keywords recognized by the multiplexer.
    Addons may also declare custom capabilities beyond this set."
-  #{:tools :schema :resources :prompts :mcp-bridge :health-reporting})
+  #{:tools :schema :resources :prompts :mcp-bridge :health-reporting :terminal})
 
 ;; =============================================================================
 ;; Health Status Constants

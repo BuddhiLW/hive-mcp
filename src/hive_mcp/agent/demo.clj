@@ -68,13 +68,13 @@
                               avg (/ (reduce + (map :score data)) (count data))]
                           {:average avg
                            :top-scorer (apply max-key :score data)
-                           :passed (filter #(>= (:score %) 80) data)})"]
-      (let [messages [{:role "user" :content complex-code}]
-            result (proto/chat backend messages nil)]
-        (println "Result:")
-        (println (:content result))
-        (swap! demo-state update :results conj {:code "complex-data" :result result})
-        (println "\nComplex evaluation completed!")))
+                           :passed (filter #(>= (:score %) 80) data)})"
+          messages [{:role "user" :content complex-code}]
+          result (proto/chat backend messages nil)]
+      (println "Result:")
+      (println (:content result))
+      (swap! demo-state update :results conj {:code "complex-data" :result result})
+      (println "\nComplex evaluation completed!"))
     (println "No backend available. Run (step-2-create-backend) first.")))
 
 (defn step-5-cleanup!

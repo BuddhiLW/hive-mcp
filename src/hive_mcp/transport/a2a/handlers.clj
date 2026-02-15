@@ -5,7 +5,8 @@
    SendStreamingMessage) to existing IAgent protocol calls.
    No new domain logic — reuses dispatch, query, and kill patterns."
 
-  (:require [hive-mcp.transport.a2a.schema :as schema]
+  (:require [clojure.string :as str]
+            [hive-mcp.transport.a2a.schema :as schema]
             [hive-mcp.agent.protocol :as proto]
             [hive-mcp.agent.ling :as ling]
             [hive-mcp.agent.drone :as drone]
@@ -26,7 +27,7 @@
   (->> parts
        (filter #(= "text" (:type %)))
        (map :text)
-       (clojure.string/join "\n")))
+       (str/join "\n")))
 
 (defn- resolve-agent
   "Look up agent in DataScript and build IAgent instance.
@@ -45,13 +46,6 @@
                                              :parent-id (:slave/parent agent-data)
                                              :project-id (:slave/project-id agent-data)}))]
       [agent agent-data])))
-
-(defn- slave-status->task-state
-  "Get A2A task state from a DataScript slave status keyword."
-  [status]
-  (get schema/agent-status->task-state
-       (keyword (name (or status :idle)))
-       "working"))
 
 (defn- generate-task-id
   "Generate a unique task ID for A2A."
@@ -222,7 +216,7 @@
 
    Returns {:result task :stream? true :task-id id} to signal
    that the transport should set up SSE for this task."
-  [{:keys [message configuration] :as params}]
+  [params]
   (let [result (handle-send-message params)]
     (if (:error result)
       result

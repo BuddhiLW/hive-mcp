@@ -38,7 +38,8 @@
      :timeout-ms        — Max execution time per tool (default 30000)
      :audit-fn          — (fn [tool-name args allowed?] nil) audit logger (optional)"
 
-  (:require [hive.events.fsm :as fsm]
+  (:require [clojure.string :as str]
+            [hive.events.fsm :as fsm]
             [taoensso.timbre :as log]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -172,33 +173,33 @@
         (let [start-ms (System/currentTimeMillis)]
           (try
             (let [result-future (future (execute-fn tool-name tool-args))
-                  result        (deref result-future timeout-ms ::timeout)]
-              (let [elapsed (- (System/currentTimeMillis) start-ms)]
-                (if (= result ::timeout)
+                  result        (deref result-future timeout-ms ::timeout)
+                  elapsed       (- (System/currentTimeMillis) start-ms)]
+              (if (= result ::timeout)
                   ;; Timeout — cancel and report
-                  (do
-                    (future-cancel result-future)
-                    (log/warn "tool-execution: timeout"
-                              {:tool tool-name
-                               :drone-id drone-id
-                               :timeout-ms timeout-ms})
-                    (assoc data
-                           :tool-result {:type "text"
-                                         :text (str "Tool execution timed out after "
-                                                    timeout-ms "ms")
-                                         :isError true}
-                           :error (str "Timeout after " timeout-ms "ms")
-                           :execution-time-ms elapsed))
+                (do
+                  (future-cancel result-future)
+                  (log/warn "tool-execution: timeout"
+                            {:tool tool-name
+                             :drone-id drone-id
+                             :timeout-ms timeout-ms})
+                  (assoc data
+                         :tool-result {:type "text"
+                                       :text (str "Tool execution timed out after "
+                                                  timeout-ms "ms")
+                                       :isError true}
+                         :error (str "Timeout after " timeout-ms "ms")
+                         :execution-time-ms elapsed))
 
                   ;; Success
-                  (do
-                    (log/debug "tool-execution: completed"
-                               {:tool tool-name
-                                :drone-id drone-id
-                                :elapsed-ms elapsed})
-                    (assoc data
-                           :tool-result result
-                           :execution-time-ms elapsed)))))
+                (do
+                  (log/debug "tool-execution: completed"
+                             {:tool tool-name
+                              :drone-id drone-id
+                              :elapsed-ms elapsed})
+                  (assoc data
+                         :tool-result result
+                         :execution-time-ms elapsed))))
 
             (catch Exception e
               (let [elapsed (- (System/currentTimeMillis) start-ms)]
@@ -238,7 +239,7 @@
                       (and (map? tool-result) (sequential? (:content tool-result)))
                       (->> (:content tool-result)
                            (map #(or (:text %) (str %)))
-                           (clojure.string/join "\n"))
+                           (str/join "\n"))
 
                       ;; Tool result is a string
                       (string? tool-result)

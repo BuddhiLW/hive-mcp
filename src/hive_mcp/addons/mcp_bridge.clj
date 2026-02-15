@@ -37,6 +37,7 @@
      (register-addon! (->HaystackBridge (atom nil)))"
   (:require [hive-mcp.addons.protocol :as proto]
             [hive-mcp.addons.core :as addon]
+            [hive-mcp.dns.result :refer [rescue]]
             [clojure.string :as str]
             [clojure.walk :as walk]
             [taoensso.timbre :as log]))
@@ -423,15 +424,13 @@
   ([bridge bridge-prefix]
    (proxy-tool-defs bridge bridge-prefix {}))
   ([bridge bridge-prefix opts]
-   (try
-     (let [remote-tools (list-remote-tools bridge)
-           filtered     (cond->> remote-tools
-                          (:tool-filter opts) (filter (:tool-filter opts)))]
-       (mapv #(proxy-tool-def bridge bridge-prefix % opts) filtered))
-     (catch Exception e
-       (log/warn "Failed to generate proxy tool-defs"
-                 {:bridge bridge-prefix :error (.getMessage e)})
-       []))))
+   (rescue (do (log/warn "Failed to generate proxy tool-defs"
+                         {:bridge bridge-prefix})
+               [])
+           (let [remote-tools (list-remote-tools bridge)
+                 filtered     (cond->> remote-tools
+                                (:tool-filter opts) (filter (:tool-filter opts)))]
+             (mapv #(proxy-tool-def bridge bridge-prefix % opts) filtered)))))
 
 ;; =============================================================================
 ;; NoopMcpBridge (Fallback for development/testing)

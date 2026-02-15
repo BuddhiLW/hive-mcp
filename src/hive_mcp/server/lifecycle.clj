@@ -9,6 +9,7 @@
    - Project configuration (.hive-project.edn)"
   (:require [hive-mcp.hooks.core :as hooks]
             [hive-mcp.crystal.hooks :as crystal-hooks]
+            [hive-mcp.dns.result :as result]
             [hive-mcp.swarm.sync :as sync]
             [hive-mcp.transport.olympus :as olympus-ws]
             [taoensso.timbre :as log]
@@ -38,16 +39,13 @@
   [hooks-registry-atom reason]
   (log/info "Triggering session-end hooks:" reason)
   (when-let [registry @hooks-registry-atom]
-    (try
-      (let [ctx {:reason reason
-                 :session (System/currentTimeMillis)
-                 :triggered-by "jvm-shutdown"}
-            results (hooks/trigger-hooks registry :session-end ctx)]
-        (log/info "Session-end hooks completed:" (count results) "handlers executed")
-        results)
-      (catch Exception e
-        (log/error e "Session-end hooks failed (non-fatal)")
-        nil))))
+    (result/rescue nil
+                   (let [ctx {:reason reason
+                              :session (System/currentTimeMillis)
+                              :triggered-by "jvm-shutdown"}
+                         results (hooks/trigger-hooks registry :session-end ctx)]
+                     (log/info "Session-end hooks completed:" (count results) "handlers executed")
+                     results))))
 
 (defn register-shutdown-hook!
   "Register JVM shutdown hook to trigger session-end for auto-wrap.
@@ -67,20 +65,16 @@
       (fn []
         (log/info "JVM shutdown detected - running shutdown sequence")
         ;; Stop Olympus WebSocket server first (close client connections cleanly)
-        (try
-          (olympus-ws/stop!)
-          (log/info "Olympus WebSocket server stopped")
-          (catch Exception e
-            (log/warn "Olympus WS shutdown failed (non-fatal):" (.getMessage e))))
+        (result/rescue nil
+                       (olympus-ws/stop!)
+                       (log/info "Olympus WebSocket server stopped"))
         ;; Mark coordinator as terminated in DataScript (Phase 4)
         (when-let [coord-id @coordinator-id-atom]
-          (try
-            (require 'hive-mcp.swarm.datascript)
-            (let [mark-terminated! (resolve 'hive-mcp.swarm.datascript/mark-coordinator-terminated!)]
-              (mark-terminated! coord-id)
-              (log/info "Coordinator marked terminated:" coord-id))
-            (catch Exception e
-              (log/warn "Coordinator cleanup failed (non-fatal):" (.getMessage e)))))
+          (result/rescue nil
+                         (require 'hive-mcp.swarm.datascript)
+                         (let [mark-terminated! (resolve 'hive-mcp.swarm.datascript/mark-coordinator-terminated!)]
+                           (mark-terminated! coord-id)
+                           (log/info "Coordinator marked terminated:" coord-id))))
         (trigger-session-end! hooks-registry-atom "jvm-shutdown"))))
     (reset! shutdown-hook-registered? true)
     (log/info "JVM shutdown hook registered for auto-wrap")))
@@ -94,14 +88,12 @@
    Returns {:watch-dirs [...] :hot-reload bool} or nil.
    :hot-reload defaults to true for backward compatibility."
   []
-  (try
-    (let [project-file (java.io.File. ".hive-project.edn")]
-      (when (.exists project-file)
-        (let [config (edn/read-string (slurp project-file))]
-          {:watch-dirs (:watch-dirs config)
-           :hot-reload (get config :hot-reload true)})))
-    (catch Exception _
-      nil)))
+  (result/rescue nil
+                 (let [project-file (java.io.File. ".hive-project.edn")]
+                   (when (.exists project-file)
+                     (let [config (edn/read-string (slurp project-file))]
+                       {:watch-dirs (:watch-dirs config)
+                        :hot-reload (get config :hot-reload true)})))))
 
 ;; =============================================================================
 ;; Hooks Initialization

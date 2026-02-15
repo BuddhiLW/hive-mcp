@@ -33,17 +33,16 @@
             [hive-mcp.embeddings.registry :as registry]
             [hive-mcp.chroma.core :as chroma]
             [hive-mcp.config.core :as global-config]
+            [hive-mcp.dns.result :refer [rescue]]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-
 ;; Map of collection-name -> EmbeddingConfig
 (defonce ^:private collection-configs (atom {}))
 
 (defonce ^:private initialized? (atom false))
-
 
 (defn init!
   "Initialize the EmbeddingService.
@@ -60,7 +59,6 @@
   "Check if service is initialized."
   []
   @initialized?)
-
 
 (defn configure-collection!
   "Configure embedding for a specific collection.
@@ -104,7 +102,6 @@
   (into {} (for [[k v] @collection-configs]
              [k (config/describe v)])))
 
-
 (defn- resolve-provider-for
   "Resolve embedding provider for a collection.
 
@@ -139,7 +136,6 @@
                        :configured-collections (keys @collection-configs)
                        :has-global-fallback? (chroma/embedding-configured?)})))
     provider))
-
 
 (defn embed-for-collection
   "Embed text using the provider configured for the collection.
@@ -176,16 +172,11 @@
   (let [provider (get-provider-for collection-name)]
     (chroma/embedding-dimension provider)))
 
-
 (defn provider-available-for?
   "Check if an embedding provider is available for a collection.
    Returns true if either collection-specific or global fallback is available."
   [collection-name]
-  (try
-    (resolve-provider-for collection-name)
-    true
-    (catch Exception _
-      false)))
+  (boolean (rescue false (resolve-provider-for collection-name) true)))
 
 (defn collection-embedding-status
   "Get embedding status for a specific collection."
@@ -198,7 +189,6 @@
      :dimension (when config (:dimension config))
      :has-global-fallback? (some? global)
      :provider-available? (provider-available-for? collection-name)}))
-
 
 (defn status
   "Get overall EmbeddingService status."
@@ -216,7 +206,6 @@
   (registry/clear-cache!)
   (clojure.core/reset! initialized? false)
   (log/info "EmbeddingService reset"))
-
 
 (defn configure-defaults!
   "Configure default providers for well-known collections.

@@ -1,59 +1,66 @@
 (ns hive-mcp.tools.consolidated.project
   "Consolidated Project CLI tool."
   (:require [hive-mcp.tools.cli :refer [make-cli-handler]]
+            [hive-mcp.tools.result-bridge :as rb]
             [hive-mcp.tools.projectile :as projectile-handlers]
             [hive-mcp.project.tree :as tree]
             [hive-mcp.agent.context :as ctx]
-            [clojure.data.json :as json]
+            [hive-mcp.dns.result :as result]
             [taoensso.timbre :as log]))
 
-(defn handle-project-scan
-  "Scan filesystem for .hive-project.edn files and build project hierarchy."
+;; ── Pure Result-returning functions ───────────────────────────────────────────
+
+(defn- scan*
   [{:keys [directory max_depth force]}]
   (let [effective-dir (or directory (ctx/current-directory) ".")
         opts (cond-> {}
                max_depth (assoc :max-depth max_depth)
                force (assoc :force force))]
     (log/info "project scan" {:directory effective-dir :opts opts})
-    (let [result (tree/scan-project-tree! effective-dir opts)]
-      {:type "text"
-       :text (json/write-str result)})))
+    (result/ok (tree/scan-project-tree! effective-dir opts))))
 
-(defn handle-project-tree
-  "Query the cached project tree structure from DataScript."
+(defn- tree*
   [{:keys [project_id]}]
   (log/info "project tree" {:project-id project_id})
   (let [all-projects (tree/query-all-projects)
         tree-data (tree/build-project-tree all-projects)]
     (if project_id
-      ;; Return subtree for specific project
       (let [descendants (tree/get-descendants tree-data project_id)
             ancestors (tree/get-ancestors tree-data project_id)
             project (tree/query-project-by-id project_id)]
-        {:type "text"
-         :text (json/write-str
-                {:project project
-                 :ancestors ancestors
-                 :descendants descendants
-                 :children (get (:children tree-data) project_id [])})})
-      ;; Return full tree
-      {:type "text"
-       :text (json/write-str
-              {:roots (:roots tree-data)
-               :total-projects (count all-projects)
-               :children (:children tree-data)
-               :projects (mapv #(select-keys % [:project/id :project/path :project/type :project/parent-id])
-                               all-projects)})})))
+        (result/ok {:project project
+                    :ancestors ancestors
+                    :descendants descendants
+                    :children (get (:children tree-data) project_id [])}))
+      (result/ok {:roots (:roots tree-data)
+                  :total-projects (count all-projects)
+                  :children (:children tree-data)
+                  :projects (mapv #(select-keys % [:project/id :project/path :project/type :project/parent-id])
+                                  all-projects)}))))
 
-(defn handle-project-staleness
-  "Check if project tree needs re-scanning."
+(defn- staleness*
   [{:keys [directory]}]
   (let [effective-dir (or directory (ctx/current-directory) ".")]
     (log/info "project staleness" {:directory effective-dir})
-    {:type "text"
-     :text (json/write-str
-            {:stale (tree/tree-stale? effective-dir)
-             :directory effective-dir})}))
+    (result/ok {:stale (tree/tree-stale? effective-dir)
+                :directory effective-dir})))
+
+;; ── Public handlers (MCP boundary) ────────────────────────────────────────────
+
+(defn handle-project-scan
+  "Scan filesystem for .hive-project.edn files and build project hierarchy."
+  [params]
+  (rb/result->mcp (rb/try-result :project/scan-failed #(scan* params))))
+
+(defn handle-project-tree
+  "Query the cached project tree structure from DataScript."
+  [params]
+  (rb/result->mcp (rb/try-result :project/tree-failed #(tree* params))))
+
+(defn handle-project-staleness
+  "Check if project tree needs re-scanning."
+  [params]
+  (rb/result->mcp (rb/try-result :project/staleness-failed #(staleness* params))))
 
 (def handlers
   {:info      projectile-handlers/handle-projectile-info

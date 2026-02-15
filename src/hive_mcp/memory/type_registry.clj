@@ -6,9 +6,7 @@
 
    Design principle: Knowledge-Layer-First / SST (Single Source of Truth).
    Adding a new memory type = adding one entry here. All downstream
-   validation, MCP schemas, catchup, and abstraction levels derive automatically."
-
-  (:require [clojure.string :as str]))
+   validation, MCP schemas, catchup, and abstraction levels derive automatically.")
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;

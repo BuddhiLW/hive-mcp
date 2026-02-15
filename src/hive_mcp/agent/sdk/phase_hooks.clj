@@ -1,6 +1,7 @@
 (ns hive-mcp.agent.sdk.phase-hooks
   "SDK phase hooks for SAA lifecycle gating and observation capture."
   (:require [hive-mcp.agent.sdk.python :as py]
+            [hive-mcp.dns.result :refer [rescue]]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -134,48 +135,36 @@
 (defn- build-phase-capture-hooks
   "Build PostToolUse/UserPromptSubmit/PreCompact hooks for a SAA phase."
   [phase {:keys [cwd agent-id compressed-context]}]
-  (try
-    (let [post-tool-fns
-          (cond-> []
-            (#{:silence :act} phase)
-            (conj (capture-exploration-hook cwd agent-id))
-            (= :abstract phase)
-            (conj (store-plan-hook cwd agent-id)))
+  (rescue nil
+          (let [post-tool-fns
+                (cond-> []
+                  (#{:silence :act} phase)
+                  (conj (capture-exploration-hook cwd agent-id))
+                  (= :abstract phase)
+                  (conj (store-plan-hook cwd agent-id)))
 
-          hooks (cond-> {}
-                  (seq post-tool-fns)
-                  (assoc "PostToolUse" [(hook-matcher post-tool-fns)])
+                hooks (cond-> {}
+                        (seq post-tool-fns)
+                        (assoc "PostToolUse" [(hook-matcher post-tool-fns)])
 
-                  (and (#{:abstract :act} phase) compressed-context)
-                  (assoc "UserPromptSubmit" [(hook-matcher [(inject-context-hook cwd compressed-context)])])
+                        (and (#{:abstract :act} phase) compressed-context)
+                        (assoc "UserPromptSubmit" [(hook-matcher [(inject-context-hook cwd compressed-context)])])
 
-                  true
-                  (assoc "PreCompact" [(hook-matcher [(pre-compact-save-hook cwd agent-id)])]))]
-      hooks)
-    (catch Exception e
-      (log/warn "[phase-hooks] Failed to build phase capture hooks, proceeding without"
-                {:phase phase :error (ex-message e)})
-      nil)))
+                        true
+                        (assoc "PreCompact" [(hook-matcher [(pre-compact-save-hook cwd agent-id)])]))]
+            hooks)))
 
 (defn- build-auto-observation-hooks
   "Build PostToolUse auto-observation hooks."
   [cwd]
-  (try
-    {"PostToolUse" [(hook-matcher [(auto-observation-hook cwd "")])]}
-    (catch Exception e
-      (log/warn "[phase-hooks] Failed to build auto-observation hooks, proceeding without"
-                {:error (ex-message e)})
-      nil)))
+  (rescue nil
+          {"PostToolUse" [(hook-matcher [(auto-observation-hook cwd "")])]}))
 
 (defn- build-saa-gating-hooks
   "Build SAA gating hooks with error handling."
   [phase-config]
-  (try
-    (saa-gating-hooks phase-config)
-    (catch Exception e
-      (log/warn "[phase-hooks] Failed to build SAA hooks, proceeding without"
-                {:phase (:name phase-config) :error (ex-message e)})
-      nil)))
+  (rescue nil
+          (saa-gating-hooks phase-config)))
 
 (defn hooks-for-phase
   "Build merged hooks dict for a given SAA phase."

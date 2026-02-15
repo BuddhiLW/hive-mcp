@@ -1,6 +1,7 @@
 (ns hive-mcp.crystal.core
   "Progressive crystallization of ephemeral knowledge."
   (:require [clojure.string :as str]
+            [hive-mcp.dns.result :refer [rescue]]
             [hive-mcp.extensions.registry :as ext]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -253,12 +254,10 @@
    Returns nil if timestamp is nil/empty or unparseable."
   [timestamp-str]
   (when (and timestamp-str (not (str/blank? (str timestamp-str))))
-    (try
-      (let [then (java.time.ZonedDateTime/parse (str timestamp-str))
-            now (java.time.ZonedDateTime/now)]
-        (.between java.time.temporal.ChronoUnit/DAYS then now))
-      (catch Exception _
-        nil))))
+    (rescue nil
+            (let [then (java.time.ZonedDateTime/parse (str timestamp-str))
+                  now (java.time.ZonedDateTime/now)]
+              (.between java.time.temporal.ChronoUnit/DAYS then now)))))
 
 (defn decay-candidate?
   "Check if entry should be considered for staleness decay."

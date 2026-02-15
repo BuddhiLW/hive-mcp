@@ -3,6 +3,7 @@
   (:require [hive-mcp.agent.ling.strategy :refer [ILingStrategy]]
             [hive-mcp.agent.headless :as headless]
             [hive-mcp.config.core :as global-config]
+            [hive-mcp.dns.result :refer [rescue]]
             [clojure.data.json :as json]
             [clojure.string :as str]
             [taoensso.timbre :as log])
@@ -58,11 +59,7 @@
              (str/starts-with? line "data: "))
     (let [data (subs line 6)]
       (when-not (= data "[DONE]")
-        (try
-          (json/read-str data :key-fn keyword)
-          (catch Exception e
-            (log/debug "Failed to parse SSE line" {:line data :error (ex-message e)})
-            nil))))))
+        (rescue nil (json/read-str data :key-fn keyword))))))
 
 (defn extract-delta-content
   "Extract content delta from a streaming chunk."
@@ -87,7 +84,7 @@
         response (.send @http-client request (HttpResponse$BodyHandlers/ofInputStream))
         status (.statusCode response)]
     (if (not (<= 200 status 299))
-      (let [error-body (try (slurp (.body response)) (catch Exception _ ""))]
+      (let [error-body (rescue "" (slurp (.body response)))]
         (log/error "OpenRouter streaming request failed"
                    {:status status :model model :body (subs error-body 0 (min 500 (count error-body)))})
         (headless/ring-buffer-append! stdout-buffer
@@ -121,7 +118,7 @@
   "Send a completion request in a background thread and update conversation history."
   [ling-id user-message]
   (when-let [session (.get session-registry ling-id)]
-    (let [{:keys [messages alive? request-count total-tokens active-thread]} session
+    (let [{:keys [messages _alive? request-count total-tokens active-thread]} session
           new-messages (conj @messages {:role "user" :content user-message})
           _ (reset! messages new-messages)
           thread (Thread.

@@ -7,11 +7,11 @@
    Requires the hive-mcp-projectile addon to be loaded in Emacs."
   (:require [hive-mcp.emacs.client :as ec]
             [hive-mcp.emacs.elisp :as el]
+            [hive-mcp.tools.core :refer [mcp-error]]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
-
 
 ;; =============================================================================
 ;; Projectile Integration Handlers (requires hive-mcp-projectile addon)
@@ -23,67 +23,52 @@
   (let [{:keys [success result]} (ec/eval-elisp "(featurep 'hive-mcp-projectile)")]
     (and success (= result "t"))))
 
+(defn- eval-projectile
+  "Evaluate projectile elisp, returning MCP response."
+  [elisp]
+  (let [{:keys [success result error]} (ec/eval-elisp elisp)]
+    (if success
+      {:type "text" :text result}
+      (mcp-error (str "Error: " error)))))
+
 (defn handle-projectile-info
   "Get current project info including name, root, type, and file count."
   [_]
   (log/info "projectile-info")
-  (let [elisp (el/require-and-call-json 'hive-mcp-projectile 'hive-mcp-projectile-api-project-info)
-        {:keys [success result error]} (ec/eval-elisp elisp)]
-    (if success
-      {:type "text" :text result}
-      {:type "text" :text (str "Error: " error) :isError true})))
+  (eval-projectile (el/require-and-call-json 'hive-mcp-projectile 'hive-mcp-projectile-api-project-info)))
 
 (defn handle-projectile-files
   "List files in current project, optionally filtered by pattern."
   [{:keys [pattern]}]
   (log/info "projectile-files" {:pattern pattern})
-  (let [elisp (if pattern
-                (el/require-and-call-json 'hive-mcp-projectile 'hive-mcp-projectile-api-project-files pattern)
-                (el/require-and-call-json 'hive-mcp-projectile 'hive-mcp-projectile-api-project-files))
-        {:keys [success result error]} (ec/eval-elisp elisp)]
-    (if success
-      {:type "text" :text result}
-      {:type "text" :text (str "Error: " error) :isError true})))
+  (eval-projectile
+   (if pattern
+     (el/require-and-call-json 'hive-mcp-projectile 'hive-mcp-projectile-api-project-files pattern)
+     (el/require-and-call-json 'hive-mcp-projectile 'hive-mcp-projectile-api-project-files))))
 
 (defn handle-projectile-find-file
   "Find files matching a filename in current project."
   [{:keys [filename]}]
   (log/info "projectile-find-file" {:filename filename})
-  (let [elisp (el/require-and-call-json 'hive-mcp-projectile 'hive-mcp-projectile-api-find-file filename)
-        {:keys [success result error]} (ec/eval-elisp elisp)]
-    (if success
-      {:type "text" :text result}
-      {:type "text" :text (str "Error: " error) :isError true})))
+  (eval-projectile (el/require-and-call-json 'hive-mcp-projectile 'hive-mcp-projectile-api-find-file filename)))
 
 (defn handle-projectile-search
   "Search project for a pattern using ripgrep or grep."
   [{:keys [pattern]}]
   (log/info "projectile-search" {:pattern pattern})
-  (let [elisp (el/require-and-call-json 'hive-mcp-projectile 'hive-mcp-projectile-api-search pattern)
-        {:keys [success result error]} (ec/eval-elisp elisp)]
-    (if success
-      {:type "text" :text result}
-      {:type "text" :text (str "Error: " error) :isError true})))
+  (eval-projectile (el/require-and-call-json 'hive-mcp-projectile 'hive-mcp-projectile-api-search pattern)))
 
 (defn handle-projectile-recent
   "Get recently visited files in current project."
   [_]
   (log/info "projectile-recent")
-  (let [elisp (el/require-and-call-json 'hive-mcp-projectile 'hive-mcp-projectile-api-recent-files)
-        {:keys [success result error]} (ec/eval-elisp elisp)]
-    (if success
-      {:type "text" :text result}
-      {:type "text" :text (str "Error: " error) :isError true})))
+  (eval-projectile (el/require-and-call-json 'hive-mcp-projectile 'hive-mcp-projectile-api-recent-files)))
 
 (defn handle-projectile-list-projects
   "List all known projectile projects."
   [_]
   (log/info "projectile-list-projects")
-  (let [elisp (el/require-and-call-json 'hive-mcp-projectile 'hive-mcp-projectile-api-list-projects)
-        {:keys [success result error]} (ec/eval-elisp elisp)]
-    (if success
-      {:type "text" :text result}
-      {:type "text" :text (str "Error: " error) :isError true})))
+  (eval-projectile (el/require-and-call-json 'hive-mcp-projectile 'hive-mcp-projectile-api-list-projects)))
 
 (def tools
   "Projectile tool definitions for the MCP tool registry."

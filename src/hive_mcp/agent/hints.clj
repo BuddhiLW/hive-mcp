@@ -1,6 +1,7 @@
 (ns hive-mcp.agent.hints
   "Structured memory hints for ling priming. Generates pointer-based context instead of full text injection."
   (:require [hive-mcp.chroma.core :as chroma]
+            [hive-mcp.dns.result :refer [rescue]]
             [hive-mcp.knowledge-graph.scope :as kg-scope]
             [hive-mcp.knowledge-graph.edges :as kg-edges]
             [hive-mcp.knowledge-graph.queries :as kg-queries]
@@ -52,33 +53,24 @@
 (defn- axiom-ids
   "Extract axiom IDs visible to the given project scope."
   [project-id]
-  (try
-    (let [axioms (query-axioms project-id)]
-      (mapv :id axioms))
-    (catch Exception e
-      (log/debug "axiom-ids failed:" (.getMessage e))
-      [])))
+  (rescue []
+          (let [axioms (query-axioms project-id)]
+            (mapv :id axioms))))
 
 (defn- priority-convention-ids
   "Extract IDs of catchup-priority conventions."
   [project-id]
-  (try
-    (let [conventions (query-scoped-entries
-                       "convention" ["catchup-priority"] project-id 50)]
-      (mapv :id conventions))
-    (catch Exception e
-      (log/debug "priority-convention-ids failed:" (.getMessage e))
-      [])))
+  (rescue []
+          (let [conventions (query-scoped-entries
+                             "convention" ["catchup-priority"] project-id 50)]
+            (mapv :id conventions))))
 
 (defn- decision-ids
   "Extract IDs of active decisions for this project."
   [project-id]
-  (try
-    (let [decisions (query-scoped-entries "decision" nil project-id 20)]
-      (mapv :id decisions))
-    (catch Exception e
-      (log/debug "decision-ids failed:" (.getMessage e))
-      [])))
+  (rescue []
+          (let [decisions (query-scoped-entries "decision" nil project-id 20)]
+            (mapv :id decisions))))
 
 (defn- task-semantic-queries
   "Generate semantic search queries from a task description."
@@ -89,18 +81,15 @@
 (defn- kg-seed-nodes
   "Find KG seed nodes relevant to this project."
   [project-id]
-  (try
-    (let [stats (kg-edges/edge-stats)
-          total-edges (:total-edges stats)]
-      (when (> total-edges 5)
-        (let [decisions (query-scoped-entries "decision" nil project-id 5)]
-          (->> decisions
-               (mapv :id)
-               (take 3)
-               vec))))
-    (catch Exception e
-      (log/debug "kg-seed-nodes failed:" (.getMessage e))
-      [])))
+  (rescue []
+          (let [stats (kg-edges/edge-stats)
+                total-edges (:total-edges stats)]
+            (when (> total-edges 5)
+              (let [decisions (query-scoped-entries "decision" nil project-id 5)]
+                (->> decisions
+                     (mapv :id)
+                     (take 3)
+                     vec))))))
 
 (defn generate-hints
   "Generate structured memory hints for a ling spawn."
@@ -167,37 +156,31 @@
   "Generate KG-driven hints for a specific task or memory node."
   [{:keys [task-id memory-id depth] :or {depth 2}}]
   (when-let [node-id (if-let [tid task-id] tid memory-id)]
-    (try
-      (let [entry (when-let [_ (chroma/embedding-configured?)]
-                    (chroma/get-entry-by-id node-id))
-            traversal (try
-                        (kg-queries/traverse node-id
-                                             {:direction :both
-                                              :max-depth depth})
-                        (catch Exception e
-                          (log/debug "generate-task-hints KG traverse failed:" (.getMessage e))
-                          []))]
-        (if-let [trav (seq traversal)]
-          (let [discovered-ids (->> trav
-                                    (map :node-id)
-                                    distinct
-                                    (take max-l1-ids)
-                                    vec)
-                l2-queries (extract-semantic-themes traversal (domain/or-val entry {}))
-                depth-1-nodes (->> trav
-                                   (filter #(= 1 (:depth %)))
-                                   (map :node-id)
-                                   distinct)
-                l3-seeds (->> depth-1-nodes
-                              (take max-l3-seeds)
-                              (mapv (fn [id] {:id id :depth depth})))]
-            {:l1-ids discovered-ids
-             :l2-queries l2-queries
-             :l3-seeds l3-seeds})
-          (fallback-tag-search (domain/or-val entry {}))))
-      (catch Exception e
-        (log/warn "generate-task-hints failed, returning empty:" (.getMessage e))
-        {:l1-ids [] :l2-queries [] :l3-seeds []}))))
+    (rescue {:l1-ids [] :l2-queries [] :l3-seeds []}
+            (let [entry (when-let [_ (chroma/embedding-configured?)]
+                          (chroma/get-entry-by-id node-id))
+                  traversal (rescue []
+                                    (kg-queries/traverse node-id
+                                                         {:direction :both
+                                                          :max-depth depth}))]
+              (if-let [trav (seq traversal)]
+                (let [discovered-ids (->> trav
+                                          (map :node-id)
+                                          distinct
+                                          (take max-l1-ids)
+                                          vec)
+                      l2-queries (extract-semantic-themes traversal (domain/or-val entry {}))
+                      depth-1-nodes (->> trav
+                                         (filter #(= 1 (:depth %)))
+                                         (map :node-id)
+                                         distinct)
+                      l3-seeds (->> depth-1-nodes
+                                    (take max-l3-seeds)
+                                    (mapv (fn [id] {:id id :depth depth})))]
+                  {:l1-ids discovered-ids
+                   :l2-queries l2-queries
+                   :l3-seeds l3-seeds})
+                (fallback-tag-search (domain/or-val entry {})))))))
 
 (defn serialize-hints
   "Serialize memory hints to a compact markdown block for spawn injection."
@@ -246,15 +229,12 @@
   (when-let [id-list (seq ids)]
     (->> id-list
          (mapv (fn [id]
-                 (try
-                   (when-let [entry (chroma/get-entry-by-id id)]
-                     {:id id
-                      :content (:content entry)
-                      :type (name (domain/or-val (:type entry) "note"))
-                      :tags (vec (domain/or-val (:tags entry) []))})
-                   (catch Exception e
-                     (log/debug "Failed to fetch hint ID:" id (.getMessage e))
-                     nil))))
+                 (rescue nil
+                         (when-let [entry (chroma/get-entry-by-id id)]
+                           {:id id
+                            :content (:content entry)
+                            :type (name (domain/or-val (:type entry) "note"))
+                            :tags (vec (domain/or-val (:tags entry) []))}))))
          (filterv some?))))
 
 (defn execute-hint-queries

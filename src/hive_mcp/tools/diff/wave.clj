@@ -5,6 +5,7 @@
             [hive-mcp.tools.diff.auto-approve :as auto-approve]
             [hive-mcp.tools.diff.handlers :as handlers]
             [clojure.data.json :as json]
+            [clojure.string :as str]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -106,7 +107,7 @@
   "Handle review_wave_diffs tool call."
   [{:keys [wave_id]}]
   (log/debug "review_wave_diffs called" {:wave_id wave_id})
-  (if (clojure.string/blank? wave_id)
+  (if (str/blank? wave_id)
     (mcp-error-json "Missing required field: wave_id")
     (try
       (let [result (review-wave-diffs wave_id)]
@@ -119,7 +120,7 @@
   "Handle approve_wave_diffs tool call."
   [{:keys [wave_id diff_ids]}]
   (log/debug "approve_wave_diffs called" {:wave_id wave_id :diff_ids diff_ids})
-  (if (clojure.string/blank? wave_id)
+  (if (str/blank? wave_id)
     (mcp-error-json "Missing required field: wave_id")
     (try
       (let [result (approve-wave-diffs! wave_id diff_ids)]
@@ -132,7 +133,7 @@
   "Handle reject_wave_diffs tool call."
   [{:keys [wave_id reason]}]
   (log/debug "reject_wave_diffs called" {:wave_id wave_id :reason reason})
-  (if (clojure.string/blank? wave_id)
+  (if (str/blank? wave_id)
     (mcp-error-json "Missing required field: wave_id")
     (try
       (let [result (reject-wave-diffs! wave_id (or reason "Rejected by coordinator"))]
@@ -145,7 +146,7 @@
   "Handle auto_approve_wave_diffs tool call."
   [{:keys [wave_id]}]
   (log/debug "auto_approve_wave_diffs called" {:wave_id wave_id})
-  (if (clojure.string/blank? wave_id)
+  (if (str/blank? wave_id)
     (mcp-error-json "Missing required field: wave_id")
     (try
       (let [result (auto-approve-wave-diffs! wave_id)]

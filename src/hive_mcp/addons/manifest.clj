@@ -31,6 +31,7 @@
             [clojure.java.io :as io]
             [clojure.walk :as walk]
             [hive-mcp.addons.protocol :as proto]
+            [hive-mcp.dns.result :refer [rescue]]
             [malli.core :as m]
             [malli.error :as me]
             [clojure.string :as str]
@@ -215,15 +216,9 @@
    Returns:
      Function | nil"
   [manifest]
-  (try
-    (let [sym (manifest->init-sym manifest)]
-      (requiring-resolve sym))
-    (catch Exception e
-      (log/warn "Failed to resolve addon constructor"
-                {:addon/id (:addon/id manifest)
-                 :init-sym (manifest->init-sym manifest)
-                 :error (.getMessage e)})
-      nil)))
+  (rescue nil
+          (let [sym (manifest->init-sym manifest)]
+            (requiring-resolve sym))))
 
 (defn manifest-summary
   "Return a compact summary of a manifest for logging/display.
@@ -363,26 +358,23 @@
   "List .edn entries under META-INF/hive-addons/ inside a JAR.
    Returns URLs using jar: protocol."
   [^java.net.URL jar-url]
-  (try
-    (let [jar-path (-> (.getPath jar-url)
+  (rescue []
+          (let [jar-path (-> (.getPath jar-url)
                        ;; jar:file:/path/to.jar!/META-INF/hive-addons → /path/to.jar
-                       (str/replace #"^file:" "")
-                       (str/replace #"!.*$" ""))
-          jar-file (JarFile. jar-path)
-          prefix   (str manifest-resource-path "/")
-          entries  (->> (enumeration-seq (.entries jar-file))
-                        (filter (fn [e]
-                                  (let [n (.getName e)]
-                                    (and (str/starts-with? n prefix)
-                                         (str/ends-with? n ".edn")
-                                         (not (.isDirectory e))))))
-                        (mapv (fn [e]
-                                (java.net.URL. (str "jar:file:" jar-path "!/" (.getName e))))))]
-      (.close jar-file)
-      entries)
-    (catch Exception e
-      (log/debug "Failed to read JAR for addon manifests" {:url jar-url :error (.getMessage e)})
-      [])))
+                             (str/replace #"^file:" "")
+                             (str/replace #"!.*$" ""))
+                jar-file (JarFile. jar-path)
+                prefix   (str manifest-resource-path "/")
+                entries  (->> (enumeration-seq (.entries jar-file))
+                              (filter (fn [e]
+                                        (let [n (.getName e)]
+                                          (and (str/starts-with? n prefix)
+                                               (str/ends-with? n ".edn")
+                                               (not (.isDirectory e))))))
+                              (mapv (fn [e]
+                                      (java.net.URL. (str "jar:file:" jar-path "!/" (.getName e))))))]
+            (.close jar-file)
+            entries)))
 
 (defn- discover-manifest-urls
   "Scan the classpath for all META-INF/hive-addons/*.edn files.

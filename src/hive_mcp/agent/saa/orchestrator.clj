@@ -1,7 +1,8 @@
 (ns hive-mcp.agent.saa.orchestrator
   "SAA (Silence-Abstract-Act) orchestrator implementing ISAAOrchestrator protocol."
-  (:require [clojure.core.async :as async :refer [go go-loop chan >! <! >!! <!! close! put!]]
+  (:require [clojure.core.async :as async :refer [go go-loop chan >! <! close!]]
             [clojure.string :as str]
+            [hive-mcp.dns.result :refer [rescue]]
             [hive-mcp.protocols.agent-bridge :as bridge]
             [hive-mcp.agent.headless-sdk :as sdk]
             [hive-mcp.extensions.registry :as ext]
@@ -61,15 +62,13 @@
 (defn- shout-phase!
   "Broadcast phase transition to hivemind via requiring-resolve."
   [agent-id phase message]
-  (try
-    (when-let [shout-fn (requiring-resolve 'hive-mcp.hivemind.core/shout!)]
-      (shout-fn agent-id
-                :progress
-                {:task (:task (get-agent-state agent-id))
-                 :message (str "[SAA:" (name phase) "] " message)
-                 :saa-phase phase}))
-    (catch Exception e
-      (log/debug "[saa] Hivemind shout failed (non-critical)" {:error (ex-message e)}))))
+  (rescue nil
+          (when-let [shout-fn (requiring-resolve 'hive-mcp.hivemind.core/shout!)]
+            (shout-fn agent-id
+                      :progress
+                      {:task (:task (get-agent-state agent-id))
+                       :message (str "[SAA:" (name phase) "] " message)
+                       :saa-phase phase}))))
 
 (defn- maybe-shout!
   "Broadcast phase transition only if :shout? is enabled in config."
@@ -102,7 +101,7 @@
   "Build the full prompt for a given SAA phase."
   [phase task-or-content extra-context]
   (let [phase-config (get sdk/saa-phases phase)
-        suffix (:system-prompt-suffix phase-config)]
+        _suffix (:system-prompt-suffix phase-config)]
     (case phase
       :silence
       (str "TASK: " task-or-content
@@ -286,37 +285,35 @@
                         (>! out-ch msg)
                         (recur)))
                     (:observations (get-agent-state agent-id)))
-                  [])]
+                  [])
+                plan
+                (if-not skip-abstract?
+                  (let [abstract-ch (bridge/run-abstract! this session observations abstract-opts)]
+                    (loop []
+                      (when-let [msg (<! abstract-ch)]
+                        (>! out-ch msg)
+                        (recur)))
+                    (:plan (get-agent-state agent-id)))
+                  nil)
+                act-ch (bridge/run-act! this session (or plan task) act-opts)]
+            (loop []
+              (when-let [msg (<! act-ch)]
+                (>! out-ch msg)
+                (recur)))
 
-            (let [plan
-                  (if-not skip-abstract?
-                    (let [abstract-ch (bridge/run-abstract! this session observations abstract-opts)]
-                      (loop []
-                        (when-let [msg (<! abstract-ch)]
-                          (>! out-ch msg)
-                          (recur)))
-                      (:plan (get-agent-state agent-id)))
-                    nil)]
-
-              (let [act-ch (bridge/run-act! this session (or plan task) act-opts)]
-                (loop []
-                  (when-let [msg (<! act-ch)]
-                    (>! out-ch msg)
-                    (recur)))
-
-                (let [final-state (get-agent-state agent-id)]
-                  (maybe-shout! config agent-id :complete
-                                (str "SAA cycle complete. "
-                                     (count (:observations final-state)) " observations, "
-                                     (count (:phase-history final-state)) " phases"))
-                  (>! out-ch {:type :saa-complete
-                              :agent-id agent-id
-                              :observations-count (count (:observations final-state))
-                              :plan (:plan final-state)
-                              :result (:result final-state)
-                              :phase-history (:phase-history final-state)
-                              :elapsed-ms (- (System/currentTimeMillis)
-                                             (:started-at final-state))})))))
+            (let [final-state (get-agent-state agent-id)]
+              (maybe-shout! config agent-id :complete
+                            (str "SAA cycle complete. "
+                                 (count (:observations final-state)) " observations, "
+                                 (count (:phase-history final-state)) " phases"))
+              (>! out-ch {:type :saa-complete
+                          :agent-id agent-id
+                          :observations-count (count (:observations final-state))
+                          :plan (:plan final-state)
+                          :result (:result final-state)
+                          :phase-history (:phase-history final-state)
+                          :elapsed-ms (- (System/currentTimeMillis)
+                                         (:started-at final-state))})))
           (catch Exception e
             (log/error "[saa] Full SAA cycle failed"
                        {:agent-id agent-id :error (ex-message e)})

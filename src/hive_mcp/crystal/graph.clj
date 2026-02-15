@@ -3,6 +3,7 @@
   (:require [clojure.data.json :as json]
             [hive-mcp.emacs.client :as ec]
             [hive-mcp.crystal.core :as crystal]
+            [hive-mcp.dns.result :refer [rescue]]
             [hive-mcp.graph.datascript :as ds]
             [hive-mcp.graph.schema :as schema]
             [taoensso.timbre :as log]))
@@ -202,11 +203,8 @@
             (log/warn "Memory query eval failed:" (.getMessage e))
             {:success false :error (.getMessage e)}))]
     (if success
-      (try
-        (json/read-str result :key-fn keyword)
-        (catch Exception e
-          (log/warn "Failed to parse memory query result:" (.getMessage e))
-          nil))
+      (rescue nil
+              (json/read-str result :key-fn keyword))
       (do
         (log/warn "Memory query failed:" error (when timed-out "(timed out)"))
         nil))))

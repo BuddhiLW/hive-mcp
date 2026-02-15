@@ -7,6 +7,7 @@
    via budget/allocate-ling-context for priority-based truncation."
 
   (:require [hive-mcp.context.budget :as budget]
+            [hive-mcp.dns.result :refer [rescue]]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -71,30 +72,27 @@
    Returns:
      Compact context string (budget-managed, hard-capped at 10K chars), or nil."
   [{:keys [_directory token-budget] :as opts}]
-  (try
-    (when-let [f (requiring-resolve 'hive-mcp.extensions.context/ling-catchup)]
-      (let [result (f opts)
-            effective-budget (or token-budget default-ling-budget)]
-        (cond
+  (rescue nil
+          (when-let [f (requiring-resolve 'hive-mcp.extensions.context/ling-catchup)]
+            (let [result (f opts)
+                  effective-budget (or token-budget default-ling-budget)]
+              (cond
           ;; Structured result: apply layered budget allocation
-          (and (map? result) (or (:preset result) (:axioms result)
-                                 (:context result) (:history result)))
-          (let [budgeted (budget-allocate-structured result effective-budget)]
-            (when (and budgeted (seq budgeted))
-              (if (> (count budgeted) max-context-chars)
-                (subs budgeted 0 max-context-chars)
-                budgeted)))
+                (and (map? result) (or (:preset result) (:axioms result)
+                                       (:context result) (:history result)))
+                (let [budgeted (budget-allocate-structured result effective-budget)]
+                  (when (and budgeted (seq budgeted))
+                    (if (> (count budgeted) max-context-chars)
+                      (subs budgeted 0 max-context-chars)
+                      budgeted)))
 
           ;; String result: apply token budget truncation
-          (and (string? result) (pos? (count result)))
-          (let [budgeted (budget-truncate-string result effective-budget)]
-            (if (> (count budgeted) max-context-chars)
-              (do (log/info "ling-catchup: hard-capped post-budget" {:chars (count budgeted)})
-                  (subs budgeted 0 max-context-chars))
-              budgeted))
+                (and (string? result) (pos? (count result)))
+                (let [budgeted (budget-truncate-string result effective-budget)]
+                  (if (> (count budgeted) max-context-chars)
+                    (do (log/info "ling-catchup: hard-capped post-budget" {:chars (count budgeted)})
+                        (subs budgeted 0 max-context-chars))
+                    budgeted))
 
           ;; Nil or empty
-          :else nil)))
-    (catch Exception e
-      (log/debug "ling-catchup: extension not available:" (.getMessage e))
-      nil)))
+                :else nil)))))

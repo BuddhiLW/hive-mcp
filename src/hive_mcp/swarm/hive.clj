@@ -16,11 +16,11 @@
   (:require [hive-mcp.emacs.client :as ec]
             [clojure.data.json :as json]
             [clojure.string :as str]
+            [hive-mcp.dns.result :refer [rescue]]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
-
 
 ;; =============================================================================
 ;; Memory Query (Direct elisp call, bypasses MCP tool layer)
@@ -34,11 +34,7 @@
                       (name type) limit)
         {:keys [success result]} (ec/eval-elisp-with-timeout elisp 3000)]
     (when success
-      (try
-        (json/read-str result :key-fn keyword)
-        (catch Exception e
-          (log/warn "Failed to parse memory query result:" (.getMessage e))
-          nil)))))
+      (rescue nil (json/read-str result :key-fn keyword)))))
 
 (defn- format-convention
   "Format a convention entry for context injection."

@@ -53,7 +53,10 @@
          :hivemind (resolve-handler 'hive-mcp.tools.consolidated.hivemind/handle-hivemind)
          :wave     (resolve-handler 'hive-mcp.tools.consolidated.wave/handle-wave)
          :agora    (resolve-handler 'hive-mcp.tools.consolidated.agora/handle-agora)
-         :kondo    (resolve-handler 'hive-mcp.tools.consolidated.kondo/handle-kondo)
+         :kondo    (fn [params]
+                     (let [builder (requiring-resolve 'hive-mcp.tools.composite/build-composite-handler)
+                           handler (builder "analysis")]
+                       (handler params)))
          :project  (resolve-handler 'hive-mcp.tools.consolidated.project/handle-project)
          :session  (resolve-handler 'hive-mcp.tools.consolidated.session/handle-session)
          :emacs    (resolve-handler 'hive-mcp.tools.consolidated.emacs/handle-emacs)

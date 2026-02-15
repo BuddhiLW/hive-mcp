@@ -6,7 +6,6 @@
             [hive-mcp.tools.diff.validation :as validation]
             [hive-mcp.tools.diff.auto-approve :as auto-approve]
             [hive-mcp.agent.context :as ctx]
-            [clojure.data.json :as json]
             [clojure.string :as str]
             [clojure.java.io :as io]
             [taoensso.timbre :as log]))

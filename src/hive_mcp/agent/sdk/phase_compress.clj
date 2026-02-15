@@ -1,6 +1,7 @@
 (ns hive-mcp.agent.sdk.phase-compress
   "Phase-boundary compression for SAA lifecycle transitions."
   (:require [clojure.string :as str]
+            [hive-mcp.dns.result :refer [rescue]]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -26,12 +27,9 @@
 (defn resolve-compressor
   "Resolve the best available phase compressor, falling back to NoOp."
   []
-  (or (try
-        (let [ctor (requiring-resolve
-                    'hive-agent-bridge.compress/->KGPhaseCompressor)]
-          (log/info "[phase-compress] Resolved custom compressor from hive-agent-bridge")
-          (ctor))
-        (catch Exception _
-          (log/debug "[phase-compress] hive-agent-bridge not available, using NoOp")
-          nil))
+  (or (rescue nil
+              (let [ctor (requiring-resolve
+                          'hive-agent-bridge.compress/->KGPhaseCompressor)]
+                (log/info "[phase-compress] Resolved custom compressor from hive-agent-bridge")
+                (ctor)))
       (->NoOpPhaseCompressor)))

@@ -8,8 +8,7 @@
    - :kg/node-promoted  - Knowledge promoted to parent scope"
 
   (:require [hive-mcp.events.core :as ev]
-            [hive-mcp.events.interceptors :as interceptors]
-            [hive-mcp.knowledge-graph.schema :as schema]))
+            [hive-mcp.events.interceptors :as interceptors]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -25,14 +24,6 @@
        (when scope (str " [scope: " scope "]"))
        (when confidence (str " [conf: " confidence "]"))
        (when created-by (str " by " created-by))))
-
-(defn- _valid-edge-data?
-  "Validate edge data has required fields."
-  [{:keys [from to relation]}]
-  (and (string? from)
-       (string? to)
-       (keyword? relation)
-       (schema/valid-relation? relation)))
 
 ;; =============================================================================
 ;; Handler: :kg/edge-created

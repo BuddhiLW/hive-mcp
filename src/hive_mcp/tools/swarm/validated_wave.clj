@@ -1,7 +1,7 @@
 (ns hive-mcp.tools.swarm.validated-wave
   "Validated wave execution with self-healing lint-and-retry loop."
   (:require [hive-mcp.tools.swarm.wave :as wave]
-            [hive-mcp.tools.kondo :as kondo]
+            [hive-mcp.analysis.resolve :as resolve]
             [hive-mcp.tools.core :refer [mcp-error]]
             [hive-mcp.agent.context :as ctx]
             [hive-mcp.events.core :as ev]
@@ -32,29 +32,33 @@
 (defn- lint-files
   "Run clj-kondo lint on files and filter by severity level."
   [files lint-level]
-  (let [level-kw (keyword lint-level)
-        all-findings (reduce
-                      (fn [acc file]
-                        (try
-                          (let [{:keys [findings]} (kondo/run-analysis file)
-                                filtered (->> findings
-                                              (filter #(case level-kw
-                                                         :error (= (:level %) :error)
-                                                         :warning (#{:error :warning} (:level %))
-                                                         :info true)))]
-                            (concat acc filtered))
-                          (catch Exception e
-                            (log/warn "Failed to lint file:" file (.getMessage e))
-                            acc)))
-                      []
-                      files)
-        files-with-errors (->> all-findings
-                               (group-by :filename)
-                               (keys)
-                               (vec))]
-    {:findings (vec all-findings)
-     :files-with-errors files-with-errors
-     :count (count all-findings)}))
+  (if-let [run-analysis (resolve/resolve-kondo-analysis)]
+    (let [level-kw (keyword lint-level)
+          all-findings (reduce
+                        (fn [acc file]
+                          (try
+                            (let [{:keys [findings]} (run-analysis file)
+                                  filtered (->> findings
+                                                (filter #(case level-kw
+                                                           :error (= (:level %) :error)
+                                                           :warning (#{:error :warning} (:level %))
+                                                           :info true)))]
+                              (concat acc filtered))
+                            (catch Exception e
+                              (log/warn "Failed to lint file:" file (.getMessage e))
+                              acc)))
+                        []
+                        files)
+          files-with-errors (->> all-findings
+                                 (group-by :filename)
+                                 (keys)
+                                 (vec))]
+      {:findings (vec all-findings)
+       :files-with-errors files-with-errors
+       :count (count all-findings)})
+    (do
+      (log/warn "clj-kondo-mcp not available, skipping lint")
+      {:findings [] :files-with-errors [] :count 0})))
 
 (defn- format-finding-for-task
   "Format a lint finding into a human-readable string."

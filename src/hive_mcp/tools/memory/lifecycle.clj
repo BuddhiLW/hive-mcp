@@ -15,6 +15,8 @@
             [hive-mcp.tools.memory.decay :as decay]
             [hive-mcp.tools.memory.promotion :as promo]
             [hive-mcp.tools.core :refer [mcp-error coerce-int!]]
+            [hive-mcp.tools.result-bridge :as rb]
+            [hive-mcp.dns.result :as result]
             [hive-mcp.memory.types :as mt]
             [hive-mcp.chroma.core :as chroma]
             [hive-mcp.knowledge-graph.edges :as kg-edges]
@@ -39,7 +41,7 @@
                                             :expires (or expires "")})]
       (if updated
         {:type "text" :text (json/write-str (fmt/entry->json-alist updated))}
-        {:type "text" :text (json/write-str {:error "Entry not found"}) :isError true}))))
+        (mcp-error "Entry not found")))))
 
 (defn- shift-entry-duration
   "Shift entry duration by delta steps."
@@ -116,27 +118,27 @@
          :duration (:duration entry)
          :expires (:expires entry)))
 
+(defn- expiring-soon*
+  "Pure logic for expiring-soon query. Returns Result."
+  [{:keys [days directory limit include-short]}]
+  (let [days-val (coerce-int! days :days 3)
+        limit-val (coerce-int! limit :limit 20)
+        directory (or directory (ctx/current-directory))]
+    (log/info "mcp-memory-expiring-soon:" days-val "limit:" limit-val "directory:" directory)
+    (with-chroma
+      (let [project-id (scope/get-current-project-id directory)
+            all-entries (chroma/entries-expiring-soon days-val)
+            scope-filter (scope/make-scope-tag project-id)
+            filtered (->> all-entries
+                          (filter #(scope/matches-scope? % scope-filter))
+                          (filter #(or include-short (worth-promoting? %)))
+                          (take limit-val))]
+        (result/ok (mapv entry->expiring-meta filtered))))))
+
 (defn handle-expiring-soon
   "List memory entries expiring within N days, filtered by project scope."
-  [{:keys [days directory limit include-short]}]
-  (try
-    (let [days-val (coerce-int! days :days 3)
-          limit-val (coerce-int! limit :limit 20)
-          directory (or directory (ctx/current-directory))]
-      (log/info "mcp-memory-expiring-soon:" days-val "limit:" limit-val "directory:" directory)
-      (with-chroma
-        (let [project-id (scope/get-current-project-id directory)
-              all-entries (chroma/entries-expiring-soon days-val)
-              scope-filter (scope/make-scope-tag project-id)
-              filtered (->> all-entries
-                            (filter #(scope/matches-scope? % scope-filter))
-                            (filter #(or include-short (worth-promoting? %)))
-                            (take limit-val))]
-          {:type "text" :text (json/write-str (mapv entry->expiring-meta filtered))})))
-    (catch clojure.lang.ExceptionInfo e
-      (if (= :coercion-error (:type (ex-data e)))
-        (mcp-error (.getMessage e))
-        (throw e)))))
+  [params]
+  (rb/result->mcp (rb/try-result :memory/expiring-soon #(expiring-soon* params))))
 
 ;; =============================================================================
 ;; Re-exports (backward compatibility for tools/memory.clj facade)

@@ -8,9 +8,7 @@
    Adding a new agent type = adding one entry here. All downstream
    validation, MCP schemas, depth mappings, and capabilities derive automatically.
 
-   Sum type variants: coordinator, ling, drone."
-
-  (:require [clojure.string :as str]))
+   Sum type variants: coordinator, ling, drone.")
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;

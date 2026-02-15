@@ -31,10 +31,6 @@
 ;; Constants (formatting)
 ;; =============================================================================
 
-(def ^:const max-content-chars
-  "Maximum characters per content entry to avoid token bloat."
-  500)
-
 ;; =============================================================================
 ;; Empty Return Shapes (noop fallback)
 ;; =============================================================================
@@ -74,41 +70,6 @@
 ;; =============================================================================
 ;; Pure Utilities (no IP — data formatting only)
 ;; =============================================================================
-
-(defn- truncate-content
-  "Truncate content to max-content-chars to prevent token bloat."
-  [content]
-  (if (and (string? content) (> (count content) max-content-chars))
-    (str (subs content 0 max-content-chars) "...")
-    content))
-
-(defn- classify-entries
-  "Classify fetched entries by memory type into structured map."
-  [entries]
-  (reduce
-   (fn [acc entry]
-     (let [entry-type (or (:type entry) "note")
-           truncated  (update entry :content truncate-content)
-           category   (case entry-type
-                        "convention" :conventions
-                        "decision"   :decisions
-                        "snippet"    :snippets
-                        :domain)]
-       (update acc category (fnil conj []) truncated)))
-   {:conventions [] :decisions [] :snippets [] :domain []}
-   entries))
-
-(defn- enrich-context
-  "Extension point for context enrichment.
-   Delegates to extension if available."
-  [context opts]
-  (if-let [ext-fn (ext/get-extension :uc/enrich)]
-    (try
-      (ext-fn context opts)
-      (catch Exception e
-        (log/debug "Extension :uc/enrich failed, returning unenriched:" (.getMessage e))
-        context))
-    context))
 
 ;; =============================================================================
 ;; Formatting (pure — no IP)

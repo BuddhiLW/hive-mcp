@@ -14,7 +14,7 @@
             [clojure.string :as str]
             [clojure.edn :as edn]
             [clojure.set]
-            [taoensso.timbre :as log]))
+            [hive-mcp.dns.result :refer [rescue]]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -27,13 +27,10 @@
   "Read .hive-project.edn from a directory.
    Returns the parsed config map or nil on failure."
   [dir]
-  (try
-    (let [config-file (io/file dir ".hive-project.edn")]
-      (when (.exists config-file)
-        (-> config-file slurp edn/read-string)))
-    (catch Exception e
-      (log/debug "Failed to read .hive-project.edn:" (.getMessage e))
-      nil)))
+  (rescue nil
+          (let [config-file (io/file dir ".hive-project.edn")]
+            (when (.exists config-file)
+              (-> config-file slurp edn/read-string)))))
 
 (def ^:private config-cache
   "Cache for project configs to avoid repeated file reads."
@@ -303,12 +300,9 @@
 (defn- resolve-tree-fn
   "Lazy-resolve a function from project.tree namespace. Returns fn or nil."
   [sym-name]
-  (try
-    (require 'hive-mcp.project.tree)
-    (resolve (symbol "hive-mcp.project.tree" sym-name))
-    (catch Exception e
-      (log/debug "Failed to resolve tree fn:" sym-name (.getMessage e))
-      nil)))
+  (rescue nil
+          (require 'hive-mcp.project.tree)
+          (resolve (symbol "hive-mcp.project.tree" sym-name))))
 
 (defn descendant-scope-tags
   "Return all scope tags for descendant projects (children, grandchildren, etc).

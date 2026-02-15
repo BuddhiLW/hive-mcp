@@ -1,6 +1,6 @@
 (ns hive-mcp.agent.drone.validation
   "Pre/post execution validation for drone agents."
-  (:require [hive-mcp.tools.kondo :as kondo]
+  (:require [hive-mcp.analysis.resolve :as resolve]
             [hive-mcp.swarm.logic :as logic]
             [clojure.java.io :as io]
             [clojure.set :as set]
@@ -142,22 +142,26 @@
 (defn- run-lint-check
   "Run kondo lint on file and extract errors."
   [file lint-level]
-  (try
-    (let [{:keys [findings]} (kondo/run-analysis file)
-          level-kw (keyword (or lint-level "error"))
-          filtered (->> findings
-                        (filter #(case level-kw
-                                   :error (= (:level %) :error)
-                                   :warning (#{:error :warning} (:level %))
-                                   :info true))
-                        (mapv #(select-keys % [:filename :row :col :level :type :message])))]
-      filtered)
-    (catch Exception e
-      (log/warn "Lint check failed for" file ":" (.getMessage e))
-      [{:filename file
-        :level :error
-        :type :lint-failed
-        :message (str "Lint check failed: " (.getMessage e))}])))
+  (if-let [run-analysis (resolve/resolve-kondo-analysis)]
+    (try
+      (let [{:keys [findings]} (run-analysis file)
+            level-kw (keyword (or lint-level "error"))
+            filtered (->> findings
+                          (filter #(case level-kw
+                                     :error (= (:level %) :error)
+                                     :warning (#{:error :warning} (:level %))
+                                     :info true))
+                          (mapv #(select-keys % [:filename :row :col :level :type :message])))]
+        filtered)
+      (catch Exception e
+        (log/warn "Lint check failed for" file ":" (.getMessage e))
+        [{:filename file
+          :level :error
+          :type :lint-failed
+          :message (str "Lint check failed: " (.getMessage e))}]))
+    (do
+      (log/warn "clj-kondo-mcp not available, skipping lint for" file)
+      [])))
 
 (defn- file-was-modified?
   "Check if file was actually modified by comparing content."

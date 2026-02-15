@@ -5,6 +5,7 @@
             [manifold.stream :as s]
             [manifold.deferred :as d]
             [clojure.data.json :as json]
+            [hive-mcp.dns.result :refer [rescue]]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -55,11 +56,7 @@
                                (s/put! socket "pong")
 
                                :else
-                               (when-let [msg (try
-                                                (json/read-str raw :key-fn keyword)
-                                                (catch Exception _e
-                                                  (log/debug "Non-JSON message:" raw)
-                                                  nil))]
+                               (when-let [msg (rescue nil (json/read-str raw :key-fn keyword))]
                                  (handle-message client-id msg))))
                            socket)
 

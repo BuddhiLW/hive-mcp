@@ -12,7 +12,7 @@
             [clojure.string :as str]
             [hive-mcp.tools.swarm.validated-wave :as validated-wave]
             [hive-mcp.tools.swarm.wave :as wave]
-            [hive-mcp.tools.kondo :as kondo]))
+            [hive-mcp.analysis.resolve :as resolve]))
 
 ;;; =============================================================================
 ;;; Test Fixtures
@@ -129,13 +129,13 @@
 (deftest test-handler-validates-task-structure
   (testing "handler normalizes task keys from string maps"
     ;; This tests that MCP's string keys get normalized
-    (with-redefs [wave/create-plan! (fn [tasks _] 
+    (with-redefs [wave/create-plan! (fn [tasks _]
                                       (is (every? #(contains? % :file) tasks))
                                       (is (every? #(contains? % :task) tasks))
                                       "plan-1")
                   wave/execute-wave! (fn [_ _] "wave-1")
                   wave/get-plan-status (fn [_] {:items [{:file "test.clj" :status :completed}]})
-                  kondo/run-analysis (fn [_] {:findings []})]
+                  resolve/resolve-kondo-analysis (fn [] (fn [_] {:findings []}))]
       (let [response (validated-wave/handle-dispatch-validated-wave
                       {:tasks [{"file" "test.clj" "task" "test task"}]
                        :validate false})]
@@ -150,7 +150,7 @@
     (with-redefs [wave/create-plan! mock-wave-create-plan!
                   wave/execute-wave! mock-wave-execute!
                   wave/get-plan-status (fn [_] {:items [{:file "src/foo.clj" :status :completed}]})
-                  kondo/run-analysis (fn [_] {:findings []})]
+                  resolve/resolve-kondo-analysis (fn [] (fn [_] {:findings []}))]
       (let [result (validated-wave/execute-validated-wave!
                     [{:file "src/foo.clj" :task "test"}]
                     {:validate true :trace false})]
@@ -175,16 +175,16 @@
       (with-redefs [wave/create-plan! mock-wave-create-plan!
                     wave/execute-wave! mock-wave-execute!
                     wave/get-plan-status (fn [_] {:items [{:file "src/foo.clj" :status :completed}]})
-                    kondo/run-analysis (fn [_]
-                                         (swap! lint-calls inc)
-                                         ;; First lint has errors, second is clean
-                                         (if (= 1 @lint-calls)
-                                           {:findings [{:filename "src/foo.clj"
-                                                        :row 1 :col 1
-                                                        :level :error
-                                                        :type :syntax
-                                                        :message "test error"}]}
-                                           {:findings []}))]
+                    resolve/resolve-kondo-analysis
+                    (fn [] (fn [_]
+                             (swap! lint-calls inc)
+                             (if (= 1 @lint-calls)
+                               {:findings [{:filename "src/foo.clj"
+                                            :row 1 :col 1
+                                            :level :error
+                                            :type :syntax
+                                            :message "test error"}]}
+                               {:findings []})))]
         (let [result (validated-wave/execute-validated-wave!
                       [{:file "src/foo.clj" :task "test"}]
                       {:validate true :max-retries 3 :trace false})]
@@ -197,13 +197,13 @@
     (with-redefs [wave/create-plan! mock-wave-create-plan!
                   wave/execute-wave! mock-wave-execute!
                   wave/get-plan-status (fn [_] {:items [{:file "src/foo.clj" :status :completed}]})
-                  ;; Always return errors
-                  kondo/run-analysis (fn [_]
-                                       {:findings [{:filename "src/foo.clj"
-                                                    :row 1 :col 1
-                                                    :level :error
-                                                    :type :syntax
-                                                    :message "persistent error"}]})]
+                  resolve/resolve-kondo-analysis
+                  (fn [] (fn [_]
+                           {:findings [{:filename "src/foo.clj"
+                                        :row 1 :col 1
+                                        :level :error
+                                        :type :syntax
+                                        :message "persistent error"}]}))]
       (let [result (validated-wave/execute-validated-wave!
                     [{:file "src/foo.clj" :task "test"}]
                     {:validate true :max-retries 3 :trace false})]
@@ -219,15 +219,16 @@
       (with-redefs [wave/create-plan! mock-wave-create-plan!
                     wave/execute-wave! mock-wave-execute!
                     wave/get-plan-status (fn [_] {:items [{:file "src/foo.clj" :status :completed}]})
-                    kondo/run-analysis (fn [_]
-                                         (swap! lint-calls inc)
-                                         (if (<= @lint-calls 2)
-                                           {:findings [{:filename "src/foo.clj"
-                                                        :row @lint-calls :col 1
-                                                        :level :error
-                                                        :type :syntax
-                                                        :message (str "error " @lint-calls)}]}
-                                           {:findings []}))]
+                    resolve/resolve-kondo-analysis
+                    (fn [] (fn [_]
+                             (swap! lint-calls inc)
+                             (if (<= @lint-calls 2)
+                               {:findings [{:filename "src/foo.clj"
+                                            :row @lint-calls :col 1
+                                            :level :error
+                                            :type :syntax
+                                            :message (str "error " @lint-calls)}]}
+                               {:findings []})))]
         (let [result (validated-wave/execute-validated-wave!
                       [{:file "src/foo.clj" :task "test"}]
                       {:validate true :max-retries 5 :trace false})]
@@ -244,29 +245,32 @@
 
 (deftest test-lint-files-error-level
   (testing "lint-files filters to errors only at error level"
-    (with-redefs [kondo/run-analysis (fn [_]
-                                       {:findings [{:level :error :filename "a.clj"}
-                                                   {:level :warning :filename "a.clj"}
-                                                   {:level :info :filename "a.clj"}]})]
+    (with-redefs [resolve/resolve-kondo-analysis
+                  (fn [] (fn [_]
+                           {:findings [{:level :error :filename "a.clj"}
+                                       {:level :warning :filename "a.clj"}
+                                       {:level :info :filename "a.clj"}]}))]
       (let [result (#'validated-wave/lint-files ["a.clj"] "error")]
         (is (= 1 (:count result)))
         (is (every? #(= :error (:level %)) (:findings result)))))))
 
 (deftest test-lint-files-warning-level
   (testing "lint-files includes errors and warnings at warning level"
-    (with-redefs [kondo/run-analysis (fn [_]
-                                       {:findings [{:level :error :filename "a.clj"}
-                                                   {:level :warning :filename "a.clj"}
-                                                   {:level :info :filename "a.clj"}]})]
+    (with-redefs [resolve/resolve-kondo-analysis
+                  (fn [] (fn [_]
+                           {:findings [{:level :error :filename "a.clj"}
+                                       {:level :warning :filename "a.clj"}
+                                       {:level :info :filename "a.clj"}]}))]
       (let [result (#'validated-wave/lint-files ["a.clj"] "warning")]
         (is (= 2 (:count result)))))))
 
 (deftest test-lint-files-info-level
   (testing "lint-files includes all at info level"
-    (with-redefs [kondo/run-analysis (fn [_]
-                                       {:findings [{:level :error :filename "a.clj"}
-                                                   {:level :warning :filename "a.clj"}
-                                                   {:level :info :filename "a.clj"}]})]
+    (with-redefs [resolve/resolve-kondo-analysis
+                  (fn [] (fn [_]
+                           {:findings [{:level :error :filename "a.clj"}
+                                       {:level :warning :filename "a.clj"}
+                                       {:level :info :filename "a.clj"}]}))]
       (let [result (#'validated-wave/lint-files ["a.clj"] "info")]
         (is (= 3 (:count result)))))))
 

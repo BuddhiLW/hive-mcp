@@ -51,15 +51,6 @@
 ;;; Extension Delegation Helpers
 ;;; =============================================================================
 
-(defn- delegate-or-noop
-  "Try to delegate to extension fn, fall back to default value."
-  [ext-key default-val args]
-  (if-let [f (ext/get-extension ext-key)]
-    (apply f args)
-    (do
-      (log/debug "Extension not available, returning default for" ext-key)
-      default-val)))
-
 ;;; =============================================================================
 ;;; Shared Helpers (pure calculations)
 ;;; =============================================================================

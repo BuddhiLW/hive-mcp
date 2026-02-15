@@ -34,6 +34,10 @@
 (defonce ^:private tool-registry
   (atom {}))
 
+;; Registry for composite tool command contributions.
+;; Shape: {"analysis" {"lint" {:handler fn :params {...} :description "..." :addon :kondo} ...}}
+(defonce ^:private command-contributions (atom {}))
+
 ;; =============================================================================
 ;; Public API
 ;; =============================================================================
@@ -79,11 +83,12 @@
   k)
 
 (defn clear-all!
-  "Remove all registrations (fn + schema + tool). Intended for testing only."
+  "Remove all registrations (fn + schema + tool + contributions). Intended for testing only."
   []
   (reset! registry {})
   (reset! schema-registry {})
   (reset! tool-registry {})
+  (reset! command-contributions {})
   nil)
 
 ;; =============================================================================
@@ -139,3 +144,42 @@
   []
   (reset! tool-registry {})
   nil)
+
+;; =============================================================================
+;; Composite Tool Command Contributions
+;; =============================================================================
+
+(defn contribute-commands!
+  "Register commands that compose into a named composite tool.
+   tool-name: \"analysis\", addon-id: :kondo
+   commands: {\"lint\" {:handler fn :params {\"path\" {...}} :description \"...\"}}"
+  [tool-name addon-id commands]
+  (swap! command-contributions update tool-name merge
+         (->> commands
+              (map (fn [[cmd spec]] [(name cmd) (assoc spec :addon addon-id)]))
+              (into {}))))
+
+(defn retract-commands!
+  "Remove all commands contributed by an addon from a tool."
+  [tool-name addon-id]
+  (swap! command-contributions update tool-name
+         (fn [m] (into {} (remove #(= addon-id (:addon (val %))) m)))))
+
+(defn retract-all-by-addon!
+  "Remove all contributions from an addon across all tools (for shutdown)."
+  [addon-id]
+  (swap! command-contributions
+         (fn [m]
+           (into {} (map (fn [[tn cmds]]
+                           [tn (into {} (remove #(= addon-id (:addon (val %))) cmds))])
+                         m)))))
+
+(defn get-contributed-commands
+  "Get contributed commands for a composite tool name."
+  [tool-name]
+  (get @command-contributions tool-name))
+
+(defn contributed-tool-names
+  "Return vector of tool names that have command contributions."
+  []
+  (vec (keys @command-contributions)))
