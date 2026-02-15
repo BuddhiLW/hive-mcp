@@ -1,6 +1,7 @@
 (ns hive-mcp.agent.permissions
   "Permission policies and enforcement for agent tool calls."
   (:require [hive-mcp.agent.drone.tool-allowlist :as allowlist]
+            [hive-mcp.dns.result :refer [rescue]]
             [hive-mcp.protocols.agent-bridge :as bridge]
             [taoensso.timbre :as log]))
 
@@ -226,12 +227,9 @@
 (defn- resolve-budget-guardrail-handler
   "Dynamically resolve the budget guardrail handler factory."
   []
-  (try
-    (when-let [factory-fn (requiring-resolve 'hive-mcp.agent.hooks.budget/budget-guardrail-handler)]
-      (factory-fn))
-    (catch Exception e
-      (log/debug "Budget guardrail handler not available" {:error (ex-message e)})
-      nil)))
+  (rescue nil
+          (when-let [factory-fn (requiring-resolve 'hive-mcp.agent.hooks.budget/budget-guardrail-handler)]
+            (factory-fn))))
 
 (defn ling-policy-with-budget
   "Permission policy for ling agents with optional budget guardrail."
@@ -240,13 +238,11 @@
    (if-let [budget-handler (resolve-budget-guardrail-handler)]
      (do
        (when (and (:agent-id opts) (:max-budget-usd opts))
-         (try
-           (let [register-fn (requiring-resolve 'hive-mcp.agent.hooks.budget/register-budget!)]
-             (register-fn (:agent-id opts)
-                          (:max-budget-usd opts)
-                          {:model (:model opts)}))
-           (catch Exception e
-             (log/warn "Failed to register budget" {:error (ex-message e)}))))
+         (rescue nil
+                 (let [register-fn (requiring-resolve 'hive-mcp.agent.hooks.budget/register-budget!)]
+                   (register-fn (:agent-id opts)
+                                (:max-budget-usd opts)
+                                {:model (:model opts)}))))
        (->policy :allow-safe
                  (composite-handler [(logging-handler) budget-handler])))
      (do
@@ -259,13 +255,11 @@
   (let [al-handler (allowlist-handler opts)
         budget-handler (resolve-budget-guardrail-handler)]
     (when (and (:agent-id opts) (:max-budget-usd opts) budget-handler)
-      (try
-        (let [register-fn (requiring-resolve 'hive-mcp.agent.hooks.budget/register-budget!)]
-          (register-fn (:agent-id opts)
-                       (:max-budget-usd opts)
-                       {:model (:model opts)}))
-        (catch Exception e
-          (log/warn "Failed to register drone budget" {:error (ex-message e)}))))
+      (rescue nil
+              (let [register-fn (requiring-resolve 'hive-mcp.agent.hooks.budget/register-budget!)]
+                (register-fn (:agent-id opts)
+                             (:max-budget-usd opts)
+                             {:model (:model opts)}))))
     (if budget-handler
       (->policy :allow-safe
                 (composite-handler [al-handler budget-handler]))

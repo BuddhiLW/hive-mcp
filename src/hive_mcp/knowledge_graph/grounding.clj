@@ -1,8 +1,9 @@
 (ns hive-mcp.knowledge-graph.grounding
   "Re-grounding workflow for knowledge entries.
    Verifies entries against source files and updates grounding timestamps."
-   
+
   (:require [hive-mcp.chroma.core :as chroma]
+            [hive-mcp.dns.result :refer [rescue]]
             [clojure.java.io :as io]
             [clojure.string :as str]
             [taoensso.timbre :as log])
@@ -42,18 +43,15 @@
    
    Note: Uses SHA-256 for content fingerprinting."
   [source-path]
-  (try
-    (let [file (io/file source-path)]
-      (if (.exists file)
-        (let [content (slurp file)
-              hash-bytes (.digest (java.security.MessageDigest/getInstance "SHA-256")
-                                  (.getBytes content "UTF-8"))
-              hash-hex (apply str (map #(format "%02x" (bit-and % 0xff)) hash-bytes))]
-          {:hash hash-hex :exists? true})
-        {:exists? false}))
-    (catch Exception e
-      (log/warn "Failed to read source file for hashing" {:path source-path :error e})
-      nil)))
+  (rescue nil
+          (let [file (io/file source-path)]
+            (if (.exists file)
+              (let [content (slurp file)
+                    hash-bytes (.digest (java.security.MessageDigest/getInstance "SHA-256")
+                                        (.getBytes content "UTF-8"))
+                    hash-hex (apply str (map #(format "%02x" (bit-and % 0xff)) hash-bytes))]
+                {:hash hash-hex :exists? true})
+              {:exists? false}))))
 
 (defn reground-entry!
   "Re-ground a single knowledge entry by verifying against source file.

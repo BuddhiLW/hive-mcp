@@ -27,12 +27,3 @@
 (def sdk-session? lifecycle/sdk-session?)
 (def kill-all-sdk! lifecycle/kill-all-sdk!)
 
-(defn- register-session!
-  "Internal, for test backward compat."
-  [ling-id session-data]
-  (session/register-session! ling-id session-data))
-
-(defn- unregister-session!
-  "Internal, for test backward compat."
-  [ling-id]
-  (session/unregister-session! ling-id))

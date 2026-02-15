@@ -11,6 +11,7 @@
    - Legacy TCP channel (deprecated, backward compat)"
   (:require [nrepl.server :as nrepl-server]
             [hive-mcp.config.core :as config]
+            [hive-mcp.dns.result :as result]
             [hive-mcp.transport.websocket :as ws]
             [hive-mcp.transport.olympus :as olympus-ws]
             [hive-mcp.channel.core :as channel]
@@ -117,11 +118,9 @@
                                        :default 9999)
         check-interval-ms 30000] ; Check every 30 seconds
     ;; Start initial server
-    (try
-      (ws-channel/start! {:port port})
-      (log/info "WebSocket channel server started on port" port)
-      (catch Exception e
-        (log/warn "WebSocket channel initial start failed:" (.getMessage e))))
+    (result/rescue nil
+                   (ws-channel/start! {:port port})
+                   (log/info "WebSocket channel server started on port" port))
     ;; Start monitoring loop
     (when-not @ws-channel-monitor
       (reset! ws-channel-monitor
@@ -133,11 +132,9 @@
 
                 (when-not (:running? (ws-channel/status))
                   (log/warn "WebSocket channel server died, attempting restart...")
-                  (try
-                    (ws-channel/start! {:port port})
-                    (log/info "WebSocket channel server restarted on port" port)
-                    (catch Exception e
-                      (log/error "WebSocket channel restart failed:" (.getMessage e)))))
+                  (result/rescue nil
+                                 (ws-channel/start! {:port port})
+                                 (log/info "WebSocket channel server restarted on port" port)))
                 (recur)))
       (log/info "WebSocket channel auto-heal monitor started"))))
 
@@ -149,12 +146,10 @@
   "Start Olympus WebSocket server for Olympus Web UI (port 7911).
    Sends full snapshot on connect, supports typed event protocol."
   []
-  (try
-    (olympus-ws/start!)
-    (olympus-ws/wire-hivemind-events!)
-    (log/info "Olympus WebSocket server started on port 7911")
-    (catch Exception e
-      (log/warn "Olympus WebSocket server failed to start (non-fatal):" (.getMessage e)))))
+  (result/rescue nil
+                 (olympus-ws/start!)
+                 (olympus-ws/wire-hivemind-events!)
+                 (log/info "Olympus WebSocket server started on port 7911")))
 
 ;; =============================================================================
 ;; A2A Protocol Gateway
@@ -168,18 +163,16 @@
                                   :env "HIVE_MCP_A2A_ENABLED"
                                   :parse #(= "true" %)
                                   :default false)
-    (try
-      (require 'hive-mcp.transport.a2a)
-      ((resolve 'hive-mcp.transport.a2a/start!)
-       {:port (config/get-service-value :a2a :port
-                                        :env "HIVE_MCP_A2A_PORT"
-                                        :parse parse-long
-                                        :default 7912)
-        :api-key (config/get-service-value :a2a :api-key
-                                           :env "HIVE_MCP_A2A_API_KEY")})
-      (log/info "A2A gateway started")
-      (catch Exception e
-        (log/warn "A2A gateway failed to start (non-fatal):" (.getMessage e))))))
+    (result/rescue nil
+                   (require 'hive-mcp.transport.a2a)
+                   ((resolve 'hive-mcp.transport.a2a/start!)
+                    {:port (config/get-service-value :a2a :port
+                                                     :env "HIVE_MCP_A2A_PORT"
+                                                     :parse parse-long
+                                                     :default 7912)
+                     :api-key (config/get-service-value :a2a :api-key
+                                                        :env "HIVE_MCP_A2A_API_KEY")})
+                   (log/info "A2A gateway started"))))
 
 ;; =============================================================================
 ;; Legacy Channel (deprecated)
@@ -193,11 +186,9 @@
                                                :env "HIVE_MCP_CHANNEL_PORT"
                                                :parse parse-long
                                                :default 9998)]
-    (try
-      (channel/start-server! {:type :tcp :port channel-port})
+    (result/rescue nil
+                   (channel/start-server! {:type :tcp :port channel-port})
       ;; Mark coordinator as running to protect from test fixture cleanup
       ;; the production server when tests run in the same JVM
-      (channel/mark-coordinator-running!)
-      (log/info "Legacy channel server started on TCP port" channel-port)
-      (catch Exception e
-        (log/warn "Legacy channel server failed to start (non-fatal):" (.getMessage e))))))
+                   (channel/mark-coordinator-running!)
+                   (log/info "Legacy channel server started on TCP port" channel-port))))

@@ -2,6 +2,7 @@
   "KG-aware task prioritization for the Forge Belt."
   (:require [hive-mcp.knowledge-graph.edges :as kg-edges]
             [hive-mcp.chroma.core :as chroma]
+            [hive-mcp.dns.result :refer [rescue]]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -14,21 +15,16 @@
 (defn get-task-deps
   "Query KG for the task IDs that a given task depends on."
   [task-id]
-  (try
-    (let [edges (kg-edges/get-edges-from task-id)
-          dep-edges (filter #(= :depends-on (:kg-edge/relation %)) edges)]
-      (set (map :kg-edge/to dep-edges)))
-    (catch Exception e
-      (log/debug "get-task-deps failed for" task-id (ex-message e))
-      #{})))
+  (rescue #{}
+          (let [edges (kg-edges/get-edges-from task-id)
+                dep-edges (filter #(= :depends-on (:kg-edge/relation %)) edges)]
+            (set (map :kg-edge/to dep-edges)))))
 
 (defn task-exists-in-chroma?
   "Check if a task still exists in Chroma."
   [task-id]
-  (try
-    (some? (chroma/get-entry-by-id task-id))
-    (catch Exception _
-      false)))
+  (rescue false
+          (some? (chroma/get-entry-by-id task-id))))
 
 ;; =============================================================================
 ;; Pure Readiness Calculations

@@ -3,6 +3,7 @@
   (:require [hive-mcp.emacs.client :as ec]
             [hive-mcp.chroma.core :as chroma]
             [hive-mcp.knowledge-graph.scope :as kg-scope]
+            [hive-mcp.dns.result :refer [rescue]]
             [clojure.string :as str]
             [clojure.set :as set]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -29,16 +30,14 @@
   "Get current project name from Emacs."
   ([] (get-current-project-name nil))
   ([directory]
-   (try
-     (let [elisp (if directory
-                   (format "(hive-mcp-memory--get-project-name %s)" (pr-str directory))
-                   "(hive-mcp-memory--get-project-name)")
-           {:keys [success result timed-out]} (ec/eval-elisp-with-timeout elisp 10000)]
-       (if (and success result (not= result "nil") (not timed-out))
-         (str/replace result #"\"" "")
-         nil))
-     (catch Exception _
-       nil))))
+   (rescue nil
+           (let [elisp (if directory
+                         (format "(hive-mcp-memory--get-project-name %s)" (pr-str directory))
+                         "(hive-mcp-memory--get-project-name)")
+                 {:keys [success result timed-out]} (ec/eval-elisp-with-timeout elisp 10000)]
+             (if (and success result (not= result "nil") (not timed-out))
+               (str/replace result #"\"" "")
+               nil)))))
 
 (defn filter-by-tags
   "Filter entries to only those containing all specified tags."
@@ -118,12 +117,11 @@
   "Check if entry expires within 7 days."
   [entry]
   (when-let [exp (:expires entry)]
-    (try
-      (let [exp-time (java.time.ZonedDateTime/parse exp)
-            now (java.time.ZonedDateTime/now)
-            week-later (.plusDays now 7)]
-        (.isBefore exp-time week-later))
-      (catch Exception _ false))))
+    (rescue false
+            (let [exp-time (java.time.ZonedDateTime/parse exp)
+                  now (java.time.ZonedDateTime/now)
+                  week-later (.plusDays now 7)]
+              (.isBefore exp-time week-later)))))
 
 (defn query-expiring-entries
   "Query entries expiring within 7 days, scoped to project with scope-piercing."

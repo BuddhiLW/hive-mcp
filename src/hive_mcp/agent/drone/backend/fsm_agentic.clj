@@ -1,6 +1,7 @@
 (ns hive-mcp.agent.drone.backend.fsm-agentic
   "FSMAgenticBackend -- IDroneExecutionBackend via composable FSM drone-loop."
   (:require [hive-mcp.agent.drone.backend :as backend]
+            [hive-mcp.dns.result :refer [rescue]]
             [taoensso.timbre :as log]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -10,22 +11,7 @@
 (defn- resolve-drone-loop-fn
   "Lazily resolve a function from the drone-loop FSM namespace."
   [sym]
-  (try
-    (requiring-resolve sym)
-    (catch Exception e
-      (log/debug "FSM drone-loop not available:" sym (.getMessage e))
-      nil)))
-
-(defn- get-compiled-drone-loop
-  "Get the compiled drone-loop FSM, or nil if not available."
-  []
-  (when-let [compiled-var (resolve-drone-loop-fn
-                           'hive-mcp.workflows.drone-loop/compiled)]
-    (try
-      @compiled-var
-      (catch Exception e
-        (log/warn "Failed to deref compiled drone-loop FSM:" (.getMessage e))
-        nil))))
+  (rescue nil (requiring-resolve sym)))
 
 (defn- get-run-drone-loop
   "Get the run-drone-loop convenience function, or nil if not available."

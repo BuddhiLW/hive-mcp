@@ -48,10 +48,12 @@
 (defn normalize-content
   "Normalize handler result to content array.
    SRP: Single responsibility for content normalization.
-   Handles: sequential (passthrough), map (wrap), other (text wrap)."
+   Handles: sequential (passthrough), map with :content (unwrap MCP response),
+   map (wrap), other (text wrap)."
   [result]
   (cond
     (sequential? result) (vec result)
+    (and (map? result) (:content result)) (:content result)
     (map? result) [result]
     :else [{:type "text" :text (str result)}]))
 

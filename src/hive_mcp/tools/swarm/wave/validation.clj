@@ -1,6 +1,6 @@
 (ns hive-mcp.tools.swarm.wave.validation
   "Wave validation for pre-flight path checks and post-apply lint/compile checks."
-  (:require [clj-kondo.core :as kondo]
+  (:require [hive-mcp.analysis.resolve :as resolve]
             [clojure.java.io :as io]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
@@ -59,28 +59,32 @@
 (defn lint-file!
   "Run clj-kondo lint on a single file."
   [file-path & [{:keys [level] :or {level :error}}]]
-  (try
-    (let [result (kondo/run! {:lint [file-path]})
-          findings (:findings result)
-          errors (filter #(= :error (:level %)) findings)
-          warnings (filter #(= :warning (:level %)) findings)
-          info-msgs (filter #(= :info (:level %)) findings)]
-      {:valid? (case level
-                 :error (empty? errors)
-                 :warning (and (empty? errors) (empty? warnings))
-                 :info (empty? findings))
-       :errors (vec errors)
-       :warnings (vec warnings)
-       :info-count (count info-msgs)
-       :file file-path})
-    (catch Exception e
-      (log/warn "Lint failed for" file-path ":" (ex-message e))
-      {:valid? false
-       :errors [{:message (str "Lint error: " (ex-message e))
-                 :file file-path}]
-       :warnings []
-       :info-count 0
-       :file file-path})))
+  (if-let [run-analysis (resolve/resolve-kondo-analysis)]
+    (try
+      (let [result (run-analysis file-path)
+            findings (:findings result)
+            errors (filter #(= :error (:level %)) findings)
+            warnings (filter #(= :warning (:level %)) findings)
+            info-msgs (filter #(= :info (:level %)) findings)]
+        {:valid? (case level
+                   :error (empty? errors)
+                   :warning (and (empty? errors) (empty? warnings))
+                   :info (empty? findings))
+         :errors (vec errors)
+         :warnings (vec warnings)
+         :info-count (count info-msgs)
+         :file file-path})
+      (catch Exception e
+        (log/warn "Lint failed for" file-path ":" (ex-message e))
+        {:valid? false
+         :errors [{:message (str "Lint error: " (ex-message e))
+                   :file file-path}]
+         :warnings []
+         :info-count 0
+         :file file-path}))
+    (do
+      (log/warn "clj-kondo-mcp not available, skipping lint for" file-path)
+      {:valid? true :errors [] :warnings [] :info-count 0 :file file-path})))
 
 (defn lint-before-apply!
   "Run clj-kondo on proposed diff content before applying."

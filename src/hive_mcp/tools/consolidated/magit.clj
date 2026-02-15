@@ -1,18 +1,17 @@
 (ns hive-mcp.tools.consolidated.magit
   "Consolidated Magit/Git CLI tool."
   (:require [hive-mcp.tools.cli :refer [make-cli-handler make-batch-handler]]
+            [hive-mcp.tools.core :refer [mcp-error]]
             [hive-mcp.tools.magit :as magit-handlers]))
 
-(def ^:private batch-commit-handler
-  "Batch commit multiple operations via make-batch-handler."
-  (let [commit-handlers {:commit magit-handlers/handle-magit-commit}
-        batch-fn (make-batch-handler commit-handlers)]
-    (fn [{:keys [operations] :as params}]
-      (if (or (nil? operations) (empty? operations))
-        {:isError true :text "operations is required (array of commit parameter objects, each with :message)"}
-        (let [;; Auto-inject :command "commit" into each operation
-              ops-with-command (mapv #(assoc % :command "commit") operations)]
-          (batch-fn (assoc params :operations ops-with-command)))))))
+(defn- handle-batch-commit
+  "Batch commit multiple operations. Injects :command \"commit\" into each op."
+  [{:keys [operations] :as params}]
+  (if (or (nil? operations) (empty? operations))
+    (mcp-error "operations is required (array of commit parameter objects, each with :message)")
+    (let [batch-fn (make-batch-handler {:commit magit-handlers/handle-magit-commit})
+          ops-with-command (mapv #(assoc % :command "commit") operations)]
+      (batch-fn (assoc params :operations ops-with-command)))))
 
 (def handlers
   {:status   magit-handlers/handle-magit-status
@@ -25,7 +24,7 @@
    :pull     magit-handlers/handle-magit-pull
    :fetch    magit-handlers/handle-magit-fetch
    :feature-branches magit-handlers/handle-magit-feature-branches
-   :batch-commit batch-commit-handler})
+   :batch-commit handle-batch-commit})
 
 (def handle-magit
   (make-cli-handler handlers))

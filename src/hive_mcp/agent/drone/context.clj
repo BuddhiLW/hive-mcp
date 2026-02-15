@@ -1,8 +1,9 @@
 (ns hive-mcp.agent.drone.context
   "Smart context injection for drone agents including surrounding lines, imports, kondo analysis, and conventions."
-  (:require [hive-mcp.tools.kondo :as kondo]
+  (:require [hive-mcp.analysis.resolve :as resolve]
             [hive-mcp.chroma.core :as chroma]
             [hive-mcp.knowledge-graph.disc :as kg-disc]
+            [hive-mcp.dns.result :refer [rescue]]
             [clojure.string :as str]
             [clojure.java.io :as io]
             [taoensso.timbre :as log]))
@@ -13,12 +14,9 @@
 (defn- read-file-lines
   "Read file as vector of lines, returning nil if file doesn't exist."
   [path]
-  (try
-    (when (.exists (io/file path))
-      (str/split-lines (slurp path)))
-    (catch Exception e
-      (log/debug "Could not read file:" path (.getMessage e))
-      nil)))
+  (rescue nil
+          (when (.exists (io/file path))
+            (str/split-lines (slurp path)))))
 
 (defn read-surrounding-lines
   "Read surrounding lines around a target line number."
@@ -42,16 +40,14 @@
 (defn- parse-ns-form
   "Parse ns form from file content, returning nil on failure."
   [content]
-  (try
-    (let [forms (read-string (str "[" content "]"))]
-      (first (filter #(and (list? %) (= 'ns (first %))) forms)))
-    (catch Exception _
-      nil)))
+  (rescue nil
+          (let [forms (read-string (str "[" content "]"))]
+            (first (filter #(and (list? %) (= 'ns (first %))) forms)))))
 
 (defn extract-imports
   "Extract require/import clauses from a Clojure file."
   [path]
-  (when-let [content (try (slurp path) (catch Exception _ nil))]
+  (when-let [content (rescue nil (slurp path))]
     (when-let [ns-form (parse-ns-form content)]
       (let [ns-name (second ns-form)
             clauses (drop 2 ns-form)
@@ -80,31 +76,31 @@
 (defn find-related-symbols
   "Find function signatures related to the task using kondo analysis."
   [path task]
-  (try
-    (let [{:keys [analysis]} (kondo/run-analysis path)
-          var-defs (:var-definitions analysis)
-          ;; Extract potential function names from task
-          task-words (-> task
-                         str/lower-case
-                         (str/replace #"[^a-z0-9\-]" " ")
-                         (str/split #"\s+")
-                         set)
-          ;; Find definitions that match task keywords
-          relevant-defs (->> var-defs
-                             (filter (fn [vdef]
-                                       (let [var-name (str/lower-case (str (:name vdef)))]
-                                         (some #(str/includes? var-name %) task-words))))
-                             (take 10))]
-      (mapv (fn [vdef]
-              {:name (str (:name vdef))
-               :ns (str (:ns vdef))
-               :arglists (:arglist-strs vdef)
-               :row (:row vdef)
-               :private (:private vdef)})
-            relevant-defs))
-    (catch Exception e
-      (log/debug "Could not analyze file for related symbols:" path (.getMessage e))
-      [])))
+  (if-let [run-analysis (resolve/resolve-kondo-analysis)]
+    (try
+      (let [{:keys [analysis]} (run-analysis path)
+            var-defs (:var-definitions analysis)
+            task-words (-> task
+                           str/lower-case
+                           (str/replace #"[^a-z0-9\-]" " ")
+                           (str/split #"\s+")
+                           set)
+            relevant-defs (->> var-defs
+                               (filter (fn [vdef]
+                                         (let [var-name (str/lower-case (str (:name vdef)))]
+                                           (some #(str/includes? var-name %) task-words))))
+                               (take 10))]
+        (mapv (fn [vdef]
+                {:name (str (:name vdef))
+                 :ns (str (:ns vdef))
+                 :arglists (:arglist-strs vdef)
+                 :row (:row vdef)
+                 :private (:private vdef)})
+              relevant-defs))
+      (catch Exception e
+        (log/debug "Could not analyze file for related symbols:" path (.getMessage e))
+        []))
+    []))
 
 (defn format-related-symbols
   "Format related symbols as context string."
@@ -121,18 +117,20 @@
 (defn get-existing-warnings
   "Get existing lint warnings for a file."
   [path & [{:keys [level] :or {level :warning}}]]
-  (try
-    (let [{:keys [findings]} (kondo/run-analysis path)]
-      (->> findings
-           (filter #(case level
-                      :error (= (:level %) :error)
-                      :warning (#{:error :warning} (:level %))
-                      :info true))
-           (mapv #(select-keys % [:row :col :level :type :message]))
-           (take 15)))  ; Limit to avoid context bloat
-    (catch Exception e
-      (log/debug "Could not lint file:" path (.getMessage e))
-      [])))
+  (if-let [run-analysis (resolve/resolve-kondo-analysis)]
+    (try
+      (let [{:keys [findings]} (run-analysis path)]
+        (->> findings
+             (filter #(case level
+                        :error (= (:level %) :error)
+                        :warning (#{:error :warning} (:level %))
+                        :info true))
+             (mapv #(select-keys % [:row :col :level :type :message]))
+             (take 15)))
+      (catch Exception e
+        (log/debug "Could not lint file:" path (.getMessage e))
+        []))
+    []))
 
 (defn format-lint-context
   "Format lint findings as context for drone."
@@ -205,12 +203,11 @@
                          (and hash (:disc/content-hash disc)
                               (not= hash (:disc/content-hash disc))))))
           staleness (when disc (kg-disc/staleness-score disc))
-          grounded-entries (try
-                             (when (chroma/embedding-configured?)
-                               (->> (chroma/query-entries :limit 10)
-                                    (filter #(= file-path (get-in % [:metadata :source-file])))
-                                    (take 5)))
-                             (catch Exception _ nil))]
+          grounded-entries (rescue nil
+                                   (when (chroma/embedding-configured?)
+                                     (->> (chroma/query-entries :limit 10)
+                                          (filter #(= file-path (get-in % [:metadata :source-file])))
+                                          (take 5))))]
       {:disc disc
        :stale? (boolean stale?)
        :staleness-score (or staleness 1.0)
@@ -256,18 +253,15 @@
   (let [file-obj (io/file (if (str/starts-with? file-path "/")
                             file-path
                             (str project-root "/" file-path)))
-        abs-path (try
-                   (let [canonical (.getCanonicalPath file-obj)
-                         root-canonical (.getCanonicalPath (io/file project-root))]
-                     (if (str/starts-with? canonical root-canonical)
-                       canonical
-                       (do
-                         (log/warn "Path escapes project directory in build-drone-context"
-                                   {:file file-path :canonical canonical :root root-canonical})
-                         nil)))
-                   (catch Exception e
-                     (log/warn "Path validation failed" {:file file-path :error (.getMessage e)})
-                     nil))]
+        abs-path (rescue nil
+                         (let [canonical (.getCanonicalPath file-obj)
+                               root-canonical (.getCanonicalPath (io/file project-root))]
+                           (if (str/starts-with? canonical root-canonical)
+                             canonical
+                             (do
+                               (log/warn "Path escapes project directory in build-drone-context"
+                                         {:file file-path :canonical canonical :root root-canonical})
+                               nil))))]
     (when-not abs-path
       (log/warn "Skipping context build for invalid path" {:file file-path}))
     (when abs-path

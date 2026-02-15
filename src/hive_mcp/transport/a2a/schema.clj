@@ -5,8 +5,7 @@
    Defines A2A Task, Message, StatusUpdateEvent factories
    and JSON-RPC 2.0 success/error wrappers.
 
-   Spec: https://google.github.io/A2A/"
-  (:require [clojure.data.json :as json]))
+   Spec: https://google.github.io/A2A/")
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later

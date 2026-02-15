@@ -35,7 +35,9 @@
    - Delegates to olympus.clj for snapshot/broadcast infrastructure"
 
   (:require [clojure.data.json :as json]
+            [clojure.string :as str]
             [taoensso.timbre :as log]
+            [hive-mcp.dns.result :as result]
             [hive-mcp.transport.olympus :as olympus]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -101,11 +103,7 @@
   "Lazily resolve a handler function to avoid circular dependencies.
    Returns nil if resolution fails."
   [sym]
-  (try
-    (requiring-resolve sym)
-    (catch Exception e
-      (log/warn "Failed to resolve handler:" sym (.getMessage e))
-      nil)))
+  (result/rescue nil (requiring-resolve sym)))
 
 (defn- execute-agent-command
   "Execute an agent lifecycle command.
@@ -234,7 +232,7 @@
      {:lines [...] :cursor <last-timestamp> :ling_id \"...\" :stats {...}}"
   [params]
   (let [ling-id (or (:ling_id params) (:ling-id params))
-        since (some-> (or (:since params)) long)
+        since (some-> (:since params) long)
         last-n (some-> (or (:last_n params) (:last-n params)) long)]
     (when-not ling-id
       (throw (ex-info "Missing required parameter: ling_id" {:params params})))
@@ -487,31 +485,30 @@
 
                       :else (str command))
         [ns-part action] (if (.contains command-str "/")
-                           (clojure.string/split command-str #"/" 2)
+                           (str/split command-str #"/" 2)
                            [command-str nil])
-        action-kw (when action (keyword action))]
-    ;; Check authorization
-    (let [{:keys [authorized? reason]} (authorize-command client-info command params)]
-      (if-not authorized?
+        action-kw (when action (keyword action))
+        {:keys [authorized? reason]} (authorize-command client-info command params)]
+    (if-not authorized?
+      {:success false
+       :error (str "Unauthorized: " (or reason "Access denied"))
+       :command command-str}
+      ;; Route to handler
+      (if-let [handler (or (get @command-handlers ns-part)
+                           (get builtin-commands ns-part))]
+        (try
+          (handler (or action-kw (keyword ns-part)) params)
+          (catch Exception e
+            (log/error "Command execution failed:" command-str (.getMessage e))
+            {:success false
+             :error (.getMessage e)
+             :command command-str}))
         {:success false
-         :error (str "Unauthorized: " (or reason "Access denied"))
-         :command command-str}
-        ;; Route to handler
-        (if-let [handler (or (get @command-handlers ns-part)
-                             (get builtin-commands ns-part))]
-          (try
-            (handler (or action-kw (keyword ns-part)) params)
-            (catch Exception e
-              (log/error "Command execution failed:" command-str (.getMessage e))
-              {:success false
-               :error (.getMessage e)
-               :command command-str}))
-          {:success false
-           :error (str "Unknown command namespace: " ns-part
-                       ". Available: " (clojure.string/join ", "
-                                                            (concat (keys builtin-commands)
-                                                                    (keys @command-handlers))))
-           :command command-str})))))
+         :error (str "Unknown command namespace: " ns-part
+                     ". Available: " (str/join ", "
+                                               (concat (keys builtin-commands)
+                                                       (keys @command-handlers))))
+         :command command-str}))))
 
 ;; =============================================================================
 ;; WebSocket Message Handler (extends olympus.clj)

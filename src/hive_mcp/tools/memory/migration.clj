@@ -11,6 +11,7 @@
             [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.string :as str]
+            [hive-mcp.dns.result :refer [rescue]]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -204,13 +205,10 @@
 (defn- read-hive-project-edn
   "Read and parse .hive-project.edn from a directory."
   [directory]
-  (try
-    (let [edn-file (io/file directory ".hive-project.edn")]
-      (when (.exists edn-file)
-        (edn/read-string (slurp edn-file))))
-    (catch Exception e
-      (log/debug "read-hive-project-edn failed:" (.getMessage e))
-      nil)))
+  (rescue nil
+          (let [edn-file (io/file directory ".hive-project.edn")]
+            (when (.exists edn-file)
+              (edn/read-string (slurp edn-file))))))
 
 (defn- update-hive-project-edn!
   "Update .hive-project.edn with new project-id and append old to aliases."
@@ -254,14 +252,12 @@
                 (when dry-run "(dry-run)") {:directory directory})
 
       (if dry-run
-        (let [chroma-count (try
-                             (with-chroma
-                               (count (chroma/query-entries :project-id old-project-id
-                                                            :limit 10000)))
-                             (catch Exception _ 0))
-              kg-count (try
-                         (count (kg-edges/get-edges-by-scope old-project-id))
-                         (catch Exception _ 0))
+        (let [chroma-count (rescue 0
+                                   (with-chroma
+                                     (count (chroma/query-entries :project-id old-project-id
+                                                                  :limit 10000))))
+              kg-count (rescue 0
+                               (count (kg-edges/get-edges-by-scope old-project-id)))
               edn-config (when directory (read-hive-project-edn directory))
               current-aliases (or (:aliases edn-config) [])
               would-add-alias (not (some #{old-project-id} current-aliases))]
@@ -297,20 +293,15 @@
                            {:skipped "no directory provided"})
 
               config-registered
-              (try
-                (when-let [config (:config edn-result)]
-                  (kg-scope/register-project-config! new-project-id config)
-                  true)
-                (catch Exception e
-                  (log/warn "Failed to re-register project config:" (.getMessage e))
-                  false))
+              (rescue false
+                      (when-let [config (:config edn-result)]
+                        (kg-scope/register-project-config! new-project-id config)
+                        true))
 
-              _cache-cleared (try
-                               (kg-scope/clear-config-cache!)
-                               (when-let [config (:config edn-result)]
-                                 (kg-scope/register-project-config! new-project-id config))
-                               (catch Exception e
-                                 (log/debug "Cache clear/re-register warning:" (.getMessage e))))]
+              _cache-cleared (rescue nil
+                                     (kg-scope/clear-config-cache!)
+                                     (when-let [config (:config edn-result)]
+                                       (kg-scope/register-project-config! new-project-id config)))]
 
           (mcp-json {:status "success"
                      :chroma {:migrated (:migrated migrate-result 0)

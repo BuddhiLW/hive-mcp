@@ -5,6 +5,13 @@
             [hive-mcp.tools.memory-kanban :as mem-kanban]
             [hive-mcp.plan.tool :as plan-tool]))
 
+(defn- handle-batch-update
+  "Batch update handler: injects :command \"update\" into each operation."
+  [{:keys [operations] :as params}]
+  (let [inner (make-batch-handler {:update mem-kanban/handle-mem-kanban-move})]
+    (inner (assoc params :operations
+                  (mapv #(assoc % :command "update") operations)))))
+
 (def ^:private canonical-handlers
   {:list           mem-kanban/handle-mem-kanban-list-slim
    :create         mem-kanban/handle-mem-kanban-create
@@ -12,10 +19,7 @@
    :status         mem-kanban/handle-mem-kanban-stats
    :sync           (fn [_] {:success true :message "Memory kanban is single-backend, no sync needed"})
    :plan-to-kanban plan-tool/handle-plan-to-kanban
-   :batch-update   (let [inner (make-batch-handler {:update mem-kanban/handle-mem-kanban-move})]
-                     (fn [{:keys [operations] :as params}]
-                       (inner (assoc params :operations
-                                     (mapv #(assoc % :command "update") operations)))))})
+   :batch-update   handle-batch-update})
 
 (def ^:private deprecated-aliases
   {:move     :update

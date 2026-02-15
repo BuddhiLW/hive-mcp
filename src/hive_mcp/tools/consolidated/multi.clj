@@ -17,15 +17,17 @@
             [hive-mcp.tools.consolidated.preset :as c-preset]
             [hive-mcp.tools.consolidated.olympus :as c-olympus]
             [hive-mcp.tools.consolidated.agora :as c-agora]
-            [hive-mcp.tools.consolidated.analysis :as c-analysis]
+            [hive-mcp.tools.composite :as composite]
             [hive-mcp.tools.consolidated.project :as c-project]
             [hive-mcp.tools.consolidated.session :as c-session]
             [hive-mcp.tools.consolidated.emacs :as c-emacs]
             [hive-mcp.tools.consolidated.wave :as c-wave]
             [hive-mcp.tools.consolidated.migration :as c-migration]
             [hive-mcp.tools.consolidated.config :as c-config]
-            [hive-mcp.tools.consolidated.lsp :as c-lsp]
             [hive-mcp.tools.consolidated.workflow :as c-workflow]
+            [hive-mcp.tools.result-bridge :as rb]
+            [hive-mcp.tools.core :refer [mcp-error]]
+            [hive-mcp.dns.result :refer [rescue]]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -43,14 +45,13 @@
    :preset    c-preset/handle-preset
    :olympus   c-olympus/handle-olympus
    :agora     c-agora/handle-agora
-   :analysis  c-analysis/handle-analysis
+   :analysis  (composite/build-composite-handler "analysis")
    :project   c-project/handle-project
    :session   c-session/handle-session
    :emacs     c-emacs/handle-emacs
    :wave      c-wave/handle-wave
    :migration c-migration/handle-migration
    :config    c-config/handle-config
-   :lsp       c-lsp/handle-lsp
    :workflow  c-workflow/handle-workflow})
 
 (def ^:private tool-names
@@ -61,43 +62,31 @@
   [tool-name]
   (get tool-handlers (keyword tool-name)))
 
-(defn- resolve-run-multi
-  "Lazily resolve hive-mcp.tools.multi/run-multi to avoid circular deps."
-  []
-  (try
-    (requiring-resolve 'hive-mcp.tools.multi/run-multi)
-    (catch Exception e
-      (log/error {:event :batch-resolve-error
-                  :error (ex-message e)})
-      nil)))
+;; ── Lazy Resolution Helpers ───────────────────────────────────────────────────
 
-(defn- resolve-format-results
-  "Lazily resolve hive-mcp.tools.multi/format-results."
-  []
-  (try
-    (requiring-resolve 'hive-mcp.tools.multi/format-results)
-    (catch Exception _
-      nil)))
+(defn- resolve-or-err
+  "Lazily resolve a fully-qualified symbol. Returns the fn or nil.
+   Logs the error category on failure."
+  [sym category]
+  (rescue nil
+          (requiring-resolve sym)))
 
-(defn- resolve-compile-paragraph
-  "Lazily resolve hive-mcp.dsl.verbs/compile-paragraph for DSL→ops compilation.
-   Returns the fn or nil if the DSL module is not available."
-  []
-  (try
-    (requiring-resolve 'hive-mcp.dsl.verbs/compile-paragraph)
-    (catch Exception e
-      (log/debug {:event :dsl-resolve-error :error (ex-message e)})
-      nil)))
+(defn- resolve-run-multi []
+  (resolve-or-err 'hive-mcp.tools.multi/run-multi :batch-resolve-error))
+
+(defn- resolve-format-results []
+  (resolve-or-err 'hive-mcp.tools.multi/format-results :format-resolve-error))
+
+(defn- resolve-compile-paragraph []
+  (resolve-or-err 'hive-mcp.dsl.verbs/compile-paragraph :dsl-resolve-error))
 
 (defn- resolve-async-fn
-  "Lazily resolve a function from hive-mcp.tools.multi-async namespace.
-   Returns the fn or nil if the async module is not available."
+  "Lazily resolve a function from hive-mcp.tools.multi-async namespace."
   [fn-name]
-  (try
-    (requiring-resolve (symbol "hive-mcp.tools.multi-async" (name fn-name)))
-    (catch Exception e
-      (log/debug {:event :async-resolve-error :fn fn-name :error (ex-message e)})
-      nil)))
+  (resolve-or-err (symbol "hive-mcp.tools.multi-async" (name fn-name))
+                  :async-resolve-error))
+
+;; ── Help ──────────────────────────────────────────────────────────────────────
 
 (defn- format-multi-help
   "Format help listing all available tools and their commands."
@@ -130,88 +119,76 @@
        "  multi {\"tool\": \"memory\", \"command\": \"help\"}\n\n"
        "All additional params are forwarded to the target tool handler."))
 
+;; ── Batch Dispatch ────────────────────────────────────────────────────────────
+
+(defn- dispatch-async
+  "Dispatch operations asynchronously, returning batch-id immediately."
+  [normalized-ops {:keys [dry_run]}]
+  (if-let [async-fn (resolve-async-fn 'run-multi-async)]
+    (try
+      (let [result (async-fn normalized-ops (cond-> {}
+                                              dry_run (assoc :dry-run true)))]
+        {:type "text" :text (pr-str result)})
+      (catch Exception e
+        (mcp-error (str "Async dispatch failed: " (ex-message e)))))
+    (mcp-error (pr-str {:error "Async module not loaded"
+                        :hint "hive-mcp.tools.multi-async is not available"}))))
+
+(defn- dispatch-sync
+  "Execute operations synchronously via batch engine."
+  [normalized-ops {:keys [dry_run] :as params}]
+  (let [run-multi-fn (resolve-run-multi)
+        format-fn    (resolve-format-results)
+        compact-mode (rescue nil
+                             (when-let [resolve-fn (requiring-resolve
+                                                    'hive-mcp.dsl.response/resolve-compress-mode)]
+                               (resolve-fn params)))]
+    (if-not run-multi-fn
+      (mcp-error "Batch execution engine not available (hive-mcp.tools.multi/run-multi could not be resolved)")
+      (let [result (if dry_run
+                     (run-multi-fn normalized-ops :dry-run true)
+                     (run-multi-fn normalized-ops))]
+        (if format-fn
+          (format-fn result :compact compact-mode)
+          {:type "text" :text (pr-str result)})))))
+
 (defn- handle-batch
   "Handle batch dispatch mode with dependency-ordered wave execution.
    Supports async: true for non-blocking dispatch."
-  [{:keys [operations dry_run async] :as _params}]
+  [{:keys [operations async] :as params}]
   (cond
     (nil? operations)
-    {:isError true
-     :text "Batch mode requires 'operations' array. Each op: {id, tool, command, ...params, depends_on?: [ids]}"}
+    (mcp-error "Batch mode requires 'operations' array. Each op: {id, tool, command, ...params, depends_on?: [ids]}")
 
     (not (sequential? operations))
-    {:isError true
-     :text "operations must be an array of {id, tool, command, ...} objects"}
+    (mcp-error "operations must be an array of {id, tool, command, ...} objects")
 
     (empty? operations)
-    {:isError true
-     :text "operations array is empty. Provide at least one operation."}
+    (mcp-error "operations array is empty. Provide at least one operation.")
 
-    ;; Async mode: dispatch and return batch-id immediately
-    async
-    (if-let [async-fn (resolve-async-fn 'run-multi-async)]
-      (try
-        (let [normalized-ops (mapv (fn [op]
-                                     (into {} (map (fn [[k v]] [(keyword k) v]) op)))
-                                   operations)
-              result (async-fn normalized-ops (cond-> {}
-                                                dry_run (assoc :dry-run true)))]
-          {:type "text" :text (pr-str result)})
-        (catch Exception e
-          {:isError true
-           :text (str "Async dispatch failed: " (ex-message e))}))
-      {:isError true
-       :text (pr-str {:error "Async module not loaded"
-                      :hint "hive-mcp.tools.multi-async is not available"})})
-
-    ;; Synchronous batch execution
     :else
-    (let [run-multi-fn (resolve-run-multi)
-          format-fn    (resolve-format-results)
-          ;; Resolve compact mode for batch envelope compression
-          compact-mode (try
-                         (when-let [resolve-fn (requiring-resolve
-                                                'hive-mcp.dsl.response/resolve-compress-mode)]
-                           (resolve-fn _params))
-                         (catch Exception _ nil))]
-      (if-not run-multi-fn
-        {:isError true
-         :text "Batch execution engine not available (hive-mcp.tools.multi/run-multi could not be resolved)"}
-
-        ;; Normalize each op's keys to keywords (MCP sends string keys)
-        (let [normalized-ops (mapv (fn [op]
-                                     (into {} (map (fn [[k v]] [(keyword k) v]) op)))
-                                   operations)
-              result (if dry_run
-                       (run-multi-fn normalized-ops :dry-run true)
-                       (run-multi-fn normalized-ops))]
-          (if format-fn
-            (format-fn result :compact compact-mode)
-            ;; Fallback if format-results not resolved
-            {:type "text" :text (pr-str result)}))))))
+    (let [normalized-ops (mapv rb/keywordize-map operations)]
+      (if async
+        (dispatch-async normalized-ops params)
+        (dispatch-sync normalized-ops params)))))
 
 ;; =============================================================================
 ;; DSL Handling
 ;; =============================================================================
 
 (defn- handle-dsl
-  "Handle DSL verb input: compile paragraph → run via batch engine.
-   DSL sentences are compiled to standard operations, then routed through
-   the existing batch execution pipeline (sync or async)."
+  "Handle DSL verb input: compile paragraph → run via batch engine."
   [{:keys [dsl] :as params}]
   (if-let [compile-fn (resolve-compile-paragraph)]
     (try
       (let [ops (compile-fn dsl)]
-        ;; Route compiled ops through handle-batch (reuses all validation/execution)
         (handle-batch (-> params
                           (dissoc :dsl)
                           (assoc :operations ops))))
       (catch Exception e
-        {:isError true
-         :text (str "DSL compilation failed: " (ex-message e))}))
-    {:isError true
-     :text (pr-str {:error "DSL module not loaded"
-                    :hint "hive-mcp.dsl.verbs is not available"})}))
+        (mcp-error (str "DSL compilation failed: " (ex-message e)))))
+    (mcp-error (pr-str {:error "DSL module not loaded"
+                        :hint "hive-mcp.dsl.verbs is not available"}))))
 
 ;; =============================================================================
 ;; Async Commands
@@ -221,18 +198,14 @@
   "Collect results from an async batch by batch_id."
   [{:keys [batch_id]}]
   (if (str/blank? (str batch_id))
-    {:isError true
-     :text "collect requires 'batch_id' parameter"}
+    (mcp-error "collect requires 'batch_id' parameter")
     (if-let [collect-fn (resolve-async-fn 'collect-async-result)]
       (try
-        (let [result (collect-fn (str batch_id))]
-          {:type "text" :text (pr-str result)})
+        {:type "text" :text (pr-str (collect-fn (str batch_id)))}
         (catch Exception e
-          {:isError true
-           :text (str "Collect failed: " (ex-message e))}))
-      {:isError true
-       :text (pr-str {:error "Async module not loaded"
-                      :hint "hive-mcp.tools.multi-async is not available"})})))
+          (mcp-error (str "Collect failed: " (ex-message e)))))
+      (mcp-error (pr-str {:error "Async module not loaded"
+                          :hint "hive-mcp.tools.multi-async is not available"})))))
 
 (defn- handle-async-list
   "List all pending/completed async batches."
@@ -241,27 +214,22 @@
     (try
       {:type "text" :text (pr-str (list-fn))}
       (catch Exception e
-        {:isError true
-         :text (str "List async failed: " (ex-message e))}))
-    {:isError true
-     :text (pr-str {:error "Async module not loaded"
-                    :hint "hive-mcp.tools.multi-async is not available"})}))
+        (mcp-error (str "List async failed: " (ex-message e)))))
+    (mcp-error (pr-str {:error "Async module not loaded"
+                        :hint "hive-mcp.tools.multi-async is not available"}))))
 
 (defn- handle-async-cancel
   "Cancel a running async batch by batch_id."
   [{:keys [batch_id]}]
   (if (str/blank? (str batch_id))
-    {:isError true
-     :text "cancel-async requires 'batch_id' parameter"}
+    (mcp-error "cancel-async requires 'batch_id' parameter")
     (if-let [cancel-fn (resolve-async-fn 'cancel-async-batch)]
       (try
         {:type "text" :text (pr-str (cancel-fn (str batch_id)))}
         (catch Exception e
-          {:isError true
-           :text (str "Cancel failed: " (ex-message e))}))
-      {:isError true
-       :text (pr-str {:error "Async module not loaded"
-                      :hint "hive-mcp.tools.multi-async is not available"})})))
+          (mcp-error (str "Cancel failed: " (ex-message e)))))
+      (mcp-error (pr-str {:error "Async module not loaded"
+                          :hint "hive-mcp.tools.multi-async is not available"})))))
 
 ;; =============================================================================
 ;; Main Router
@@ -277,14 +245,12 @@
    4. Single dispatch: :tool + :command → route to consolidated handler
    5. Help: no tool/operations/dsl → show help text"
   [params]
-  ;; Normalize string keys -> keywords (MCP sends JSON with string keys)
-  (let [normalized (into {} (map (fn [[k v]] [(keyword k) v]) params))
+  (let [normalized (rb/keywordize-map params)
         {:keys [tool command operations dsl]} normalized]
     (cond
       ;; Mutual exclusion: dsl and operations cannot both be present
       (and (some? dsl) (some? operations))
-      {:isError true
-       :text "Cannot specify both 'dsl' and 'operations'. Use one input mode."}
+      (mcp-error "Cannot specify both 'dsl' and 'operations'. Use one input mode.")
 
       ;; DSL mode: dsl present → compile and execute
       (some? dsl)
@@ -317,12 +283,9 @@
       (let [tool-kw (keyword (str/lower-case (str tool)))
             handler (get tool-handlers tool-kw)]
         (if handler
-          ;; Forward to consolidated handler (strip :tool, keep :command + rest)
           (handler (dissoc normalized :tool))
-          ;; Unknown tool
-          {:isError true
-           :text (str "Unknown tool: " (name tool-kw)
-                      ". Available: " (str/join ", " tool-names))})))))
+          (mcp-error (str "Unknown tool: " (name tool-kw)
+                          ". Available: " (str/join ", " tool-names))))))))
 
 (def tool-def
   {:name "multi"

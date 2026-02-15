@@ -188,7 +188,7 @@
                      (take entry-limit)
                      vec)
         entry-ids (set (map :id entries))
-        entry-by-id (zipmap (map :id entries) entries)
+        _entry-by-id (zipmap (map :id entries) entries)
 
         ;; Track results
         state (atom {:edges-created 0

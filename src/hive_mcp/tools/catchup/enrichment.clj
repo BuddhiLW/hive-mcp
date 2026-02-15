@@ -116,17 +116,17 @@
                :stale-count 0
                :stale-entries []
                :error (.getMessage e)
-               :timed-out? false})))]
-    (let [result (deref result-future timeout-ms ::timeout)]
-      (if (= result ::timeout)
-        (do
-          (future-cancel result-future)
-          (log/warn "Grounding freshness check timed out after" timeout-ms "ms")
-          {:total-checked 0
-           :stale-count 0
-           :stale-entries []
-           :timed-out? true})
-        result))))
+               :timed-out? false})))
+        result (deref result-future timeout-ms ::timeout)]
+    (if (= result ::timeout)
+      (do
+        (future-cancel result-future)
+        (log/warn "Grounding freshness check timed out after" timeout-ms "ms")
+        {:total-checked 0
+         :stale-count 0
+         :stale-entries []
+         :timed-out? true})
+      result)))
 
 (defn find-co-accessed-suggestions
   "Find memory entries frequently co-accessed with the given entries."

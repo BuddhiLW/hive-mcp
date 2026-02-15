@@ -345,7 +345,7 @@
 
    Returns:
      Rewind result map or {:error \"No act checkpoint found\"}"
-  [& {:keys [dry-run? delete-after?] :as opts}]
+  [& {:keys [dry-run? delete-after?] :as _opts}]
   (let [act-checkpoints (->> (list-checkpoints {:metadata-key :phase})
                              (filter #(= :act (get-in % [:metadata :phase]))))]
     (if-let [latest (first act-checkpoints)]

@@ -97,7 +97,7 @@
 
    Resources used: :system-prompt-fn (optional)"
   [resources data]
-  (let [{:keys [task files messages system-prompt turn]} data
+  (let [{:keys [task files messages system-prompt _turn]} data
         system-prompt-fn (or (:system-prompt-fn resources) default-system-prompt)]
     (if (seq messages)
       ;; Continuation: messages already built by parent

@@ -9,7 +9,9 @@
    and all consumers fall back to their defaults."
   (:require [hive-mcp.addons.core :as addon-core]
             [hive-mcp.addons.manifest :as manifest]
+            [hive-mcp.dns.result :refer [rescue]]
             [hive-mcp.extensions.registry :as ext]
+            [hive-mcp.tools.composite :as composite]
             [taoensso.timbre :as log]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -24,10 +26,8 @@
   "Attempt to resolve a fully-qualified symbol.
    Returns the var if available, nil otherwise."
   [sym]
-  (try
-    (requiring-resolve sym)
-    (catch Exception _
-      nil)))
+  (rescue nil
+          (requiring-resolve sym)))
 
 ;; =============================================================================
 ;; Extension Manifests (removed — addons self-register via init!)
@@ -67,25 +67,19 @@
         legacy-sym (symbol (str ns-sym) "init!")]
     (or
      ;; Strategy 1: New multiplexer protocol (IAddon from addons.protocol)
-     (try
-       (when-let [addon-fn (try-resolve addon-sym)]
-         (let [result (addon-fn)]
-           (log/info "Extension" ns-sym "initialized via IAddon (multiplexer):"
-                     (:total result 0) "capabilities")
-           result))
-       (catch Exception e
-         (log/debug "Extension" addon-sym "not available:" (.getMessage e))
-         nil))
+     (rescue nil
+             (when-let [addon-fn (try-resolve addon-sym)]
+               (let [result (addon-fn)]
+                 (log/info "Extension" ns-sym "initialized via IAddon (multiplexer):"
+                           (:total result 0) "capabilities")
+                 result)))
      ;; Strategy 2: Legacy self-registration
-     (try
-       (when-let [init-fn (try-resolve legacy-sym)]
-         (let [result (init-fn)]
-           (log/info "Extension initializer" legacy-sym "registered"
-                     (:total result 0) "capabilities")
-           result))
-       (catch Exception e
-         (log/debug "Extension initializer" legacy-sym "not available:" (.getMessage e))
-         nil)))))
+     (rescue nil
+             (when-let [init-fn (try-resolve legacy-sym)]
+               (let [result (init-fn)]
+                 (log/info "Extension initializer" legacy-sym "registered"
+                           (:total result 0) "capabilities")
+                 result))))))
 
 ;; =============================================================================
 ;; Public API
@@ -169,6 +163,18 @@
                 ", classpath-manifests:" (count ordered)
                 ", manifest-fallback:" @manifest-init-count ")")
       (log/debug "No extensions found on classpath — all capabilities will use defaults"))
+
+    ;; Build composite tools from addon command contributions
+    (let [composite-tools (composite/build-all-composite-tools
+                           {"analysis" "Code analysis"})]
+      (doseq [t composite-tools]
+        (ext/register-tool! t)
+        ;; Also register in agent registry for drone agentic loop
+        (rescue nil
+                (when-let [reg-fn (requiring-resolve 'hive-mcp.agent.registry/register!)]
+                  (reg-fn [t]))))
+      (when (seq composite-tools)
+        (log/info "Built composite tools:" (mapv :name composite-tools))))
 
     {:registered (vec (ext/registered-keys))
      :total total-registered

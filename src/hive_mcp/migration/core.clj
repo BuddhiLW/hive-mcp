@@ -14,6 +14,7 @@
             [clojure.edn :as edn]
             [clojure.string :as str]
             [hive-mcp.knowledge-graph.scope :as kg-scope]
+            [hive-mcp.dns.result :refer [rescue]]
             [taoensso.timbre :as log])
   (:import [java.time LocalDateTime]
            [java.time.format DateTimeFormatter]))
@@ -75,12 +76,9 @@
    Returns project-id string or nil on failure.
    Lightweight - reads full file but only extracts one field."
   [path]
-  (try
-    (let [data (-> path slurp edn/read-string)]
-      (:backup/project-id data))
-    (catch Exception e
-      (log/debug "Failed to read project-id from backup" {:path path :error (.getMessage e)})
-      nil)))
+  (rescue nil
+          (let [data (-> path slurp edn/read-string)]
+            (:backup/project-id data))))
 
 (defn list-backups
   "List all backups in the backup directory.
@@ -169,8 +167,7 @@
             :backup/project-id (or project-id "global")
             :backup/created-at (java.util.Date.)
             :backup/created-by (System/getProperty "user.name")
-            :backup/hostname (try (.getHostName (java.net.InetAddress/getLocalHost))
-                                  (catch Exception _ "unknown"))
+            :backup/hostname (rescue "unknown" (.getHostName (java.net.InetAddress/getLocalHost)))
             :backup/counts counts})))
 
 ;; =============================================================================

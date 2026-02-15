@@ -1,7 +1,8 @@
 (ns hive-mcp.tools.swarm.channel
   "Channel-based event management for swarm task tracking via core.async and NATS."
   (:require [clojure.core.async :as async :refer [go-loop <! close!]]
-            [taoensso.timbre :as log]))
+            [taoensso.timbre :as log]
+            [hive-mcp.dns.result :refer [rescue]]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -13,11 +14,9 @@
 (defn- try-require-channel
   "Attempt to require the channel namespace, returns true if available."
   []
-  (try
-    (require 'hive-mcp.channel.core)
-    true
-    (catch Exception _
-      false)))
+  (rescue false
+          (require 'hive-mcp.channel.core)
+          true))
 
 (defn- channel-subscribe!
   "Subscribe to an event type if channel is available."

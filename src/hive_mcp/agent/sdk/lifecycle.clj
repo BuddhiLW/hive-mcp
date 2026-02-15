@@ -10,6 +10,7 @@
             [hive-mcp.agent.context-envelope :as ctx-envelope]
             [hive-mcp.context.budget :as budget]
             [hive-mcp.protocols.dispatch :as dispatch-ctx]
+            [hive-mcp.dns.result :refer [rescue]]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -89,14 +90,11 @@
   "Build compressed context prefix for SAA silence phase from dispatch-context."
   [dispatch-context]
   (when dispatch-context
-    (try
-      (when (= :ref (dispatch-ctx/context-type dispatch-context))
-        (let [{:keys [ctx-refs kg-node-ids scope]} dispatch-context]
-          (ctx-envelope/enrich-context ctx-refs kg-node-ids scope
-                                       {:mode :inline})))
-      (catch Exception e
-        (log/debug "[sdk.lifecycle] Context prefix failed (non-fatal):" (ex-message e))
-        nil))))
+    (rescue nil
+            (when (= :ref (dispatch-ctx/context-type dispatch-context))
+              (let [{:keys [ctx-refs kg-node-ids scope]} dispatch-context]
+                (ctx-envelope/enrich-context ctx-refs kg-node-ids scope
+                                             {:mode :inline}))))))
 
 (def ^:const ^:private default-phase-budget 2000)
 
@@ -170,6 +168,42 @@
         phase-ch (exec/execute-phase! ling-id prompt :act)]
     (forward-phase-messages! phase-ch out-ch :act)))
 
+(def ^:private saa-phases
+  "Data-driven SAA phase pipeline. Each phase spec defines a key, runner fn,
+   and whether to compress observations before the next phase."
+  [{:key :silence  :run run-saa-silence!  :compress? true}
+   {:key :abstract :run run-saa-abstract! :compress? true}
+   {:key :act      :run run-saa-act!      :compress? false}])
+
+(defn- should-run-phase?
+  "Pure predicate: should this phase run given the phase config?"
+  [phase-spec {:keys [skip-phases only-phase]}]
+  (and (not (contains? skip-phases (:key phase-spec)))
+       (or (nil? only-phase) (= only-phase (:key phase-spec)))))
+
+(defn- build-phase-config
+  "Convert legacy skip-silence?/skip-abstract?/phase flags into a phase-config map."
+  [{:keys [skip-silence? skip-abstract? phase]}]
+  {:skip-phases (cond-> #{}
+                  skip-silence?  (conj :silence)
+                  skip-abstract? (conj :abstract))
+   :only-phase phase})
+
+(defn- execute-saa-pipeline!
+  "Reduce over saa-phases, running each eligible phase and compressing between them."
+  [ling-id task out-ch phase-config]
+  (reduce
+   (fn [prev-ran phase-spec]
+     (if (should-run-phase? phase-spec phase-config)
+       (do
+         (when (and prev-ran (:compress? prev-ran))
+           (compress-and-transition! ling-id (:key prev-ran) (:key phase-spec)))
+         ((:run phase-spec) ling-id task out-ch)
+         phase-spec)
+       prev-ran))
+   nil
+   saa-phases))
+
 (defn- emit-dispatch-complete!
   "Emit SAA completion message and log."
   [ling-id out-ch]
@@ -183,7 +217,7 @@
 
 (defn dispatch-headless-sdk!
   "Dispatch a task to an SDK ling via the persistent client."
-  [ling-id task & [{:keys [skip-silence? skip-abstract? phase raw? dispatch-context] :as _opts}]]
+  [ling-id task & [{:keys [raw? dispatch-context] :as opts}]]
   {:pre [(string? ling-id)
          (string? task)]}
   (let [sess (session/get-session ling-id)]
@@ -200,19 +234,7 @@
           (if raw?
             (forward-phase-messages!
              (exec/execute-phase! ling-id task :dispatch) out-ch :dispatch)
-            (do
-              (when-not (or skip-silence? (and phase (not= phase :silence)))
-                (run-saa-silence! ling-id task out-ch))
-              (when (and (not (or skip-silence? (and phase (not= phase :silence))))
-                         (not (or skip-abstract? (and phase (not= phase :abstract)))))
-                (compress-and-transition! ling-id :silence :abstract))
-              (when-not (or skip-abstract? (and phase (not= phase :abstract)))
-                (run-saa-abstract! ling-id task out-ch))
-              (when (and (not (or skip-abstract? (and phase (not= phase :abstract))))
-                         (not (and phase (not= phase :act))))
-                (compress-and-transition! ling-id :abstract :act))
-              (when-not (and phase (not= phase :act))
-                (run-saa-act! ling-id task out-ch))))
+            (execute-saa-pipeline! ling-id task out-ch (build-phase-config opts)))
           (emit-dispatch-complete! ling-id out-ch)
           (catch Exception e
             (log/error "[sdk.lifecycle] Dispatch failed"

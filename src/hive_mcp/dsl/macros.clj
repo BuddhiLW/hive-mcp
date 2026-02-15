@@ -17,8 +17,7 @@
      Output is ready for dsl/verbs.clj parse-dsl or compile-paragraph.
 
    Design decision: 20260211213929-2be37853"
-  (:require [clojure.string :as str]
-            [hive-mcp.extensions.registry :as ext]
+  (:require [hive-mcp.extensions.registry :as ext]
             [taoensso.timbre :as log]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>

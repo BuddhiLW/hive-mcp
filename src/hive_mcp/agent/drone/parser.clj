@@ -1,6 +1,7 @@
 (ns hive-mcp.agent.drone.parser
   "Robust output parsing for drone agents with multi-format extraction and confidence scoring."
-  (:require [clojure.set :as set]
+  (:require [hive-mcp.dns.result :refer [rescue]]
+            [clojure.set :as set]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -29,80 +30,63 @@
   "Check if string is valid Clojure syntax."
   [s]
   (when (and s (not (str/blank? s)))
-    (try
-      (binding [*read-eval* false]
-        (read-string (str "(do " s ")")))
-      true
-      (catch Exception _
-        false))))
+    (rescue false
+            (binding [*read-eval* false]
+              (read-string (str "(do " s ")")))
+            true)))
+
+;; --- Indented code extraction (decomposed) ---
+
+(defn- group-indented-lines
+  "Group consecutive 4+-space indented lines into code blocks. Pure reduce for grouping."
+  [lines]
+  (->> (reduce
+        (fn [acc line]
+          (if (re-matches #"^[ ]{4,}.*" line)
+            (let [current (or (peek acc) [])
+                  trimmed (str/replace line #"^[ ]{4}" "")]
+              (conj (pop (if (empty? acc) [[]] acc))
+                    (conj current trimmed)))
+            (if (seq (peek acc))
+              (conj acc [])
+              acc)))
+        [[]]
+        lines)
+       (map #(str/join "\n" %))
+       (remove str/blank?)
+       vec))
 
 (defn extract-indented-code
   "Extract code blocks that are indented with 4+ spaces."
   [s]
   (when (and s (not (str/blank? s)))
-    (let [lines (str/split-lines s)
-          groups (reduce
-                  (fn [acc line]
-                    (if (re-matches #"^[ ]{4,}.*" line)
-                      (let [current (or (peek acc) [])
-                            trimmed (str/replace line #"^[ ]{4}" "")]
-                        (conj (pop (if (empty? acc) [[]] acc))
-                              (conj current trimmed)))
-                      (if (seq (peek acc))
-                        (conj acc [])
-                        acc)))
-                  [[]]
-                  lines)]
-      (->> groups
-           (map #(str/join "\n" %))
-           (filter #(not (str/blank? %)))
-           (filter looks-like-code?)
-           vec))))
+    (let [groups (group-indented-lines (str/split-lines s))]
+      (filterv looks-like-code? groups))))
 
-(defn- extract-markdown-blocks
-  "Extract code from markdown fenced blocks."
-  [response]
-  (let [pattern #"```(?:clojure|clj)?\s*\n([\s\S]*?)```"
-        matches (re-seq pattern response)]
-    (when (seq matches)
-      (->> matches
-           (map second)
-           (map str/trim)
-           (filter #(not (str/blank? %)))
-           vec))))
+;; --- Tagged block extraction (HOF + data) ---
 
-(defn- extract-xml-blocks
-  "Extract code from XML-style code tags."
-  [response]
-  (let [pattern #"<code[^>]*>([\s\S]*?)</code>"
-        matches (re-seq pattern response)]
-    (when (seq matches)
-      (->> matches
-           (map second)
-           (map str/trim)
-           (filter #(not (str/blank? %)))
-           vec))))
+(defn- extract-tagged-blocks
+  "Extract code blocks matching a regex pattern. HOF parameterized by pattern."
+  [pattern response]
+  (when-let [matches (seq (re-seq pattern response))]
+    (->> matches
+         (map second)
+         (map str/trim)
+         (remove str/blank?)
+         vec)))
 
-(defn- extract-source-blocks
-  "Extract code from source tags."
-  [response]
-  (let [pattern #"<source[^>]*>([\s\S]*?)</source>"
-        matches (re-seq pattern response)]
-    (when (seq matches)
-      (->> matches
-           (map second)
-           (map str/trim)
-           (filter #(not (str/blank? %)))
-           vec))))
+(def ^:private block-extractors
+  "Data-driven block extraction strategies. Each entry: [regex-pattern :label]."
+  [[#"```(?:clojure|clj)?\s*\n([\s\S]*?)```" :markdown]
+   [#"<code[^>]*>([\s\S]*?)</code>" :xml]
+   [#"<source[^>]*>([\s\S]*?)</source>" :source]])
 
 (defn extract-code-blocks
   "Extract code blocks from model response using multiple strategies."
   [response]
   (when (and response (not (str/blank? response)))
     (or
-     (extract-markdown-blocks response)
-     (extract-xml-blocks response)
-     (extract-source-blocks response)
+     (some #(extract-tagged-blocks (first %) response) block-extractors)
      (let [indented (extract-indented-code response)]
        (when (seq indented) indented))
      (when (looks-like-code? response)

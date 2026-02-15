@@ -1,6 +1,7 @@
 (ns hive-mcp.agent.drone.cache
   "Drone result caching with task fingerprinting, LRU eviction, and TTL expiration."
-  (:require [taoensso.timbre :as log]))
+  (:require [hive-mcp.dns.result :refer [rescue]]
+            [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -20,10 +21,7 @@
 (defn- compute-file-hash
   "Compute hash of file contents, returning nil if file unreadable."
   [file-path]
-  (try
-    (hash (slurp file-path))
-    (catch Exception _
-      nil)))
+  (rescue nil (hash (slurp file-path))))
 
 (defn task-fingerprint
   "Generate unique fingerprint for a task + files combination."

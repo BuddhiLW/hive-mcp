@@ -3,7 +3,8 @@
 
    Supports n-depth nested handler trees via parse-command + resolve-handler.
    Single-word commands remain backward compatible."
-  (:require [clojure.data.json :as json]
+  (:require [hive-mcp.tools.core :refer [mcp-error]]
+            [clojure.data.json :as json]
             [clojure.string :as str]))
 
 ;; =============================================================================
@@ -131,8 +132,8 @@
       (cond
         ;; No command or empty → error
         (nil? path)
-        {:isError true :text (str "Unknown command: " command
-                                  ". Valid: " (keys handlers))}
+        (mcp-error (str "Unknown command: " command
+                        ". Valid: " (keys handlers)))
 
         ;; Help at root level
         (= [:help] path)
@@ -143,8 +144,8 @@
         (let [result (resolve-handler handlers path)]
           (if-let [handler (:handler result)]
             (handler params)
-            {:isError true :text (str "Unknown command: " command
-                                      ". Valid: " (keys handlers))}))))))
+            (mcp-error (str "Unknown command: " command
+                            ". Valid: " (keys handlers)))))))))
 
 ;; =============================================================================
 ;; Batch Handler Factory (generic batch middleware)
@@ -164,7 +165,7 @@
   [handlers]
   (fn [{:keys [operations parallel] :as params}]
     (if (or (nil? operations) (empty? operations))
-      {:isError true :text "operations is required (array of {command, ...} objects)"}
+      (mcp-error "operations is required (array of {command, ...} objects)")
       (let [shared-params (dissoc params :operations :parallel :command)
             exec-fn       (if parallel pmap mapv)
             results       (exec-fn

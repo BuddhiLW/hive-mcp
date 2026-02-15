@@ -12,6 +12,7 @@
 
    without modifying either system."
   (:require [clojure.core.async :as async]
+            [clojure.data.json :as json]
             [taoensso.timbre :as log]
             [hive-mcp.channel.core :as channel]
             [hive-mcp.agent.protocol :as proto]
@@ -243,7 +244,7 @@
                              :priority (name (or (:priority opts) :normal))})
         ;; Extract task-id from dispatch result
         result-text (some-> result :text)
-        parsed (try (clojure.data.json/read-str (or result-text "{}") :key-fn keyword)
+        parsed (try (json/read-str (or result-text "{}") :key-fn keyword)
                     (catch Exception _ nil))
         task-id (:task-id parsed)]
     (if task-id

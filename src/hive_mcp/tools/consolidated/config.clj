@@ -1,51 +1,62 @@
 (ns hive-mcp.tools.consolidated.config
   "Consolidated Config CLI tool for managing hive-mcp configuration."
   (:require [hive-mcp.tools.cli :refer [make-cli-handler]]
-            [hive-mcp.tools.core :refer [mcp-error mcp-json]]
+            [hive-mcp.tools.result-bridge :as rb]
+            [hive-mcp.dns.result :as result]
             [hive-mcp.config.core :as config]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-(defn handle-get
-  "Read a config value by dotted key path."
+;; ── Pure Result-returning functions ───────────────────────────────────────────
+
+(defn- get*
   [{:keys [key]}]
   (if (or (nil? key) (= "" key))
-    (mcp-error "Missing required parameter: key. Example: config get {\"key\": \"embeddings.ollama.host\"}")
-    (let [value (config/get-config-value key)]
-      (mcp-json {:key key :value value}))))
+    (result/err :config/get {:message "Missing required parameter: key. Example: config get {\"key\": \"embeddings.ollama.host\"}"})
+    (result/ok {:key key :value (config/get-config-value key)})))
+
+(defn- set*
+  [{:keys [key value]}]
+  (if (or (nil? key) (= "" key))
+    (result/err :config/set {:message "Missing required parameter: key. Example: config set {\"key\": \"embeddings.ollama.host\", \"value\": \"http://new:11434\"}"})
+    (do
+      (config/set-config-value! key value)
+      (log/info "Config set:" key "=" value)
+      (result/ok {:key key :value value :status "updated"}))))
+
+(defn- list-config*
+  [_params]
+  (result/ok {:config (config/get-global-config)}))
+
+(defn- reload*
+  [_params]
+  (let [loaded (config/load-global-config!)]
+    (result/ok {:status "reloaded"
+                :keys (vec (keys loaded))})))
+
+;; ── Public handlers (MCP boundary) ────────────────────────────────────────────
+
+(defn handle-get
+  "Read a config value by dotted key path."
+  [params]
+  (rb/result->mcp (rb/try-result :config/get-failed #(get* params))))
 
 (defn handle-set
   "Set a config value at a dotted key path and persist to disk."
-  [{:keys [key value]}]
-  (cond
-    (or (nil? key) (= "" key))
-    (mcp-error "Missing required parameter: key. Example: config set {\"key\": \"embeddings.ollama.host\", \"value\": \"http://new:11434\"}")
-
-    ;; value can be nil (to clear a key), so we don't validate it
-    :else
-    (try
-      (config/set-config-value! key value)
-      (log/info "Config set:" key "=" value)
-      (mcp-json {:key key :value value :status "updated"})
-      (catch Exception e
-        (mcp-error (str "Failed to set config: " (.getMessage e)))))))
+  [params]
+  (rb/result->mcp (rb/try-result :config/set-failed #(set* params))))
 
 (defn handle-list
   "List all configuration values."
-  [_params]
-  (mcp-json {:config (config/get-global-config)}))
+  [params]
+  (rb/result->mcp (rb/try-result :config/list-failed #(list-config* params))))
 
 (defn handle-reload
   "Reload config from disk, merging with defaults."
-  [_params]
-  (try
-    (let [loaded (config/load-global-config!)]
-      (mcp-json {:status "reloaded"
-                 :keys (vec (keys loaded))}))
-    (catch Exception e
-      (mcp-error (str "Failed to reload config: " (.getMessage e))))))
+  [params]
+  (rb/result->mcp (rb/try-result :config/reload-failed #(reload* params))))
 
 (def handlers
   {:get    handle-get

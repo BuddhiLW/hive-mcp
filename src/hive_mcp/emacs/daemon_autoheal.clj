@@ -12,21 +12,17 @@
 
   (:require [hive-mcp.emacs.daemon :as daemon]
             [hive-mcp.emacs.daemon-selection :as selection]
-            [hive-mcp.swarm.datascript.connection :as conn]
             [hive-mcp.swarm.datascript.queries :as queries]
             [hive-mcp.swarm.datascript.lings :as lings]
-            [datascript.core :as d]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-
 (def ^:const unhealthy-daemon-statuses
   "Daemon statuses that indicate a daemon is dead or non-functional.
    Lings bound to daemons in these states are considered orphaned."
   #{:stale :terminated :error})
-
 
 (defn find-orphaned-lings
   "Find all lings that are bound to dead/unhealthy daemons.
@@ -83,7 +79,6 @@
     (:error :terminated)                       :skip
     ;; Unknown status — be conservative, try to terminate
     :terminate))
-
 
 (defn- rebind-ling!
   "Rebind an idle ling from a dead daemon to a healthy one.
@@ -171,7 +166,6 @@
        :claims-released claims-released
        :success?        true})))
 
-
 (defn heal-orphan!
   "Heal a single orphaned ling based on its classification.
 
@@ -232,7 +226,6 @@
        :healed        healed
        :failed        failed
        :results       results})))
-
 
 (defn orphan-status
   "Get current orphan status without healing. Useful for monitoring.

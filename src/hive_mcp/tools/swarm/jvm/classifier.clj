@@ -2,8 +2,8 @@
   "JVM process discovery, classification, and swarm environment detection."
   (:require [clojure.java.shell :as shell]
             [clojure.string :as str]
-            [taoensso.timbre :as log]
-            [hive-mcp.tools.swarm.jvm.parser :as parser]))
+            [hive-mcp.tools.swarm.jvm.parser :as parser]
+            [hive-mcp.dns.result :refer [rescue]]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -11,49 +11,43 @@
 (defn find-jvm-processes
   "Find all JVM processes with their details including parent info."
   []
-  (try
-    (let [result (shell/sh "ps" "-eo" "pid,ppid,pcpu,pmem,etime,args" "--no-headers")
-          lines (str/split-lines (:out result))
-          jvm-lines (filter #(re-find #"java" %) lines)]
-      (keep parser/parse-process-line-extended jvm-lines))
-    (catch Exception e
-      (log/error "Error finding JVM processes:" (.getMessage e))
-      [])))
+  (rescue []
+          (let [result (shell/sh "ps" "-eo" "pid,ppid,pcpu,pmem,etime,args" "--no-headers")
+                lines (str/split-lines (:out result))
+                jvm-lines (filter #(re-find #"java" %) lines)]
+            (keep parser/parse-process-line-extended jvm-lines))))
 
 (defn get-all-process-parents
   "Get pid-to-parent map for all processes in a single ps call."
   []
-  (try
-    (let [result (shell/sh "ps" "-eo" "pid,ppid,comm" "--no-headers")
-          lines (str/split-lines (:out result))]
-      (into {}
-            (keep (fn [line]
-                    (let [parts (str/split (str/trim line) #"\s+" 3)]
-                      (when (= 3 (count parts))
-                        [(first parts) {:ppid (second parts) :comm (nth parts 2)}])))
-                  lines)))
-    (catch Exception _ {})))
+  (rescue {}
+          (let [result (shell/sh "ps" "-eo" "pid,ppid,comm" "--no-headers")
+                lines (str/split-lines (:out result))]
+            (into {}
+                  (keep (fn [line]
+                          (let [parts (str/split (str/trim line) #"\s+" 3)]
+                            (when (= 3 (count parts))
+                              [(first parts) {:ppid (second parts) :comm (nth parts 2)}])))
+                        lines)))))
 
 (defn get-process-swarm-info
   "Get swarm environment variables from /proc/<pid>/environ."
   [pid]
-  (try
-    (let [environ-file (str "/proc/" pid "/environ")
-          content (slurp environ-file)
-          entries (str/split content #"\x00")
-          env-map (into {} (keep #(let [parts (str/split % #"=" 2)]
-                                    (when (= 2 (count parts))
-                                      [(first parts) (second parts)]))
-                                 entries))
-          slave-id (get env-map "CLAUDE_SWARM_SLAVE_ID")
-          master-id (get env-map "CLAUDE_SWARM_MASTER")
-          depth (get env-map "CLAUDE_SWARM_DEPTH")]
-      (when (or slave-id master-id depth)
-        {:swarm-slave-id slave-id
-         :swarm-master-id master-id
-         :swarm-depth (when depth (try (Integer/parseInt depth) (catch Exception _ nil)))}))
-    (catch Exception _
-      nil)))
+  (rescue nil
+          (let [environ-file (str "/proc/" pid "/environ")
+                content (slurp environ-file)
+                entries (str/split content #"\x00")
+                env-map (into {} (keep #(let [parts (str/split % #"=" 2)]
+                                          (when (= 2 (count parts))
+                                            [(first parts) (second parts)]))
+                                       entries))
+                slave-id (get env-map "CLAUDE_SWARM_SLAVE_ID")
+                master-id (get env-map "CLAUDE_SWARM_MASTER")
+                depth (get env-map "CLAUDE_SWARM_DEPTH")]
+            (when (or slave-id master-id depth)
+              {:swarm-slave-id slave-id
+               :swarm-master-id master-id
+               :swarm-depth (when depth (rescue nil (Integer/parseInt depth)))}))))
 
 (def ^:private type-patterns
   "Regex patterns for JVM process type classification."

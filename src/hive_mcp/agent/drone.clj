@@ -12,7 +12,6 @@
             [hive-mcp.agent.routing :as routing]
             [hive-mcp.agent.drone.tools :as drone-tools]
             [hive-mcp.agent.drone.preset :as preset]
-            [hive-mcp.agent.hive-agent-bridge :as ha-bridge]
             [hive-mcp.tools.diff :as diff]
             [hive-mcp.swarm.coordinator :as coordinator]
             [hive-mcp.swarm.datascript :as ds]
@@ -25,9 +24,10 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-(def allowed-tools
+(defn allowed-tools
   "DEPRECATED: Use drone-tools/get-tools-for-drone instead."
-  (vec drone-tools/legacy-allowed-tools))
+  []
+  (vec (drone-tools/full-toolset)))
 
 (defn delegate!
   "Delegate a task to a drone via phase-based execution."

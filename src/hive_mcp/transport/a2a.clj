@@ -14,12 +14,11 @@
   (:require [aleph.http :as http]
             [aleph.netty :as netty]
             [manifold.stream :as s]
-            [manifold.deferred :as d]
             [clojure.core.async :as async]
             [clojure.data.json :as json]
             [clojure.string :as str]
             [taoensso.timbre :as log]
-            [hive-mcp.config.core :as config]
+            [hive-mcp.dns.result :as result]
             [hive-mcp.swarm.datascript.queries :as ds-queries]
             [hive-mcp.transport.a2a.schema :as schema]
             [hive-mcp.transport.a2a.handlers :as handlers]))
@@ -146,7 +145,7 @@
               ;; Unknown method
               {:error {:code (:method-not-found schema/error-codes)
                        :message (str "Unknown method: " method)}})
-            {:keys [result error stream?]} handler-result]
+            {:keys [result error]} handler-result]
         (if error
           (schema/jsonrpc-error id (:code error) (:message error))
           (schema/jsonrpc-success id result))))))
@@ -317,19 +316,16 @@
        (do
          (log/warn "A2A gateway already running on port" (:port @server-atom))
          (:port @server-atom))
-       (try
-         (let [handler (make-http-handler api-key)
-               server (http/start-server handler {:port port})
-               actual-port (netty/port server)]
-           (reset! server-atom {:server server
-                                :port actual-port
-                                :api-key (some? api-key)})
-           (log/info "A2A gateway started on port" actual-port
-                     (if api-key "(auth enabled)" "(no auth)"))
-           actual-port)
-         (catch Exception e
-           (log/error "Failed to start A2A gateway:" (.getMessage e))
-           nil))))))
+       (result/rescue nil
+                      (let [handler (make-http-handler api-key)
+                            server (http/start-server handler {:port port})
+                            actual-port (netty/port server)]
+                        (reset! server-atom {:server server
+                                             :port actual-port
+                                             :api-key (some? api-key)})
+                        (log/info "A2A gateway started on port" actual-port
+                                  (if api-key "(auth enabled)" "(no auth)"))
+                        actual-port))))))
 
 (defn stop!
   "Stop the A2A gateway and drain SSE streams."

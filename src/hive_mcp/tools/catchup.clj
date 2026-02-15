@@ -29,6 +29,7 @@
             [hive-mcp.channel.context-store :as context-store]
             [hive-mcp.knowledge-graph.disc :as disc]
             [hive-mcp.project.tree :as project-tree]
+            [hive-mcp.dns.result :refer [rescue]]
             [clojure.data.json :as json]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -163,50 +164,47 @@
               ;; Non-fatal: context-store failure doesn't break catchup.
               catchup-ttl 600000
               context-refs
-              (try
-                (let [refs (cond-> {}
-                             (seq axioms)
-                             (assoc :axioms (context-store/context-put!
-                                             axioms
-                                             :tags #{"catchup" "axioms" (or project-id "global")}
-                                             :ttl-ms catchup-ttl))
-                             (seq principles)
-                             (assoc :principles (context-store/context-put!
-                                                 principles
-                                                 :tags #{"catchup" "principles" (or project-id "global")}
-                                                 :ttl-ms catchup-ttl))
-                             (seq priority-conventions)
-                             (assoc :priority-conventions (context-store/context-put!
-                                                           priority-conventions
-                                                           :tags #{"catchup" "priority-conventions" (or project-id "global")}
-                                                           :ttl-ms catchup-ttl))
-                             (seq sessions)
-                             (assoc :sessions (context-store/context-put!
-                                               sessions
-                                               :tags #{"catchup" "sessions" (or project-id "global")}
-                                               :ttl-ms catchup-ttl))
-                             (seq decisions)
-                             (assoc :decisions (context-store/context-put!
-                                                decisions
-                                                :tags #{"catchup" "decisions" (or project-id "global")}
-                                                :ttl-ms catchup-ttl))
-                             (seq conventions)
-                             (assoc :conventions (context-store/context-put!
-                                                  conventions
-                                                  :tags #{"catchup" "conventions" (or project-id "global")}
-                                                  :ttl-ms catchup-ttl))
-                             (seq snippets)
-                             (assoc :snippets (context-store/context-put!
-                                               snippets
-                                               :tags #{"catchup" "snippets" (or project-id "global")}
-                                               :ttl-ms catchup-ttl)))]
-                  (when (seq refs)
-                    (log/info "catchup: stored" (count refs) "categories in context-store"
-                              {:refs (keys refs)}))
-                  refs)
-                (catch Exception e
-                  (log/warn e "catchup: context-store caching failed (non-fatal)")
-                  nil))
+              (rescue nil
+                      (let [refs (cond-> {}
+                                   (seq axioms)
+                                   (assoc :axioms (context-store/context-put!
+                                                   axioms
+                                                   :tags #{"catchup" "axioms" (or project-id "global")}
+                                                   :ttl-ms catchup-ttl))
+                                   (seq principles)
+                                   (assoc :principles (context-store/context-put!
+                                                       principles
+                                                       :tags #{"catchup" "principles" (or project-id "global")}
+                                                       :ttl-ms catchup-ttl))
+                                   (seq priority-conventions)
+                                   (assoc :priority-conventions (context-store/context-put!
+                                                                 priority-conventions
+                                                                 :tags #{"catchup" "priority-conventions" (or project-id "global")}
+                                                                 :ttl-ms catchup-ttl))
+                                   (seq sessions)
+                                   (assoc :sessions (context-store/context-put!
+                                                     sessions
+                                                     :tags #{"catchup" "sessions" (or project-id "global")}
+                                                     :ttl-ms catchup-ttl))
+                                   (seq decisions)
+                                   (assoc :decisions (context-store/context-put!
+                                                      decisions
+                                                      :tags #{"catchup" "decisions" (or project-id "global")}
+                                                      :ttl-ms catchup-ttl))
+                                   (seq conventions)
+                                   (assoc :conventions (context-store/context-put!
+                                                        conventions
+                                                        :tags #{"catchup" "conventions" (or project-id "global")}
+                                                        :ttl-ms catchup-ttl))
+                                   (seq snippets)
+                                   (assoc :snippets (context-store/context-put!
+                                                     snippets
+                                                     :tags #{"catchup" "snippets" (or project-id "global")}
+                                                     :ttl-ms catchup-ttl)))]
+                        (when (seq refs)
+                          (log/info "catchup: stored" (count refs) "categories in context-store"
+                                    {:refs (keys refs)}))
+                        refs))
 
               _ (when (seq piggyback-entries)
                   (memory-piggyback/enqueue! piggyback-agent-id project-id piggyback-entries context-refs))]

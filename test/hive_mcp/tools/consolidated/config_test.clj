@@ -185,14 +185,16 @@
     ;; Verify custom key is loaded
     (is (= "custom-value" (config/get-config-value "custom-key")))
     ;; Reload handler uses default path, so we test with redefs
-    (with-redefs [config/load-global-config!
-                  (fn
-                    ([] (config/load-global-config! test-config-path))
-                    ([path] (#'config/load-global-config! path)))]
-      (let [result (config-tool/handle-config {:command "reload"})]
-        (is (not (:isError result)))
-        (let [parsed (parse-response result)]
-          (is (= "reloaded" (:status parsed))))))))
+    ;; Capture original fn before with-redefs to avoid infinite recursion
+    (let [orig-load! config/load-global-config!]
+      (with-redefs [config/load-global-config!
+                    (fn
+                      ([] (orig-load! test-config-path))
+                      ([path] (orig-load! path)))]
+        (let [result (config-tool/handle-config {:command "reload"})]
+          (is (not (:isError result)))
+          (let [parsed (parse-response result)]
+            (is (= "reloaded" (:status parsed)))))))))
 
 ;; =============================================================================
 ;; Config Key Path Parsing Tests

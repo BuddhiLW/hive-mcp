@@ -1,5 +1,6 @@
 (ns hive-mcp.protocols.agent-bridge
-  "Protocols for agent backend abstraction and session lifecycle.")
+  "Protocols for agent backend abstraction and session lifecycle."
+  (:require [clojure.core.async :as async]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -110,10 +111,10 @@
   (session-id [_] id)
 
   (query! [_ _prompt _opts]
-    (let [ch (clojure.core.async/chan 1)]
-      (clojure.core.async/put! ch {:type :error
-                                   :message "NoopAgentSession: No agent backend configured. Set one via set-agent-backend!"})
-      (clojure.core.async/close! ch)
+    (let [ch (async/chan 1)]
+      (async/put! ch {:type :error
+                      :message "NoopAgentSession: No agent backend configured. Set one via set-agent-backend!"})
+      (async/close! ch)
       ch))
 
   (interrupt! [_]
@@ -121,13 +122,13 @@
      :errors ["NoopAgentSession: No agent backend configured."]})
 
   (receive-messages [_]
-    (let [ch (clojure.core.async/chan)]
-      (clojure.core.async/close! ch)
+    (let [ch (async/chan)]
+      (async/close! ch)
       ch))
 
   (receive-response [_]
-    (let [ch (clojure.core.async/chan)]
-      (clojure.core.async/close! ch)
+    (let [ch (async/chan)]
+      (async/close! ch)
       ch)))
 
 (defn ->noop-session
@@ -151,9 +152,9 @@
   (capabilities [_] #{})
 
   (execute! [_ _task _opts]
-    (let [ch (clojure.core.async/chan 1)]
-      (clojure.core.async/put! ch {:type :error :message noop-msg})
-      (clojure.core.async/close! ch)
+    (let [ch (async/chan 1)]
+      (async/put! ch {:type :error :message noop-msg})
+      (async/close! ch)
       ch))
 
   (connect! [_ _opts]
@@ -191,27 +192,27 @@
   ISAAOrchestrator
 
   (run-silence! [_ _session _task _opts]
-    (let [ch (clojure.core.async/chan 1)]
-      (clojure.core.async/put! ch {:type :error :message noop-msg})
-      (clojure.core.async/close! ch)
+    (let [ch (async/chan 1)]
+      (async/put! ch {:type :error :message noop-msg})
+      (async/close! ch)
       ch))
 
   (run-abstract! [_ _session _observations _opts]
-    (let [ch (clojure.core.async/chan 1)]
-      (clojure.core.async/put! ch {:type :error :message noop-msg})
-      (clojure.core.async/close! ch)
+    (let [ch (async/chan 1)]
+      (async/put! ch {:type :error :message noop-msg})
+      (async/close! ch)
       ch))
 
   (run-act! [_ _session _plan _opts]
-    (let [ch (clojure.core.async/chan 1)]
-      (clojure.core.async/put! ch {:type :error :message noop-msg})
-      (clojure.core.async/close! ch)
+    (let [ch (async/chan 1)]
+      (async/put! ch {:type :error :message noop-msg})
+      (async/close! ch)
       ch))
 
   (run-full-saa! [_ _session _task _opts]
-    (let [ch (clojure.core.async/chan 1)]
-      (clojure.core.async/put! ch {:type :error :message noop-msg})
-      (clojure.core.async/close! ch)
+    (let [ch (async/chan 1)]
+      (async/put! ch {:type :error :message noop-msg})
+      (async/close! ch)
       ch)))
 
 ;;; ============================================================================

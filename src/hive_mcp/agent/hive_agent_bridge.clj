@@ -46,7 +46,7 @@
 
 (defn run-agent-via-bridge
   "Run a task through the agent loop extension if available, or return nil."
-  [{:keys [task model max-turns preset-content project-id files cwd compress?] :as opts}]
+  [{:keys [task model max-turns preset-content project-id files cwd compress?] :as _opts}]
   (if-let [run-agent-fn (resolve-run-agent)]
     (do
       (log/info {:event :hive-agent-bridge/dispatching

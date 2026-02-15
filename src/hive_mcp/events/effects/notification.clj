@@ -19,7 +19,6 @@
             [hive-mcp.hivemind.core :as hivemind]
             [hive-mcp.swarm.datascript :as ds]
             [hive-mcp.channel.core :as channel]
-            [hive-mcp.agent.context :as ctx]
             [datascript.core :as d]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>

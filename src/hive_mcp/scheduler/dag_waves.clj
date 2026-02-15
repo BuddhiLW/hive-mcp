@@ -163,7 +163,7 @@
 
 (defn on-ling-complete
   "Handle ling completion event and auto-dispatch next wave."
-  [{:keys [agent-id project-id data]}]
+  [{:keys [agent-id _project-id data]}]
   (when (:active @dag-state)
     (let [;; Find the kanban-task-id for this ling
           slave (ds-queries/get-slave agent-id)

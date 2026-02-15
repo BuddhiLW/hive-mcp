@@ -1,37 +1,11 @@
 (ns hive-mcp.tools.consolidated.emacs
   "Consolidated Emacs CLI tool."
   (:require [hive-mcp.tools.cli :refer [make-cli-handler]]
-            [hive-mcp.tools.core :refer [mcp-success mcp-error mcp-json]]
+            [hive-mcp.tools.result-bridge :as rb]
             [hive-mcp.dns.result :as result]
             [hive-mcp.emacs.client :as ec]
             [hive-mcp.emacs.elisp :as el]
             [taoensso.timbre :as log]))
-
-;; ── result-dsl shared helpers (MCP TOOL HANDLER pattern) ─────────────────────
-
-(defn- try-result
-  "Execute f in try/catch, returning Result. f must return a Result ({:ok ...}).
-   Exceptions -> (result/err category {:message ...})."
-  [category f]
-  (try (f)
-       (catch clojure.lang.ExceptionInfo e
-         (result/err category {:message (ex-message e) :data (ex-data e)}))
-       (catch Exception e
-         (result/err category {:message (ex-message e) :class (str (class e))}))))
-
-(defn- result->mcp
-  "Convert a Result to MCP JSON response: ok -> mcp-json, err -> mcp-error."
-  [r]
-  (if (result/ok? r)
-    (mcp-json (:ok r))
-    (mcp-error (or (:message r) (str (:error r))))))
-
-(defn- result->mcp-text
-  "Convert a Result to MCP text response: ok -> mcp-success, err -> mcp-error."
-  [r]
-  (if (result/ok? r)
-    (mcp-success (:ok r))
-    (mcp-error (or (:message r) (str (:error r))))))
 
 (defn- elisp->result
   "Convert emacs client response {:keys [success result error]} to Result."
@@ -87,49 +61,49 @@
   "Evaluate Elisp code."
   [{:keys [code] :as params}]
   (log/info "emacs-eval" {:code-length (count code)})
-  (result->mcp-text (try-result :emacs/eval-failed #(eval* params))))
+  (rb/result->mcp-text (rb/try-result :emacs/eval-failed #(eval* params))))
 
 (defn handle-buffers
   "List Emacs buffers."
   [params]
   (log/info "emacs-buffers")
-  (result->mcp (try-result :emacs/buffers-failed #(buffers* params))))
+  (rb/result->mcp (rb/try-result :emacs/buffers-failed #(buffers* params))))
 
 (defn handle-notify
   "Send notification to Emacs."
   [{:keys [message level] :as params}]
   (log/info "emacs-notify" {:message message :level level})
-  (result->mcp-text (try-result :emacs/notify-failed #(notify* params))))
+  (rb/result->mcp-text (rb/try-result :emacs/notify-failed #(notify* params))))
 
 (defn handle-status
   "Get Emacs connection status."
   [params]
   (log/info "emacs-status")
-  (result->mcp (try-result :emacs/status-failed #(status* params))))
+  (rb/result->mcp (rb/try-result :emacs/status-failed #(status* params))))
 
 (defn handle-switch-buffer
   "Switch to a buffer."
   [{:keys [buffer] :as params}]
   (log/info "emacs-switch" {:buffer buffer})
-  (result->mcp-text (try-result :emacs/switch-failed #(switch-buffer* params))))
+  (rb/result->mcp-text (rb/try-result :emacs/switch-failed #(switch-buffer* params))))
 
 (defn handle-find-file
   "Open a file in Emacs."
   [{:keys [file] :as params}]
   (log/info "emacs-find-file" {:file file})
-  (result->mcp-text (try-result :emacs/find-file-failed #(find-file* params))))
+  (rb/result->mcp-text (rb/try-result :emacs/find-file-failed #(find-file* params))))
 
 (defn handle-save
   "Save current buffer or all buffers."
   [{:keys [all] :as params}]
   (log/info "emacs-save" {:all all})
-  (result->mcp-text (try-result :emacs/save-failed #(save* params))))
+  (rb/result->mcp-text (rb/try-result :emacs/save-failed #(save* params))))
 
 (defn handle-current-buffer
   "Get current buffer info."
   [params]
   (log/info "emacs-current-buffer")
-  (result->mcp (try-result :emacs/current-buffer-failed #(current-buffer* params))))
+  (rb/result->mcp (rb/try-result :emacs/current-buffer-failed #(current-buffer* params))))
 
 (def handlers
   {:eval    handle-eval

@@ -28,7 +28,7 @@
             [hive-mcp.tools.consolidated.wave :as wave]
             [hive-mcp.tools.consolidated.magit :as magit]
             [hive-mcp.tools.consolidated.emacs :as emacs]
-            [hive-mcp.tools.consolidated.analysis :as analysis]
+            [hive-mcp.tools.composite :as composite]
             [hive-mcp.tools.consolidated.agora :as agora]
             [hive-mcp.tools.consolidated.cider :as cider]
             [hive-mcp.tools.consolidated.olympus :as olympus]
@@ -288,7 +288,7 @@
    :wave      wave/tool-def
    :magit     magit/tool-def
    :emacs     emacs/tool-def
-   :analysis  analysis/tool-def
+   ;; :analysis — composite tool, tested separately
    :agora     agora/tool-def
    :cider     cider/tool-def
    :olympus   olympus/tool-def
@@ -345,7 +345,7 @@
              :wave      {:tools-var #'wave/tools}
              :magit     {:tools-var #'magit/tools}
              :emacs     {:tools-var #'emacs/tools}
-             :analysis  {:tools-var #'analysis/tools}
+             ;; :analysis — composite tool, no static tools var
              :agora     {:tools-var #'agora/tools}
              :cider     {:tools-var #'cider/tools}
              :olympus   {:tools-var #'olympus/tools}
@@ -376,7 +376,7 @@
              :wave      wave/handlers
              :magit     magit/handlers
              :emacs     emacs/handlers
-             :analysis  analysis/handlers
+             ;; :analysis — composite tool, handlers built dynamically
              :agora     agora/handlers
              :cider     cider/handlers
              :olympus   olympus/handlers
@@ -399,7 +399,7 @@
              :wave      {:handlers-map wave/handlers :tool-def-val wave/tool-def}
              :magit     {:handlers-map magit/handlers :tool-def-val magit/tool-def}
              :emacs     {:handlers-map emacs/handlers :tool-def-val emacs/tool-def}
-             :analysis  {:handlers-map analysis/handlers :tool-def-val analysis/tool-def}
+             ;; :analysis — composite tool, tested separately
              :session   {:handlers-map session/handlers :tool-def-val session/tool-def}
              :config    {:handlers-map config/handlers :tool-def-val config/tool-def}
              :migration {:handlers-map migration/handlers :tool-def-val migration/tool-def}}]
@@ -426,7 +426,7 @@
              :wave      wave/handle-wave
              :magit     magit/handle-magit
              :emacs     emacs/handle-emacs
-             :analysis  analysis/handle-analysis
+             :analysis  (composite/build-composite-handler "analysis")
              :agora     agora/handle-agora
              :cider     cider/handle-cider
              :olympus   olympus/handle-olympus
@@ -457,7 +457,7 @@
              :wave      wave/handle-wave
              :magit     magit/handle-magit
              :emacs     emacs/handle-emacs
-             :analysis  analysis/handle-analysis
+             :analysis  (composite/build-composite-handler "analysis")
              :agora     agora/handle-agora
              :cider     cider/handle-cider
              :olympus   olympus/handle-olympus
@@ -798,39 +798,36 @@
       (is (= #{"info" "warn" "error"} (set enum))))))
 
 ;; =============================================================================
-;; Part 14: Analysis Consolidated Tool Integration Tests
+;; Part 14: Analysis Composite Tool Integration Tests
 ;; =============================================================================
 
-(deftest test-analysis-handlers-completeness
-  (testing "analysis handlers has all expected commands"
-    ;; kondo commands
-    (is (contains? analysis/handlers :lint))
-    (is (contains? analysis/handlers :analyze))
-    (is (contains? analysis/handlers :callers))
-    (is (contains? analysis/handlers :calls))
-    (is (contains? analysis/handlers :graph))
-    ;; scc commands
-    (is (contains? analysis/handlers :scc))
-    (is (contains? analysis/handlers :hotspots))
-    (is (contains? analysis/handlers :file))
-    (is (contains? analysis/handlers :compare))))
+;; NOTE: Analysis is now a composite tool built dynamically from addon
+;; command contributions. These tests verify the composite builder works
+;; with mock contributions rather than static tool-def vars.
 
-(deftest test-analysis-tool-def-schema-params
-  (testing "analysis tool-def schema has key params"
-    (let [props (get-in analysis/tool-def [:inputSchema :properties])]
-      (is (contains? props "path"))
-      (is (contains? props "level"))
-      (is (contains? props "ns"))
-      (is (contains? props "var_name"))
-      (is (contains? props "threshold"))
-      (is (contains? props "file_path"))
-      (is (contains? props "path_a"))
-      (is (contains? props "path_b")))))
-
-(deftest test-analysis-lint-level-enum
-  (testing "analysis lint level enum is correct"
-    (let [enum (get-in analysis/tool-def [:inputSchema :properties "level" :enum])]
-      (is (= #{"error" "warning" "info"} (set enum))))))
+(deftest test-analysis-composite-builder
+  (testing "composite builder produces valid tool-def from contributions"
+    (let [ext-ns (requiring-resolve 'hive-mcp.extensions.registry/contribute-commands!)
+          clear! (requiring-resolve 'hive-mcp.extensions.registry/clear-all!)]
+      ;; Set up mock contributions
+      (clear!)
+      (ext-ns "analysis" :test-kondo
+              {"lint" {:handler identity :params {"path" {:type "string"}} :description "test lint"}})
+      (ext-ns "analysis" :test-scc
+              {"scc" {:handler identity :params {"path" {:type "string"}} :description "test scc"}})
+      (let [tool-def (composite/build-composite-tool "analysis" "Code analysis")]
+        (is (string? (:name tool-def)))
+        (is (= "analysis" (:name tool-def)))
+        (is (true? (:consolidated tool-def)))
+        (is (true? (:composite tool-def)))
+        (is (string? (:description tool-def)))
+        (is (map? (:inputSchema tool-def)))
+        (is (ifn? (:handler tool-def)))
+        ;; Schema has contributed params
+        (let [props (get-in tool-def [:inputSchema :properties])]
+          (is (contains? props "command"))
+          (is (contains? props "path"))))
+      (clear!))))
 
 ;; =============================================================================
 ;; Part 15: Agora Consolidated Tool Integration Tests

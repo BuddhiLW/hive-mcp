@@ -34,6 +34,7 @@
 
   (:refer-clojure :exclude [ancestors])
   (:require [hive-mcp.knowledge-graph.protocol :as proto]
+            [hive-mcp.dns.result :refer [rescue]]
             [taoensso.timbre :as log]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -56,13 +57,10 @@
   "Dynamically require Yggdrasil namespaces.
    Returns true if available, false otherwise."
   []
-  (try
-    (require 'yggdrasil.adapters.datahike)
-    (require 'yggdrasil.protocols)
-    true
-    (catch Exception e
-      (log/warn "Yggdrasil not available" {:error (.getMessage e)})
-      false)))
+  (rescue false
+          (require 'yggdrasil.adapters.datahike)
+          (require 'yggdrasil.protocols)
+          true))
 
 (defn- create-yggdrasil-system
   "Create a Yggdrasil DatahikeSystem from a Datahike connection.

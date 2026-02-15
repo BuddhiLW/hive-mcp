@@ -60,13 +60,10 @@
 (defn decode-msg
   "Decode bencode bytes to Clojure map."
   [^bytes data]
-  (try
-    (let [in (PushbackInputStream. (ByteArrayInputStream. data))]
-      (-> (bencode/read-bencode in)
-          bytes->str))
-    (catch Exception e
-      (log/debug "Bencode decode error:" (.getMessage e))
-      nil)))
+  (result/rescue nil
+                 (let [in (PushbackInputStream. (ByteArrayInputStream. data))]
+                   (-> (bencode/read-bencode in)
+                       bytes->str))))
 
 (defn decode-msg-from-stream
   "Decode bencode message from a PushbackInputStream.
@@ -137,9 +134,7 @@
   "Close a SocketChannel if non-nil. Swallows close exceptions."
   [^SocketChannel ch label]
   (when ch
-    (try (.close ch)
-         (catch Exception e
-           (log/debug label "disconnect error:" (.getMessage e))))
+    (result/rescue nil (.close ch))
     (log/debug label "disconnected")))
 
 (defn- try-send!
@@ -285,11 +280,11 @@
   (reset! running? false)
   ;; Close all client channels
   (doseq [[_id ch] @clients]
-    (try (.close ^SocketChannel ch) (catch Exception _)))
+    (result/rescue nil (.close ^SocketChannel ch)))
   (reset! clients {})
   ;; Close server channel
   (when server-channel
-    (try (.close ^ServerSocketChannel server-channel) (catch Exception _)))
+    (result/rescue nil (.close ^ServerSocketChannel server-channel)))
   ;; Shutdown executor
   (when executor
     (.shutdownNow ^java.util.concurrent.ExecutorService executor))
@@ -328,9 +323,7 @@
   (stop-server! [_]
     (shutdown-server-common!
      running? clients server-channel executor
-     #(try
-        (Files/deleteIfExists (.toPath (java.io.File. ^String path)))
-        (catch Exception _)))
+     #(result/rescue nil (Files/deleteIfExists (.toPath (java.io.File. ^String path)))))
     (log/info "Unix server stopped:" path))
 
   (server-running? [_]
@@ -355,9 +348,7 @@
   [{:keys [path on-message on-connect]
     :or {path "/tmp/hive-mcp-channel.sock"}}]
   ;; Cleanup existing socket file
-  (try
-    (Files/deleteIfExists (.toPath (java.io.File. ^String path)))
-    (catch Exception _))
+  (result/rescue nil (Files/deleteIfExists (.toPath (java.io.File. ^String path))))
 
   (let [addr (UnixDomainSocketAddress/of ^String path)
         server-ch (doto (ServerSocketChannel/open StandardProtocolFamily/UNIX)
@@ -380,15 +371,13 @@
   [clients-atom msg]
   (let [data (encode-msg msg)
         buf-template (ByteBuffer/wrap data)]
-    (doseq [[id ^SocketChannel ch] @clients-atom]
+    (doseq [[_id ^SocketChannel ch] @clients-atom]
       (when (.isConnected ch)
-        (try
-          (let [buf (.duplicate buf-template)]
-            (.rewind buf)
-            (while (.hasRemaining buf)
-              (.write ch buf)))
-          (catch Exception e
-            (log/warn "Broadcast to" id "failed:" (.getMessage e))))))))
+        (result/rescue nil
+                       (let [buf (.duplicate buf-template)]
+                         (.rewind buf)
+                         (while (.hasRemaining buf)
+                           (.write ch buf))))))))
 
 ;; =============================================================================
 ;; TCP Server (using Java NIO for consistency)

@@ -33,6 +33,7 @@
        (merge parent-data result))"
 
   (:require [hive.events.fsm :as fsm]
+            [hive-mcp.dns.result :refer [rescue]]
             [taoensso.timbre :as log]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -62,11 +63,7 @@
   (let [ctx-refs   (or (:ctx-refs data) {})
         fetch-fn   (:fetch-ref-data-fn resources)
         ref-data   (if (and fetch-fn (seq ctx-refs))
-                     (try
-                       (fetch-fn ctx-refs)
-                       (catch Exception e
-                         (log/debug "handle-fetch-refs: fetch failed:" (.getMessage e))
-                         {}))
+                     (rescue {} (fetch-fn ctx-refs))
                      {})]
     (assoc data :ref-data ref-data)))
 
@@ -82,11 +79,7 @@
         scope       (:scope data)
         gather-fn   (:gather-kg-context-fn resources)
         kg-raw      (if (and gather-fn (seq kg-node-ids))
-                      (try
-                        (gather-fn kg-node-ids scope)
-                        (catch Exception e
-                          (log/debug "handle-traverse-kg: traverse failed:" (.getMessage e))
-                          nil))
+                      (rescue nil (gather-fn kg-node-ids scope))
                       nil)]
     (assoc data :kg-raw kg-raw)))
 
@@ -101,11 +94,7 @@
   (let [kg-raw      (:kg-raw data)
         compress-fn (:compress-kg-fn resources)
         compressed  (if (and compress-fn kg-raw (seq (:edges kg-raw)))
-                      (try
-                        (compress-fn kg-raw)
-                        (catch Exception e
-                          (log/debug "handle-compress: compression failed:" (.getMessage e))
-                          nil))
+                      (rescue nil (compress-fn kg-raw))
                       nil)]
     (assoc data :compressed-context compressed)))
 
@@ -121,14 +110,11 @@
         kg-raw      (:kg-raw data)
         render-fn   (:render-context-fn resources)
         rendered    (if render-fn
-                      (try
-                        (let [result (render-fn ref-data kg-raw)]
-                          (if (and result (> (count result) max-output-chars))
-                            (str (subs result 0 (- max-output-chars 20)) "\n...[truncated]")
-                            result))
-                        (catch Exception e
-                          (log/debug "handle-render: render failed:" (.getMessage e))
-                          nil))
+                      (rescue nil
+                              (let [result (render-fn ref-data kg-raw)]
+                                (if (and result (> (count result) max-output-chars))
+                                  (str (subs result 0 (- max-output-chars 20)) "\n...[truncated]")
+                                  result)))
                       ;; Fallback: minimal context summary
                       (str "## Context (no renderer)\n"
                            "Refs: " (count ref-data) " categories\n"
@@ -244,11 +230,7 @@
    to avoid hard namespace dependency."
   []
   (let [resolve-fn (fn [sym]
-                     (try
-                       (requiring-resolve sym)
-                       (catch Exception e
-                         (log/warn "Failed to resolve" sym ":" (.getMessage e))
-                         nil)))]
+                     (rescue nil (requiring-resolve sym)))]
     {:fetch-ref-data-fn    (or (resolve-fn 'hive-mcp.context.reconstruction/fetch-ref-data)
                                (constantly {}))
      :gather-kg-context-fn (or (resolve-fn 'hive-mcp.context.reconstruction/gather-kg-context)

@@ -3,15 +3,18 @@
 
    Tests cover:
    - ILingStrategy protocol contract
-   - VtermStrategy (mocked elisp)
+   - Protocol contract tests via mock strategy (reify)
    - HeadlessStrategy (mocked headless)
+   - Terminal registry integration (addon-contributed backends)
    - Strategy resolution (resolve-strategy)
    - Ling facade delegation to strategies
 
+   Note: Vterm-specific tests now live in the vterm-mcp addon project.
    All external dependencies (emacsclient, headless) are mocked."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [hive-mcp.agent.ling.strategy :as strategy]
-            [hive-mcp.agent.ling.vterm :as vterm]
+            [hive-mcp.agent.ling.terminal-registry :as terminal-reg]
+            [hive-mcp.addons.terminal]
             [hive-mcp.agent.ling.headless-strategy :as headless-strat]
             [hive-mcp.agent.protocol :as proto]
             [hive-mcp.agent.ling :as ling]
@@ -22,7 +25,6 @@
             [hive-mcp.swarm.datascript :as ds]
             [hive-mcp.swarm.datascript.lings :as ds-lings]
             [hive-mcp.swarm.datascript.queries :as ds-queries]
-            [hive-mcp.emacs.client :as ec]
             [clojure.string :as str]))
 
 ;; =============================================================================
@@ -30,15 +32,37 @@
 ;; =============================================================================
 
 (defn reset-datascript-fixture
-  "Reset DataScript and SDK state before and after each test."
+  "Reset DataScript, SDK state, and terminal registry before and after each test."
   [f]
   (ds/reset-conn!)
+  (terminal-reg/clear-registry!)
   (try (sdk/kill-all-sdk!) (catch Exception _))
   (f)
   (try (sdk/kill-all-sdk!) (catch Exception _))
+  (terminal-reg/clear-registry!)
   (ds/reset-conn!))
 
 (use-fixtures :each reset-datascript-fixture)
+
+;; =============================================================================
+;; Mock Strategy Helper
+;; =============================================================================
+
+(defn- make-mock-strategy
+  "Create a mock ILingStrategy via reify for protocol contract tests.
+   All parameters are optional with sensible defaults."
+  [& {:keys [spawn-fn dispatch-fn status-fn kill-fn interrupt-fn]
+      :or {spawn-fn (fn [ctx _opts] (:id ctx))
+           dispatch-fn (fn [_ctx _opts] true)
+           status-fn (fn [_ctx ds-data] (or ds-data {:slave/status :unknown}))
+           kill-fn (fn [ctx] {:killed? true :id (:id ctx)})
+           interrupt-fn (fn [ctx] {:success? false :ling-id (:id ctx) :errors ["Not supported"]})}}]
+  (reify strategy/ILingStrategy
+    (strategy-spawn! [_ ctx opts] (spawn-fn ctx opts))
+    (strategy-dispatch! [_ ctx opts] (dispatch-fn ctx opts))
+    (strategy-status [_ ctx ds] (status-fn ctx ds))
+    (strategy-kill! [_ ctx] (kill-fn ctx))
+    (strategy-interrupt! [_ ctx] (interrupt-fn ctx))))
 
 ;; =============================================================================
 ;; Section 1: ILingStrategy Protocol Tests
@@ -59,106 +83,89 @@
         "strategy-kill! should be a function")))
 
 ;; =============================================================================
-;; Section 2: VtermStrategy Tests
+;; Section 2: Protocol Contract Tests (via mock strategy reify)
 ;; =============================================================================
 
-(deftest vterm-strategy-spawn-success
-  (testing "VtermStrategy spawn delegates to emacsclient"
-    (let [strat (vterm/->vterm-strategy)
-          ctx {:id "vterm-test-001" :cwd "/tmp/project" :presets ["tdd"]
-               :project-id "test" :model nil}]
-      (with-redefs [ec/eval-elisp-with-timeout
-                    (fn [code _timeout]
-                      ;; Verify elisp code contains the ling ID
-                      (is (re-find #"vterm-test-001" code)
-                          "Elisp code should contain ling ID")
-                      {:success true :result "vterm-test-001"})]
-        (let [slave-id (strategy/strategy-spawn! strat ctx {})]
-          (is (= "vterm-test-001" slave-id)
-              "Should return elisp result as slave-id"))))))
+(deftest protocol-spawn-returns-id
+  (testing "ILingStrategy spawn returns slave-id string"
+    (let [strat (make-mock-strategy
+                 :spawn-fn (fn [ctx _opts] (:id ctx)))
+          ctx {:id "spawn-test-001" :cwd "/tmp/project" :presets ["tdd"]}]
+      (let [slave-id (strategy/strategy-spawn! strat ctx {})]
+        (is (= "spawn-test-001" slave-id)
+            "Should return the ling id from context")))))
 
-(deftest vterm-strategy-spawn-failure-throws
-  (testing "VtermStrategy spawn throws on elisp failure"
-    (let [strat (vterm/->vterm-strategy)
-          ctx {:id "fail-ling" :cwd "/tmp" :presets [] :model nil}]
-      (with-redefs [ec/eval-elisp-with-timeout
-                    (fn [_code _timeout]
-                      {:success false :error "Emacs not running"})]
-        (is (thrown-with-msg? clojure.lang.ExceptionInfo
-                              #"Failed to spawn ling"
-                              (strategy/strategy-spawn! strat ctx {})))))))
+(deftest protocol-spawn-failure-throws
+  (testing "ILingStrategy spawn can throw on failure"
+    (let [strat (make-mock-strategy
+                 :spawn-fn (fn [ctx _opts]
+                             (throw (ex-info "Failed to spawn ling"
+                                             {:id (:id ctx) :error "Backend down"}))))
+          ctx {:id "fail-ling" :cwd "/tmp" :presets []}]
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                            #"Failed to spawn ling"
+                            (strategy/strategy-spawn! strat ctx {}))))))
 
-(deftest vterm-strategy-dispatch-success
-  (testing "VtermStrategy dispatch sends via elisp"
-    (let [strat (vterm/->vterm-strategy)
-          ctx {:id "dispatch-vterm" :cwd "/tmp"}]
-      (with-redefs [ec/eval-elisp-with-timeout
-                    (fn [code timeout]
-                      (is (re-find #"dispatch-vterm" code)
-                          "Elisp dispatch should target the ling ID")
-                      (is (re-find #"Fix the bug" code)
-                          "Elisp should contain the task")
-                      {:success true :result "ok"})]
-        (let [result (strategy/strategy-dispatch! strat ctx {:task "Fix the bug"
-                                                             :timeout-ms 30000})]
-          (is (true? result)))))))
+(deftest protocol-dispatch-returns-true
+  (testing "ILingStrategy dispatch returns true on success"
+    (let [strat (make-mock-strategy
+                 :dispatch-fn (fn [_ctx task-opts]
+                                (is (= "Fix the bug" (:task task-opts)))
+                                true))
+          ctx {:id "dispatch-test" :cwd "/tmp"}]
+      (let [result (strategy/strategy-dispatch! strat ctx {:task "Fix the bug"
+                                                            :timeout-ms 30000})]
+        (is (true? result))))))
 
-(deftest vterm-strategy-dispatch-failure-throws
-  (testing "VtermStrategy dispatch throws on elisp failure"
-    (let [strat (vterm/->vterm-strategy)
+(deftest protocol-dispatch-failure-throws
+  (testing "ILingStrategy dispatch can throw on failure"
+    (let [strat (make-mock-strategy
+                 :dispatch-fn (fn [_ctx _opts]
+                                (throw (ex-info "Dispatch failed"
+                                                {:error "Timeout"}))))
           ctx {:id "fail-dispatch" :cwd "/tmp"}]
-      (with-redefs [ec/eval-elisp-with-timeout
-                    (fn [_code _timeout]
-                      {:success false :error "Timeout"})]
-        (is (thrown-with-msg? clojure.lang.ExceptionInfo
-                              #"Vterm dispatch failed"
-                              (strategy/strategy-dispatch! strat ctx {:task "Fix it"})))))))
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                            #"Dispatch failed"
+                            (strategy/strategy-dispatch! strat ctx {:task "Fix it"}))))))
 
-(deftest vterm-strategy-status-with-ds
-  (testing "VtermStrategy status enriches DataScript data"
-    (let [strat (vterm/->vterm-strategy)
-          ctx {:id "status-vterm"}
-          ds-data {:slave/id "status-vterm"
-                   :slave/status :working}]
-      ;; When DataScript has data and status is known, no elisp call needed
+(deftest protocol-status-with-ds-data
+  (testing "ILingStrategy status returns DataScript data when available"
+    (let [strat (make-mock-strategy
+                 :status-fn (fn [_ctx ds-data] ds-data))
+          ctx {:id "status-test"}
+          ds-data {:slave/id "status-test" :slave/status :working}]
       (let [result (strategy/strategy-status strat ctx ds-data)]
         (is (= :working (:slave/status result))
             "Should return DataScript status directly")))))
 
-(deftest vterm-strategy-status-unknown-queries-elisp
-  (testing "VtermStrategy queries elisp when status unknown"
-    (let [strat (vterm/->vterm-strategy)
-          ctx {:id "unknown-vterm"}
-          ds-data {:slave/id "unknown-vterm"
-                   :slave/status :unknown}]
-      (with-redefs [ec/eval-elisp-with-timeout
-                    (fn [_code _timeout]
-                      {:success true :result "working"})]
-        (let [result (strategy/strategy-status strat ctx ds-data)]
-          (is (true? (:elisp-alive? result))
-              "Should indicate elisp alive"))))))
+(deftest protocol-status-enriches-unknown
+  (testing "ILingStrategy status enriches unknown status"
+    (let [strat (make-mock-strategy
+                 :status-fn (fn [_ctx ds-data]
+                              (assoc ds-data :backend-alive? true)))
+          ctx {:id "unknown-test"}
+          ds-data {:slave/id "unknown-test" :slave/status :unknown}]
+      (let [result (strategy/strategy-status strat ctx ds-data)]
+        (is (true? (:backend-alive? result))
+            "Should indicate backend alive")))))
 
-(deftest vterm-strategy-kill-success
-  (testing "VtermStrategy kill delegates to elisp"
-    (let [strat (vterm/->vterm-strategy)
-          ctx {:id "kill-vterm"}]
-      (with-redefs [ec/eval-elisp-with-timeout
-                    (fn [_code _timeout]
-                      {:success true :result "killed"})]
-        (let [result (strategy/strategy-kill! strat ctx)]
-          (is (true? (:killed? result)))
-          (is (= "kill-vterm" (:id result))))))))
+(deftest protocol-kill-returns-killed
+  (testing "ILingStrategy kill returns killed map"
+    (let [strat (make-mock-strategy
+                 :kill-fn (fn [ctx] {:killed? true :id (:id ctx)}))
+          ctx {:id "kill-test"}]
+      (let [result (strategy/strategy-kill! strat ctx)]
+        (is (true? (:killed? result)))
+        (is (= "kill-test" (:id result)))))))
 
-(deftest vterm-strategy-kill-failure
-  (testing "VtermStrategy returns killed?=false on elisp failure"
-    (let [strat (vterm/->vterm-strategy)
-          ctx {:id "kill-fail-vterm"}]
-      (with-redefs [ec/eval-elisp-with-timeout
-                    (fn [_code _timeout]
-                      {:success false :error "process not found"})]
-        (let [result (strategy/strategy-kill! strat ctx)]
-          (is (false? (:killed? result)))
-          (is (= :elisp-kill-failed (:reason result))))))))
+(deftest protocol-kill-returns-not-killed
+  (testing "ILingStrategy kill returns killed?=false on failure"
+    (let [strat (make-mock-strategy
+                 :kill-fn (fn [ctx] {:killed? false :id (:id ctx) :reason :backend-failed}))
+          ctx {:id "kill-fail-test"}]
+      (let [result (strategy/strategy-kill! strat ctx)]
+        (is (false? (:killed? result)))
+        (is (= :backend-failed (:reason result)))))))
 
 ;; =============================================================================
 ;; Section 3: HeadlessStrategy Tests
@@ -243,26 +250,37 @@
 ;; =============================================================================
 
 (deftest facade-spawn-uses-vterm-strategy-by-default
-  (testing "Ling facade defaults to vterm strategy"
-    (let [ling (ling/->ling "facade-vterm" {:cwd "/tmp" :project-id "test"})]
-      (is (= :vterm (:spawn-mode ling))
-          "Default spawn mode should be :vterm")
-      (with-redefs [ec/eval-elisp-with-timeout
-                    (fn [_code _timeout]
-                      {:success true :result "facade-vterm"})]
+  (testing "Ling facade defaults to vterm strategy (via terminal registry)"
+    (let [;; Register a mock vterm strategy in the terminal registry
+          mock-terminal (reify
+                          hive-mcp.addons.terminal/ITerminalAddon
+                          (terminal-id [_] :vterm)
+                          (terminal-spawn! [_ ctx _opts]
+                            (:id ctx))
+                          (terminal-dispatch! [_ _ctx _opts] true)
+                          (terminal-status [_ _ctx ds-data] ds-data)
+                          (terminal-kill! [_ ctx] {:killed? true :id (:id ctx)})
+                          (terminal-interrupt! [_ ctx] {:success? false :ling-id (:id ctx) :errors ["Not supported"]}))
+          ling (ling/->ling "facade-vterm" {:cwd "/tmp" :project-id "test"})]
+      (terminal-reg/register-terminal! :vterm mock-terminal)
+      (try
+        (is (= :vterm (:spawn-mode ling))
+            "Default spawn mode should be :vterm")
         (let [slave-id (proto/spawn! ling {:depth 1})]
           (is (= "facade-vterm" slave-id))
           ;; Verify DataScript registration (common concern)
           (let [slave (ds-queries/get-slave "facade-vterm")]
             (is (some? slave))
-            (is (= :vterm (:ling/spawn-mode slave)))))))))
+            (is (= :vterm (:ling/spawn-mode slave)))))
+        (finally
+          (terminal-reg/deregister-terminal! :vterm))))))
 
 (deftest facade-spawn-uses-headless-strategy
   (testing "Ling facade maps :headless to :agent-sdk since 0.12.0"
     (let [ling (ling/->ling "facade-headless"
                             {:cwd "/tmp" :project-id "test"
                              :spawn-mode :headless})]
-      ;; ->ling maps :headless → :agent-sdk at factory level
+      ;; ->ling maps :headless -> :agent-sdk at factory level
       (is (= :agent-sdk (:spawn-mode ling)))
       (with-redefs [sdk/available? (constantly true)
                     sdk/sdk-status (constantly :available)
@@ -290,7 +308,7 @@
 
 (deftest facade-dispatch-delegates-to-strategy
   (testing "Dispatch delegates to correct strategy based on mode"
-    ;; Register ling in DataScript — facade maps :headless → :agent-sdk
+    ;; Register ling in DataScript -- facade maps :headless -> :agent-sdk
     (ds-lings/add-slave! "dispatch-delegate" {:status :idle :cwd "/tmp"})
     (ds-lings/update-slave! "dispatch-delegate" {:ling/spawn-mode :agent-sdk})
 
@@ -317,7 +335,7 @@
   (testing "Kill delegates to correct strategy and cleans up DataScript"
     (ds-lings/add-slave! "kill-delegate" {:status :idle})
 
-    ;; facade maps :headless → :agent-sdk
+    ;; facade maps :headless -> :agent-sdk
     (let [ling (ling/->ling "kill-delegate" {:spawn-mode :headless})]
       (with-redefs [sdk/available? (constantly true)
                     sdk/sdk-status (constantly :available)
@@ -337,7 +355,7 @@
     (ds-lings/add-slave! "status-delegate" {:status :idle})
     (ds-lings/update-slave! "status-delegate" {:ling/spawn-mode :agent-sdk})
 
-    ;; facade maps :headless → :agent-sdk
+    ;; facade maps :headless -> :agent-sdk
     (let [ling (ling/->ling "status-delegate" {:spawn-mode :headless})]
       (with-redefs [sdk/available? (constantly true)
                     sdk/sdk-status (constantly :available)
@@ -352,6 +370,14 @@
           (is (some? status) "Status should be returned")
           (is (= :idle (:slave/status status))))))))
 
+(deftest facade-unregistered-vterm-throws
+  (testing "Attempting :vterm with no addon registered throws clear error"
+    (let [ling (ling/->ling "no-vterm-ling" {:cwd "/tmp" :project-id "test"})]
+      (is (= :vterm (:spawn-mode ling)))
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                            #"No strategy registered for mode"
+                            (proto/spawn! ling {:depth 1}))))))
+
 ;; =============================================================================
 ;; Section 5: Query Functions (mode-independent, unaffected by refactoring)
 ;; =============================================================================
@@ -364,7 +390,7 @@
 
     (let [ling (ling/get-ling "mode-preserved")]
       (is (some? ling))
-      ;; ->ling factory maps :headless → :agent-sdk for claude models
+      ;; ->ling factory maps :headless -> :agent-sdk for claude models
       (is (= :agent-sdk (:spawn-mode ling))
           "spawn-mode should be mapped from :headless to :agent-sdk")
       (is (= "claude" (:model ling))
@@ -388,6 +414,8 @@
 ;; Tests that when a headless ling is spawned with a kanban-task-id,
 ;; generate-task-hints is called and the hint block is prepended to the
 ;; task string passed to strategy-spawn! (embedded in CLI arg).
+;;
+;; Note: Vterm-specific hint test moved to vterm-mcp addon project.
 ;; =============================================================================
 
 (deftest headless-spawn-with-hints-injects-into-task
@@ -417,7 +445,7 @@
                     (fn [hint-data & {:keys [project-name]}]
                       (is (= "test-project" project-name))
                       "## Memory Hints (Auto-Injected)\n\nMocked hint block")
-                    ;; Mock SDK spawn — returns plain map (not channel)
+                    ;; Mock SDK spawn -- returns plain map (not channel)
                     sdk/available? (constantly true)
                     sdk/sdk-status (constantly :available)
                     sdk/spawn-headless-sdk!
@@ -526,42 +554,6 @@
               "Should spawn successfully without task")
           (is (not @dispatch-called?)
               "No dispatch should happen when no task provided"))))))
-
-(deftest vterm-spawn-with-hints-dispatches-enriched-task
-  (testing "Vterm spawn with kanban-task-id dispatches hints-enriched task via elisp"
-    (let [captured-dispatch-code (atom nil)
-          ling-inst (ling/->ling "hints-vterm-001"
-                                 {:cwd "/tmp/project"
-                                  :project-id "test-project"
-                                  :spawn-mode :vterm})]
-      (with-redefs [hints/generate-task-hints
-                    (fn [{:keys [task-id]}]
-                      {:l1-ids ["vterm-mem-1"]
-                       :l2-queries []
-                       :l3-seeds []})
-                    hints/generate-hints
-                    (fn [_ _]
-                      {:memory-hints {:axiom-ids ["vax-1"]
-                                      :read-ids ["vterm-mem-1"]}})
-                    hints/serialize-hints
-                    (fn [_ & _] "## Memory Hints\n\nVterm hints")
-                    ec/eval-elisp-with-timeout
-                    (fn [code _timeout]
-                      ;; Capture the dispatch call (contains the task), not the spawn call
-                      (when (str/includes? code "hive-mcp-swarm-api-dispatch")
-                        (reset! captured-dispatch-code code))
-                      {:success true :result "hints-vterm-001"})]
-        (let [slave-id (proto/spawn! ling-inst {:task "Vterm task"
-                                                :kanban-task-id "kanban-vterm-1"
-                                                :depth 1})]
-          (is (= "hints-vterm-001" slave-id))
-          ;; The dispatch elisp code should contain hints in the task
-          (is (some? @captured-dispatch-code)
-              "A dispatch call should have been made")
-          (is (str/includes? @captured-dispatch-code "Memory Hints")
-              "Dispatch elisp should contain hint block")
-          (is (str/includes? @captured-dispatch-code "Vterm task")
-              "Dispatch elisp should contain original task"))))))
 
 (comment
   ;; Run all strategy tests

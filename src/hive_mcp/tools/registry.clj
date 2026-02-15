@@ -38,14 +38,14 @@
    [hive-mcp.tools.consolidated.preset :as c-preset]
    [hive-mcp.tools.consolidated.olympus :as c-olympus]
    [hive-mcp.tools.consolidated.agora :as c-agora]
-   [hive-mcp.tools.consolidated.analysis :as c-analysis]
+   [hive-mcp.tools.composite :as composite]
+   [hive-mcp.extensions.registry :as ext]
    [hive-mcp.tools.consolidated.project :as c-project]
    [hive-mcp.tools.consolidated.session :as c-session]
    [hive-mcp.tools.consolidated.emacs :as c-emacs]
    [hive-mcp.tools.consolidated.wave :as c-wave]
    [hive-mcp.tools.consolidated.migration :as c-migration]
    [hive-mcp.tools.consolidated.config :as c-config]
-   [hive-mcp.tools.consolidated.lsp :as c-lsp]
    [hive-mcp.tools.consolidated.workflow :as c-workflow]
    [hive-mcp.tools.consolidated.multi :as c-multi]
    ;; Backward-compatibility shims for deprecated tools
@@ -104,14 +104,13 @@
                c-preset/tools
                c-olympus/tools
                c-agora/tools
-               c-analysis/tools
+               ;; analysis tool built dynamically via composite/build-composite-tool
                c-project/tools
                c-session/tools
                c-emacs/tools
                c-wave/tools
                c-migration/tools  ; KG/Memory migration operations
                c-config/tools     ; Config management (~/.config/hive-mcp/config.edn)
-               c-lsp/tools        ; LSP code intelligence (optional lsp-mcp dep)
                c-workflow/tools   ; Forja Belt workflow automation
                c-multi/tools     ; Meta-facade: single tool for all consolidated ops
                ;; Backward-compatibility shims (deprecated, sunset: 2026-04-01)
@@ -298,14 +297,13 @@
                c-preset/tools
                c-olympus/tools
                c-agora/tools
-               c-analysis/tools
+               ;; analysis tool built dynamically via composite/build-composite-tool
                c-project/tools
                c-session/tools
                c-emacs/tools
                c-wave/tools
                c-migration/tools  ; KG/Memory migration operations
                c-config/tools     ; Config management (~/.config/hive-mcp/config.edn)
-               c-lsp/tools        ; LSP code intelligence (optional lsp-mcp dep)
                c-workflow/tools   ; Forja Belt workflow automation
                c-multi/tools     ; Meta-facade: single tool for all consolidated ops
                ;; Backward-compatibility shims (deprecated, sunset: 2026-04-01)
@@ -364,7 +362,7 @@
    :preset    c-preset/handlers
    :olympus   c-olympus/handlers
    :agora     c-agora/handlers
-   :analysis  c-analysis/handlers
+   ;; :analysis resolved dynamically via composite/build-composite-handlers
    :project   c-project/handlers
    :session   c-session/handlers
    :emacs     c-emacs/handlers
@@ -378,6 +376,7 @@
 
    Returns sorted vector of command path strings, or nil if tool not found.
    Supports nested handler trees (e.g. agent's dag sub-commands).
+   Falls back to composite tool handlers for dynamically built tools.
 
    Example:
      (get-child-tools \"agent\")
@@ -395,5 +394,7 @@
      multi is a meta-facade routing to other tools)
    - Returns nil for unknown tool names"
   [tool-name]
-  (when-let [handlers (get consolidated-handler-maps (keyword tool-name))]
+  (when-let [handlers (or (get consolidated-handler-maps (keyword tool-name))
+                          (when (seq (ext/get-contributed-commands tool-name))
+                            (composite/build-composite-handlers tool-name)))]
     (vec (sort (extract-commands handlers)))))

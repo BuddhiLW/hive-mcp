@@ -3,6 +3,7 @@
 
    Handles buffer operations, file operations, and hive-mcp.el integration."
   (:require [hive-mcp.emacs.client :as ec]
+            [hive-mcp.tools.core :refer [mcp-error]]
             [hive-mcp.telemetry.core :as telemetry]
             [hive-mcp.dns.validation :as v]
             [clojure.data.json :as json]
@@ -25,7 +26,7 @@
         (let [{:keys [success result error]} (ec/eval-elisp code)]
           (if success
             {:type "text" :text result}
-            {:type "text" :text (str "Error: " error) :isError true}))))
+            (mcp-error (str "Error: " error))))))
     (catch clojure.lang.ExceptionInfo e
       (if (= :validation (:type (ex-data e)))
         (v/wrap-validation-error e)
@@ -108,7 +109,7 @@
      :text (str "Emacs is running\n"
                 "Current buffer: " (ec/current-buffer) "\n"
                 "Current file: " (or (ec/current-file) "none"))}
-    {:type "text" :text "Emacs server is not running" :isError true}))
+    (mcp-error "Emacs server is not running")))
 
 ;; =============================================================================
 ;; hive-mcp.el Integration Tools
@@ -129,8 +130,8 @@
     (let [{:keys [success result error]} (ec/eval-elisp "(json-encode (hive-mcp-api-get-context))")]
       (if success
         {:type "text" :text result}
-        {:type "text" :text (str "Error: " error) :isError true}))
-    {:type "text" :text "Error: hive-mcp.el is not loaded. Run (require 'hive-mcp) and (hive-mcp-mode 1) in Emacs." :isError true}))
+        (mcp-error (str "Error: " error))))
+    (mcp-error "Error: hive-mcp.el is not loaded. Run (require 'hive-mcp) and (hive-mcp-mode 1) in Emacs.")))
 
 (defn handle-mcp-capabilities
   "Check hive-mcp.el availability and capabilities."
@@ -140,7 +141,7 @@
     (let [{:keys [success result error]} (ec/eval-elisp "(json-encode (hive-mcp-api-capabilities))")]
       (if success
         {:type "text" :text result}
-        {:type "text" :text (str "Error: " error) :isError true}))
+        (mcp-error (str "Error: " error))))
     {:type "text"
      :text (json/write-str {:available false
                             :message "hive-mcp.el is not loaded. Run (require 'hive-mcp) and (hive-mcp-mode 1) in Emacs."})}))
@@ -154,8 +155,8 @@
     ;; Send desktop notification (primary - catches attention)
     (require 'hive-mcp.emacs.notify)
     ((resolve 'hive-mcp.emacs.notify/notify!) {:summary "Hive-MCP"
-                                         :body message
-                                         :type type-str})
+                                               :body message
+                                               :type type-str})
     ;; Also send to Emacs echo-area (secondary - visible if Emacs focused)
     (let [elisp (format "(hive-mcp-api-notify %s %s)"
                         (pr-str message)
@@ -173,8 +174,8 @@
     (let [{:keys [success result error]} (ec/eval-elisp "(json-encode (hive-mcp-api-list-workflows))")]
       (if success
         {:type "text" :text result}
-        {:type "text" :text (str "Error: " error) :isError true}))
-    {:type "text" :text "Error: hive-mcp.el is not loaded." :isError true}))
+        (mcp-error (str "Error: " error))))
+    (mcp-error "Error: hive-mcp.el is not loaded.")))
 
 (defn handle-mcp-list-special-buffers
   "List special buffers useful for monitoring (*Messages*, *Warnings*, etc.)."
@@ -188,7 +189,7 @@
         {:keys [success result error]} (ec/eval-elisp elisp)]
     (if success
       {:type "text" :text result}
-      {:type "text" :text (str "Error: " error) :isError true})))
+      (mcp-error (str "Error: " error)))))
 
 (defn handle-mcp-buffer-info
   "Get detailed info about a buffer including size, modified time, mode."
@@ -208,7 +209,7 @@
         {:keys [success result error]} (ec/eval-elisp elisp)]
     (if success
       {:type "text" :text result}
-      {:type "text" :text (str "Error: " error) :isError true})))
+      (mcp-error (str "Error: " error)))))
 
 ;; =============================================================================
 ;; Tool Definitions

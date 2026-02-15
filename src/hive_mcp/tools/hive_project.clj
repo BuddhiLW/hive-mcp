@@ -19,6 +19,7 @@
             [hive-mcp.config.core :as config]
             [clojure.data.json :as json]
             [clojure.java.io :as io]
+            [hive-mcp.dns.result :refer [rescue]]
             [clojure.string :as str]
             [taoensso.timbre :as log])
   (:import [java.security MessageDigest]
@@ -96,13 +97,10 @@
   "Read :project-id from a .hive-project.edn file.
    Returns the project-id string or nil on failure."
   [hive-project-file]
-  (try
-    (let [content (slurp hive-project-file)
-          config (read-string content)]
-      (:project-id config))
-    (catch Exception e
-      (log/debug "Failed to read parent .hive-project.edn:" (.getMessage e))
-      nil)))
+  (rescue nil
+          (let [content (slurp hive-project-file)
+                config (read-string content)]
+            (:project-id config))))
 
 (defn- find-parent-project-id
   "Walk up directories from given path looking for parent .hive-project.edn.
@@ -262,50 +260,46 @@
    - {:skipped true :reason ...} if file exists or detection fails
    - nil on error"
   [directory]
-  (try
-    (let [dir (io/file directory)
-          config-path (io/file dir ".hive-project.edn")]
+  (rescue nil
+          (let [dir (io/file directory)
+                config-path (io/file dir ".hive-project.edn")]
       ;; INVARIANT: Never overwrite existing
-      (if (.exists config-path)
-        {:skipped true
-         :reason "existing"
-         :path (.getAbsolutePath config-path)}
+            (if (.exists config-path)
+              {:skipped true
+               :reason "existing"
+               :path (.getAbsolutePath config-path)}
 
         ;; Detect project type natively
-        (if-let [project-type (detect-project-type-native directory)]
-          (let [;; project-id = directory basename (for Chroma compat)
-                project-id (.getName dir)
+              (if-let [project-type (detect-project-type-native directory)]
+                (let [;; project-id = directory basename (for Chroma compat)
+                      project-id (.getName dir)
                 ;; Resolve parent via config.clj parent-rules
-                parent-id (config/get-parent-for-path (.getAbsolutePath dir))
+                      parent-id (config/get-parent-for-path (.getAbsolutePath dir))
                 ;; Build config
-                watch-dirs (infer-watch-dirs project-type)
-                hot-reload (infer-hot-reload? project-type)
-                edn-config {:project-id project-id
-                            :parent parent-id
-                            :project-type (keyword project-type)
-                            :watch-dirs watch-dirs
-                            :hot-reload hot-reload
-                            :presets-path (when hot-reload ".hive/presets")}
-                edn-content (generate-edn-content edn-config)]
+                      watch-dirs (infer-watch-dirs project-type)
+                      hot-reload (infer-hot-reload? project-type)
+                      edn-config {:project-id project-id
+                                  :parent parent-id
+                                  :project-type (keyword project-type)
+                                  :watch-dirs watch-dirs
+                                  :hot-reload hot-reload
+                                  :presets-path (when hot-reload ".hive/presets")}
+                      edn-content (generate-edn-content edn-config)]
             ;; Write file
-            (spit (.getAbsolutePath config-path) edn-content)
-            (log/info "Generated .hive-project.edn (headless):"
-                      (.getAbsolutePath config-path)
-                      {:project-id project-id
-                       :project-type project-type
-                       :parent-id parent-id})
-            {:success true
-             :path (.getAbsolutePath config-path)
-             :config edn-config})
+                  (spit (.getAbsolutePath config-path) edn-content)
+                  (log/info "Generated .hive-project.edn (headless):"
+                            (.getAbsolutePath config-path)
+                            {:project-id project-id
+                             :project-type project-type
+                             :parent-id parent-id})
+                  {:success true
+                   :path (.getAbsolutePath config-path)
+                   :config edn-config})
 
           ;; No .git found or not a valid project
-          {:skipped true
-           :reason "no-git"
-           :path (.getAbsolutePath dir)})))
-    (catch Exception e
-      (log/warn "generate-hive-project-headless! failed for" directory ":"
-                (.getMessage e))
-      nil)))
+                {:skipped true
+                 :reason "no-git"
+                 :path (.getAbsolutePath dir)})))))
 
 ;; =============================================================================
 ;; Startup Scan: Find and Generate Missing .hive-project.edn
@@ -346,20 +340,20 @@
                      (for [dir dirs]
                        (let [path (.getAbsolutePath dir)
                              result (generate-hive-project-headless! path)]
-                         (merge {:directory path} result))))]
-        (let [generated (count (filter :success results))
-              skipped (count (filter :skipped results))
-              errors (count (filter nil? results))]
-          (log/info "scan-and-generate-missing! complete:"
-                    {:scanned (count dirs)
-                     :generated generated
-                     :skipped skipped
-                     :errors errors})
-          {:scanned (count dirs)
-           :generated generated
-           :skipped skipped
-           :errors errors
-           :details results})))))
+                         (merge {:directory path} result))))
+            generated (count (filter :success results))
+            skipped (count (filter :skipped results))
+            errors (count (filter nil? results))]
+        (log/info "scan-and-generate-missing! complete:"
+                  {:scanned (count dirs)
+                   :generated generated
+                   :skipped skipped
+                   :errors errors})
+        {:scanned (count dirs)
+         :generated generated
+         :skipped skipped
+         :errors errors
+         :details results}))))
 
 ;; =============================================================================
 ;; Projectile Integration
@@ -378,11 +372,8 @@
                                           'hive-mcp-projectile-api-project-info))
         {:keys [success result]} (ec/eval-elisp elisp)]
     (when success
-      (try
-        (json/read-str result :key-fn keyword)
-        (catch Exception e
-          (log/warn "Failed to parse projectile info:" (.getMessage e))
-          nil)))))
+      (rescue nil
+              (json/read-str result :key-fn keyword)))))
 
 ;; =============================================================================
 ;; Handler

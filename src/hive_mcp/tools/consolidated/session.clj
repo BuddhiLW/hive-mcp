@@ -2,12 +2,14 @@
   "Consolidated Session CLI tool for lifecycle and context store operations."
   (:require [hive-mcp.tools.cli :refer [make-cli-handler]]
             [hive-mcp.tools.session-complete :as session-handlers]
+            [hive-mcp.tools.result-bridge :as rb]
             [hive-mcp.tools.core :refer [mcp-error mcp-json]]
             [hive-mcp.tools.crystal :as crystal]
             [hive-mcp.tools.catchup :as catchup]
             [hive-mcp.agent.context :as ctx]
             [hive-mcp.channel.context-store :as ctx-store]
             [hive-mcp.context.reconstruction :as reconstruction]
+            [hive-mcp.dns.result :as result]
             [hive-mcp.tools.memory.scope :as scope]
             [taoensso.timbre :as log]))
 
@@ -27,6 +29,83 @@
         (log/warn "evict-agent-context! failed for" agent-id ":" (.getMessage e))
         {:evicted 0 :error (.getMessage e)}))))
 
+;; ── Pure Result-returning functions ───────────────────────────────────────────
+
+(defn- keywordize-refs
+  "Normalize string-keyed ctx_refs map to keyword-keyed."
+  [ctx_refs]
+  (reduce-kv (fn [m k v] (assoc m (keyword k) v)) {} ctx_refs))
+
+(defn- context-put*
+  "Store data in ephemeral context store. Returns Result."
+  [{:keys [data tags ttl_ms]}]
+  (if-not data
+    (result/err :session/context-put {:message "Missing required field: data"})
+    (let [args (cond-> []
+                 tags   (into [:tags (set tags)])
+                 ttl_ms (into [:ttl-ms (long ttl_ms)]))
+          id (apply ctx-store/context-put! data args)]
+      (result/ok {:ctx-id id :ttl-ms (or ttl_ms ctx-store/default-ttl-ms)}))))
+
+(defn- context-get*
+  "Retrieve entry from context store by ID. Returns Result."
+  [{:keys [ctx_id]}]
+  (if-not ctx_id
+    (result/err :session/context-get {:message "Missing required field: ctx_id"})
+    (if-let [entry (ctx-store/context-get ctx_id)]
+      (result/ok entry)
+      (result/ok {:not-found true :ctx-id ctx_id}))))
+
+(defn- context-query*
+  "Query context store entries by tags. Returns Result."
+  [{:keys [tags limit]}]
+  (let [args (cond-> []
+               tags  (into [:tags (set tags)])
+               limit (into [:limit (long limit)]))
+        results (apply ctx-store/context-query args)]
+    (result/ok {:count (count results) :entries results})))
+
+(defn- context-evict*
+  "Remove entry from context store by ID. Returns Result."
+  [{:keys [ctx_id]}]
+  (if-not ctx_id
+    (result/err :session/context-evict {:message "Missing required field: ctx_id"})
+    (let [removed? (ctx-store/context-evict! ctx_id)]
+      (result/ok {:evicted removed? :ctx-id ctx_id}))))
+
+(defn- context-stats*
+  "Return context store statistics. Returns Result."
+  [_params]
+  (result/ok (ctx-store/context-stats)))
+
+(defn- context-reconstruct*
+  "Reconstruct compressed context from context-store refs and KG traversal. Returns Result."
+  [{:keys [ctx_id ctx_refs kg_node_ids scope directory]}]
+  (let [effective-refs (cond
+                         (seq ctx_refs)
+                         (keywordize-refs ctx_refs)
+
+                         ctx_id
+                         (when-let [entry (ctx-store/context-get ctx_id)]
+                           (let [data (:data entry)]
+                             (if (map? data) data {})))
+
+                         :else {})
+        effective-kg-ids (vec (or kg_node_ids []))
+        effective-scope (or scope
+                            (when directory
+                              (scope/get-current-project-id directory)))
+        r (reconstruction/reconstruct-context
+           (or effective-refs {})
+           effective-kg-ids
+           effective-scope)]
+    (result/ok {:reconstructed r
+                :chars (count r)
+                :refs-count (count effective-refs)
+                :kg-nodes-count (count effective-kg-ids)})))
+
+;; ── Public handlers (MCP boundary) ────────────────────────────────────────────
+
 (defn handle-whoami
   "Return the calling agent's identity context."
   [{:keys [agent_id directory]}]
@@ -45,116 +124,64 @@
                :cwd        effective-dir})))
 
 (defn handle-wrap
-  "Wrap session -- crystallize learnings without commit."
+  "Wrap session -- crystallize learnings without commit.
+   Delegates to crystal/handle-wrap-crystallize which already returns MCP response."
   [{:keys [agent_id directory]}]
   (log/info "session-wrap" {:agent agent_id})
-  (try
-    (let [result (crystal/handle-wrap-crystallize {:directory directory
-                                                   :agent_id agent_id})]
-      (let [effective-agent (or agent_id
-                                (ctx/current-agent-id)
-                                (System/getenv "CLAUDE_SWARM_SLAVE_ID"))
-            eviction (evict-agent-context! effective-agent)]
-        (when eviction
-          (log/info "session-wrap: context eviction" eviction)))
-      result)
-    (catch Exception e
-      (mcp-error (str "Wrap failed: " (.getMessage e))))))
+  (let [r (rb/try-result :session/wrap-failed
+                         #(let [mcp-resp (crystal/handle-wrap-crystallize {:directory directory
+                                                                           :agent_id agent_id})
+                                effective-agent (or agent_id
+                                                    (ctx/current-agent-id)
+                                                    (System/getenv "CLAUDE_SWARM_SLAVE_ID"))
+                                eviction (evict-agent-context! effective-agent)]
+                            (when eviction
+                              (log/info "session-wrap: context eviction" eviction))
+                            (result/ok mcp-resp)))]
+    (if (result/ok? r)
+      (:ok r)
+      (mcp-error (str "Wrap failed: " (or (:message r) (str (:error r))))))))
 
 (defn handle-catchup
-  "Restore session context from Chroma memory."
+  "Restore session context from Chroma memory.
+   Delegates to catchup/handle-native-catchup which already returns MCP response."
   [{:keys [directory] :as params}]
   (log/info "session-catchup" {:directory directory})
-  (try
-    (catchup/handle-native-catchup params)
-    (catch Exception e
-      (mcp-error (str "Catchup failed: " (.getMessage e))))))
+  (let [r (rb/try-result :session/catchup-failed
+                         #(result/ok (catchup/handle-native-catchup params)))]
+    (if (result/ok? r)
+      (:ok r)
+      (mcp-error (str "Catchup failed: " (or (:message r) (str (:error r))))))))
 
 (defn handle-context-put
   "Store data in ephemeral context store, returns ctx-id for pass-by-reference."
-  [{:keys [data tags ttl_ms]}]
-  (try
-    (when-not data
-      (throw (ex-info "Missing required field: data" {})))
-    (let [args (cond-> []
-                 tags   (into [:tags (set tags)])
-                 ttl_ms (into [:ttl-ms (long ttl_ms)]))
-          id (apply ctx-store/context-put! data args)]
-      (mcp-json {:ctx-id id :ttl-ms (or ttl_ms ctx-store/default-ttl-ms)}))
-    (catch Exception e
-      (mcp-error (str "context-put failed: " (.getMessage e))))))
+  [params]
+  (rb/result->mcp (rb/try-result :session/context-put-failed #(context-put* params))))
 
 (defn handle-context-get
   "Retrieve entry from context store by ID."
-  [{:keys [ctx_id]}]
-  (try
-    (when-not ctx_id
-      (throw (ex-info "Missing required field: ctx_id" {})))
-    (if-let [entry (ctx-store/context-get ctx_id)]
-      (mcp-json entry)
-      (mcp-json {:not-found true :ctx-id ctx_id}))
-    (catch Exception e
-      (mcp-error (str "context-get failed: " (.getMessage e))))))
+  [params]
+  (rb/result->mcp (rb/try-result :session/context-get-failed #(context-get* params))))
 
 (defn handle-context-query
   "Query context store entries by tags."
-  [{:keys [tags limit]}]
-  (try
-    (let [args (cond-> []
-                 tags  (into [:tags (set tags)])
-                 limit (into [:limit (long limit)]))
-          results (apply ctx-store/context-query args)]
-      (mcp-json {:count (count results) :entries results}))
-    (catch Exception e
-      (mcp-error (str "context-query failed: " (.getMessage e))))))
+  [params]
+  (rb/result->mcp (rb/try-result :session/context-query-failed #(context-query* params))))
 
 (defn handle-context-evict
   "Remove entry from context store by ID."
-  [{:keys [ctx_id]}]
-  (try
-    (when-not ctx_id
-      (throw (ex-info "Missing required field: ctx_id" {})))
-    (let [removed? (ctx-store/context-evict! ctx_id)]
-      (mcp-json {:evicted removed? :ctx-id ctx_id}))
-    (catch Exception e
-      (mcp-error (str "context-evict failed: " (.getMessage e))))))
+  [params]
+  (rb/result->mcp (rb/try-result :session/context-evict-failed #(context-evict* params))))
 
 (defn handle-context-stats
   "Return context store statistics."
-  [_params]
-  (try
-    (mcp-json (ctx-store/context-stats))
-    (catch Exception e
-      (mcp-error (str "context-stats failed: " (.getMessage e))))))
+  [params]
+  (rb/result->mcp (rb/try-result :session/context-stats-failed #(context-stats* params))))
 
 (defn handle-context-reconstruct
   "Reconstruct compressed context from context-store refs and KG traversal."
-  [{:keys [ctx_id ctx_refs kg_node_ids scope directory]}]
-  (try
-    (let [effective-refs (cond
-                           (seq ctx_refs)
-                           (reduce-kv (fn [m k v] (assoc m (keyword k) v)) {} ctx_refs)
-
-                           ctx_id
-                           (when-let [entry (ctx-store/context-get ctx_id)]
-                             (let [data (:data entry)]
-                               (if (map? data) data {})))
-
-                           :else {})
-          effective-kg-ids (vec (or kg_node_ids []))
-          effective-scope (or scope
-                              (when directory
-                                (scope/get-current-project-id directory)))
-          result (reconstruction/reconstruct-context
-                  (or effective-refs {})
-                  effective-kg-ids
-                  effective-scope)]
-      (mcp-json {:reconstructed result
-                 :chars (count result)
-                 :refs-count (count effective-refs)
-                 :kg-nodes-count (count effective-kg-ids)}))
-    (catch Exception e
-      (mcp-error (str "context-reconstruct failed: " (.getMessage e))))))
+  [params]
+  (rb/result->mcp (rb/try-result :session/context-reconstruct-failed #(context-reconstruct* params))))
 
 (defn handle-complete
   "Complete a ling session with context eviction."

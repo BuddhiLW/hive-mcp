@@ -12,7 +12,8 @@
             [clojure.string :as str]
             [cheshire.core :as json]
             [taoensso.timbre :as log]
-            [hive-mcp.telemetry.prometheus :as prom]))
+            [hive-mcp.telemetry.prometheus :as prom]
+            [hive-mcp.dns.result :refer [rescue]]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -21,13 +22,10 @@
   "Write spawn context to a temporary file for elisp consumption."
   [context-str]
   (when context-str
-    (try
-      (let [tmp-file (java.io.File/createTempFile "hive-spawn-ctx-" ".md")]
-        (spit tmp-file context-str)
-        (.getAbsolutePath tmp-file))
-      (catch Exception e
-        (log/warn "Failed to write spawn context file:" (.getMessage e))
-        nil))))
+    (rescue nil
+            (let [tmp-file (java.io.File/createTempFile "hive-spawn-ctx-" ".md")]
+              (spit tmp-file context-str)
+              (.getAbsolutePath tmp-file)))))
 
 (defn handle-swarm-spawn
   "Spawn a new Claude slave instance with context injection."
@@ -36,11 +34,7 @@
     (let [effective-cwd (or cwd (ctx/current-directory))
           validated-cwd (when (and effective-cwd (string? effective-cwd) (not (str/blank? effective-cwd)))
                           effective-cwd)
-          spawn-ctx (try
-                      (catchup/spawn-context validated-cwd)
-                      (catch Exception e
-                        (log/warn "spawn-context generation failed (non-fatal):" (.getMessage e))
-                        nil))
+          spawn-ctx (rescue nil (catchup/spawn-context validated-cwd))
           ctx-file (write-spawn-context-file spawn-ctx)
           presets-str (when (seq presets)
                         (format "'(%s)" (str/join " " (map #(format "\"%s\"" %) presets))))
@@ -139,8 +133,7 @@
 
                success
                (let [parsed-result (if (string? result)
-                                     (try (json/parse-string result true)
-                                          (catch Exception _ result))
+                                     (rescue result (json/parse-string result true))
                                      result)
                      result-error (get parsed-result :error)]
                  (if (= result-error "kill-blocked")

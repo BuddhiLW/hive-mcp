@@ -4,6 +4,7 @@
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.string :as str]
+            [hive-mcp.dns.result :refer [rescue]]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -94,16 +95,13 @@
 (defn- read-config-file
   "Read and parse an EDN config file."
   [path]
-  (try
-    (let [f (io/file path)]
-      (when (.exists f)
-        (let [content (slurp f)
-              parsed (edn/read-string content)]
-          (when (map? parsed)
-            parsed))))
-    (catch Exception e
-      (log/warn "Failed to read config file" path ":" (.getMessage e))
-      nil)))
+  (rescue nil
+          (let [f (io/file path)]
+            (when (.exists f)
+              (let [content (slurp f)
+                    parsed (edn/read-string content)]
+                (when (map? parsed)
+                  parsed))))))
 
 (defn- merge-config
   "Deep-merge user config with defaults."

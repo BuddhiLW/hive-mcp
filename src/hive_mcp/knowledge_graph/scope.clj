@@ -1,12 +1,6 @@
 (ns hive-mcp.knowledge-graph.scope
   "Scope hierarchy for Knowledge Graph.
 
-   - S: Single responsibility - scope hierarchy management
-   - O: Open for extension via new project config fields
-   - L: Layers pure - no I/O in core functions, only in config loading
-   - R: Represented intent - clear scope semantics
-   - I: Inputs guarded - validates scope strings
-
    Inheritance Rules:
    - Down (parent→child): Automatic - child sees parent knowledge
    - Up (child→parent): NOT automatic - requires explicit promotion
@@ -20,7 +14,7 @@
             [clojure.string :as str]
             [clojure.edn :as edn]
             [clojure.set]
-            [taoensso.timbre :as log]))
+            [hive-mcp.dns.result :refer [rescue]]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -33,31 +27,33 @@
   "Read .hive-project.edn from a directory.
    Returns the parsed config map or nil on failure."
   [dir]
-  (try
-    (let [config-file (io/file dir ".hive-project.edn")]
-      (when (.exists config-file)
-        (-> config-file slurp edn/read-string)))
-    (catch Exception e
-      (log/debug "Failed to read .hive-project.edn:" (.getMessage e))
-      nil)))
+  (rescue nil
+          (let [config-file (io/file dir ".hive-project.edn")]
+            (when (.exists config-file)
+              (-> config-file slurp edn/read-string)))))
 
 (def ^:private config-cache
-  "Cache for project configs to avoid repeated file reads.
-   Key: directory path, Value: {:config ... :timestamp ...}"
+  "Cache for project configs to avoid repeated file reads."
   (atom {}))
 
 (def ^:private cache-ttl-ms
   "Cache TTL in milliseconds (5 minutes)"
   (* 5 60 1000))
 
+(defn- cache-fresh?
+  "True if cached entry is within TTL. CC-free: when-let only."
+  [entry now]
+  (when-let [ts (:timestamp entry)]
+    (< (- now ts) cache-ttl-ms)))
+
 (defn- get-cached-config
   "Get project config with caching."
   [dir]
   (let [dir-path (.getAbsolutePath (io/file dir))
         now (System/currentTimeMillis)
-        cached (get @config-cache dir-path)]
-    (if (and cached (< (- now (:timestamp cached)) cache-ttl-ms))
-      (:config cached)
+        entry (get @config-cache dir-path)]
+    (if-let [_ (cache-fresh? entry now)]
+      (:config entry)
       (let [config (read-hive-project-config dir)]
         (swap! config-cache assoc dir-path {:config config :timestamp now})
         config))))
@@ -68,108 +64,99 @@
   [directory]
   (get-cached-config (io/file directory)))
 
-;; NOTE: clear-config-cache! is defined after the Project Config Registry section
-;; to avoid forward references to project-configs and reverse-alias-index atoms.
-
 ;; ============================================================
 ;; Scope Parsing Utilities
 ;; ============================================================
 
+(def ^:private scope-prefix "scope:project:")
+(def ^:private scope-prefix-len (count scope-prefix))
+
 (defn- normalize-scope
-  "Normalize a scope string:
-   - nil -> nil
-   - empty string -> nil
-   - 'scope:global' -> 'global'
-   - 'scope:project:foo' -> 'foo'
-   - 'foo' -> 'foo' (unchanged)"
+  "Normalize a scope string to canonical form.
+   nil/blank -> nil, 'scope:global' -> 'global', 'scope:project:foo' -> 'foo'."
   [scope]
-  (when (and scope (not (str/blank? scope)))
-    (cond
-      (= scope "global") "global"
-      (= scope "scope:global") "global"
-      (str/starts-with? scope "scope:project:")
-      (subs scope (count "scope:project:"))
-      :else scope)))
+  (when-not (str/blank? (str scope))
+    (case scope
+      "global"       "global"
+      "scope:global" "global"
+      (cond-> scope
+        (str/starts-with? scope scope-prefix)
+        (subs scope-prefix-len)))))
 
 (defn- infer-parent-from-string
-  "Infer parent scope from a colon-delimited scope string.
-   'hive-mcp:agora:feature' -> 'hive-mcp:agora'
-   'hive-mcp:agora' -> 'hive-mcp'
-   'hive-mcp' -> nil (no inferred parent, will fall back to global)
-   'global' -> nil"
+  "Infer parent scope from colon-delimited string.
+   'a:b:c' -> 'a:b', 'a:b' -> 'a', 'a' -> nil, 'global' -> nil."
   [scope]
-  (when (and scope (not= scope "global"))
-    (let [parts (str/split scope #":")]
-      (when (> (count parts) 1)
-        (str/join ":" (butlast parts))))))
+  (when-let [parts (when-not (= scope "global")
+                     (let [p (str/split scope #":")]
+                       (when (> (count p) 1) p)))]
+    (str/join ":" (butlast parts))))
+
+;; ============================================================
+;; Shared Predicates (CC-free)
+;; ============================================================
+
+(def ^:private global-set
+  "Set for O(1) global-or-nil? checks."
+  #{nil "global"})
+
+(defn- global-or-nil?
+  "True if scope is nil or 'global'. CC-free: uses set contains?."
+  [scope]
+  (contains? global-set scope))
 
 ;; ============================================================
 ;; Project Config Registry
 ;; ============================================================
 
 (def ^:private project-configs
-  "Registry of known project configs by project-id.
-   Built up as configs are discovered."
+  "Registry of known project configs by project-id."
   (atom {}))
 
 (def ^:private reverse-alias-index
-  "Reverse index from alias -> canonical project-id.
-   Enables O(1) lookup when a query uses an old/aliased project name.
-   Built up by register-project-config! when configs have :aliases."
+  "Reverse index: alias -> canonical project-id."
   (atom {}))
 
 (defn resolve-project-id
   "Resolve a project-id that may be an alias to its canonical project-id.
    Returns the canonical project-id if the input is a known alias,
-   otherwise returns the input unchanged.
-
-   Examples:
-     (resolve-project-id \"emacs-mcp\")   => \"hive-mcp\"  (if aliased)
-     (resolve-project-id \"hive-mcp\")    => \"hive-mcp\"  (canonical, unchanged)
-     (resolve-project-id \"unknown\")     => \"unknown\"   (not found, pass-through)
-     (resolve-project-id nil)            => nil"
+   otherwise returns the input unchanged."
   [project-id]
-  (when project-id
-    (or (get @reverse-alias-index project-id)
-        project-id)))
+  (when-let [pid project-id]
+    (get @reverse-alias-index pid pid)))
+
+(defn- valid-alias?
+  "True if alias-id is registerable (string, non-nil, different from canonical)."
+  [alias-id project-id]
+  (and (string? alias-id) (not= alias-id project-id)))
 
 (defn register-project-config!
   "Register a project config for later parent-id lookups.
-   Called when loading .hive-project.edn files.
-
-   Also registers alias mappings from the config's :aliases vector
-   into the reverse-alias-index for O(1) alias resolution."
+   Also registers alias mappings from the config's :aliases vector."
   [project-id config]
-  (when project-id
-    (swap! project-configs assoc project-id config)
-    ;; Register alias mappings: each alias -> canonical project-id
-    (when-let [aliases (seq (:aliases config))]
-      (doseq [alias-id aliases]
-        (when (and alias-id (string? alias-id) (not= alias-id project-id))
-          (swap! reverse-alias-index assoc alias-id project-id))))))
+  (when-let [pid project-id]
+    (swap! project-configs assoc pid config)
+    (run! (fn [a]
+            (when (valid-alias? a pid)
+              (swap! reverse-alias-index assoc a pid)))
+          (:aliases config))))
 
 (defn deregister-project-config!
-  "Remove a project config and its alias mappings.
-   Useful for testing and project cleanup."
+  "Remove a project config and its alias mappings."
   [project-id]
-  (when project-id
-    (let [config (get @project-configs project-id)
-          aliases (:aliases config)]
-      ;; Remove alias mappings
-      (when (seq aliases)
-        (doseq [alias-id aliases]
-          (swap! reverse-alias-index dissoc alias-id)))
-      ;; Remove config
-      (swap! project-configs dissoc project-id))))
+  (when-let [pid project-id]
+    (when-let [aliases (seq (:aliases (get @project-configs pid)))]
+      (run! #(swap! reverse-alias-index dissoc %) aliases))
+    (swap! project-configs dissoc pid)))
 
 (defn get-project-config
   "Get a registered project config by project-id.
-   Also resolves aliases: if project-id is a known alias,
-   returns the config for the canonical project."
+   Also resolves aliases."
   [project-id]
-  (or (get @project-configs project-id)
-      (when-let [canonical (get @reverse-alias-index project-id)]
-        (get @project-configs canonical))))
+  (when-let [pid project-id]
+    (or (get @project-configs pid)
+        (when-let [canonical (get @reverse-alias-index pid)]
+          (get @project-configs canonical)))))
 
 (defn get-alias-index
   "Return the current reverse alias index (alias -> canonical-id).
@@ -188,157 +175,102 @@
 ;; Core Scope Functions
 ;; ============================================================
 
+(defn- explicit-parent
+  "Get explicit parent from config (:parent-id or legacy :parent). CC-free."
+  [config]
+  (when-let [cfg config]
+    (or (:parent-id cfg) (:parent cfg))))
+
 (defn get-parent-scope
   "Get parent scope from project config or infer from scope string.
 
    Resolution order:
-   0. Resolve aliases first (e.g., 'emacs-mcp' -> 'hive-mcp')
+   0. Normalize + resolve aliases
    1. Explicit :parent-id in registered project config
    2. Explicit :parent in registered project config (legacy)
    3. Inferred from colon-delimited scope string
-   4. nil if no parent (scope is root or global)
-
-   Examples:
-     (get-parent-scope 'hive-mcp:agora') -> 'hive-mcp' (inferred)
-     (get-parent-scope 'hive-mcp') -> 'global' (if no explicit parent)
-     (get-parent-scope 'emacs-mcp') -> 'global' (alias resolved to hive-mcp)
-     (get-parent-scope 'global') -> nil"
+   4. 'global' if scope is root (no parent inferred)"
   [scope]
-  (let [scope (normalize-scope scope)
-        ;; Resolve alias to canonical project-id
-        scope (when scope (resolve-project-id scope))]
-    (cond
-      ;; nil or global has no parent
-      (or (nil? scope) (= scope "global"))
-      nil
-
-      :else
-      (let [;; Check for explicit parent in registered config
-            config (get-project-config scope)
-            explicit-parent (or (:parent-id config) (:parent config))]
-        (cond
-          ;; Explicit parent from config
-          (some? explicit-parent)
-          (normalize-scope (str explicit-parent))
-
-          ;; Try to infer from string (colon-delimited)
-          :else
-          (or (infer-parent-from-string scope)
-              ;; Root project - parent is global
-              "global"))))))
+  (let [scope (some-> scope normalize-scope resolve-project-id)]
+    (when-not (global-or-nil? scope)
+      (if-let [ep (explicit-parent (get-project-config scope))]
+        (normalize-scope (str ep))
+        (if-let [inferred (infer-parent-from-string scope)]
+          inferred
+          "global")))))
 
 (defn visible-scopes
   "Return all scopes visible from given scope (inclusive).
-   Walks up hierarchy to global. Resolves aliases first.
+   Walks up hierarchy to global using iterate + take-while.
 
    Examples:
      (visible-scopes 'hive-mcp:agora')
      => ['hive-mcp:agora' 'hive-mcp' 'global']
 
-     (visible-scopes 'hive-mcp')
-     => ['hive-mcp' 'global']
-
-     (visible-scopes 'emacs-mcp')
-     => ['hive-mcp' 'global']  ;; alias resolved
-
-     (visible-scopes 'global')
-     => ['global']
-
-     (visible-scopes nil)
-     => ['global']"
+     (visible-scopes nil) => ['global']"
   [scope]
-  (let [scope (normalize-scope scope)
-        ;; Resolve alias to canonical project-id
-        scope (when scope (resolve-project-id scope))]
-    (if (or (nil? scope) (= scope "global"))
+  (let [scope (some-> scope normalize-scope resolve-project-id)]
+    (if (global-or-nil? scope)
       ["global"]
-      (loop [s scope
-             acc [scope]]
-        (if-let [parent (get-parent-scope s)]
-          (if (= parent "global")
-            (conj acc "global")
-            (recur parent (conj acc parent)))
-          ;; No more parents
-          (conj acc "global"))))))
+      (vec (take-while some? (iterate get-parent-scope scope))))))
 
 (defn scope-contains?
   "Check if child-scope is within or equal to parent-scope.
-   Used for inheritance checks. Resolves aliases first.
+   Resolves aliases first.
 
    Examples:
+     (scope-contains? 'global' 'hive-mcp') -> true
      (scope-contains? 'hive-mcp' 'hive-mcp:agora') -> true
-     (scope-contains? 'hive-mcp:agora' 'hive-mcp') -> false
-     (scope-contains? 'global' 'hive-mcp') -> true (global contains all)
-     (scope-contains? 'hive-mcp' 'hive-mcp') -> true (equal scopes)
-     (scope-contains? 'hive-mcp' 'emacs-mcp') -> true (alias resolved)"
+     (scope-contains? nil nil) -> true"
   [parent-scope child-scope]
-  (let [parent-scope (normalize-scope parent-scope)
-        child-scope (normalize-scope child-scope)
-        ;; Resolve aliases
-        parent-scope (when parent-scope (resolve-project-id parent-scope))
-        child-scope (when child-scope (resolve-project-id child-scope))]
+  (let [ps (some-> parent-scope normalize-scope resolve-project-id)
+        cs (some-> child-scope normalize-scope resolve-project-id)]
     (cond
-      ;; Same scope (after alias resolution)
-      (= parent-scope child-scope)
-      true
-
-      ;; Global contains everything
-      (= parent-scope "global")
-      true
-
-      ;; nil parent contains nothing (except nil child)
-      (nil? parent-scope)
-      (nil? child-scope)
-
-      ;; Check if child's visible scopes include parent
-      :else
-      (let [child-visible (set (visible-scopes child-scope))]
-        (contains? child-visible parent-scope)))))
+      (= ps cs) true
+      (= ps "global") true
+      (nil? ps) (nil? cs)
+      :else (contains? (set (visible-scopes cs)) ps))))
 
 ;; ============================================================
 ;; Path-based Scope Inference
 ;; ============================================================
+
+(defn- at-home-boundary?
+  "True if directory is at user.home. CC-free via when-let."
+  [^java.io.File current]
+  (when-let [home (System/getProperty "user.home")]
+    (= (.getAbsolutePath current) home)))
+
+(defn- try-register-config!
+  "Try to load config from dir. If found, register and return [dir config]."
+  [^java.io.File dir]
+  (when-let [config (get-cached-config dir)]
+    (when-let [pid (:project-id config)]
+      (register-project-config! pid config))
+    [(.getAbsolutePath dir) config]))
 
 (defn- find-nearest-hive-project
   "Walk up from file-path finding nearest .hive-project.edn.
    Returns [directory config] or nil if not found."
   [file-path]
   (let [start-file (io/file file-path)
-        start-dir (if (.isDirectory start-file)
-                    start-file
-                    (.getParentFile start-file))
-        home-dir (System/getProperty "user.home")]
+        start-dir  (cond-> start-file
+                     (not (.isDirectory start-file)) (.getParentFile))]
     (loop [current start-dir]
-      (cond
-        ;; Reached root
-        (nil? current)
-        nil
-
-        ;; Don't traverse above home
-        (= (.getAbsolutePath current) home-dir)
-        (when-let [config (get-cached-config current)]
-          [(.getAbsolutePath current) config])
-
-        :else
-        (if-let [config (get-cached-config current)]
-          (do
-            ;; Register config for later lookups
-            (when-let [project-id (:project-id config)]
-              (register-project-config! project-id config))
-            [(.getAbsolutePath current) config])
-          (recur (.getParentFile current)))))))
+      (when-let [dir current]
+        (if-let [result (try-register-config! dir)]
+          result
+          (when-not (at-home-boundary? dir)
+            (recur (.getParentFile dir))))))))
 
 (defn infer-scope-from-path
   "Infer scope from file path by finding nearest .hive-project.edn.
-   Returns the project-id from the config, or 'global' if not found.
-
-   Also registers the project config for future parent-id lookups."
+   Returns the project-id from the config, or 'global' if not found."
   [file-path]
   (if-let [[_dir config] (find-nearest-hive-project file-path)]
-    (let [project-id (:project-id config)]
-      (when project-id
-        (register-project-config! project-id config))
-      (or project-id "global"))
+    (if-let [pid (:project-id config)]
+      (do (register-project-config! pid config) pid)
+      "global")
     "global"))
 
 ;; ============================================================
@@ -348,19 +280,16 @@
 (defn scope->tag
   "Convert a scope to a scope tag for Chroma filtering.
    'hive-mcp' -> 'scope:project:hive-mcp'
-   'global' -> 'scope:global'"
+   'global'/nil -> 'scope:global'"
   [scope]
   (let [scope (normalize-scope scope)]
-    (if (or (nil? scope) (= scope "global"))
+    (if (global-or-nil? scope)
       "scope:global"
-      (str "scope:project:" scope))))
+      (str scope-prefix scope))))
 
 (defn visible-scope-tags
   "Return all scope tags visible from given scope.
-   Suitable for Chroma metadata filtering.
-
-   (visible-scope-tags 'hive-mcp:agora')
-   => #{'scope:project:hive-mcp:agora' 'scope:project:hive-mcp' 'scope:global'}"
+   Suitable for Chroma metadata filtering."
   [scope]
   (set (map scope->tag (visible-scopes scope))))
 
@@ -368,74 +297,39 @@
 ;; HCR Wave 3: Descendant Scope Tags
 ;; ============================================================
 
+(defn- resolve-tree-fn
+  "Lazy-resolve a function from project.tree namespace. Returns fn or nil."
+  [sym-name]
+  (rescue nil
+          (require 'hive-mcp.project.tree)
+          (resolve (symbol "hive-mcp.project.tree" sym-name))))
+
 (defn descendant-scope-tags
   "Return all scope tags for descendant projects (children, grandchildren, etc).
-   HCR Wave 3: Enables memory queries to include child project memories.
-
-   This is the inverse of visible-scope-tags:
-   - visible-scope-tags: goes UP to ancestors (child sees parent)
-   - descendant-scope-tags: goes DOWN to children (parent queries child)
-
-   Uses project tree from hive-mcp.project.tree (loaded lazily to avoid
-   circular dependency).
-
-   Args:
-     scope - Project ID or scope string
-
-   Returns:
-     Set of scope tags like #{\"scope:project:child1\" \"scope:project:child2\"}
-     Returns empty set if project has no children or tree not scanned.
-
-   Example:
-     (descendant-scope-tags \"hive-mcp\")
-     => #{\"scope:project:hive-mcp:agora\" \"scope:project:hive-mcp:memory\"}"
+   Inverse of visible-scope-tags: goes DOWN instead of UP.
+   Returns nil for nil/global scopes, empty set if no children."
   [scope]
   (let [scope (normalize-scope scope)]
-    (when (and scope (not= scope "global"))
-      (try
-        ;; Lazy require to avoid circular dependency (tree.clj requires scope.clj)
-        (require 'hive-mcp.project.tree)
-        (let [get-tags (resolve 'hive-mcp.project.tree/get-descendant-scope-tags)]
-          (or (get-tags scope) #{}))
-        (catch Exception e
-          (log/debug "Failed to get descendant scope tags:" (.getMessage e))
-          #{})))))
+    (when-not (global-or-nil? scope)
+      (if-let [get-tags (resolve-tree-fn "get-descendant-scope-tags")]
+        (if-let [tags (get-tags scope)] tags #{})
+        #{}))))
 
 (defn descendant-scopes
   "Return all descendant project IDs (children, grandchildren, etc).
-   Lower-level function - use descendant-scope-tags for memory filtering.
-
-   Example:
-     (descendant-scopes \"hive-mcp\")
-     => [\"hive-mcp:agora\" \"hive-mcp:memory\"]"
+   Returns nil for nil/global scopes, empty vector if no children."
   [scope]
   (let [scope (normalize-scope scope)]
-    (when (and scope (not= scope "global"))
-      (try
-        (require 'hive-mcp.project.tree)
-        (let [get-descendants (resolve 'hive-mcp.project.tree/get-descendant-scopes)]
-          (or (get-descendants scope) []))
-        (catch Exception e
-          (log/debug "Failed to get descendant scopes:" (.getMessage e))
-          [])))))
+    (when-not (global-or-nil? scope)
+      (if-let [get-descendants (resolve-tree-fn "get-descendant-scopes")]
+        (if-let [desc (get-descendants scope)] desc [])
+        []))))
 
 (defn full-hierarchy-scope-tags
-  "Return scope tags for full hierarchy: self + ancestors + descendants.
-   HCR Wave 3: Use this for bidirectional memory queries.
-
-   Combines:
-   - visible-scope-tags (upward: ancestors + global)
-   - descendant-scope-tags (downward: children)
-
-   Example:
-     (full-hierarchy-scope-tags \"hive-mcp\")
-     => #{\"scope:project:hive-mcp\"      ; self
-          \"scope:global\"                 ; ancestor
-          \"scope:project:hive-mcp:agora\" ; child
-          \"scope:project:hive-mcp:memory\"}"
+  "Return scope tags for full hierarchy: self + ancestors + descendants."
   [scope]
   (let [scope (normalize-scope scope)]
-    (if (or (nil? scope) (= scope "global"))
+    (if (global-or-nil? scope)
       #{"scope:global"}
       (clojure.set/union
        (visible-scope-tags scope)
@@ -447,13 +341,9 @@
 
 (defn derive-hierarchy-scope-filter
   "Derive hierarchical scope filter that includes ancestors.
-   Compatible with existing memory/scope.clj API.
-
-   Returns a set of valid scope tags:
-   - nil if scope is 'all' (no filtering)
-   - set including scope + ancestors + global if hierarchical"
+   Returns nil for 'all' or nil scope (no filtering),
+   set of scope tags otherwise."
   [scope]
-  (cond
-    (= scope "all") nil
-    (nil? scope) nil  ;; Let caller handle nil -> auto mode
-    :else (visible-scope-tags scope)))
+  (case scope
+    (nil "all") nil
+    (visible-scope-tags scope)))

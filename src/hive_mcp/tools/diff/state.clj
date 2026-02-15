@@ -2,7 +2,6 @@
   "Diff state management: atoms, error helpers, TDD status."
   (:require [hive-mcp.server.guards :as guards]
             [clojure.data.json :as json]
-            [clojure.string :as str]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;

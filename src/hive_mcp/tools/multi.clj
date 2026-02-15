@@ -18,7 +18,8 @@
    returning error vectors. CC reduced via function decomposition.
 
    Design decision: 20260207194224-3b674f5d"
-  (:require [hive-mcp.dns.result :as result]
+  (:require [hive-mcp.dns.result :as result :refer [rescue]]
+            [hive-mcp.tools.core :refer [mcp-error]]
             [hive-mcp.dsl.response :as compress]
             [hive-mcp.extensions.registry :as ext]
             [taoensso.timbre :as log]
@@ -60,13 +61,11 @@
                    (str ", " failed-count " failed")))]
     (log/info msg)
     (when-let [agent-id (resolve-agent-id)]
-      (try
-        (when-let [shout-fn (requiring-resolve 'hive-mcp.hivemind.core/shout!)]
-          (shout-fn agent-id :progress
-                    {:task "multi-op"
-                     :message msg}))
-        (catch Exception e
-          (log/debug "[multi] Hivemind shout failed (non-fatal):" (ex-message e)))))))
+      (rescue nil
+              (when-let [shout-fn (requiring-resolve 'hive-mcp.hivemind.core/shout!)]
+                (shout-fn agent-id :progress
+                          {:task "multi-op"
+                           :message msg}))))))
 
 (defn- handle-op-error
   "FX handler for :multi/op-error — log per-op errors with structured data."
@@ -77,19 +76,6 @@
               :command command
               :wave    wave-num
               :error   error}))
-
-;; Self-contained FX registration. Runs once at require time.
-(defonce ^:private *fx-registered
-  (try
-    (when-let [reg-fx (requiring-resolve 'hive.events.fx/reg-fx)]
-      (reg-fx :multi/wave-complete handle-wave-complete)
-      (reg-fx :multi/op-error handle-op-error)
-      (log/info "[multi] FX effects registered: :multi/wave-complete :multi/op-error")
-      true)
-    (catch Exception e
-      (log/warn "[multi] FX registration deferred (hive.events.fx not available):"
-                (ex-message e))
-      false)))
 
 (defn register-fx!
   "Explicitly register multi FX handlers. Called during server init if
@@ -123,14 +109,9 @@
    Uses requiring-resolve to avoid circular dependency with consolidated/multi.
    Returns handler fn or nil if tool not found."
   [tool-name]
-  (try
-    (let [get-handler (requiring-resolve 'hive-mcp.tools.consolidated.multi/get-tool-handler)]
-      (get-handler tool-name))
-    (catch Exception e
-      (log/error {:event :tool-resolve-error
-                  :tool  tool-name
-                  :error (ex-message e)})
-      nil)))
+  (rescue nil
+          (let [get-handler (requiring-resolve 'hive-mcp.tools.consolidated.multi/get-tool-handler)]
+            (get-handler tool-name))))
 
 (defn resolve-tool-handler
   "Resolve a tool name to its handler function.
@@ -138,15 +119,10 @@
    Returns handler fn or nil if tool not found."
   [tool-name]
   (or (resolve-consolidated-handler tool-name)
-      (try
-        (let [get-tool-fn (requiring-resolve 'hive-mcp.tools/get-tool-by-name)
-              tool-def    (get-tool-fn tool-name)]
-          (:handler tool-def))
-        (catch Exception e
-          (log/error {:event :tool-resolve-error
-                      :tool  tool-name
-                      :error (ex-message e)})
-          nil))))
+      (rescue nil
+              (let [get-tool-fn (requiring-resolve 'hive-mcp.tools/get-tool-by-name)
+                    tool-def    (get-tool-fn tool-name)]
+                (:handler tool-def)))))
 
 ;; =============================================================================
 ;; Operation Normalization
@@ -311,7 +287,7 @@
    Resolves consolidated tool handler, merges command + params, invokes handler.
 
    Returns {:id op-id :success bool :result map} or {:id op-id :success false :error string}."
-  [{:keys [id tool command] :as op}]
+  [{:keys [id tool] :as op}]
   (try
     (let [handler (resolve-tool-handler tool)]
       (if-not handler
@@ -364,12 +340,10 @@
   "Fire a single FX effect through the hive.events.fx registry.
    No-op if fx registry is not available (graceful degradation)."
   [fx-id fx-data]
-  (try
-    (when-let [get-fx (requiring-resolve 'hive.events.fx/get-fx)]
-      (when-let [handler (get-fx fx-id)]
-        (handler fx-data)))
-    (catch Exception e
-      (log/debug "[multi] FX emission" fx-id "failed (non-fatal):" (ex-message e)))))
+  (rescue nil
+          (when-let [get-fx (requiring-resolve 'hive.events.fx/get-fx)]
+            (when-let [handler (get-fx fx-id)]
+              (handler fx-data)))))
 
 (defn- emit-wave-complete!
   "Emit :multi/wave-complete FX after a wave finishes execution."
@@ -597,8 +571,7 @@
   (let [input   (validate-batch-input params)
         compact (compress/resolve-compress-mode params)]
     (if (result/err? input)
-      {:isError true
-       :text (:message input)}
+      (mcp-error (:message input))
       (format-results (run-multi (:ok input)
                                  :dry-run (boolean (:dry_run params)))
                       :compact compact))))

@@ -1,7 +1,7 @@
 (ns hive-mcp.agent.context-envelope
   "Context preparation for agent spawn and dispatch. Delegates to extension layer when available."
-  (:require [hive-mcp.protocols.dispatch :as dispatch-ctx]
-            [taoensso.timbre :as log]))
+  (:require [hive-mcp.dns.result :refer [rescue]]
+            [hive-mcp.protocols.dispatch :as dispatch-ctx]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -13,12 +13,9 @@
 (defn- try-ext
   "Resolve and call an extension function. Returns nil on failure."
   [sym & args]
-  (try
-    (when-let [f (requiring-resolve sym)]
-      (apply f args))
-    (catch Exception e
-      (log/debug "Extension not available:" sym (.getMessage e))
-      nil)))
+  (rescue nil
+          (when-let [f (requiring-resolve sym)]
+            (apply f args))))
 
 (defn- cap-output
   "Enforce hard character cap on context output."
