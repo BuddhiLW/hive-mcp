@@ -75,3 +75,8 @@ src/hive_mcp/plan/*.edn
 
 # Addon classpath manifests (local-only, not shipped to remote)
 resources/META-INF/hive-addons/
+
+# Sibling projects (formerly submodules, now independent repos)
+claude-code-ide.el/
+hive-mcp.wiki/
+hive-hot
