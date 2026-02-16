@@ -636,13 +636,14 @@
    Arguments:
      task-id - Unique identifier (e.g., kanban task ID)
      opts    - Map with optional keys:
-               :title    - Task title/description
-               :agent-id - ID of completing agent (auto-detected if not provided)
+               :title      - Task title/description
+               :agent-id   - ID of completing agent (auto-detected if not provided)
+               :project-id - Project scope
 
    Returns:
      Transaction report"
 
-  [task-id {:keys [title agent-id]}]
+  [task-id {:keys [title agent-id project-id]}]
   {:pre [(string? task-id)]}
   (let [c (conn/ensure-conn)
         ;; Auto-detect agent-id from environment if not provided
@@ -650,8 +651,9 @@
         tx-data (cond-> {:completed-task/id task-id
                          :completed-task/completed-at (conn/now)}
                   title (assoc :completed-task/title title)
-                  auto-agent-id (assoc :completed-task/agent-id auto-agent-id))]
-    (log/debug "Registering completed task:" task-id "title:" title)
+                  auto-agent-id (assoc :completed-task/agent-id auto-agent-id)
+                  project-id (assoc :completed-task/project-id project-id))]
+    (log/debug "Registering completed task:" task-id "title:" title "project-id:" project-id)
     (d/transact! c [tx-data])))
 
 (defn get-completed-task
@@ -672,11 +674,12 @@
    Used by wrap to harvest task completions.
 
    Options:
-   - :agent-id - Filter by specific agent
+   - :agent-id   - Filter by specific agent
+   - :project-id - Filter by project scope
 
    Returns:
      Seq of completed-task maps sorted by completion time (most recent first)"
-  [& {:keys [agent-id]}]
+  [& {:keys [agent-id project-id]}]
   (let [c (conn/ensure-conn)
         db @c
         ;; Query all completed tasks
@@ -688,6 +691,10 @@
          (filter (fn [task]
                    (or (nil? agent-id)
                        (= agent-id (:completed-task/agent-id task)))))
+         ;; Filter by project-id if provided (HCR scope isolation)
+         (filter (fn [task]
+                   (or (nil? project-id)
+                       (= project-id (:completed-task/project-id task)))))
          ;; Sort by completion time (most recent first)
          (sort-by :completed-task/completed-at #(compare %2 %1))
          ;; Clean up output format
