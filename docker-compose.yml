@@ -1,13 +1,10 @@
 # hive-mcp Docker Compose
 #
-# QUICK START (just Chroma):
+# QUICK START (Chroma + LSP sidecar + NATS):
 #   docker compose up -d
 #
-# WITH OBSERVABILITY:
-#   docker compose --profile observability up -d
-#
-# EVERYTHING:
-#   docker compose --profile observability up -d
+# WITH TELEMETRY (+ Prometheus + Grafana + Loki):
+#   docker compose --profile telemetry up -d
 
 services:
   # =============================================================================
@@ -27,6 +24,23 @@ services:
     # Health check disabled - chromadb/chroma:latest lacks curl/wget/python
     # Monitor via: curl http://localhost:8000/api/v2/heartbeat
     # Or via nREPL: (chroma/embedding-configured?)
+
+  # =============================================================================
+  # Core: clojure-lsp Sidecar (default, always starts)
+  # Periodic analysis dumper for hive-mcp code intelligence
+  # =============================================================================
+  lsp-sidecar:
+    build:
+      context: ./docker/lsp-sidecar
+    container_name: hive-mcp-lsp-sidecar
+    volumes:
+      - lsp-cache:/cache
+      - .:/workspace:ro
+    environment:
+      - ANALYSIS_INTERVAL_SECONDS=300
+      - JAVA_OPTS=-Xmx1g -Xms256m
+      - LSP_PROJECTS=/workspace
+    restart: unless-stopped
 
   # =============================================================================
   # Optional: Milvus Vector Database (profile: milvus)
@@ -99,8 +113,8 @@ services:
   #   restart: unless-stopped
 
   # =============================================================================
-  # Optional: NATS Server (push-based drone notifications)
-  # Enable: config set services.nats.enabled true
+  # Core: NATS Server (default, always starts)
+  # Push-based drone notifications
   # =============================================================================
   nats:
     image: nats:latest
@@ -117,11 +131,11 @@ services:
     restart: unless-stopped
 
   # =============================================================================
-  # Optional: Observability Stack (profile: observability)
+  # Optional: Observability Stack (profile: telemetry)
   # CLARITY-T: Telemetry first
   # =============================================================================
   prometheus:
-    profiles: ["observability"]
+    profiles: ["telemetry"]
     image: prom/prometheus:latest
     container_name: hive-mcp-prometheus
     ports:
@@ -138,7 +152,7 @@ services:
     restart: unless-stopped
 
   grafana:
-    profiles: ["observability"]
+    profiles: ["telemetry"]
     image: grafana/grafana:latest
     container_name: hive-mcp-grafana
     ports:
@@ -156,7 +170,7 @@ services:
     restart: unless-stopped
 
   loki:
-    profiles: ["observability"]
+    profiles: ["telemetry"]
     image: grafana/loki:2.9.0
     container_name: hive-mcp-loki
     ports:
@@ -168,7 +182,7 @@ services:
     restart: unless-stopped
 
   promtail:
-    profiles: ["observability"]
+    profiles: ["telemetry"]
     image: grafana/promtail:2.9.0
     container_name: hive-mcp-promtail
     volumes:
@@ -186,6 +200,8 @@ volumes:
   # Core (always created)
   chroma-data:
     driver: local
+  lsp-cache:
+    driver: local
 
   # Milvus (uncomment when profile enabled)
   # milvus-etcd:
@@ -195,7 +211,7 @@ volumes:
   # milvus-data:
   #   driver: local
 
-  # Observability (created when profile enabled)
+  # Telemetry (created when profile enabled)
   prometheus-data:
     driver: local
   grafana-data:
