@@ -16,8 +16,18 @@
             [clojure.data.json :as json]
             [hive-mcp.tools.swarm :as swarm]
             [hive-mcp.tools.swarm.core :as core]
+            [hive-mcp.tools.swarm.registry :as registry]
             [hive-mcp.emacs.client :as ec]
-            [hive-mcp.swarm.coordinator :as coord]))
+            [hive-mcp.swarm.coordinator :as coord]
+            [hive-mcp.swarm.datascript :as ds]
+            [hive-mcp.swarm.datascript.queries :as queries]
+            [hive-mcp.hivemind.core :as hivemind]
+            [hive-mcp.agent.ling :as ling]
+            [hive-mcp.agent.protocol :as proto]
+            [hive-mcp.agent.ling.terminal-registry :as terminal-reg]
+            [hive-mcp.agent.ling.strategy :as strategy]
+            [hive-mcp.knowledge-graph.disc :as kg-disc]
+            [hive-mcp.telemetry.prometheus :as prom]))
 
 ;; =============================================================================
 ;; Test Helpers
@@ -72,64 +82,132 @@
   `(with-redefs [ec/eval-elisp-with-timeout (mock-addon-unavailable)]
      ~@body))
 
+;; -- Spawn/Kill lifecycle mocks (ling.clj delegation) --
+
+(defn mock-killable-ling
+  "Create a mock IAgent that returns {:killed? true} on kill!.
+   Protocol dispatch on Ling records bypasses var indirection,
+   so with-redefs on proto/kill! doesn't work. Use reify instead."
+  [id]
+  (reify proto/IAgent
+    (kill! [_] {:killed? true})
+    (spawn! [_ _opts] id)
+    (dispatch! [_ _task-opts] nil)
+    (status [_] {:id id :status :idle})
+    (agent-type [_] :ling)
+    (can-chain-tools? [_] true)
+    (claims [_] [])
+    (claim-files! [_ _files _task-id] nil)
+    (release-claims! [_] 0)
+    (upgrade! [_] nil)))
+
+(defmacro with-lifecycle-mocks
+  "Execute body with ling.clj spawn/kill mocks and addon available."
+  [& body]
+  `(with-redefs [core/swarm-addon-available? (constantly true)
+                 registry/get-available-lings (constantly {})
+                 prom/set-lings-active! (constantly nil)]
+     ~@body))
+
+;; -- Dispatch-specific mocks (terminal-registry strategy pattern) --
+
+(defn mock-ling-strategy
+  "Create a mock ILingStrategy that returns success for all operations."
+  []
+  (reify strategy/ILingStrategy
+    (strategy-dispatch! [_ _ling-ctx _task-opts] true)
+    (strategy-spawn! [_ _ling-ctx _opts] "test-slave")
+    (strategy-status [_ _ling-ctx ds-status] ds-status)
+    (strategy-kill! [_ _ling-ctx] {:killed? true})
+    (strategy-interrupt! [_ _ling-ctx] {:success? true})))
+
+(defn mock-ling-strategy-capturing
+  "Create a mock ILingStrategy that captures dispatch args into an atom."
+  [captured-atom]
+  (reify strategy/ILingStrategy
+    (strategy-dispatch! [_ ling-ctx task-opts]
+      (reset! captured-atom {:ling-ctx ling-ctx :task-opts task-opts})
+      true)
+    (strategy-spawn! [_ _ling-ctx _opts] "test-slave")
+    (strategy-status [_ _ling-ctx ds-status] ds-status)
+    (strategy-kill! [_ _ling-ctx] {:killed? true})
+    (strategy-interrupt! [_ _ling-ctx] {:success? true})))
+
+(defn mock-ling-strategy-failing
+  "Create a mock ILingStrategy that throws on dispatch."
+  []
+  (reify strategy/ILingStrategy
+    (strategy-dispatch! [_ _ling-ctx _task-opts]
+      (throw (ex-info "Dispatch failed" {})))
+    (strategy-spawn! [_ _ling-ctx _opts] "test-slave")
+    (strategy-status [_ _ling-ctx ds-status] ds-status)
+    (strategy-kill! [_ _ling-ctx] {:killed? true})
+    (strategy-interrupt! [_ _ling-ctx] {:success? true})))
+
+(defmacro with-dispatch-mocks
+  "Execute body with all dispatch-path mocks in place.
+   Optionally accepts a strategy-mock (default: mock-ling-strategy)."
+  [strategy-mock & body]
+  `(with-redefs [core/swarm-addon-available? (constantly true)
+                 coord/dispatch-or-queue! (constantly {:action :dispatch :files []})
+                 queries/get-slave (constantly {:ling/spawn-mode :vterm})
+                 terminal-reg/resolve-terminal-strategy (constantly ~strategy-mock)
+                 queries/get-recent-claim-history (constantly [])
+                 kg-disc/kg-first-context (constantly {})]
+     ~@body))
+
 ;; =============================================================================
 ;; handle-swarm-spawn Tests
 ;; =============================================================================
 
 (deftest handle-swarm-spawn-success-test
   (testing "Returns proper MCP response format on success"
-    (let [spawn-json "{\"slave_id\":\"test-slave\",\"status\":\"spawned\",\"buffer\":\"*claude-test-slave*\"}"]
-      (with-addon-available (mock-elisp-timeout-success spawn-json)
+    (with-lifecycle-mocks
+      (with-redefs [ling/create-ling! (constantly "test-slave")]
         (let [result (swarm/handle-swarm-spawn {:name "test-slave"})]
           (is (= "text" (:type result)))
           (is (string? (:text result)))
           (is (nil? (:isError result)))
-          ;; Verify JSON content
           (let [parsed (json/read-str (:text result) :key-fn keyword)]
             (is (= "test-slave" (:slave_id parsed)))
             (is (= "spawned" (:status parsed)))))))))
 
 (deftest handle-swarm-spawn-with-presets-test
   (testing "Returns proper format when spawning with presets"
-    (let [spawn-json "{\"slave_id\":\"tdd-slave\",\"status\":\"spawned\",\"presets\":[\"tdd\",\"clarity\"]}"]
-      (with-addon-available (mock-elisp-timeout-success spawn-json)
+    (with-lifecycle-mocks
+      (with-redefs [ling/create-ling! (constantly "tdd-slave")]
         (let [result (swarm/handle-swarm-spawn {:name "tdd-slave"
                                                 :presets ["tdd" "clarity"]})]
           (is (= "text" (:type result)))
           (is (nil? (:isError result)))
           (let [parsed (json/read-str (:text result) :key-fn keyword)]
-            (is (= ["tdd" "clarity"] (:presets parsed)))))))))
+            (is (= "tdd-slave" (:slave_id parsed)))
+            (is (= "spawned" (:status parsed)))))))))
 
 (deftest handle-swarm-spawn-with-cwd-test
   (testing "Returns proper format when spawning with working directory"
-    (let [spawn-json "{\"slave_id\":\"slave\",\"status\":\"spawned\",\"cwd\":\"/home/user/project\"}"]
-      (with-addon-available (mock-elisp-timeout-success spawn-json)
+    (with-lifecycle-mocks
+      (with-redefs [ling/create-ling! (constantly "slave")]
         (let [result (swarm/handle-swarm-spawn {:name "slave"
                                                 :cwd "/home/user/project"})]
           (is (= "text" (:type result)))
-          (is (nil? (:isError result))))))))
+          (is (nil? (:isError result)))
+          (let [parsed (json/read-str (:text result) :key-fn keyword)]
+            (is (= "/home/user/project" (:cwd parsed)))))))))
 
 (deftest handle-swarm-spawn-error-test
-  (testing "Returns error format when emacsclient fails"
-    (with-addon-available (mock-elisp-timeout-failure "Buffer creation failed")
-      (let [result (swarm/handle-swarm-spawn {:name "test-slave"})]
-        (is (= "text" (:type result)))
-        (is (true? (:isError result)))
-        (is (str/includes? (:text result) "Error:"))
-        (is (str/includes? (:text result) "Buffer creation failed"))))))
-
-(deftest handle-swarm-spawn-timeout-test
-  (testing "Returns timeout error when operation times out"
-    (with-addon-available (mock-elisp-timeout-timed-out)
-      (let [result (swarm/handle-swarm-spawn {:name "test-slave"})]
-        (is (= "text" (:type result)))
-        (is (true? (:isError result)))
-        (let [parsed (json/read-str (:text result) :key-fn keyword)]
-          (is (= "timeout" (:status parsed))))))))
+  (testing "Returns error format when ling creation fails"
+    (with-lifecycle-mocks
+      (with-redefs [ling/create-ling! (fn [_ _] (throw (ex-info "Buffer creation failed" {})))]
+        (let [result (swarm/handle-swarm-spawn {:name "test-slave"})]
+          (is (= "text" (:type result)))
+          (is (true? (:isError result)))
+          (is (str/includes? (:text result) "Error:"))
+          (is (str/includes? (:text result) "Buffer creation failed")))))))
 
 (deftest handle-swarm-spawn-addon-not-loaded-test
   (testing "Returns error when hive-mcp-swarm addon not loaded"
-    (with-addon-unavailable
+    (with-redefs [core/swarm-addon-available? (constantly false)]
       (let [result (swarm/handle-swarm-spawn {:name "test-slave"})]
         (is (= "text" (:type result)))
         (is (true? (:isError result)))
@@ -141,22 +219,19 @@
 
 (deftest handle-swarm-dispatch-success-test
   (testing "Returns proper MCP response format on successful dispatch"
-    (let [dispatch-json "{\"task_id\":\"task-001\",\"status\":\"dispatched\",\"slave_id\":\"slave-1\"}"]
-      (with-redefs [swarm/swarm-addon-available? (constantly true)
-                    coord/dispatch-or-queue! (constantly {:action :dispatch :files []})
-                    ec/eval-elisp-with-timeout (mock-elisp-timeout-success dispatch-json)]
-        (let [result (swarm/handle-swarm-dispatch {:slave_id "slave-1"
-                                                   :prompt "Run tests"})]
-          (is (= "text" (:type result)))
-          (is (string? (:text result)))
-          (is (nil? (:isError result)))
-          (let [parsed (json/read-str (:text result) :key-fn keyword)]
-            (is (= "task-001" (:task_id parsed)))
-            (is (= "dispatched" (:status parsed)))))))))
+    (with-dispatch-mocks (mock-ling-strategy)
+      (let [result (swarm/handle-swarm-dispatch {:slave_id "slave-1"
+                                                 :prompt "Run tests"})]
+        (is (= "text" (:type result)))
+        (is (string? (:text result)))
+        (is (nil? (:isError result)))
+        (let [parsed (json/read-str (:text result) :key-fn keyword)]
+          (is (= "dispatched" (:status parsed)))
+          (is (= "slave-1" (:slave_id parsed))))))))
 
 (deftest handle-swarm-dispatch-queued-test
   (testing "Returns queued status when file conflicts exist"
-    (with-redefs [swarm/swarm-addon-available? (constantly true)
+    (with-redefs [core/swarm-addon-available? (constantly true)
                   coord/dispatch-or-queue! (constantly {:action :queued
                                                         :task-id "queued-task-001"
                                                         :position 1
@@ -172,7 +247,7 @@
 
 (deftest handle-swarm-dispatch-blocked-test
   (testing "Returns blocked status when circular dependency detected"
-    (with-redefs [swarm/swarm-addon-available? (constantly true)
+    (with-redefs [core/swarm-addon-available? (constantly true)
                   coord/dispatch-or-queue! (constantly {:action :blocked
                                                         :would-deadlock ["slave-1" "slave-2"]})]
       (let [result (swarm/handle-swarm-dispatch {:slave_id "slave-1"
@@ -182,32 +257,32 @@
         (let [parsed (json/read-str (:text result) :key-fn keyword)]
           (is (str/includes? (:error parsed) "circular dependency")))))))
 
-(deftest handle-swarm-dispatch-timeout-test
-  (testing "Returns timeout error when dispatch times out"
-    (with-redefs [swarm/swarm-addon-available? (constantly true)
+(deftest handle-swarm-dispatch-no-strategy-test
+  (testing "Returns error when no terminal strategy found for spawn mode"
+    (with-redefs [core/swarm-addon-available? (constantly true)
                   coord/dispatch-or-queue! (constantly {:action :dispatch :files []})
-                  ec/eval-elisp-with-timeout (mock-elisp-timeout-timed-out)]
+                  queries/get-slave (constantly {:ling/spawn-mode :vterm})
+                  terminal-reg/resolve-terminal-strategy (constantly nil)
+                  queries/get-recent-claim-history (constantly [])
+                  kg-disc/kg-first-context (constantly {})]
       (let [result (swarm/handle-swarm-dispatch {:slave_id "slave-1"
                                                  :prompt "Long task"})]
         (is (= "text" (:type result)))
         (is (true? (:isError result)))
-        (let [parsed (json/read-str (:text result) :key-fn keyword)]
-          (is (= "timeout" (:status parsed))))))))
+        (is (str/includes? (:text result) "No terminal strategy"))))))
 
 (deftest handle-swarm-dispatch-error-test
-  (testing "Returns error format when dispatch fails"
-    (with-redefs [swarm/swarm-addon-available? (constantly true)
-                  coord/dispatch-or-queue! (constantly {:action :dispatch :files []})
-                  ec/eval-elisp-with-timeout (mock-elisp-timeout-failure "Slave not found")]
+  (testing "Returns error format when strategy dispatch fails"
+    (with-dispatch-mocks (mock-ling-strategy-failing)
       (let [result (swarm/handle-swarm-dispatch {:slave_id "nonexistent"
                                                  :prompt "Test"})]
         (is (= "text" (:type result)))
         (is (true? (:isError result)))
-        (is (str/includes? (:text result) "Error:"))))))
+        (is (str/includes? (:text result) "Dispatch failed"))))))
 
 (deftest handle-swarm-dispatch-addon-not-loaded-test
   (testing "Returns error when hive-mcp-swarm addon not loaded"
-    (with-redefs [swarm/swarm-addon-available? (constantly false)]
+    (with-redefs [core/swarm-addon-available? (constantly false)]
       (let [result (swarm/handle-swarm-dispatch {:slave_id "slave-1"
                                                  :prompt "Test"})]
         (is (= "text" (:type result)))
@@ -362,48 +437,47 @@
 
 (deftest handle-swarm-kill-success-test
   (testing "Returns proper MCP response format on successful kill"
-    (let [kill-json "{\"slave_id\":\"slave-1\",\"status\":\"killed\"}"]
-      (with-addon-available (mock-elisp-timeout-success kill-json)
+    (with-lifecycle-mocks
+      (with-redefs [ds/can-kill? (constantly {:can-kill? true})
+                    ds/get-slave (constantly nil) ;; no target project = legacy ling
+                    ling/get-ling (constantly (mock-killable-ling "slave-1"))
+                    hivemind/clear-agent! (constantly nil)]
         (let [result (swarm/handle-swarm-kill {:slave_id "slave-1"})]
           (is (= "text" (:type result)))
           (is (string? (:text result)))
           (is (nil? (:isError result)))
           (let [parsed (json/read-str (:text result) :key-fn keyword)]
-            (is (= "slave-1" (:slave_id parsed)))
-            (is (= "killed" (:status parsed)))))))))
+            (is (true? (:killed? parsed)))))))))
 
 (deftest handle-swarm-kill-all-test
   (testing "Returns proper format when killing all slaves"
-    (let [kill-json "{\"status\":\"all_killed\",\"count\":3}"]
-      (with-addon-available (mock-elisp-timeout-success kill-json)
+    (with-lifecycle-mocks
+      (with-redefs [registry/get-available-lings (constantly {"s1" {} "s2" {} "s3" {}})
+                    ds/can-kill? (constantly {:can-kill? true})
+                    ds/get-slave (constantly nil)
+                    ling/get-ling (constantly (mock-killable-ling "s"))
+                    hivemind/clear-agent! (constantly nil)
+                    hivemind/agent-registry (atom {})]
         (let [result (swarm/handle-swarm-kill {:slave_id "all"})]
           (is (= "text" (:type result)))
           (is (nil? (:isError result)))
           (let [parsed (json/read-str (:text result) :key-fn keyword)]
-            (is (= "all_killed" (:status parsed)))
-            (is (= 3 (:count parsed)))))))))
+            (is (= 3 (:killed parsed)))))))))
 
 (deftest handle-swarm-kill-error-test
-  (testing "Returns error format when kill fails"
-    (with-addon-available (mock-elisp-timeout-failure "Slave not found")
-      (let [result (swarm/handle-swarm-kill {:slave_id "nonexistent"})]
-        (is (= "text" (:type result)))
-        (is (true? (:isError result)))
-        (is (str/includes? (:text result) "Error:"))
-        (is (str/includes? (:text result) "Slave not found"))))))
-
-(deftest handle-swarm-kill-timeout-test
-  (testing "Returns timeout error when kill times out"
-    (with-addon-available (mock-elisp-timeout-timed-out)
-      (let [result (swarm/handle-swarm-kill {:slave_id "slave-1"})]
-        (is (= "text" (:type result)))
-        (is (true? (:isError result)))
-        (let [parsed (json/read-str (:text result) :key-fn keyword)]
-          (is (= "timeout" (:status parsed))))))))
+  (testing "Returns error format when kill fails (agent not found)"
+    (with-lifecycle-mocks
+      (with-redefs [ds/can-kill? (constantly {:can-kill? true})
+                    ds/get-slave (constantly nil)
+                    ling/get-ling (constantly nil)] ;; agent not found
+        (let [result (swarm/handle-swarm-kill {:slave_id "nonexistent"})]
+          (is (= "text" (:type result)))
+          (is (true? (:isError result)))
+          (is (str/includes? (:text result) "KILL BLOCKED")))))))
 
 (deftest handle-swarm-kill-addon-not-loaded-test
   (testing "Returns error when hive-mcp-swarm addon not loaded"
-    (with-addon-unavailable
+    (with-redefs [core/swarm-addon-available? (constantly false)]
       (let [result (swarm/handle-swarm-kill {:slave_id "slave-1"})]
         (is (= "text" (:type result)))
         (is (true? (:isError result)))
@@ -412,22 +486,6 @@
 ;; =============================================================================
 ;; Elisp Generation Verification Tests
 ;; =============================================================================
-
-(deftest elisp-spawn-generation-test
-  (testing "Verifies correct elisp is generated for spawn"
-    (let [captured-elisp (atom nil)]
-      (with-redefs [swarm/swarm-addon-available? (constantly true)
-                    ec/eval-elisp-with-timeout
-                    (fn [elisp _timeout]
-                      (reset! captured-elisp elisp)
-                      {:success true :result "{}" :duration-ms 10 :timed-out false})]
-        (swarm/handle-swarm-spawn {:name "test-slave"
-                                   :presets ["tdd"]
-                                   :cwd "/home/user"})
-        (is (str/includes? @captured-elisp "hive-mcp-swarm-api-spawn"))
-        (is (str/includes? @captured-elisp "test-slave"))
-        (is (str/includes? @captured-elisp "tdd"))
-        (is (str/includes? @captured-elisp "/home/user"))))))
 
 (deftest elisp-status-generation-test
   (testing "Verifies correct elisp is generated for status"
@@ -451,41 +509,33 @@
         (is (str/includes? @captured-elisp "hive-mcp-swarm-status"))
         (is (str/includes? @captured-elisp "slave-1"))))))
 
-(deftest elisp-kill-generation-test
-  (testing "Verifies correct elisp is generated for kill"
-    (let [captured-elisp (atom nil)]
-      ;; Test single slave kill
-      (with-redefs [swarm/swarm-addon-available? (constantly true)
-                    ec/eval-elisp-with-timeout
-                    (fn [elisp _timeout]
-                      (reset! captured-elisp elisp)
-                      {:success true :result "{}" :duration-ms 10 :timed-out false})]
-        (swarm/handle-swarm-kill {:slave_id "slave-1"})
-        (is (str/includes? @captured-elisp "hive-mcp-swarm-api-kill"))
-        (is (str/includes? @captured-elisp "slave-1")))
-
-      ;; Test kill all slaves
-      (with-redefs [swarm/swarm-addon-available? (constantly true)
-                    ec/eval-elisp-with-timeout
-                    (fn [elisp _timeout]
-                      (reset! captured-elisp elisp)
-                      {:success true :result "{}" :duration-ms 10 :timed-out false})]
-        (swarm/handle-swarm-kill {:slave_id "all"})
-        (is (str/includes? @captured-elisp "hive-mcp-swarm-api-kill-all"))))))
-
 ;; =============================================================================
 ;; Response Format Consistency Tests
 ;; =============================================================================
 
 (deftest response-format-consistency-test
   (testing "All swarm handlers return consistent response format"
-    (with-redefs [swarm/swarm-addon-available? (constantly true)
+    (with-redefs [core/swarm-addon-available? (constantly true)
                   coord/dispatch-or-queue! (constantly {:action :dispatch :files []})
                   swarm/check-event-journal (constantly {:status "completed"
                                                          :result "ok"
                                                          :slave-id "s1"
                                                          :timestamp 0})
-                  ec/eval-elisp-with-timeout (mock-elisp-timeout-success "{}")]
+                  ;; Spawn/kill mocks (ling.clj delegation)
+                  ling/create-ling! (constantly "test-slave")
+                  registry/get-available-lings (constantly {})
+                  prom/set-lings-active! (constantly nil)
+                  ds/can-kill? (constantly {:can-kill? true})
+                  ds/get-slave (constantly nil)
+                  ling/get-ling (constantly (mock-killable-ling "s"))
+                  hivemind/clear-agent! (constantly nil)
+                  ;; Status/collect still use elisp
+                  ec/eval-elisp-with-timeout (mock-elisp-timeout-success "{}")
+                  ;; Dispatch-path mocks (terminal-registry strategy pattern)
+                  queries/get-slave (constantly {:ling/spawn-mode :vterm})
+                  terminal-reg/resolve-terminal-strategy (constantly (mock-ling-strategy))
+                  queries/get-recent-claim-history (constantly [])
+                  kg-disc/kg-first-context (constantly {})]
       ;; Test each handler returns :type "text"
       (doseq [handler-fn [#(swarm/handle-swarm-spawn {:name "s"})
                           #(swarm/handle-swarm-dispatch {:slave_id "s" :prompt "p"})
@@ -520,35 +570,36 @@
 
 (deftest dispatch-injects-shout-reminder-test
   (testing "Dispatch appends hivemind_shout reminder to all prompts"
-    (let [captured-elisp (atom nil)]
+    (let [captured (atom nil)]
       (with-redefs [core/swarm-addon-available? (constantly true)
                     coord/dispatch-or-queue! (constantly {:action :dispatch :files []})
-                    ec/eval-elisp-with-timeout
-                    (fn [elisp _timeout]
-                      ;; Capture the elisp containing the prompt
-                      (reset! captured-elisp elisp)
-                      {:success true :result "{\"task_id\":\"t1\"}" :duration-ms 10 :timed-out false})]
+                    queries/get-slave (constantly {:ling/spawn-mode :vterm})
+                    terminal-reg/resolve-terminal-strategy
+                    (constantly (mock-ling-strategy-capturing captured))
+                    queries/get-recent-claim-history (constantly [])
+                    kg-disc/kg-first-context (constantly {})]
         (swarm/handle-swarm-dispatch {:slave_id "slave-1"
                                       :prompt "Run tests please"})
-        ;; Verify the reminder was injected into the prompt
-        (is (str/includes? @captured-elisp "hivemind_shout")
-            "Dispatched prompt must include hivemind_shout reminder")
-        (is (str/includes? @captured-elisp "completed")
-            "Reminder must mention 'completed' event type")))))
+        (let [task (:task (:task-opts @captured))]
+          (is (str/includes? task "hivemind_shout")
+              "Dispatched prompt must include hivemind_shout reminder")
+          (is (str/includes? task "completed")
+              "Reminder must mention 'completed' event type"))))))
 
 (deftest dispatch-reminder-preserves-original-prompt-test
   (testing "Original prompt content is preserved when reminder is appended"
-    (let [captured-elisp (atom nil)]
+    (let [captured (atom nil)]
       (with-redefs [core/swarm-addon-available? (constantly true)
                     coord/dispatch-or-queue! (constantly {:action :dispatch :files []})
-                    ec/eval-elisp-with-timeout
-                    (fn [elisp _timeout]
-                      (reset! captured-elisp elisp)
-                      {:success true :result "{}" :duration-ms 10 :timed-out false})]
+                    queries/get-slave (constantly {:ling/spawn-mode :vterm})
+                    terminal-reg/resolve-terminal-strategy
+                    (constantly (mock-ling-strategy-capturing captured))
+                    queries/get-recent-claim-history (constantly [])
+                    kg-disc/kg-first-context (constantly {})]
         (swarm/handle-swarm-dispatch {:slave_id "slave-1"
                                       :prompt "Fix the authentication bug in src/auth.clj"})
-        ;; Verify original prompt is preserved
-        (is (str/includes? @captured-elisp "Fix the authentication bug")
-            "Original prompt content must be preserved")
-        (is (str/includes? @captured-elisp "src/auth.clj")
-            "Original prompt details must be preserved")))))
+        (let [task (:task (:task-opts @captured))]
+          (is (str/includes? task "Fix the authentication bug")
+              "Original prompt content must be preserved")
+          (is (str/includes? task "src/auth.clj")
+              "Original prompt details must be preserved"))))))
