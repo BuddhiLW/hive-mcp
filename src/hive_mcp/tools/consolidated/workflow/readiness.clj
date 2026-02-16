@@ -10,8 +10,6 @@
    Extracted from workflow.clj to reduce cyclomatic complexity."
   (:require [hive-mcp.emacs.client :as ec]
             [hive-mcp.agent.headless :as headless]
-            [hive-mcp.agent.sdk.session :as sdk-session]
-            [hive-mcp.agent.sdk.python :as sdk-py]
             [hive-mcp.swarm.datascript.queries :as queries]
             [hive-mcp.dns.result :as result]
             [taoensso.timbre :as log]))
@@ -46,27 +44,33 @@
   "Check if an agent-sdk ling's session is idle and event loop thread is alive."
   [agent-id]
   (result/rescue false
-                 (when-let [sess (sdk-session/get-session agent-id)]
-                   (and (= :idle (:phase sess))
-                        (some? (:client-ref sess))
-                        (let [safe-id (:py-safe-id sess)]
-                          (if safe-id
-                            (let [thread-obj (sdk-py/py-get-global
-                                              (str "_hive_loop_thread_" safe-id))]
-                              (boolean (and thread-obj
-                                            (sdk-py/py-call thread-obj "is_alive"))))
-                            false))))))
+                 (when-let [get-session-fn (requiring-resolve 'hive-claude.sdk.session/get-session)]
+                   (when-let [sess (get-session-fn agent-id)]
+                     (and (= :idle (:phase sess))
+                          (some? (:client-ref sess))
+                          (let [safe-id (:py-safe-id sess)]
+                            (if safe-id
+                              (when-let [py-get-fn (requiring-resolve 'hive-claude.sdk.python/py-get-global)]
+                                (let [thread-obj (py-get-fn (str "_hive_loop_thread_" safe-id))]
+                                  (when thread-obj
+                                    (when-let [py-call-fn (requiring-resolve 'hive-claude.sdk.python/py-call)]
+                                      (boolean (py-call-fn thread-obj "is_alive"))))))
+                              false)))))))
 
 ;; ── Mode Dispatch ───────────────────────────────────────────────────────────
 
 (defn ling-cli-ready?
-  "Mode-dispatch readiness check for a ling's CLI."
+  "Mode-dispatch readiness check for a ling's CLI.
+   Checks terminal modes via Emacs, headless via process/SDK status."
   [agent-id spawn-mode]
   (case spawn-mode
-    :headless   (headless-ready? agent-id)
-    :openrouter true
-    :agent-sdk  (agent-sdk-ready? agent-id)
-    ;; default: vterm
+    :headless        (headless-ready? agent-id)
+    :claude-process  (headless-ready? agent-id)
+    :openrouter      true
+    :agent-sdk       (agent-sdk-ready? agent-id)
+    :claude-sdk      (agent-sdk-ready? agent-id)
+    ;; default: claude / vterm (both Emacs-bound)
+    (:claude :vterm) (vterm-ready? agent-id)
     (vterm-ready? agent-id)))
 
 ;; ── Polling Loop ────────────────────────────────────────────────────────────

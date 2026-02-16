@@ -42,7 +42,7 @@
                                          :preset     (:preset defaults)
                                          :seeds      (:seeds defaults)})
                       (cond->
-                        (or (:ctx-refs opts) (:ctx-refs defaults))
+                       (or (:ctx-refs opts) (:ctx-refs defaults))
                         (assoc :ctx_refs (or (:ctx-refs opts) (:ctx-refs defaults)))
                         (or (:kg-node-ids opts) (:kg-node-ids defaults))
                         (assoc :kg_node_ids (or (:kg-node-ids opts) (:kg-node-ids defaults)))))))
@@ -108,7 +108,7 @@
    forge-state]
   (log/info "FORGE STRIKE (legacy): Starting cycle" {:directory  directory
                                                      :max-slots  max_slots
-                                                     :spawn-mode (or spawn_mode "vterm")
+                                                     :spawn-mode (or spawn_mode "claude")
                                                      :model      (or model "claude")})
   (let [smite-result  (forge-ops/smite! params)
         _             (log/info "FORGE STRIKE: SMITE complete" {:killed (:count smite-result)})
@@ -117,16 +117,16 @@
                                           (some? task_filter)  (assoc :task_filter task_filter)))
         _             (log/info "FORGE STRIKE: SURVEY complete" {:tasks (:count survey-result)})
         spark-result  (spawn/spark! (assoc params
-                                          :tasks     (:tasks survey-result)
-                                          :max_slots max_slots
-                                          :presets   presets
-                                          :model     model))
+                                           :tasks     (:tasks survey-result)
+                                           :max_slots max_slots
+                                           :presets   presets
+                                           :model     model))
         _             (log/info "FORGE STRIKE: SPARK complete" {:spawned (:count spark-result)})]
     (update-forge-state-after-strike! forge-state (:count smite-result) (:count spark-result))
     (result/ok {:success    true
                 :mode       :imperative
                 :deprecated true
-                :spawn-mode (or spawn_mode "vterm")
+                :spawn-mode (or spawn_mode "claude")
                 :model      (or model "claude")
                 :smite      smite-result
                 :survey     {:todo-count   (:count survey-result)
@@ -135,7 +135,7 @@
                 :summary    (str "DEPRECATED legacy: Smited " (:count smite-result)
                                  ", surveyed " (:count survey-result) " tasks"
                                  ", sparked " (:count spark-result) " lings"
-                                 " (mode: " (or spawn_mode "vterm")
+                                 " (mode: " (or spawn_mode "claude")
                                  ", model: " (or model "claude") ")")})))
 
 ;; ── Forge Strike: FSM ─────────────────────────────────────────────────────────
@@ -146,7 +146,7 @@
   [{:keys [directory max_slots spawn_mode model] :as params} forge-state]
   (log/info "FORGE STRIKE: Starting FSM cycle" {:directory  directory
                                                 :max-slots  max_slots
-                                                :spawn-mode (or spawn_mode "vterm")
+                                                :spawn-mode (or spawn_mode "claude")
                                                 :model      (or model "claude")})
   (let [resources  (build-fsm-resources params)
         fsm-result (forge-belt/run-single-strike resources)
@@ -161,7 +161,7 @@
     (result/ok {:success    (:success fsm-result true)
                 :outcome    outcome
                 :mode       :fsm
-                :spawn-mode (or spawn_mode "vterm")
+                :spawn-mode (or spawn_mode "claude")
                 :model      (or model "claude")
                 :smite      (:smite-result fsm-result)
                 :survey     {:todo-count  (get-in fsm-result [:survey-result :count] 0)
@@ -172,5 +172,5 @@
                                  "Smited " (:total-smited fsm-result 0)
                                  ", surveyed " (get-in fsm-result [:survey-result :count] 0) " tasks"
                                  ", sparked " (:total-sparked fsm-result 0) " lings"
-                                 " (mode: " (or spawn_mode "vterm")
+                                 " (mode: " (or spawn_mode "claude")
                                  ", model: " (or model "claude") ")")})))

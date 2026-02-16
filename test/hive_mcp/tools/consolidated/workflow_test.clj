@@ -52,7 +52,7 @@
   (testing "Returns :ds-timeout when slave never appears in DataScript"
     (with-redefs [workflow/ling-ready-timeout-ms 150
                   workflow/ling-ready-poll-ms 10]
-      (let [result (wait-for-ling-ready "nonexistent-ling" :vterm)]
+      (let [result (wait-for-ling-ready "nonexistent-ling" :claude)]
         (is (not (:ready? result)) "Should not be ready")
         (is (>= (:attempts result) 2) "Should have polled multiple times")
         (is (= :ds-timeout (:phase result)) "Should be DS timeout phase")
@@ -69,7 +69,7 @@
         (Thread/sleep 30)
         (ds-lings/add-slave! "delayed-ling" {:status :idle :depth 1 :cwd "/tmp"}))
 
-      (let [result (wait-for-ling-ready "delayed-ling" :vterm)]
+      (let [result (wait-for-ling-ready "delayed-ling" :claude)]
         (is (:ready? result) "Should eventually find the slave")
         (is (> (:attempts result) 1) "Should take more than one attempt")
         (is (some? (:slave result)) "Should include slave data")
@@ -84,7 +84,7 @@
     (ds-lings/add-slave! "test-ling-001" {:status :idle :depth 1 :cwd "/tmp"})
 
     (with-redefs [workflow/ling-cli-ready? (constantly true)]
-      (let [result (wait-for-ling-ready "test-ling-001" :vterm)]
+      (let [result (wait-for-ling-ready "test-ling-001" :claude)]
         (is (:ready? result) "Should be ready")
         (is (= 1 (:attempts result)) "Should find on first attempt")
         (is (< (:elapsed-ms result) 200) "Should be near-instant")
@@ -97,7 +97,7 @@
     (with-redefs [workflow/ling-ready-timeout-ms 150
                   workflow/ling-ready-poll-ms 10
                   workflow/ling-cli-ready? (constantly false)]
-      (let [result (wait-for-ling-ready "stuck-ling" :vterm)]
+      (let [result (wait-for-ling-ready "stuck-ling" :claude)]
         (is (not (:ready? result)) "Should not be ready")
         (is (>= (:attempts result) 2) "Should have polled multiple times")
         (is (= :cli-timeout (:phase result)) "Should be CLI timeout")
@@ -113,7 +113,7 @@
                     workflow/ling-cli-ready? (fn [_agent-id _mode]
                                               ;; Ready after 3rd CLI check
                                                (>= (swap! call-count inc) 3))]
-        (let [result (wait-for-ling-ready "slow-cli-ling" :vterm)]
+        (let [result (wait-for-ling-ready "slow-cli-ling" :claude)]
           (is (:ready? result) "Should eventually be ready")
           (is (= 3 (:attempts result)) "Should take 3 attempts")
           (is (= :cli-ready (:phase result))))))))
@@ -139,16 +139,16 @@
       (is (:ready? result) "Agent SDK should be immediately ready")
       (is (= 1 (:attempts result)) "Should pass on first attempt"))))
 
-(deftest test-vterm-mode-calls-vterm-ready
-  (testing "Vterm mode delegates to vterm-ready? via ling-cli-ready?"
-    (ds-lings/add-slave! "vterm-ling" {:status :idle :depth 1 :cwd "/tmp"})
+(deftest test-claude-mode-calls-vterm-ready
+  (testing "Claude mode delegates to vterm-ready? via ling-cli-ready?"
+    (ds-lings/add-slave! "claude-ling" {:status :idle :depth 1 :cwd "/tmp"})
 
     (let [checked-modes (atom [])]
       (with-redefs [workflow/ling-cli-ready? (fn [_id mode]
                                                (swap! checked-modes conj mode)
                                                true)]
-        (wait-for-ling-ready "vterm-ling" :vterm)
-        (is (= [:vterm] @checked-modes) "Should call ling-cli-ready? with :vterm")))))
+        (wait-for-ling-ready "claude-ling" :claude)
+        (is (= [:claude] @checked-modes) "Should call ling-cli-ready? with :claude")))))
 
 (deftest test-headless-mode-calls-headless-ready
   (testing "Headless mode delegates to headless-ready? via ling-cli-ready?"
@@ -174,7 +174,7 @@
       (ds-lings/add-slave! "timing-ling" {:status :idle :depth 1 :cwd "/tmp"})
 
       (let [start (System/currentTimeMillis)
-            result (wait-for-ling-ready "timing-ling" :vterm)
+            result (wait-for-ling-ready "timing-ling" :claude)
             elapsed (- (System/currentTimeMillis) start)]
         ;; With 50ms fixed interval and 200ms timeout, should take ~200ms
         (is (>= elapsed 150) "Should have spent time polling")
