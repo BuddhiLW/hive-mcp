@@ -195,17 +195,38 @@
               [id (shutdown-addon! id)]))
        (into {})))
 
+(defn- safe-excluded-tools
+  "Get excluded-tools set from addon, returning #{} for legacy addons
+   that don't implement the method."
+  [addon]
+  (try (proto/excluded-tools addon)
+       (catch AbstractMethodError _ #{})
+       (catch IllegalArgumentException _ #{})))
+
 (defn active-addon-tools
-  "Get all MCP tools from active addons."
+  "Get all MCP tools from active addons.
+   Respects excluded-tools declarations: when addon A excludes tool name X,
+   tools named X from all OTHER addons are filtered out."
   []
-  (->> @addon-registry
-       (filter (fn [[_id {:keys [state addon]}]]
-                 (and (= state :active)
-                      (contains? (proto/capabilities addon) :tools))))
-       (mapcat (fn [[id {:keys [addon]}]]
-                 (->> (proto/tools addon)
-                      (map #(assoc % :addon-source id)))))
-       vec))
+  (let [active (->> @addon-registry
+                    (filter (fn [[_id {:keys [state addon]}]]
+                              (and (= state :active)
+                                   (contains? (proto/capabilities addon) :tools)))))
+        ;; {tool-name -> declaring-addon-id} — who declared each exclusion
+        exclusions (->> active
+                        (mapcat (fn [[id {:keys [addon]}]]
+                                  (map (fn [tn] [tn id])
+                                       (safe-excluded-tools addon))))
+                        (into {}))]
+    (->> active
+         (mapcat (fn [[id {:keys [addon]}]]
+                   (->> (proto/tools addon)
+                        ;; Remove tools excluded by ANOTHER addon
+                        (remove (fn [t]
+                                  (when-let [excluder (get exclusions (:name t))]
+                                    (not= excluder id))))
+                        (map #(assoc % :addon-source id)))))
+         vec)))
 
 (defn addon-tools-by-name
   "Get MCP tools contributed by a specific addon."
