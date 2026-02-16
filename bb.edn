@@ -1,6 +1,6 @@
 {:paths ["src" "scripts"]
 
- :deps {babashka/process {:mvn/version "0.5.22"}}
+ :deps {babashka/process {:mvn/version "0.6.25"}}
 
  :tasks
  {test {:doc "Run tests"

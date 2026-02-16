@@ -1,128 +1,50 @@
 (ns hive-mcp.dns.result
-  "Lightweight Result monad for railway-oriented error handling.
+  "Re-exports hive-dsl.result — single source of truth for Result monad.
 
-   ok  results: {:ok value}
-   err results: {:error category ...extra-data}")
+   Canonical implementation lives in hive-dsl. This namespace re-exports
+   all public vars so existing hive-mcp code continues to work unchanged.
 
-(defn ok
-  "Wrap a value in a success Result."
-  [value]
-  {:ok value})
+   Usage (both equivalent):
+     (require '[hive-mcp.dns.result :as result])    ;; legacy
+     (require '[hive-dsl.result :as result])         ;; canonical"
+  (:require [hive-dsl.result]))
 
-(defn err
-  "Create an error Result with category keyword and optional data map."
-  ([category]
-   {:error category})
-  ([category data]
-   (merge {:error category} data)))
+;; --- Re-export all public vars from hive-dsl.result --------------------------
+;; Macros must be re-defined (potemkin not on classpath), fns use def aliases.
 
-(defn ok?
-  "True if result is a success."
-  [r]
-  (and (map? r) (contains? r :ok)))
+;; Functions — simple var aliases
+(def ok       hive-dsl.result/ok)
+(def err      hive-dsl.result/err)
+(def ok?      hive-dsl.result/ok?)
+(def err?     hive-dsl.result/err?)
+(def bind     hive-dsl.result/bind)
+(def map-ok   hive-dsl.result/map-ok)
+(def map-err  hive-dsl.result/map-err)
+(def rescue-fn hive-dsl.result/rescue-fn)
+(def guard-fn  hive-dsl.result/guard-fn)
 
-(defn err?
-  "True if result is an error."
-  [r]
-  (and (map? r) (contains? r :error)))
-
-(defn bind
-  "Monadic bind. If result is ok, applies f to the unwrapped value.
-   If result is err, short-circuits and returns the error unchanged.
-   f must return a Result."
-  [result f]
-  (if (ok? result)
-    (f (:ok result))
-    result))
-
-(defn map-ok
-  "Functor map over ok values. Applies f to the unwrapped value and
-   re-wraps in ok. Errors pass through unchanged.
-   Unlike bind, f returns a plain value (not a Result)."
-  [result f]
-  (if (ok? result)
-    (ok (f (:ok result)))
-    result))
-
-(defn map-err
-  "Map over error values. Applies f to the error map (without :error key)
-   and merges result back. Ok values pass through unchanged.
-   f receives the full error result map."
-  [result f]
-  (if (err? result)
-    (f result)
-    result))
-
+;; Macros — must re-define (def doesn't preserve macro metadata)
 (defmacro let-ok
-  "Monadic let for Results. Binds :ok values; short-circuits on first error.
-
-   (let-ok [x (may-fail)
-            y (use x)]
-     (ok (+ x y)))"
+  "Re-export of hive-dsl.result/let-ok. See canonical docstring."
   [bindings & body]
-  (if (empty? bindings)
-    `(do ~@body)
-    (let [[sym expr & rest-bindings] bindings]
-      `(let [r# ~expr]
-         (if (ok? r#)
-           (let [~sym (:ok r#)]
-             (let-ok ~(vec rest-bindings) ~@body))
-           r#)))))
+  `(hive-dsl.result/let-ok ~bindings ~@body))
 
 (defmacro try-effect
-  "Execute body in try/catch, returning ok on success or err on exception.
-   Category defaults to :effect/exception.
-
-   (try-effect (do-side-effect!))
-   => (ok result) or (err :effect/exception {:message \"...\"})"
+  "Re-export of hive-dsl.result/try-effect. See canonical docstring."
   [& body]
-  `(try
-     (ok (do ~@body))
-     (catch Exception e#
-       (err :effect/exception {:message (.getMessage e#)
-                               :class  (str (class e#))}))))
+  `(hive-dsl.result/try-effect ~@body))
 
 (defmacro try-effect*
-  "Like try-effect but with a custom error category.
-
-   (try-effect* :io/read-failure (slurp path))
-   => (ok content) or (err :io/read-failure {:message \"...\"})"
+  "Re-export of hive-dsl.result/try-effect*. See canonical docstring."
   [category & body]
-  `(try
-     (ok (do ~@body))
-     (catch Exception e#
-       (err ~category {:message (.getMessage e#)
-                       :class  (str (class e#))}))))
-
-;; --- rescue: best-effort fallback (replaces 780+ try-catch-log patterns) -----
+  `(hive-dsl.result/try-effect* ~category ~@body))
 
 (defmacro rescue
-  "Try body. On exception return fallback — error info as metadata (data, not strings).
-   Eliminates the ubiquitous (try expr (catch Exception e (log ...) fallback)) nesting.
-   Zero dependencies — error context attached via Clojure metadata, not logging.
-
-   (rescue []  (traverse ids))        ;; => [] on failure, error in ^{::error {...}}
-   (rescue nil (get-entry id))        ;; => nil on failure (nil can't carry meta)
-   (rescue {}  (compute-stats data))  ;; => {} on failure, (::error (meta result)) for details
-
-   Error data shape: {::error {:message \"...\" :form \"(traverse ids)\"}}"
+  "Re-export of hive-dsl.result/rescue. See canonical docstring."
   [fallback & body]
-  `(try ~@body
-        (catch Exception e#
-          (let [fb# ~fallback]
-            (if (instance? clojure.lang.IObj fb#)
-              (with-meta fb# {::error {:message (.getMessage e#)
-                                       :form    ~(str (first body))}})
-              fb#)))))
+  `(hive-dsl.result/rescue ~fallback ~@body))
 
-(defn rescue-fn
-  "Wrap f: on exception return fallback (default nil). For keep/map pipelines.
-   Eliminates (keep (fn [x] (try (f x) (catch Exception _ nil))) coll).
-
-   (keep (rescue-fn #(parse %)) items)           ;; nil on error → filtered by keep
-   (map  (rescue-fn #(parse %) :not-found) items) ;; :not-found on error"
-  ([f] (rescue-fn f nil))
-  ([f fallback]
-   (fn [& args]
-     (try (apply f args)
-          (catch Exception _ fallback)))))
+(defmacro guard
+  "Re-export of hive-dsl.result/guard. See canonical docstring."
+  [catch-class fallback & body]
+  `(hive-dsl.result/guard ~catch-class ~fallback ~@body))

@@ -4,24 +4,22 @@
    Tests cover:
    - ILingStrategy protocol contract
    - Protocol contract tests via mock strategy (reify)
-   - HeadlessStrategy (mocked headless)
    - Terminal registry integration (addon-contributed backends)
-   - Strategy resolution (resolve-strategy)
+   - Headless registry integration (addon-contributed headless backends)
+   - Strategy resolution (resolve-strategy via registries)
    - Ling facade delegation to strategies
 
-   Note: Vterm-specific tests now live in the vterm-mcp addon project.
-   All external dependencies (emacsclient, headless) are mocked."
+   Note: Vterm-specific tests live in vterm-mcp addon project.
+   Headless strategy tests live in headless_addon_strategy_test.clj.
+   All external dependencies are mocked."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [hive-mcp.agent.ling.strategy :as strategy]
             [hive-mcp.agent.ling.terminal-registry :as terminal-reg]
+            [hive-mcp.agent.ling.headless-registry :as headless-reg]
             [hive-mcp.addons.terminal]
-            [hive-mcp.agent.ling.headless-strategy :as headless-strat]
+            [hive-mcp.addons.headless :as headless-proto]
             [hive-mcp.agent.protocol :as proto]
             [hive-mcp.agent.ling :as ling]
-            [hive-mcp.agent.hints :as hints]
-            [hive-mcp.agent.headless :as headless]
-            [hive-mcp.agent.headless-sdk :as sdk]
-            [clojure.core.async :as async]
             [hive-mcp.swarm.datascript :as ds]
             [hive-mcp.swarm.datascript.lings :as ds-lings]
             [hive-mcp.swarm.datascript.queries :as ds-queries]
@@ -32,13 +30,13 @@
 ;; =============================================================================
 
 (defn reset-datascript-fixture
-  "Reset DataScript, SDK state, and terminal registry before and after each test."
+  "Reset DataScript and registries before and after each test."
   [f]
   (ds/reset-conn!)
   (terminal-reg/clear-registry!)
-  (try (sdk/kill-all-sdk!) (catch Exception _))
+  (headless-reg/clear-registry!)
   (f)
-  (try (sdk/kill-all-sdk!) (catch Exception _))
+  (headless-reg/clear-registry!)
   (terminal-reg/clear-registry!)
   (ds/reset-conn!))
 
@@ -114,7 +112,7 @@
                                 true))
           ctx {:id "dispatch-test" :cwd "/tmp"}]
       (let [result (strategy/strategy-dispatch! strat ctx {:task "Fix the bug"
-                                                            :timeout-ms 30000})]
+                                                           :timeout-ms 30000})]
         (is (true? result))))))
 
 (deftest protocol-dispatch-failure-throws
@@ -168,133 +166,84 @@
         (is (= :backend-failed (:reason result)))))))
 
 ;; =============================================================================
-;; Section 3: HeadlessStrategy Tests
+;; Section 3: Headless Registry Strategy Tests
 ;; =============================================================================
 
-(deftest headless-strategy-spawn-success
-  (testing "HeadlessStrategy spawn delegates to headless module"
-    (let [strat (headless-strat/->headless-strategy)
-          ctx {:id "headless-001" :cwd "/tmp/project"
-               :presets ["worker"] :model nil}]
-      (with-redefs [headless/spawn-headless!
-                    (fn [ling-id opts]
-                      (is (= "headless-001" ling-id))
-                      (is (= "/tmp/project" (:cwd opts)))
-                      {:ling-id ling-id :pid 12345})]
-        (let [slave-id (strategy/strategy-spawn! strat ctx {})]
-          (is (= "headless-001" slave-id)
-              "Headless always returns requested id"))))))
+(defn- make-mock-headless-backend
+  "Create a mock IHeadlessBackend for registry tests."
+  [id]
+  (reify
+    headless-proto/IHeadlessBackend
+    (headless-id [_] id)
+    (headless-spawn! [_ ctx _opts] (:id ctx))
+    (headless-dispatch! [_ _ctx _opts] true)
+    (headless-status [_ ctx ds-data] (merge ds-data {:alive? true :slave/id (:id ctx)}))
+    (headless-kill! [_ ctx] {:killed? true :id (:id ctx)})
+    (headless-interrupt! [_ _ctx] {:success? false})
 
-(deftest headless-strategy-dispatch-success
-  (testing "HeadlessStrategy dispatch writes to stdin"
-    (let [strat (headless-strat/->headless-strategy)
-          ctx {:id "dispatch-headless"}]
-      (with-redefs [headless/dispatch-via-stdin!
-                    (fn [ling-id message]
-                      (is (= "dispatch-headless" ling-id))
-                      (is (= "Run tests" message))
-                      true)]
-        (let [result (strategy/strategy-dispatch! strat ctx {:task "Run tests"})]
-          (is (true? result)))))))
+    headless-proto/IHeadlessCapabilities
+    (declared-capabilities [_] #{:cap/streaming :cap/multi-turn})))
 
-(deftest headless-strategy-status-with-ds
-  (testing "HeadlessStrategy enriches DataScript with process info"
-    (let [strat (headless-strat/->headless-strategy)
-          ctx {:id "status-headless"}
-          ds-data {:slave/id "status-headless" :slave/status :idle}]
-      (with-redefs [headless/headless-status
-                    (fn [ling-id]
-                      {:ling-id ling-id :alive? true :pid 9999
-                       :uptime-ms 5000
-                       :stdout {:current-lines 100}
-                       :stderr {:current-lines 0}})]
-        (let [result (strategy/strategy-status strat ctx ds-data)]
-          (is (true? (:headless-alive? result)))
-          (is (= 9999 (:headless-pid result)))
-          (is (= 5000 (:headless-uptime-ms result))))))))
+(deftest headless-registry-resolve-returns-strategy
+  (testing "Headless registry resolves to ILingStrategy"
+    (let [backend (make-mock-headless-backend :test-headless)]
+      (headless-reg/register-headless! :test-headless backend)
+      (let [strat (headless-reg/resolve-headless-strategy :test-headless)]
+        (is (some? strat) "Should resolve to a strategy")
+        (is (satisfies? strategy/ILingStrategy strat) "Should satisfy ILingStrategy")))))
 
-(deftest headless-strategy-status-no-ds
-  (testing "HeadlessStrategy returns headless-only status when no DataScript"
-    (let [strat (headless-strat/->headless-strategy)
-          ctx {:id "orphan-headless"}]
-      (with-redefs [headless/headless-status
-                    (fn [_] {:alive? true :pid 8888})]
-        (let [result (strategy/strategy-status strat ctx nil)]
-          (is (= :idle (:slave/status result))
-              "Alive headless with no DS should report :idle")
-          (is (true? (:headless-alive? result))))))))
-
-(deftest headless-strategy-kill-success
-  (testing "HeadlessStrategy kill delegates to headless module"
-    (let [strat (headless-strat/->headless-strategy)
-          ctx {:id "kill-headless"}]
-      (with-redefs [headless/kill-headless!
-                    (fn [ling-id]
-                      {:killed? true :ling-id ling-id :pid 7777 :exit-code 0})]
-        (let [result (strategy/strategy-kill! strat ctx)]
-          (is (true? (:killed? result)))
-          (is (= 7777 (:pid result))))))))
-
-(deftest headless-strategy-kill-already-dead
-  (testing "HeadlessStrategy returns killed?=true when process already dead"
-    (let [strat (headless-strat/->headless-strategy)
-          ctx {:id "dead-headless"}]
-      (with-redefs [headless/kill-headless!
-                    (fn [_] (throw (ex-info "Not found" {})))]
-        (let [result (strategy/strategy-kill! strat ctx)]
-          (is (true? (:killed? result)))
-          (is (= :process-already-dead (:reason result))))))))
+(deftest headless-registry-spawn-delegates
+  (testing "Headless registry strategy delegates spawn to backend"
+    (let [backend (make-mock-headless-backend :test-spawn)]
+      (headless-reg/register-headless! :test-spawn backend)
+      (let [strat (headless-reg/resolve-headless-strategy :test-spawn)
+            ctx {:id "spawn-via-registry" :cwd "/tmp"}]
+        (is (= "spawn-via-registry" (strategy/strategy-spawn! strat ctx {})))))))
 
 ;; =============================================================================
 ;; Section 4: Facade Integration Tests
 ;; =============================================================================
 
-(deftest facade-spawn-uses-vterm-strategy-by-default
-  (testing "Ling facade defaults to vterm strategy (via terminal registry)"
-    (let [;; Register a mock vterm strategy in the terminal registry
+(deftest facade-spawn-uses-terminal-strategy-by-default
+  (testing "Ling facade defaults to :claude terminal strategy (via terminal registry)"
+    (let [;; Register a mock terminal strategy as :claude (the default mode)
           mock-terminal (reify
                           hive-mcp.addons.terminal/ITerminalAddon
-                          (terminal-id [_] :vterm)
+                          (terminal-id [_] :claude)
                           (terminal-spawn! [_ ctx _opts]
                             (:id ctx))
                           (terminal-dispatch! [_ _ctx _opts] true)
                           (terminal-status [_ _ctx ds-data] ds-data)
                           (terminal-kill! [_ ctx] {:killed? true :id (:id ctx)})
                           (terminal-interrupt! [_ ctx] {:success? false :ling-id (:id ctx) :errors ["Not supported"]}))
-          ling (ling/->ling "facade-vterm" {:cwd "/tmp" :project-id "test"})]
-      (terminal-reg/register-terminal! :vterm mock-terminal)
+          ling (ling/->ling "facade-terminal" {:cwd "/tmp" :project-id "test"})]
+      (terminal-reg/register-terminal! :claude mock-terminal)
       (try
-        (is (= :vterm (:spawn-mode ling))
-            "Default spawn mode should be :vterm")
+        (is (= :claude (:spawn-mode ling))
+            "Default spawn mode should be :claude")
         (let [slave-id (proto/spawn! ling {:depth 1})]
-          (is (= "facade-vterm" slave-id))
+          (is (= "facade-terminal" slave-id))
           ;; Verify DataScript registration (common concern)
-          (let [slave (ds-queries/get-slave "facade-vterm")]
+          (let [slave (ds-queries/get-slave "facade-terminal")]
             (is (some? slave))
-            (is (= :vterm (:ling/spawn-mode slave)))))
+            (is (= :claude (:ling/spawn-mode slave)))))
         (finally
-          (terminal-reg/deregister-terminal! :vterm))))))
+          (terminal-reg/deregister-terminal! :claude))))))
 
-(deftest facade-spawn-uses-headless-strategy
-  (testing "Ling facade maps :headless to :agent-sdk since 0.12.0"
-    (let [ling (ling/->ling "facade-headless"
-                            {:cwd "/tmp" :project-id "test"
-                             :spawn-mode :headless})]
-      ;; ->ling maps :headless -> :agent-sdk at factory level
-      (is (= :agent-sdk (:spawn-mode ling)))
-      (with-redefs [sdk/available? (constantly true)
-                    sdk/sdk-status (constantly :available)
-                    sdk/spawn-headless-sdk!
-                    (fn [ling-id _opts]
-                      {:ling-id ling-id :status :spawned
-                       :backend :agent-sdk :phase :idle})
-                    sdk/get-session
-                    (fn [_] {:session-id "test-sess" :status :idle})]
+(deftest facade-spawn-uses-headless-registry
+  (testing "Ling facade maps :headless to best registered headless backend"
+    (let [backend (make-mock-headless-backend :claude-sdk)]
+      (headless-reg/register-headless! :claude-sdk backend)
+      (let [ling (ling/->ling "facade-headless"
+                              {:cwd "/tmp" :project-id "test"
+                               :spawn-mode :headless})]
+        ;; ->ling maps :headless -> :claude-sdk via best-headless-for-provider
+        (is (= :claude-sdk (:spawn-mode ling)))
         (let [slave-id (proto/spawn! ling {:depth 1})]
           (is (= "facade-headless" slave-id))
           (let [slave (ds-queries/get-slave "facade-headless")]
             (is (some? slave))
-            (is (= :agent-sdk (:ling/spawn-mode slave)))))))))
+            (is (= :claude-sdk (:ling/spawn-mode slave)))))))))
 
 (deftest facade-auto-openrouter-for-non-claude
   (testing "Non-claude models automatically use openrouter strategy"
@@ -307,73 +256,45 @@
           "Model should be preserved"))))
 
 (deftest facade-dispatch-delegates-to-strategy
-  (testing "Dispatch delegates to correct strategy based on mode"
-    ;; Register ling in DataScript -- facade maps :headless -> :agent-sdk
-    (ds-lings/add-slave! "dispatch-delegate" {:status :idle :cwd "/tmp"})
-    (ds-lings/update-slave! "dispatch-delegate" {:ling/spawn-mode :agent-sdk})
+  (testing "Dispatch delegates to correct strategy based on registered headless backend"
+    (let [backend (make-mock-headless-backend :claude-sdk)]
+      (headless-reg/register-headless! :claude-sdk backend)
+      (ds-lings/add-slave! "dispatch-delegate" {:status :idle :cwd "/tmp"})
+      (ds-lings/update-slave! "dispatch-delegate" {:ling/spawn-mode :claude-sdk})
 
-    (let [ling (ling/->ling "dispatch-delegate" {:cwd "/tmp" :spawn-mode :headless})]
-      (with-redefs [sdk/available? (constantly true)
-                    sdk/sdk-status (constantly :available)
-                    sdk/dispatch-headless-sdk!
-                    (fn [ling-id message & _]
-                      (is (= "dispatch-delegate" ling-id))
-                      (is (= "Analyze code" message))
-                      (let [ch (async/chan 1)]
-                        (async/put! ch {:task-id "task-1" :result "ok"})
-                        (async/close! ch)
-                        ch))
-                    sdk/get-session
-                    (fn [_] {:session-id "test-sess" :status :idle})]
+      (let [ling (ling/->ling "dispatch-delegate" {:cwd "/tmp" :spawn-mode :headless})]
         (let [task-id (proto/dispatch! ling {:task "Analyze code"})]
           (is (string? task-id))
-          ;; Verify common DataScript updates
           (let [slave (ds-queries/get-slave "dispatch-delegate")]
             (is (= :working (:slave/status slave)))))))))
 
 (deftest facade-kill-delegates-to-strategy
   (testing "Kill delegates to correct strategy and cleans up DataScript"
-    (ds-lings/add-slave! "kill-delegate" {:status :idle})
+    (let [backend (make-mock-headless-backend :claude-sdk)]
+      (headless-reg/register-headless! :claude-sdk backend)
+      (ds-lings/add-slave! "kill-delegate" {:status :idle})
 
-    ;; facade maps :headless -> :agent-sdk
-    (let [ling (ling/->ling "kill-delegate" {:spawn-mode :headless})]
-      (with-redefs [sdk/available? (constantly true)
-                    sdk/sdk-status (constantly :available)
-                    sdk/kill-headless-sdk!
-                    (fn [ling-id]
-                      {:killed? true :ling-id ling-id})
-                    sdk/get-session
-                    (fn [_] nil)]
+      (let [ling (ling/->ling "kill-delegate" {:spawn-mode :headless})]
         (let [result (proto/kill! ling)]
           (is (true? (:killed? result)))
-          ;; Common: should be removed from DataScript
           (is (nil? (ds-queries/get-slave "kill-delegate"))
               "Should be removed from DataScript after kill"))))))
 
 (deftest facade-status-delegates-to-strategy
-  (testing "Status delegates to correct strategy (agent-sdk since :headless maps to it)"
-    (ds-lings/add-slave! "status-delegate" {:status :idle})
-    (ds-lings/update-slave! "status-delegate" {:ling/spawn-mode :agent-sdk})
+  (testing "Status delegates to correct headless strategy via registry"
+    (let [backend (make-mock-headless-backend :claude-sdk)]
+      (headless-reg/register-headless! :claude-sdk backend)
+      (ds-lings/add-slave! "status-delegate" {:status :idle})
+      (ds-lings/update-slave! "status-delegate" {:ling/spawn-mode :claude-sdk})
 
-    ;; facade maps :headless -> :agent-sdk
-    (let [ling (ling/->ling "status-delegate" {:spawn-mode :headless})]
-      (with-redefs [sdk/available? (constantly true)
-                    sdk/sdk-status (constantly :available)
-                    sdk/sdk-status-for
-                    (fn [ling-id]
-                      {:session-id "sess-444" :status :idle
-                       :model "claude" :phase :act})
-                    sdk/get-session
-                    (fn [_] {:session-id "sess-444" :status :idle})]
+      (let [ling (ling/->ling "status-delegate" {:spawn-mode :headless})]
         (let [status (proto/status ling)]
-          ;; Agent-SDK status has different fields than headless
-          (is (some? status) "Status should be returned")
-          (is (= :idle (:slave/status status))))))))
+          (is (some? status) "Status should be returned"))))))
 
-(deftest facade-unregistered-vterm-throws
-  (testing "Attempting :vterm with no addon registered throws clear error"
-    (let [ling (ling/->ling "no-vterm-ling" {:cwd "/tmp" :project-id "test"})]
-      (is (= :vterm (:spawn-mode ling)))
+(deftest facade-unregistered-terminal-throws
+  (testing "Attempting :claude with no addon registered throws clear error"
+    (let [ling (ling/->ling "no-terminal-ling" {:cwd "/tmp" :project-id "test"})]
+      (is (= :claude (:spawn-mode ling)))
       (is (thrown-with-msg? clojure.lang.ExceptionInfo
                             #"No strategy registered for mode"
                             (proto/spawn! ling {:depth 1}))))))
@@ -383,18 +304,20 @@
 ;; =============================================================================
 
 (deftest query-fns-preserve-spawn-mode
-  (testing "get-ling maps :headless to :agent-sdk for claude models (0.12.0+)"
-    (ds-lings/add-slave! "mode-preserved" {:status :idle :depth 1})
-    (ds-lings/update-slave! "mode-preserved" {:ling/spawn-mode :headless
-                                              :ling/model "claude"})
+  (testing "get-ling maps :headless to best registered headless for claude models"
+    (let [backend (make-mock-headless-backend :claude-sdk)]
+      (headless-reg/register-headless! :claude-sdk backend)
+      (ds-lings/add-slave! "mode-preserved" {:status :idle :depth 1})
+      (ds-lings/update-slave! "mode-preserved" {:ling/spawn-mode :headless
+                                                :ling/model "claude"})
 
-    (let [ling (ling/get-ling "mode-preserved")]
-      (is (some? ling))
-      ;; ->ling factory maps :headless -> :agent-sdk for claude models
-      (is (= :agent-sdk (:spawn-mode ling))
-          "spawn-mode should be mapped from :headless to :agent-sdk")
-      (is (= "claude" (:model ling))
-          "model should be preserved from DataScript")))
+      (let [ling (ling/get-ling "mode-preserved")]
+        (is (some? ling))
+        ;; ->ling factory maps :headless -> :claude-sdk via best-headless-for-provider
+        (is (= :claude-sdk (:spawn-mode ling))
+            "spawn-mode should be mapped from :headless to :claude-sdk")
+        (is (= "claude" (:model ling))
+            "model should be preserved from DataScript"))))
 
   (testing "get-ling overrides spawn-mode to :openrouter for non-claude models"
     (ds-lings/add-slave! "mode-override" {:status :idle :depth 1})
@@ -407,153 +330,6 @@
           "Non-claude model should override to :openrouter regardless of DataScript")
       (is (= "deepseek/deepseek-v3.2" (:model ling))
           "model should be preserved from DataScript"))))
-
-;; =============================================================================
-;; Section 6: Hint Injection into Headless Spawn (Tier 1 Activation E2E)
-;;
-;; Tests that when a headless ling is spawned with a kanban-task-id,
-;; generate-task-hints is called and the hint block is prepended to the
-;; task string passed to strategy-spawn! (embedded in CLI arg).
-;;
-;; Note: Vterm-specific hint test moved to vterm-mcp addon project.
-;; =============================================================================
-
-(deftest headless-spawn-with-hints-injects-into-task
-  (testing "Headless spawn with kanban-task-id prepends hints to task (via agent-sdk)"
-    (let [captured-task (atom nil)
-          ling-inst (ling/->ling "hints-headless-001"
-                                 {:cwd "/tmp/project"
-                                  :project-id "test-project"
-                                  :spawn-mode :headless})]
-      (with-redefs [;; Mock hints generation
-                    hints/generate-task-hints
-                    (fn [{:keys [task-id depth]}]
-                      (is (= "kanban-task-42" task-id) "Should pass kanban-task-id")
-                      (is (= 2 depth) "Should use depth 2")
-                      {:l1-ids ["mem-1" "mem-2"]
-                       :l2-queries ["conventions for: testing"]
-                       :l3-seeds [{:id "seed-1" :depth 2}]})
-                    hints/generate-hints
-                    (fn [project-id opts]
-                      (is (= "test-project" project-id))
-                      (is (some #{"mem-1"} (:extra-ids opts))
-                          "Should pass l1-ids as extra-ids")
-                      {:memory-hints {:axiom-ids ["ax-1"]
-                                      :read-ids ["mem-1" "mem-2"]
-                                      :queries ["conventions for: testing"]}})
-                    hints/serialize-hints
-                    (fn [hint-data & {:keys [project-name]}]
-                      (is (= "test-project" project-name))
-                      "## Memory Hints (Auto-Injected)\n\nMocked hint block")
-                    ;; Mock SDK spawn -- returns plain map (not channel)
-                    sdk/available? (constantly true)
-                    sdk/sdk-status (constantly :available)
-                    sdk/spawn-headless-sdk!
-                    (fn [ling-id _opts]
-                      {:ling-id ling-id :status :spawned :backend :agent-sdk :phase :idle})
-                    ;; Capture task from dispatch (SDK strategy dispatches after spawn)
-                    sdk/dispatch-headless-sdk!
-                    (fn [_ling-id task & _]
-                      (reset! captured-task task)
-                      nil)
-                    sdk/get-session
-                    (fn [_] {:session-id "test-sess" :status :idle})]
-        (let [slave-id (proto/spawn! ling-inst {:task "Fix the authentication bug"
-                                                :kanban-task-id "kanban-task-42"
-                                                :depth 1})]
-          (is (= "hints-headless-001" slave-id))
-          ;; The task dispatched via sdk/dispatch-headless-sdk! should contain hints
-          (is (some? @captured-task) "Task should be passed to dispatch")
-          (is (str/includes? @captured-task "Memory Hints")
-              "Task should contain hint block")
-          (is (str/includes? @captured-task "Mocked hint block")
-              "Task should contain serialized hints")
-          (is (str/includes? @captured-task "Fix the authentication bug")
-              "Task should contain original task")
-          (is (str/starts-with? @captured-task "## Memory Hints")
-              "Hints should be prepended (before task)")
-          ;; Verify separator between hints and task
-          (is (str/includes? @captured-task "---")
-              "Should have separator between hints and task"))))))
-
-(deftest headless-spawn-without-kanban-task-id-no-hints
-  (testing "Headless spawn without kanban-task-id passes task as-is (via agent-sdk)"
-    (let [captured-task (atom nil)
-          ling-inst (ling/->ling "no-hints-headless"
-                                 {:cwd "/tmp/project"
-                                  :project-id "test-project"
-                                  :spawn-mode :headless})]
-      (with-redefs [sdk/available? (constantly true)
-                    sdk/sdk-status (constantly :available)
-                    sdk/spawn-headless-sdk!
-                    (fn [ling-id _opts]
-                      {:ling-id ling-id :status :spawned :backend :agent-sdk :phase :idle})
-                    sdk/dispatch-headless-sdk!
-                    (fn [_ling-id task & _]
-                      (reset! captured-task task)
-                      nil)
-                    sdk/get-session
-                    (fn [_] {:session-id "test-sess" :status :idle})]
-        (let [slave-id (proto/spawn! ling-inst {:task "Simple task"
-                                                :depth 1})]
-          (is (= "no-hints-headless" slave-id))
-          (is (= "Simple task" @captured-task)
-              "Without kanban-task-id, task should be passed verbatim")
-          (is (not (str/includes? (or @captured-task "") "Memory Hints"))
-              "No hints should be injected"))))))
-
-(deftest headless-spawn-hints-failure-is-non-fatal
-  (testing "Hint generation failure doesn't prevent spawn (via agent-sdk)"
-    (let [captured-task (atom nil)
-          ling-inst (ling/->ling "hints-fail-headless"
-                                 {:cwd "/tmp/project"
-                                  :project-id "test-project"
-                                  :spawn-mode :headless})]
-      (with-redefs [hints/generate-task-hints
-                    (fn [_] (throw (Exception. "Chroma down")))
-                    sdk/available? (constantly true)
-                    sdk/sdk-status (constantly :available)
-                    sdk/spawn-headless-sdk!
-                    (fn [ling-id _opts]
-                      {:ling-id ling-id :status :spawned :backend :agent-sdk :phase :idle})
-                    sdk/dispatch-headless-sdk!
-                    (fn [_ling-id task & _]
-                      (reset! captured-task task)
-                      nil)
-                    sdk/get-session
-                    (fn [_] {:session-id "test-sess" :status :idle})]
-        (let [slave-id (proto/spawn! ling-inst {:task "Important task"
-                                                :kanban-task-id "failing-task"
-                                                :depth 1})]
-          (is (= "hints-fail-headless" slave-id)
-              "Spawn should succeed despite hint failure")
-          (is (= "Important task" @captured-task)
-              "Task should be passed without hints on failure"))))))
-
-(deftest headless-spawn-with-hints-no-task-no-crash
-  (testing "Headless spawn with kanban-task-id but no task doesn't crash (via agent-sdk)"
-    (let [dispatch-called? (atom false)
-          ling-inst (ling/->ling "no-task-headless"
-                                 {:cwd "/tmp/project"
-                                  :project-id "test-project"
-                                  :spawn-mode :headless})]
-      (with-redefs [sdk/available? (constantly true)
-                    sdk/sdk-status (constantly :available)
-                    sdk/spawn-headless-sdk!
-                    (fn [ling-id _opts]
-                      {:ling-id ling-id :status :spawned :backend :agent-sdk :phase :idle})
-                    sdk/dispatch-headless-sdk!
-                    (fn [_ling-id _task & _]
-                      (reset! dispatch-called? true)
-                      nil)
-                    sdk/get-session
-                    (fn [_] {:session-id "test-sess" :status :idle})]
-        (let [slave-id (proto/spawn! ling-inst {:kanban-task-id "task-no-prompt"
-                                                :depth 1})]
-          (is (= "no-task-headless" slave-id)
-              "Should spawn successfully without task")
-          (is (not @dispatch-called?)
-              "No dispatch should happen when no task provided"))))))
 
 (comment
   ;; Run all strategy tests

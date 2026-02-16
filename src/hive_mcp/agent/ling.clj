@@ -3,10 +3,7 @@
   (:require [hive-mcp.agent.protocol :refer [IAgent]]
             [hive-mcp.agent.ling.strategy :as strategy]
             [hive-mcp.agent.ling.terminal-registry :as terminal-reg]
-            [hive-mcp.agent.ling.headless-strategy :as headless-strat]
-            [hive-mcp.agent.ling.openrouter-strategy :as openrouter-strat]
-            [hive-mcp.agent.ling.agent-sdk-strategy :as sdk-strat]
-            [hive-mcp.agent.headless :as headless]
+            [hive-mcp.agent.ling.headless-registry :as headless-reg]
             [hive-mcp.workflows.catchup-ling :as catchup-ling]
             [hive-mcp.swarm.datascript.lings :as ds-lings]
             [hive-mcp.swarm.datascript.queries :as ds-queries]
@@ -20,34 +17,31 @@
 
 (defn resolve-effective-mode
   "Pure function: raw spawn inputs -> effective spawn mode keyword.
-   Handles OpenRouter model detection and Agent SDK availability.
+   Handles OpenRouter model detection and headless registry resolution.
    Public: also used by spawn.clj for mode queries."
   [{:keys [model spawn-mode]}]
   (let [non-claude? (and model (not (schema/claude-model? model)))
         raw-mode (if non-claude?
                    :openrouter
-                   (or spawn-mode :vterm))]
+                   (or spawn-mode :claude))]
     (if (= raw-mode :headless)
-      (if (sdk-strat/sdk-available?)
-        :agent-sdk
-        (do (log/warn "Agent SDK unavailable, falling back to raw headless"
-                      {:sdk-status (sdk-strat/sdk-status)})
-            :headless))
+      (or (headless-reg/best-headless-for-provider :claude)
+          (do (log/warn "No headless backend registered for :claude, falling back to :headless"
+                        {:registered (headless-reg/registered-headless)})
+              :headless))
       raw-mode)))
 
 (defn- resolve-strategy
   "Get the ILingStrategy implementation for a spawn mode.
-   Checks terminal registry first (addon-contributed backends),
-   then falls back to built-in strategies."
+   Checks terminal registry first, then headless registry.
+   Pure OCP — no hardcoded strategy constructors."
   [mode]
   (or (terminal-reg/resolve-terminal-strategy mode)
-      (case mode
-        :headless (headless-strat/->headless-strategy)
-        :openrouter (openrouter-strat/->openrouter-strategy)
-        :agent-sdk (sdk-strat/->agent-sdk-strategy)
-        (throw (ex-info (str "No strategy registered for mode: " mode)
-                        {:mode mode
-                         :registered (terminal-reg/registered-terminals)})))))
+      (headless-reg/resolve-headless-strategy mode)
+      (throw (ex-info (str "No strategy registered for mode: " mode)
+                      {:mode mode
+                       :registered-terminals (terminal-reg/registered-terminals)
+                       :registered-headless (headless-reg/registered-headless)}))))
 
 (defn- ling-ctx
   "Build a context map from a Ling record for strategy calls."
@@ -66,7 +60,7 @@
   {:cwd (:slave/cwd slave)
    :presets (:slave/presets slave)
    :project-id (:slave/project-id slave)
-   :spawn-mode (or (:ling/spawn-mode slave) :vterm)
+   :spawn-mode (or (:ling/spawn-mode slave) :claude)
    :model (:ling/model slave)})
 
 (declare ->ling)
@@ -114,7 +108,8 @@
         spawn-opts (if enriched-task
                      (assoc opts :task enriched-task)
                      opts)
-        slave-id (strategy/strategy-spawn! strat ctx spawn-opts)]
+        slave-id (strategy/strategy-spawn! strat ctx spawn-opts)
+        headless? (contains? (headless-reg/registered-headless) mode)]
 
     ;; Set initial status based on whether a task will be dispatched.
     ;; When a task is provided, set :working immediately to prevent
@@ -130,14 +125,7 @@
                                    :requested-id (when (not= slave-id ling-id) ling-id)})
     (ds-lings/update-slave! slave-id (cond-> {:ling/spawn-mode mode
                                               :ling/model (or effective-model "claude")}
-                                       (and (= mode :headless)
-                                            (headless/headless-status slave-id))
-                                       (assoc :ling/process-pid
-                                              (:pid (headless/headless-status slave-id))
-                                              :ling/process-alive? true)
-                                       (= mode :openrouter)
-                                       (assoc :ling/process-alive? true)
-                                       (= mode :agent-sdk)
+                                       headless?
                                        (assoc :ling/process-alive? true)))
 
     (when (and max-budget-usd (pos? max-budget-usd))
@@ -147,7 +135,7 @@
                 (log/info "Budget guardrail registered for ling"
                           {:ling-id slave-id :max-budget-usd max-budget-usd}))))
 
-    (when (and enriched-task (not (#{:headless :openrouter :agent-sdk} mode)))
+    (when (and enriched-task (not headless?))
       (let [task-ling (->ling slave-id {:cwd cwd
                                         :presets presets
                                         :project-id project-id
@@ -175,7 +163,7 @@
           mode (or spawn-mode
                    (when-let [slave (ds-queries/get-slave id)]
                      (:ling/spawn-mode slave))
-                   :vterm)
+                   :claude)
           strat (resolve-strategy mode)]
       (ds-lings/update-slave! id {:slave/status :working})
       (ds-lings/add-task! task-id id {:status :dispatched
@@ -206,7 +194,7 @@
     (let [ds-status (ds-queries/get-slave id)
           mode (or spawn-mode
                    (:ling/spawn-mode ds-status)
-                   :vterm)
+                   :claude)
           strat (resolve-strategy mode)]
       (strategy/strategy-status strat (ling-ctx this) ds-status)))
 
@@ -215,7 +203,7 @@
           mode (or spawn-mode
                    (when-let [slave (ds-queries/get-slave id)]
                      (:ling/spawn-mode slave))
-                   :vterm)]
+                   :claude)]
       (if can-kill?
         (do
           (.release-claims! this)
@@ -272,7 +260,7 @@
   [id opts]
   (let [model-val (:model opts)
         effective-spawn-mode (resolve-effective-mode {:model model-val
-                                                      :spawn-mode (:spawn-mode opts :vterm)})]
+                                                      :spawn-mode (:spawn-mode opts :claude)})]
     (map->Ling (cond-> {:id id
                         :cwd (:cwd opts)
                         :presets (:presets opts [])
@@ -317,7 +305,7 @@
     (let [mode (or (:spawn-mode ling)
                    (when-let [slave (ds-queries/get-slave ling-id)]
                      (:ling/spawn-mode slave))
-                   :vterm)
+                   :claude)
           strat (resolve-strategy mode)]
       (strategy/strategy-interrupt! strat (ling-ctx ling)))
     {:success? false

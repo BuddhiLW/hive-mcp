@@ -79,7 +79,7 @@
                                   (string? presets) [presets]
                                   (sequential? presets) (vec presets)
                                   :else [presets])
-                    effective-spawn-mode (keyword (or spawn_mode "vterm"))
+                    effective-spawn-mode (keyword (or spawn_mode "claude"))
                     _ (when-not (spawn-registry/valid-mode? effective-spawn-mode)
                         (throw (ex-info (str "spawn_mode must be one of: " (pr-str spawn-registry/mcp-modes))
                                         {:spawn-mode spawn_mode})))
@@ -135,4 +135,4 @@
                            :files files}))))
           (catch Exception e
             (log/error "Failed to spawn agent" {:type agent-type :error (ex-message e)})
-            (mcp-error (str "Failed to spawn " (name agent-type) ": " (ex-message e)))))))))
+            (mcp-error (str "Failed to spawn " (clojure.core/name agent-type) ": " (ex-message e)))))))))

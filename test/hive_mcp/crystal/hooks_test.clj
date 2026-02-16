@@ -624,7 +624,7 @@
                   hooks/harvest-completed-tasks (fn [_] {:tasks [] :count 0})
                   hooks/harvest-git-commits (fn [_] {:commits [] :count 0})
                   hive-mcp.crystal.recall/get-buffered-recalls (fn [] {})
-                  hive-mcp.crystal.recall/flush-created-ids! (fn [] [])
+                  hive-mcp.crystal.recall/flush-created-ids! (fn [& _] [])
                   crystal/get-session-start (fn [& _] (java.time.Instant/parse "2026-02-11T10:00:00Z"))
                   crystal/session-timing-metadata
                   (fn [start end]
@@ -648,8 +648,8 @@
                   hooks/harvest-git-commits (fn [_] {:commits [] :count 0})
                   hive-mcp.crystal.recall/get-buffered-recalls (fn [] {})
                   hive-mcp.crystal.recall/flush-created-ids!
-                  (fn [] [{:id "note-abc" :timestamp "2026-02-11T10:05:00Z"}
-                          {:id "note-def" :timestamp "2026-02-11T10:10:00Z"}])
+                  (fn [& _] [{:id "note-abc" :timestamp "2026-02-11T10:05:00Z"}
+                             {:id "note-def" :timestamp "2026-02-11T10:10:00Z"}])
                   crystal/get-session-start (fn [& _] nil)
                   crystal/session-timing-metadata
                   (fn [_ end] {:session-start nil :session-end (.toString end) :duration-minutes 0})
@@ -674,7 +674,7 @@
                   (fn [] {"entry-111" [{:context :explicit-reference}]
                           "entry-222" [{:context :cross-session}]
                           "entry-333" [{:context :catchup-structural}]})
-                  hive-mcp.crystal.recall/flush-created-ids! (fn [] [])
+                  hive-mcp.crystal.recall/flush-created-ids! (fn [& _] [])
                   crystal/get-session-start (fn [& _] nil)
                   crystal/session-timing-metadata
                   (fn [_ end] {:session-start nil :session-end (.toString end) :duration-minutes 0})
@@ -699,7 +699,7 @@
                   hooks/harvest-completed-tasks (fn [_] {:tasks [] :count 0})
                   hooks/harvest-git-commits (fn [_] {:commits [] :count 0})
                   hive-mcp.crystal.recall/get-buffered-recalls (fn [] {})
-                  hive-mcp.crystal.recall/flush-created-ids! (fn [] [])
+                  hive-mcp.crystal.recall/flush-created-ids! (fn [& _] [])
                   crystal/get-session-start (fn [& _] nil)
                   crystal/session-timing-metadata
                   (fn [_ end] {:session-start nil :session-end (.toString end) :duration-minutes 0})
@@ -722,7 +722,7 @@
                   hooks/harvest-git-commits (fn [_] {:commits [] :count 0})
                   hive-mcp.crystal.recall/get-buffered-recalls (fn [] {})
                   hive-mcp.crystal.recall/flush-created-ids!
-                  (fn [] (throw (Exception. "Atom corrupted")))
+                  (fn [& _] (throw (Exception. "Atom corrupted")))
                   crystal/get-session-start (fn [& _] nil)
                   crystal/session-timing-metadata
                   (fn [_ end] {:session-start nil :session-end (.toString end) :duration-minutes 0})

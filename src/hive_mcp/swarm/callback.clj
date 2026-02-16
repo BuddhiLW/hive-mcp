@@ -112,7 +112,7 @@
                                    {:cwd (:slave/cwd agent-data)
                                     :presets (:slave/presets agent-data)
                                     :project-id (:slave/project-id agent-data)
-                                    :spawn-mode (or (:ling/spawn-mode agent-data) :vterm)})]
+                                    :spawn-mode (or (:ling/spawn-mode agent-data) :claude)})]
             (proto/dispatch! agent {:task msg :priority :high})
             (log/info "Callback fired" {:task-id task-id :ling-id ling-id
                                         :status (:status event)})

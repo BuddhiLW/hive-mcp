@@ -4,7 +4,6 @@
             [clojure.string :as str]
             [hive-mcp.dns.result :refer [rescue]]
             [hive-mcp.protocols.agent-bridge :as bridge]
-            [hive-mcp.agent.headless-sdk :as sdk]
             [hive-mcp.extensions.registry :as ext]
             [taoensso.timbre :as log]))
 
@@ -81,7 +80,9 @@
   [observations]
   (if-let [score-fn (ext/get-extension :es/score)]
     (score-fn observations)
-    (sdk/score-observations observations)))
+    (if-let [sdk-score-fn (rescue nil (requiring-resolve 'hive-claude.sdk.saa/score-observations))]
+      (sdk-score-fn observations)
+      observations)))
 
 (defn- plan-from-observations-enhanced
   "Generate a plan using extension, falling back to nil."
@@ -97,10 +98,19 @@
     (enrich-fn task)
     nil))
 
+(defn- resolve-saa-phases
+  "Resolve SAA phase config from SDK addon (hive-claude).
+   Returns phase map or nil if not available."
+  []
+  (rescue nil
+          (when-let [v (requiring-resolve 'hive-claude.sdk.saa/saa-phases)]
+            @v)))
+
 (defn- build-phase-prompt
   "Build the full prompt for a given SAA phase."
   [phase task-or-content extra-context]
-  (let [phase-config (get sdk/saa-phases phase)
+  (let [saa-phases (resolve-saa-phases)
+        phase-config (get saa-phases phase)
         _suffix (:system-prompt-suffix phase-config)]
     (case phase
       :silence
@@ -129,7 +139,8 @@
 (defn- build-phase-opts
   "Build query options for a phase."
   [phase user-opts]
-  (let [phase-config (get sdk/saa-phases phase)]
+  (let [saa-phases (resolve-saa-phases)
+        phase-config (get saa-phases phase)]
     (cond-> {:allowed-tools (:allowed-tools phase-config)
              :permission-mode (keyword (:permission-mode phase-config))}
       (:system-prompt user-opts)

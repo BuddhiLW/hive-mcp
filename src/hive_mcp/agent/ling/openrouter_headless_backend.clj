@@ -1,7 +1,14 @@
-(ns hive-mcp.agent.ling.openrouter-strategy
-  "OpenRouter spawn strategy using HTTP API-based ling lifecycle."
-  (:require [hive-mcp.agent.ling.strategy :refer [ILingStrategy]]
-            [hive-mcp.agent.headless :as headless]
+(ns hive-mcp.agent.ling.openrouter-headless-backend
+  "OpenRouter headless backend implementing IHeadlessBackend.
+
+   Stays in hive-mcp (not provider-specific — serves as multi-model
+   headless ling backend via OpenRouter API). Registers as :openrouter
+   in the headless-registry during server init.
+
+   Refactored from openrouter-strategy.clj to implement the addon
+   protocol pattern instead of directly implementing ILingStrategy."
+  (:require [hive-mcp.addons.headless :as headless-proto]
+            [hive-mcp.agent.ring-buffer :as rb]
             [hive-mcp.config.core :as global-config]
             [hive-mcp.dns.result :refer [rescue]]
             [clojure.data.json :as json]
@@ -87,8 +94,8 @@
       (let [error-body (rescue "" (slurp (.body response)))]
         (log/error "OpenRouter streaming request failed"
                    {:status status :model model :body (subs error-body 0 (min 500 (count error-body)))})
-        (headless/ring-buffer-append! stdout-buffer
-                                      (str "[ERROR] OpenRouter API returned HTTP " status))
+        (rb/ring-buffer-append! stdout-buffer
+                                (str "[ERROR] OpenRouter API returned HTTP " status))
         {:error (str "HTTP " status ": " (subs error-body 0 (min 200 (count error-body))))})
       (let [reader (BufferedReader. (InputStreamReader. (.body response)))
             content-acc (StringBuilder.)]
@@ -99,19 +106,19 @@
                 (when-let [chunk (parse-sse-line line)]
                   (when-let [delta (extract-delta-content chunk)]
                     (.append content-acc delta)
-                    (headless/ring-buffer-append! stdout-buffer delta)))
+                    (rb/ring-buffer-append! stdout-buffer delta)))
                 (recur))))
           (catch java.io.IOException e
             (log/debug "Stream reader IO exception" {:error (ex-message e)}))
           (catch Exception e
             (log/warn "Stream reader exception" {:error (ex-message e)})
-            (headless/ring-buffer-append! stdout-buffer
-                                          (str "[ERROR] Stream error: " (ex-message e))))
+            (rb/ring-buffer-append! stdout-buffer
+                                    (str "[ERROR] Stream error: " (ex-message e))))
           (finally
             (try (.close reader) (catch Exception _))))
         (let [full-content (.toString content-acc)]
           (when (pos? (.length content-acc))
-            (headless/ring-buffer-append! stdout-buffer "\n---END-COMPLETION---"))
+            (rb/ring-buffer-append! stdout-buffer "\n---END-COMPLETION---"))
           {:content full-content})))))
 
 (defn dispatch-async!
@@ -125,15 +132,15 @@
                   (fn []
                     (try
                       (swap! request-count inc)
-                      (headless/ring-buffer-append! (:stdout-buffer session)
-                                                    (str "\n[USER] " (subs user-message 0 (min 100 (count user-message))) "..."))
+                      (rb/ring-buffer-append! (:stdout-buffer session)
+                                              (str "\n[USER] " (subs user-message 0 (min 100 (count user-message))) "..."))
                       (let [result (stream-completion! session @messages)]
                         (if (:error result)
                           (do
                             (log/error "OpenRouter completion failed"
                                        {:ling-id ling-id :error (:error result)})
-                            (headless/ring-buffer-append! (:stdout-buffer session)
-                                                          (str "[ERROR] " (:error result))))
+                            (rb/ring-buffer-append! (:stdout-buffer session)
+                                                    (str "[ERROR] " (:error result))))
                           (when (seq (:content result))
                             (swap! messages conj {:role "assistant"
                                                   :content (:content result)})
@@ -142,8 +149,8 @@
                       (catch Exception e
                         (log/error "Dispatch async exception"
                                    {:ling-id ling-id :error (ex-message e)})
-                        (headless/ring-buffer-append! (:stdout-buffer session)
-                                                      (str "[ERROR] " (ex-message e))))
+                        (rb/ring-buffer-append! (:stdout-buffer session)
+                                                (str "[ERROR] " (ex-message e))))
                       (finally
                         (reset! active-thread nil))))
                   (str "hive-openrouter-ling-" ling-id))]
@@ -152,15 +159,21 @@
       (.start thread)
       thread)))
 
-(defrecord OpenRouterStrategy []
-  ILingStrategy
+;; =============================================================================
+;; IHeadlessBackend Implementation
+;; =============================================================================
 
-  (strategy-spawn! [_ ling-ctx opts]
-    (let [{:keys [id cwd presets project-id model]} ling-ctx
+(defrecord OpenRouterHeadlessBackend []
+  headless-proto/IHeadlessBackend
+
+  (headless-id [_] :openrouter)
+
+  (headless-spawn! [_ ctx opts]
+    (let [{:keys [id cwd presets project-id model]} ctx
           {:keys [task buffer-capacity]} opts
           api-key (resolve-api-key opts)
-          system-prompt (build-system-prompt ling-ctx)
-          stdout-buf (headless/create-ring-buffer (or buffer-capacity default-buffer-capacity))
+          system-prompt (build-system-prompt ctx)
+          stdout-buf (rb/create-ring-buffer (or buffer-capacity default-buffer-capacity))
           session {:model model
                    :api-key api-key
                    :messages (atom [{:role "system" :content system-prompt}])
@@ -182,16 +195,16 @@
       (.put session-registry id session)
 
       (log/info "OpenRouter ling spawned" {:id id :model model :cwd cwd})
-      (headless/ring-buffer-append! stdout-buf
-                                    (str "[SYSTEM] OpenRouter ling spawned. Model: " model))
+      (rb/ring-buffer-append! stdout-buf
+                              (str "[SYSTEM] OpenRouter ling spawned. Model: " model))
 
       (when task
         (dispatch-async! id task))
 
       id))
 
-  (strategy-dispatch! [_ ling-ctx task-opts]
-    (let [{:keys [id]} ling-ctx
+  (headless-dispatch! [_ ctx task-opts]
+    (let [{:keys [id]} ctx
           {:keys [task]} task-opts]
       (if-let [session (.get session-registry id)]
         (if @(:alive? session)
@@ -204,11 +217,11 @@
         (throw (ex-info "OpenRouter ling session not found"
                         {:ling-id id})))))
 
-  (strategy-status [_ ling-ctx ds-status]
-    (let [{:keys [id]} ling-ctx
+  (headless-status [_ ctx ds-status]
+    (let [{:keys [id]} ctx
           session (.get session-registry id)]
       (if session
-        (let [buf-stats (headless/ring-buffer-stats (:stdout-buffer session))
+        (let [buf-stats (rb/ring-buffer-stats (:stdout-buffer session))
               alive? @(:alive? session)
               active? (some? @(:active-thread session))]
           (cond-> (or ds-status {})
@@ -228,8 +241,8 @@
         (when ds-status
           (assoc ds-status :openrouter-alive? false)))))
 
-  (strategy-kill! [_ ling-ctx]
-    (let [{:keys [id]} ling-ctx]
+  (headless-kill! [_ ctx]
+    (let [{:keys [id]} ctx]
       (if-let [session (.get session-registry id)]
         (do
           (reset! (:alive? session) false)
@@ -246,16 +259,30 @@
           (log/warn "OpenRouter ling not found in registry" {:id id})
           {:killed? true :id id :reason :session-not-found}))))
 
-  (strategy-interrupt! [_ ling-ctx]
-    (let [{:keys [id]} ling-ctx]
+  (headless-interrupt! [_ ctx]
+    (let [{:keys [id]} ctx]
       {:success? false
        :ling-id id
-       :errors ["Interrupt not supported for openrouter spawn mode"]})))
+       :reason :not-supported
+       :errors ["Interrupt not supported for openrouter spawn mode"]}))
 
-(defn ->openrouter-strategy
-  "Create an OpenRouterStrategy instance."
+  headless-proto/IHeadlessCapabilities
+
+  (declared-capabilities [_]
+    #{:cap/streaming :cap/multi-turn}))
+
+;; =============================================================================
+;; Constructor
+;; =============================================================================
+
+(defn make-openrouter-headless-backend
+  "Create an OpenRouterHeadlessBackend instance."
   []
-  (->OpenRouterStrategy))
+  (->OpenRouterHeadlessBackend))
+
+;; =============================================================================
+;; Public Query API (for status/stdout queries)
+;; =============================================================================
 
 (defn get-session
   "Get session data for an OpenRouter ling."
@@ -269,20 +296,20 @@
      :message-count (count @(:messages session))
      :request-count @(:request-count session)
      :total-tokens @(:total-tokens session)
-     :stdout-stats (headless/ring-buffer-stats (:stdout-buffer session))}))
+     :stdout-stats (rb/ring-buffer-stats (:stdout-buffer session))}))
 
 (defn get-stdout
   "Get stdout ring buffer contents for an OpenRouter ling."
   ([ling-id] (get-stdout ling-id {}))
   ([ling-id opts]
    (when-let [session (.get session-registry ling-id)]
-     (headless/ring-buffer-contents (:stdout-buffer session) opts))))
+     (rb/ring-buffer-contents (:stdout-buffer session) opts))))
 
 (defn get-stdout-since
   "Get stdout lines appended after a given timestamp."
   [ling-id since]
   (when-let [session (.get session-registry ling-id)]
-    (headless/ring-buffer-contents-since (:stdout-buffer session) since)))
+    (rb/ring-buffer-contents-since (:stdout-buffer session) since)))
 
 (defn get-conversation
   "Get the full conversation history for an OpenRouter ling."

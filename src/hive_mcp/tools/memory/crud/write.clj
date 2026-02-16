@@ -153,7 +153,7 @@
                                :abstraction-level abstraction-level
                                :knowledge-gaps knowledge-gaps :agent-id agent-id}
                     entry-id (index-entry! openrouter? entry-ctx)
-                    _ (recall/register-created-id! entry-id)
+                    _ (recall/register-created-id! entry-id project-id)
                     kg-params {:kg_implements (:kg-implements-vec kg-vecs)
                                :kg_supersedes (:kg-supersedes-vec kg-vecs)
                                :kg_depends_on (:kg-depends-on-vec kg-vecs)

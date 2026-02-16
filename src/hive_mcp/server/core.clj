@@ -99,6 +99,7 @@
     ;; Phase 4.5: Extension loading (classpath addon discovery)
     ;; Must run AFTER embedding/memory (extensions may use Chroma).
     ;; Must run BEFORE workflow engine (handlers may use extensions).
+    ;; hive-claude auto-discovered here via META-INF manifest (registers :claude terminal)
     (init/load-extensions!)
 
     ;; Phase 5: Channels + Sync

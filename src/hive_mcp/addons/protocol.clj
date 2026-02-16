@@ -166,7 +166,23 @@
         :remote-tool-count 5}
 
      Called by the multiplexer health aggregator and exposed
-     via the health MCP tool."))
+     via the health MCP tool.")
+
+  (excluded-tools [this]
+    "Return a set of tool name strings this addon supersedes from other addons.
+
+     When addon A declares #{\"read_file\"}, tools named \"read_file\" from all
+     OTHER active addons are filtered out of tools/list. Addon A's own
+     tool with that name remains visible.
+
+     This enables transparent capability escalation: a smarter addon can
+     overshadow a basic addon's tools by registering the same name and
+     declaring the exclusion.
+
+     Returns #{} (empty set) if no exclusions are needed.
+
+     Legacy addons that don't implement this method are handled gracefully
+     by the registry (defaults to #{})."))
 
 ;; =============================================================================
 ;; Predicates

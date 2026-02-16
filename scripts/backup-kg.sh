@@ -37,7 +37,7 @@ BACKUP_FILE="$BACKUP_DIR/kg-datahike-$(date +%Y%m%dT%H%M%S).edn"
 # Export KG via nREPL (hot JVM — no cold start, ~1s)
 # Uses bb + bencode for raw nREPL communication
 BB="${BB:-/home/linuxbrew/.linuxbrew/bin/bb}"
-NREPL_CODE="(binding [*out* (java.io.StringWriter.)] (require '[hive-mcp.knowledge-graph.migration :as mig]) (mig/export-to-file! \"${BACKUP_FILE}\") :done)"
+NREPL_CODE='(let [export-fn (requiring-resolve (quote hive-mcp.knowledge-graph.migration/export-to-file!))] (export-fn "'"${BACKUP_FILE}"'") "EXPORT-OK")'
 
 NREPL_PORT="$NREPL_PORT" NREPL_CODE="$NREPL_CODE" "$BB" -e '
 (require (quote [bencode.core :as b]))

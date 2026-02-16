@@ -4,7 +4,7 @@
    Built on hive-dsl.adt/defadt. Provides type-safe spawn mode dispatch
    with compile-time exhaustiveness checking via adt-case.
 
-   Variants: :vterm | :headless | :agent-sdk | :openrouter
+   Variants: :claude | :vterm | :headless | :agent-sdk | :openrouter
 
    This module is the type-safe counterpart to spawn-mode-registry.
    - spawn-mode-registry: SST for metadata (requires-emacs?, io-model, etc.)
@@ -50,10 +50,12 @@
 
 (defadt SpawnMode
   "Agent spawn modes — closed sum type.
-   :vterm      — Emacs vterm buffer (interactive, Emacs-bound)
+   :claude     — Claude Code terminal via hive-claude bridge (default)
+   :vterm      — Raw Emacs vterm buffer via vterm-mcp
    :headless   — Alias for :agent-sdk (legacy name, auto-mapped since 0.12.0)
    :agent-sdk  — Claude Agent SDK subprocess (default for headless)
    :openrouter — Direct OpenRouter API calls (multi-model, no CLI)"
+  :claude
   :vterm
   :headless
   :agent-sdk
@@ -154,7 +156,7 @@
 
 (def emacs-variants
   "Set of variants requiring Emacs."
-  #{:vterm})
+  #{:claude :vterm})
 
 (def headless-variants
   "Set of subprocess/API variants (no Emacs required)."

@@ -212,7 +212,8 @@
 
 (defn- move-to-done! [entry task-id]
   (when-let [task-data (crystal-hooks/extract-task-from-kanban-entry entry)]
-    (log/info "Calling crystal hook for completed kanban task:" task-id)
+    (log/info "Calling crystal hook for completed kanban task:" task-id
+              "project-id:" (:project-id task-data))
     (try (crystal-hooks/on-kanban-done task-data)
          (catch Exception e (log/warn "Crystal hook failed (non-fatal):" (.getMessage e)))))
   ;; Archive to Datahike before deleting from Chroma

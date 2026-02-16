@@ -52,7 +52,7 @@
    ;; === Ling (depth 1) — worker agent ===
    :ling        {:description  "Worker agent spawned by coordinator (Claude Code instance)"
                  :depth        1
-                 :spawn-modes  #{:vterm :headless :agent-sdk}
+                 :spawn-modes  #{:claude :vterm :headless :agent-sdk}
                  :capabilities #{:read :write :delegate :eval :search :commit :propose-diff}
                  :permissions  {:can-spawn?        false ;; child lings cannot spawn (anti-cascade)
                                 :can-delegate?     true

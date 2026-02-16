@@ -50,7 +50,7 @@
             (let [ling-agent (ling/->ling id {:cwd        (:slave/cwd agent)
                                               :presets    (or (:slave/presets agent) [])
                                               :project-id (:slave/project-id agent)
-                                              :spawn-mode (or (:ling/spawn-mode agent) :vterm)})
+                                              :spawn-mode (or (:ling/spawn-mode agent) :claude)})
                   _result    (proto/kill! ling-agent)]
               (log/info "SMITE: killed" {:id id :status (:slave/status agent)})
               {:id id :status (name (:slave/status agent)) :killed true}))]

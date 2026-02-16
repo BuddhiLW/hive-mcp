@@ -34,8 +34,8 @@
 ;; ── Constants ───────────────────────────────────────────────────────────────
 
 (def ^:private vterm-max-slots
-  "Hard cap for vterm lings per Emacs daemon."
-  (spawn-registry/slot-limit :vterm))
+  "Hard cap for Emacs-bound lings per daemon (claude or vterm)."
+  (spawn-registry/slot-limit :claude))
 
 (def ^:private headless-modes
   "Set of spawn modes that don't require Emacs."
@@ -65,7 +65,7 @@
   (cond-> {:type "ling" :name agent-name :cwd effective-dir :presets default-presets}
     task-id              (assoc :kanban_task_id task-id)
     model                (assoc :model model)
-    (not= :vterm route)  (assoc :spawn_mode (name spawn-mode-kw))))
+    (not= :claude route) (assoc :spawn_mode (name spawn-mode-kw))))
 
 (defn- parse-spawn-result
   "Extract agent-id and spawn-mode from spawn handler response."
@@ -97,9 +97,9 @@
   [{:keys [task effective-dir default-presets model route spawn-mode-kw]}]
   (let [title       (or (:title task) (:id task) "untitled")
         task-id     (:id task)
-        prefix      (if (= :vterm route) "forja-vt-" "forja-hl-")
+        prefix      (if (= :claude route) "forja-cl-" "forja-hl-")
         agent-name  (str prefix (System/currentTimeMillis))
-        ready-mode  (or spawn-mode-kw (if (= :vterm route) :vterm :headless))
+        ready-mode  (or spawn-mode-kw (if (= :claude route) :claude :headless))
         base-result {:agent-id agent-name :task-title title :task-id task-id
                      :spawned false :route route}
         r (result/rescue
@@ -123,7 +123,7 @@
                            {:agent agent-id :task title :model (or model "claude")})
                  (cond-> {:agent-id agent-id :task-title title :task-id task-id
                           :spawned true :route route :model (or model "claude")}
-                   (not= :vterm route) (assoc :spawn-mode ready-mode)))
+                   (not= :claude route) (assoc :spawn-mode ready-mode)))
                (do
                  (log/warn (str "SPARK[" (name route) "]: ling not ready, skipping dispatch")
                            {:agent-id agent-id :elapsed-ms (:elapsed-ms ready) :phase (:phase ready)})
@@ -156,7 +156,7 @@
   [{:keys [effective-spawn-mode ling-tasks max-slots active-counts]}]
   (let [{:keys [active-vterm active-total]} active-counts]
     (case effective-spawn-mode
-      :vterm
+      (:claude :vterm)
       (let [cap   (min (or max-slots vterm-max-slots) vterm-max-slots)
             avail (max 0 (- cap active-total))]
         [(vec (take avail ling-tasks)) []])
@@ -179,7 +179,7 @@
   {:vt-results (doall (for [task vterm-tasks]
                         (spawn-one! {:task task :effective-dir effective-dir
                                      :default-presets default-presets :model model
-                                     :route :vterm})))
+                                     :route :claude})))
    :hl-results (doall (for [task headless-tasks]
                         (spawn-one! {:task task :effective-dir effective-dir
                                      :default-presets default-presets :model model
@@ -226,7 +226,7 @@
 
 (defn spark!
   "Spawn lings or dispatch drones for ready tasks.
-   Routes: :drone (wave all), :vterm, :headless/:agent-sdk/:openrouter,
+   Routes: :drone (wave all), :claude (default Emacs), :vterm, :headless/:agent-sdk/:openrouter,
    :mixed (default, classify + split)."
   [{:keys [directory max_slots presets tasks spawn_mode spawn-mode model
            preset seeds ctx_refs kg_node_ids]}]

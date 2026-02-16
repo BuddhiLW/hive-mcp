@@ -519,6 +519,9 @@
    :completed-task/agent-id
    {:db/doc "ID of the ling/agent that completed the task"}
 
+   :completed-task/project-id
+   {:db/doc "Project scope of the completed task"}
+
    :completed-task/completed-at
    {:db/doc "Timestamp when task was completed"}
 

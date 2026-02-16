@@ -54,12 +54,12 @@
 
 (defn on-kanban-done
   "Hook called when a kanban task moves to DONE."
-  [{:keys [id title _context _priority _started] :as task}]
-  (log/info "Kanban DONE hook triggered for task:" id title)
+  [{:keys [id title project-id _context _priority _started] :as task}]
+  (log/info "Kanban DONE hook triggered for task:" id title "project-id:" project-id)
   ;; Register in DataScript for wrap harvesting (non-blocking)
   (result/rescue nil
-                 (do (ds/register-completed-task! id {:title title})
-                     (log/debug "Registered completed task in DataScript:" id)))
+                 (do (ds/register-completed-task! id {:title title :project-id project-id})
+                     (log/debug "Registered completed task in DataScript:" id "project-id:" project-id)))
   (let [;; Generate progress note
         progress-note (crystal/task-to-progress-note
                        (assoc task :completed-at (.toString (java.time.Instant/now))))
@@ -93,21 +93,27 @@
 (defn extract-task-from-kanban-entry
   "Extract task data from a kanban memory entry."
   [entry]
-  (let [content (:content entry)]
+  (let [content (:content entry)
+        project-id (some (fn [tag]
+                           (when (and (string? tag) (str/starts-with? tag "scope:project:"))
+                             (subs tag (count "scope:project:"))))
+                         (:tags entry))]
     (if (map? content)
-      {:id (:id entry)
-       :title (:title content)
-       :context (:context content)
-       :priority (or (:priority content) "medium")
-       :started (:started content)
-       :status (:status content)}
+      (cond-> {:id (:id entry)
+               :title (:title content)
+               :context (:context content)
+               :priority (or (:priority content) "medium")
+               :started (:started content)
+               :status (:status content)}
+        project-id (assoc :project-id project-id))
       ;; Handle string content (legacy format)
-      {:id (:id entry)
-       :title (str content)
-       :context nil
-       :priority "medium"
-       :started nil
-       :status "done"})))
+      (cond-> {:id (:id entry)
+               :title (str content)
+               :context nil
+               :priority "medium"
+               :started nil
+               :status "done"}
+        project-id (assoc :project-id project-id)))))
 
 ;; =============================================================================
 ;; Memory Access Hook
@@ -166,9 +172,10 @@
    (result/rescue {:tasks [] :count 0 :ds-count 0 :emacs-count 0}
                   (let [dir (or directory (ctx/current-directory))
                         project-id (when dir (scope/get-current-project-id dir))
-           ;; Primary source: DataScript registry (non-blocking fallback to [])
+           ;; DataScript registry (project-scoped)
                         ds-tasks (result/rescue []
-                                                (->> (ds/get-completed-tasks-this-session)
+                                                (->> (ds/get-completed-tasks-this-session
+                                                      :project-id project-id)
                                                      (mapv (fn [t]
                                                              {:id (:completed-task/id t)
                                                               :title (:completed-task/title t)
@@ -256,6 +263,7 @@
                    :errors [{:type :harvest-failed :fn "harvest-all"}]}
                   (let [dir (or directory (ctx/current-directory))
                         effective-agent (or agent-id (ctx/current-agent-id))
+                        project-id (when dir (scope/get-current-project-id dir))
                         progress (harvest-session-progress {:directory dir})
                         tasks (harvest-completed-tasks {:directory dir})
                         commits (harvest-git-commits {:directory dir :agent-id effective-agent})
@@ -265,8 +273,8 @@
                                         (crystal/session-timing-metadata
                                          (crystal/get-session-start effective-agent)
                                          (java.time.Instant/now)))
-           ;; Auto-KG: memory IDs created this session (flushed — destructive read)
-                        memory-ids-created (result/rescue [] (recall/flush-created-ids!))
+           ;; Flush created IDs (project-scoped, destructive read)
+                        memory-ids-created (result/rescue [] (recall/flush-created-ids! project-id))
            ;; Auto-KG: memory IDs accessed this session (from recall buffer keys)
                         memory-ids-accessed (vec (keys recalls))
            ;; Aggregate errors from sub-harvests

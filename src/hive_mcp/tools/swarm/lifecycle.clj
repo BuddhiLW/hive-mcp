@@ -4,68 +4,47 @@
             [hive-mcp.tools.swarm.registry :as registry]
             [hive-mcp.swarm.datascript :as ds]
             [hive-mcp.hivemind.core :as hivemind]
-            [hive-mcp.emacs.client :as ec]
-            [hive-mcp.dns.validation :as v]
+            [hive-mcp.agent.ling :as ling]
+            [hive-mcp.agent.protocol :as proto]
             [hive-mcp.tools.memory.scope :as scope]
-            [hive-mcp.tools.catchup :as catchup]
             [hive-mcp.agent.context :as ctx]
             [clojure.string :as str]
-            [cheshire.core :as json]
             [taoensso.timbre :as log]
-            [hive-mcp.telemetry.prometheus :as prom]
-            [hive-mcp.dns.result :refer [rescue]]))
+            [hive-mcp.telemetry.prometheus :as prom]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-(defn- write-spawn-context-file
-  "Write spawn context to a temporary file for elisp consumption."
-  [context-str]
-  (when context-str
-    (rescue nil
-            (let [tmp-file (java.io.File/createTempFile "hive-spawn-ctx-" ".md")]
-              (spit tmp-file context-str)
-              (.getAbsolutePath tmp-file)))))
-
 (defn handle-swarm-spawn
-  "Spawn a new Claude slave instance with context injection."
+  "DEPRECATED: Spawn a new Claude slave instance with context injection.
+   Compat shims redirect swarm_spawn → agent spawn → ling.clj → terminal-registry.
+   This handler is dead code kept for backward compatibility. Prefer `agent spawn`."
   [{:keys [name presets cwd _role terminal kanban_task_id]}]
   (core/with-swarm
     (let [effective-cwd (or cwd (ctx/current-directory))
           validated-cwd (when (and effective-cwd (string? effective-cwd) (not (str/blank? effective-cwd)))
                           effective-cwd)
-          spawn-ctx (rescue nil (catchup/spawn-context validated-cwd))
-          ctx-file (write-spawn-context-file spawn-ctx)
-          presets-str (when (seq presets)
-                        (format "'(%s)" (str/join " " (map #(format "\"%s\"" %) presets))))
-          elisp (format "(json-encode (hive-mcp-swarm-api-spawn \"%s\" %s %s %s %s %s))"
-                        (v/escape-elisp-string (or name "slave"))
-                        (or presets-str "nil")
-                        (if validated-cwd (format "\"%s\"" (v/escape-elisp-string validated-cwd)) "nil")
-                        (if terminal (format "\"%s\"" terminal) "nil")
-                        (if kanban_task_id (format "\"%s\"" (v/escape-elisp-string kanban_task_id)) "nil")
-                        (if ctx-file (format "\"%s\"" (v/escape-elisp-string ctx-file)) "nil"))
-          {:keys [success result error timed-out]} (ec/eval-elisp-with-timeout elisp 10000)]
-      (when spawn-ctx
-        (log/info "spawn-context injected for ling" name
-                  {:chars (count spawn-ctx) :file ctx-file}))
-      (cond
-        timed-out
-        (core/mcp-timeout-error "Spawn operation" :extra-data {:slave_name name})
-
-        success
-        (do
+          project-id (when validated-cwd (scope/get-current-project-id validated-cwd))]
+      (try
+        (let [slave-id (ling/create-ling! (or name "slave")
+                                          {:cwd validated-cwd
+                                           :presets (or presets [])
+                                           :project-id project-id
+                                           :spawn-mode (keyword (or terminal "claude"))
+                                           :kanban-task-id kanban_task_id})]
           (let [current-count (count (registry/get-available-lings))]
             (prom/set-lings-active! (inc current-count)))
-          (core/mcp-success result))
-
-        :else
-        (core/mcp-error (str "Error: " error))))))
+          (core/mcp-success {:slave_id slave-id
+                             :status "spawned"
+                             :cwd validated-cwd
+                             :project-id project-id}))
+        (catch Exception e
+          (core/mcp-error (str "Error: " (ex-message e))))))))
 
 (defn- format-blocking-ops
   "Format blocking operations for error message."
   [ops]
-  (str/join ", " (map name ops)))
+  (str/join ", " (map clojure.core/name ops)))
 
 (defn- can-kill-ownership?
   "Check if caller can kill target ling based on project ownership."
@@ -110,7 +89,8 @@
        {:can-kill? true :blocked-slaves []}))))
 
 (defn- kill-single-slave!
-  "Kill a single slave by ID with ownership and critical ops checks."
+  "Kill a single slave by ID with ownership and critical ops checks.
+   Delegates to ling.clj protocol for terminal-agnostic kill."
   ([slave_id]
    (kill-single-slave! slave_id nil false))
   ([slave_id caller-project-id]
@@ -124,40 +104,31 @@
         :reason reason}
        (let [{crit-can-kill? :can-kill? :keys [blocking-ops]} (ds/can-kill? slave_id)]
          (if crit-can-kill?
-           (let [elisp (format "(json-encode (hive-mcp-swarm-api-kill \"%s\"))"
-                               (v/escape-elisp-string slave_id))
-                 {:keys [success result error timed-out]} (ec/eval-elisp-with-timeout elisp 3000)]
-             (cond
-               timed-out
-               {:success false :error "timeout" :slave-id slave_id}
-
-               success
-               (let [parsed-result (if (string? result)
-                                     (rescue result (json/parse-string result true))
-                                     result)
-                     result-error (get parsed-result :error)]
-                 (if (= result-error "kill-blocked")
-                   (do
-                     (log/warn "Kill blocked by safety validation" {:slave-id slave_id
-                                                                    :reason (get parsed-result :reason)
-                                                                    :message (get parsed-result :message)})
-                     {:success false
-                      :error "kill-blocked-safety"
-                      :slave-id slave_id
-                      :reason (get parsed-result :reason "buffer-safety-validation-failed")
-                      :message (get parsed-result :message)})
-                   (do
-                     (hivemind/clear-agent! slave_id)
-                     {:success true :result parsed-result :slave-id slave_id})))
-
-               :else
-               {:success false :error error :slave-id slave_id}))
+           (if-let [ling-record (ling/get-ling slave_id)]
+             (let [result (proto/kill! ling-record)]
+               (if (:killed? result)
+                 (do
+                   (hivemind/clear-agent! slave_id)
+                   {:success true :result result :slave-id slave_id})
+                 (do
+                   (log/warn "Kill blocked by ling protocol" {:slave-id slave_id
+                                                              :reason (:reason result)
+                                                              :blocking-ops (:blocking-ops result)})
+                   {:success false
+                    :error (if (= :critical-ops-blocking (:reason result))
+                             (format "critical ops: %s" (format-blocking-ops (:blocking-ops result)))
+                             "kill-blocked-safety")
+                    :slave-id slave_id
+                    :reason (:reason result)})))
+             {:success false :error "agent not found" :slave-id slave_id})
            {:success false
             :error (format "critical ops: %s" (format-blocking-ops blocking-ops))
             :slave-id slave_id}))))))
 
 (defn handle-swarm-kill
-  "Kill a slave or all slaves with kill guard and ownership checks."
+  "DEPRECATED: Kill a slave or all slaves with kill guard and ownership checks.
+   Compat shims redirect swarm_kill → agent kill → ling.clj → terminal-registry.
+   This handler is dead code kept for backward compatibility. Prefer `agent kill`."
   [{:keys [slave_id directory force_cross_project]}]
   (core/with-swarm
     (let [effective-dir (or directory (ctx/current-directory))
@@ -196,21 +167,16 @@
                                            :failed (mapv #(select-keys % [:slave-id :error]) failed)}}))
 
             :else
-            (let [elisp "(json-encode (hive-mcp-swarm-api-kill-all))"
-                  {:keys [success result error timed-out]} (ec/eval-elisp-with-timeout elisp 3000)]
-              (cond
-                timed-out
-                (core/mcp-timeout-error "Kill operation" :extra-data {:slave_id slave_id})
-
-                success
-                (do
-                  (registry/clear-registry!)
-                  (reset! hivemind/agent-registry {})
-                  (prom/set-lings-active! 0)
-                  (core/mcp-success result))
-
-                :else
-                (core/mcp-error (str "Error: " error))))))
+            (let [results (mapv #(kill-single-slave! % nil false) slave-ids)
+                  killed (filter :success results)
+                  failed (remove :success results)]
+              (when (every? :success results)
+                (reset! hivemind/agent-registry {}))
+              (prom/set-lings-active! (max 0 (- (count slave-ids) (count killed))))
+              (core/mcp-success {:killed (count killed)
+                                 :failed (count failed)
+                                 :details {:killed (mapv :slave-id killed)
+                                           :failed (mapv #(select-keys % [:slave-id :error]) failed)}}))))
         (let [{:keys [success error] :as result} (kill-single-slave! slave_id caller-project-id force?)]
           (if success
             (do
