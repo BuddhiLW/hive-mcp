@@ -1,14 +1,9 @@
 (ns hive-mcp.crystal.recall
   "Recall tracking with context-aware weighting.
-
-   Classification intelligence delegates to extension if available.
-   Returns noop defaults otherwise.
-
-   Extension points are resolved via the extensions registry at startup.
-   When no extensions are registered, classification functions gracefully
-   degrade to safe default results."
+   Extension points resolved via extensions registry."
   (:require [hive-mcp.crystal.core :as crystal]
             [hive-mcp.extensions.registry :as ext]
+            [hive-dsl.adt :refer [defadt adt-case]]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -125,6 +120,15 @@
   @recall-buffer)
 
 ;; =============================================================================
+;; CreatedEntry ADT — Sum type for session-tracked memory entries
+;; =============================================================================
+
+(defadt CreatedEntry
+  "Session-tracked memory entry. Scoped or unscoped."
+  [:entry/scoped   {:id string? :timestamp string? :project-id string?}]
+  [:entry/unscoped {:id string? :timestamp string?}])
+
+;; =============================================================================
 ;; Created IDs Tracking (Session-scoped)
 ;; =============================================================================
 
@@ -134,26 +138,52 @@
   (atom []))
 
 (defn register-created-id!
-  "Register a newly created memory entry ID for session tracking.
-   Called after successful chroma/index-memory-entry! in write path."
-  [entry-id]
+  "Register a created memory entry ID. Constructs CreatedEntry ADT."
+  [entry-id project-id]
   (when entry-id
-    (swap! created-ids-buffer conj
-           {:id entry-id
-            :timestamp (.toString (java.time.Instant/now))})))
+    (let [ts (.toString (java.time.Instant/now))
+          entry (if project-id
+                  (created-entry :entry/scoped {:id entry-id :timestamp ts :project-id project-id})
+                  (created-entry :entry/unscoped {:id entry-id :timestamp ts}))]
+      (swap! created-ids-buffer conj entry))))
 
 (defn get-created-ids
   "Get all created IDs without clearing."
   []
   @created-ids-buffer)
 
+;; =============================================================================
+;; Pure Partition (Calculation — extracted from Action per Grokking Simplicity)
+;; =============================================================================
+
+(defn partition-by-project
+  "Partition entries by project-id. Returns [matched retained]."
+  [entries project-id]
+  (reduce (fn [[m r] entry]
+            (adt-case CreatedEntry entry
+                      :entry/scoped   (if (= project-id (:project-id entry))
+                                        [(conj m entry) r]
+                                        [m (conj r entry)])
+                      :entry/unscoped [m (conj r entry)]))
+          [[] []]
+          entries))
+
+;; =============================================================================
+;; Flush (Action — IO sandwich: read atom → pure partition → write atom)
+;; =============================================================================
+
 (defn flush-created-ids!
-  "Get and clear all created IDs.
-   Returns: vector of {:id entry-id :timestamp iso-str}"
-  []
-  (let [ids @created-ids-buffer]
-    (reset! created-ids-buffer [])
-    ids))
+  "Flush created IDs. 0-arity: all. 1-arity: filtered by project-id."
+  ([]
+   (let [ids @created-ids-buffer]
+     (reset! created-ids-buffer [])
+     ids))
+  ([project-id]
+   (if (nil? project-id)
+     (flush-created-ids!)
+     (let [[matched retained] (partition-by-project @created-ids-buffer project-id)]
+       (reset! created-ids-buffer retained)
+       matched))))
 
 (comment
   ;; Example usage
@@ -174,4 +204,13 @@
     {:context :catchup-structural}
     {:context :catchup-structural}])
   ;; => [] (noop) or [{:context :catchup-structural :count 3} ...] (with extension)
-  )
+
+  ;; CreatedEntry ADT examples
+  (created-entry :entry/scoped {:id "n-123" :timestamp "2026-01-01T10:00:00Z" :project-id "project-alpha"})
+  (created-entry :entry/unscoped {:id "n-456" :timestamp "2026-01-01T10:00:00Z"})
+
+  (partition-by-project
+   [(created-entry :entry/scoped {:id "a" :timestamp "t1" :project-id "project-alpha"})
+    (created-entry :entry/scoped {:id "b" :timestamp "t2" :project-id "project-beta"})
+    (created-entry :entry/unscoped {:id "c" :timestamp "t3"})]
+   "project-alpha"))
