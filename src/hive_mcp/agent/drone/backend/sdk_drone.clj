@@ -1,8 +1,7 @@
 (ns hive-mcp.agent.drone.backend.sdk-drone
   "SDKDroneBackend -- IDroneExecutionBackend via Claude Agent SDK ephemeral sessions."
   (:require [hive-mcp.agent.drone.backend :as backend]
-            [hive-mcp.agent.sdk.availability :as avail]
-            [hive-mcp.agent.sdk.lifecycle :as lifecycle]
+            [hive-mcp.dns.result :refer [rescue]]
             [clojure.core.async :as async]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
@@ -15,14 +14,22 @@
   [drone-id]
   (str "sdk-drone-" (or drone-id "anon") "-" (System/currentTimeMillis)))
 
+(defn- resolve-sdk-fn
+  "Resolve a function from hive-claude SDK at runtime."
+  [sym]
+  (rescue nil (requiring-resolve sym)))
+
 (defn- ensure-sdk-available!
   "Check SDK availability, throw if not available."
   []
-  (let [status (avail/sdk-status)]
-    (when-not (= :available status)
-      (throw (ex-info "Claude Agent SDK not available for drone execution"
-                      {:sdk-status status
-                       :backend :sdk-drone})))))
+  (if-let [status-fn (resolve-sdk-fn 'hive-claude.sdk.availability/sdk-status)]
+    (let [status (status-fn)]
+      (when-not (= :available status)
+        (throw (ex-info "Claude Agent SDK not available for drone execution"
+                        {:sdk-status status
+                         :backend :sdk-drone}))))
+    (throw (ex-info "Claude SDK addon not on classpath"
+                    {:backend :sdk-drone}))))
 
 (defn- drain-output-channel
   "Drain all messages from a core.async channel into a vector with timeout."
@@ -80,22 +87,26 @@
 (defn- spawn-sdk-session!
   "Spawn an ephemeral SDK session for drone task execution."
   [session-id cwd]
-  (lifecycle/spawn-headless-sdk!
-   session-id
-   {:cwd cwd
-    :system-prompt "You are a drone worker. Execute the given task precisely and concisely."}))
+  (if-let [spawn-fn (resolve-sdk-fn 'hive-claude.sdk.lifecycle/spawn-headless-sdk!)]
+    (spawn-fn session-id
+              {:cwd cwd
+               :system-prompt "You are a drone worker. Execute the given task precisely and concisely."})
+    (throw (ex-info "SDK lifecycle not available" {:session-id session-id}))))
 
 (defn- dispatch-and-collect!
   "Dispatch task to SDK session and collect all output."
   [session-id task timeout-ms]
-  (let [out-ch (lifecycle/dispatch-headless-sdk! session-id task {:raw? true})]
-    (drain-output-channel out-ch timeout-ms)))
+  (if-let [dispatch-fn (resolve-sdk-fn 'hive-claude.sdk.lifecycle/dispatch-headless-sdk!)]
+    (let [out-ch (dispatch-fn session-id task {:raw? true})]
+      (drain-output-channel out-ch timeout-ms))
+    (throw (ex-info "SDK lifecycle not available" {:session-id session-id}))))
 
 (defn- kill-session-safe!
   "Kill SDK session, logging but not throwing on failure."
   [session-id]
   (try
-    (lifecycle/kill-headless-sdk! session-id)
+    (when-let [kill-fn (resolve-sdk-fn 'hive-claude.sdk.lifecycle/kill-headless-sdk!)]
+      (kill-fn session-id))
     (catch Exception e
       (log/warn "[sdk-drone] Failed to kill session"
                 {:session-id session-id :error (ex-message e)}))))

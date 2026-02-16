@@ -5,6 +5,8 @@
    returning Result ADT values instead of legacy {:success :result :error} maps."
   (:require [hive-mcp.protocols.editor :as ed]
             [hive-mcp.emacs.client :as ec]
+            [hive-mcp.agent.ling.terminal-registry :as terminal-reg]
+            [hive-mcp.agent.ling.strategy :as strategy]
             [hive-dsl.result :as result]
             [clojure.string :as str]))
 
@@ -44,13 +46,12 @@
       (catch Exception _ false)))
 
   (send-to-terminal [_this terminal-id text]
-    (let [escaped-text (-> text
-                           (str/replace "\\" "\\\\")
-                           (str/replace "\"" "\\\"")
-                           (str/replace "\n" "\\n"))
-          code (format "(hive-mcp-swarm-api-dispatch \"%s\" \"%s\" 60000)"
-                       terminal-id escaped-text)]
-      (ec-result->result (ec/eval-elisp-with-timeout code 60000)))))
+    (if-let [strat (or (terminal-reg/resolve-terminal-strategy :claude)
+                       (terminal-reg/resolve-terminal-strategy :vterm))]
+      (result/try-effect* :editor/dispatch-failed
+                          (strategy/strategy-dispatch! strat {:id terminal-id} {:task text :timeout-ms 60000})
+                          true)
+      (result/err :editor/no-terminal-addon {:message "No terminal addon for :claude or :vterm"}))))
 
 (defn ->emacsclient-editor
   "Create an EmacsclientEditor instance."

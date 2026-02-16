@@ -41,7 +41,7 @@
                   :ling (ling/->ling sid {:cwd (:slave/cwd agent-data)
                                           :presets (:slave/presets agent-data)
                                           :project-id (:slave/project-id agent-data)
-                                          :spawn-mode (or (:ling/spawn-mode agent-data) :vterm)})
+                                          :spawn-mode (or (:ling/spawn-mode agent-data) :claude)})
                   :drone (drone/->drone sid {:cwd (:slave/cwd agent-data)
                                              :parent-id (:slave/parent agent-data)
                                              :project-id (:slave/project-id agent-data)}))]
