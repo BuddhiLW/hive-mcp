@@ -8,8 +8,8 @@
    Adding a new spawn mode = adding one entry here. All downstream
    validation, MCP schemas, strategy dispatch, and slot limits derive automatically.
 
-   Sum type: vterm | headless | agent-sdk | openrouter
-   MCP surface: vterm | headless (headless is alias for agent-sdk since 0.12.0)")
+   Sum type: claude | vterm | headless | agent-sdk | openrouter
+   MCP surface: claude | vterm | headless (headless is alias for agent-sdk since 0.12.0)")
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -32,7 +32,15 @@
    - :capabilities    Set of capability keywords this mode supports"
   (array-map
    ;; === Emacs-bound modes ===
-   :vterm       {:description   "Emacs vterm buffer — interactive, Emacs-bound"
+   :claude      {:description   "Claude Code terminal — hive-claude bridge (default)"
+                 :requires-emacs? true
+                 :io-model      :buffer
+                 :slot-limit    6
+                 :mcp?          true
+                 :alias-of      nil
+                 :capabilities  #{:interactive :emacs-visible :dispatch :kill :interrupt}}
+
+   :vterm       {:description   "Emacs vterm buffer — raw vterm-mcp backend"
                  :requires-emacs? true
                  :io-model      :buffer
                  :slot-limit    6

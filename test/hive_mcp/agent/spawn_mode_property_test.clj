@@ -164,11 +164,12 @@
 (defspec exhaustive-dispatch-returns-value 200
   (prop/for-all [sm gen-spawn-mode]
                 (let [result (adt-case sm/SpawnMode sm
+                                       :claude     :emacs-claude
                                        :vterm      :emacs
                                        :headless   :subprocess
                                        :agent-sdk  :sdk
                                        :openrouter :api)]
-                  (contains? #{:emacs :subprocess :sdk :api} result))))
+                  (contains? #{:emacs-claude :emacs :subprocess :sdk :api} result))))
 
 ;; =============================================================================
 ;; Property: Constructor consistency with registry
@@ -188,17 +189,17 @@
 ;; Deterministic unit tests (edge cases)
 ;; =============================================================================
 
-(deftest exactly-four-variants
-  (testing "SpawnMode has exactly 4 variants"
-    (is (= 4 (count sm/all-variants)))))
+(deftest exactly-five-variants
+  (testing "SpawnMode has exactly 5 variants"
+    (is (= 5 (count sm/all-variants)))))
 
 (deftest variant-keywords-correct
   (testing "Variant set matches expected"
-    (is (= #{:vterm :headless :agent-sdk :openrouter} sm/all-variants))))
+    (is (= #{:claude :vterm :headless :agent-sdk :openrouter} sm/all-variants))))
 
 (deftest mcp-variants-correct
-  (testing "MCP-visible variants are vterm and headless"
-    (is (= #{:vterm :headless} sm/mcp-variants))))
+  (testing "MCP-visible variants are claude, vterm and headless"
+    (is (= #{:claude :vterm :headless} sm/mcp-variants))))
 
 (deftest headless-is-alias-for-agent-sdk
   (testing "resolve-alias maps headless to agent-sdk"
@@ -206,7 +207,7 @@
 
 (deftest non-aliases-resolve-to-self
   (testing "Non-alias variants resolve to themselves"
-    (doseq [kw [:vterm :agent-sdk :openrouter]]
+    (doseq [kw [:claude :vterm :agent-sdk :openrouter]]
       (is (= kw (sm/to-keyword (sm/resolve-alias (sm/spawn-mode kw))))
           (str kw " should resolve to itself")))))
 

@@ -111,6 +111,7 @@
 
 (deftest valid-spawn-mode?-test
   (testing "Ling spawn modes"
+    (is (true? (atr/valid-spawn-mode? :ling :claude)))
     (is (true? (atr/valid-spawn-mode? :ling :vterm)))
     (is (true? (atr/valid-spawn-mode? :ling :headless)))
     (is (true? (atr/valid-spawn-mode? :ling :agent-sdk)))
@@ -118,10 +119,11 @@
   (testing "Drone spawn modes"
     (is (true? (atr/valid-spawn-mode? :drone :openrouter)))
     (is (true? (atr/valid-spawn-mode? :drone :headless)))
+    (is (false? (atr/valid-spawn-mode? :drone :claude)))
     (is (false? (atr/valid-spawn-mode? :drone :vterm)))
     (is (false? (atr/valid-spawn-mode? :drone :agent-sdk))))
   (testing "Coordinator has no spawn modes"
-    (is (false? (atr/valid-spawn-mode? :coordinator :vterm)))))
+    (is (false? (atr/valid-spawn-mode? :coordinator :claude)))))
 
 ;; =============================================================================
 ;; Capabilities and permissions

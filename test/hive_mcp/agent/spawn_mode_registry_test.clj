@@ -12,12 +12,13 @@
 
 (deftest registry-has-expected-variants
   (testing "All expected spawn modes present"
+    (is (contains? smr/all-modes :claude))
     (is (contains? smr/all-modes :vterm))
     (is (contains? smr/all-modes :headless))
     (is (contains? smr/all-modes :agent-sdk))
     (is (contains? smr/all-modes :openrouter)))
-  (testing "Exactly 4 variants"
-    (is (= 4 (count smr/all-modes)))))
+  (testing "Exactly 5 variants"
+    (is (= 5 (count smr/all-modes)))))
 
 (deftest every-variant-has-required-keys
   (testing "Each variant has all required metadata keys"
@@ -50,12 +51,12 @@
                         (filter (fn [[_k v]] (:mcp? v)))
                         (mapv (comp name key)))]
       (is (= expected smr/mcp-modes))))
-  (testing "MCP enum is vterm and headless"
-    (is (= ["vterm" "headless"] smr/mcp-modes))))
+  (testing "MCP enum is claude, vterm and headless"
+    (is (= ["claude" "vterm" "headless"] smr/mcp-modes))))
 
 (deftest emacs-modes-correct
-  (testing "Only vterm requires Emacs"
-    (is (= #{:vterm} smr/emacs-modes))))
+  (testing "Claude and vterm require Emacs"
+    (is (= #{:claude :vterm} smr/emacs-modes))))
 
 (deftest headless-modes-correct
   (testing "Non-emacs modes are headless"
@@ -66,6 +67,8 @@
     (is (= {:headless :agent-sdk} smr/alias-map))))
 
 (deftest slot-limits-correct
+  (testing "claude has slot limit 6"
+    (is (= 6 (:claude smr/mode->slot-limit))))
   (testing "vterm has slot limit 6"
     (is (= 6 (:vterm smr/mode->slot-limit))))
   (testing "Headless modes have no slot limit"
@@ -79,11 +82,13 @@
 
 (deftest valid-mode?-test
   (testing "Valid keywords"
+    (is (true? (smr/valid-mode? :claude)))
     (is (true? (smr/valid-mode? :vterm)))
     (is (true? (smr/valid-mode? :headless)))
     (is (true? (smr/valid-mode? :agent-sdk)))
     (is (true? (smr/valid-mode? :openrouter))))
   (testing "Valid strings"
+    (is (true? (smr/valid-mode? "claude")))
     (is (true? (smr/valid-mode? "vterm")))
     (is (true? (smr/valid-mode? "headless"))))
   (testing "Invalid inputs"
@@ -99,6 +104,8 @@
     (is (= :openrouter (smr/resolve-alias :openrouter)))))
 
 (deftest requires-emacs?-test
+  (testing "claude requires Emacs"
+    (is (true? (smr/requires-emacs? :claude))))
   (testing "vterm requires Emacs"
     (is (true? (smr/requires-emacs? :vterm))))
   (testing "Others do not"
@@ -107,12 +114,16 @@
     (is (false? (smr/requires-emacs? :openrouter)))))
 
 (deftest slot-limit-test
+  (testing "claude capped at 6"
+    (is (= 6 (smr/slot-limit :claude))))
   (testing "vterm capped at 6"
     (is (= 6 (smr/slot-limit :vterm))))
   (testing "Others unlimited"
     (is (nil? (smr/slot-limit :agent-sdk)))))
 
 (deftest io-model-test
+  (testing "claude uses buffer I/O"
+    (is (= :buffer (smr/io-model :claude))))
   (testing "vterm uses buffer I/O"
     (is (= :buffer (smr/io-model :vterm))))
   (testing "agent-sdk uses stdin-stdout"
@@ -142,4 +153,4 @@
 
 (deftest mcp-enum-test
   (testing "Returns MCP-visible mode strings"
-    (is (= ["vterm" "headless"] (smr/mcp-enum)))))
+    (is (= ["claude" "vterm" "headless"] (smr/mcp-enum)))))
