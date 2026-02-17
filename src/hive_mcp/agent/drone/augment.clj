@@ -10,7 +10,7 @@
             [hive-mcp.context.budget :as budget]
             [hive-mcp.knowledge-graph.disc :as kg-disc]
             [hive-mcp.tools.diff :as diff]
-            [hive-mcp.dns.result :refer [rescue]]
+            [hive-dsl.result :as r]
             [clojure.data.json :as json]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
@@ -18,20 +18,20 @@
 (defn prepare-context
   "Gather catchup data (conventions, decisions, snippets) for drone context."
   []
-  (try
-    (let [catchup-handler (registry/get-tool "mcp_get_context")
-          context (when (:handler catchup-handler)
-                    ((:handler catchup-handler) {}))]
-      (if (and context (:text context))
-        (let [parsed (json/read-str (:text context) :key-fn keyword)]
-          {:conventions (get-in parsed [:memory :conventions] [])
-           :decisions (get-in parsed [:memory :decisions] [])
-           :snippets (get-in parsed [:memory :snippets] [])
-           :project (get parsed :project {})})
-        {}))
-    (catch Exception e
-      (log/warn e "Failed to gather ling context")
-      {})))
+  (let [result (r/guard Exception {}
+                        (let [catchup-handler (registry/get-tool "mcp_get_context")
+                              context (when (:handler catchup-handler)
+                                        ((:handler catchup-handler) {}))]
+                          (if (and context (:text context))
+                            (let [parsed (json/read-str (:text context) :key-fn keyword)]
+                              {:conventions (get-in parsed [:memory :conventions] [])
+                               :decisions (get-in parsed [:memory :decisions] [])
+                               :snippets (get-in parsed [:memory :snippets] [])
+                               :project (get parsed :project {})})
+                            {})))]
+    (when-let [err (::r/error (meta result))]
+      (log/warn "Failed to gather ling context" {:error (:message err)}))
+    result))
 
 (defn format-context-str
   "Format context data as string for task augmentation."
@@ -61,7 +61,7 @@
                          (try
                            (let [content (slurp (:canonical-path validation))]
                              (future
-                               (rescue nil (kg-disc/touch-disc! (:canonical-path validation))))
+                               (r/rescue nil (kg-disc/touch-disc! (:canonical-path validation))))
                              (str "### " f "\n```\n" content "```\n"))
                            (catch Exception e
                              (str "### " f "\n(File not found or unreadable: " (.getMessage e) ")\n")))
@@ -79,15 +79,15 @@
   [files task project-root project-id]
   (when (seq files)
     (let [contexts (for [f files]
-                     (rescue nil
-                             (let [ctx-data (ctx/build-drone-context
-                                             {:file-path f
-                                              :task task
-                                              :project-root project-root
-                                              :project-id project-id})]
-                               (when (:formatted ctx-data)
-                                 (str "## Smart Context for " f "\n"
-                                      (:formatted ctx-data))))))
+                     (r/rescue nil
+                               (let [ctx-data (ctx/build-drone-context
+                                               {:file-path f
+                                                :task task
+                                                :project-root project-root
+                                                :project-id project-id})]
+                                 (when (:formatted ctx-data)
+                                   (str "## Smart Context for " f "\n"
+                                        (:formatted ctx-data))))))
           non-nil-contexts (remove nil? contexts)]
       (when (seq non-nil-contexts)
         (str/join "\n\n" non-nil-contexts)))))
@@ -104,19 +104,19 @@
   (let [;; Compressed path: pre-resolved context refs from wave dispatch
         compressed-ctx-str
         (when (seq ctx-refs)
-          (rescue nil
-                  (let [envelope (context-envelope/enrich-context
-                                  ctx-refs
-                                  (or kg-node-ids [])
-                                  effective-project-id
-                                  {:mode :inline})]
-                    (when (seq envelope)
-                      (log/info "augment-task using COMPRESSED context path (ctx-refs)"
-                                {:project-id effective-project-id
-                                 :ref-count (count ctx-refs)
-                                 :kg-seeds (count (or kg-node-ids []))
-                                 :envelope-chars (count envelope)})
-                      envelope))))
+          (r/rescue nil
+                    (let [envelope (context-envelope/enrich-context
+                                    ctx-refs
+                                    (or kg-node-ids [])
+                                    effective-project-id
+                                    {:mode :inline})]
+                      (when (seq envelope)
+                        (log/info "augment-task using COMPRESSED context path (ctx-refs)"
+                                  {:project-id effective-project-id
+                                   :ref-count (count ctx-refs)
+                                   :kg-seeds (count (or kg-node-ids []))
+                                   :envelope-chars (count envelope)})
+                        envelope))))
 
         ;; Unified path: single KG traversal for conventions + domain
         use-unified? (and (not compressed-ctx-str)
@@ -125,11 +125,11 @@
 
         unified-raw
         (when use-unified?
-          (rescue nil
-                  (unified-ctx/prepare-drone-context
-                   {:task       task
-                    :seeds      seeds
-                    :project-id effective-project-id})))
+          (r/rescue nil
+                    (unified-ctx/prepare-drone-context
+                     {:task       task
+                      :seeds      seeds
+                      :project-id effective-project-id})))
 
         ;; Entry-level budget allocation before formatting
         unified-ctx-str
@@ -163,13 +163,13 @@
                         (build-smart-context files task effective-root effective-project-id))
 
         primed-ctx-str (when (and (not compressed-ctx-str) (not unified-ctx-str) (seq seeds))
-                         (rescue nil
-                                 (let [primed (kg-priming/prime-context
-                                               {:task task
-                                                :seeds seeds
-                                                :project-id effective-project-id
-                                                :token-budget 1500})]
-                                   (when (seq primed) primed))))
+                         (r/rescue nil
+                                   (let [primed (kg-priming/prime-context
+                                                 {:task task
+                                                  :seeds seeds
+                                                  :project-id effective-project-id
+                                                  :token-budget 1500})]
+                                     (when (seq primed) primed))))
 
         ;; Merge context sections: compressed > unified > legacy
         kg-ctx-str (cond

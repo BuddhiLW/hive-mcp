@@ -3,7 +3,7 @@
    Verifies entries against source files and updates grounding timestamps."
 
   (:require [hive-mcp.chroma.core :as chroma]
-            [hive-mcp.dns.result :refer [rescue]]
+            [hive-dsl.result :as r]
             [clojure.java.io :as io]
             [clojure.string :as str]
             [taoensso.timbre :as log])
@@ -33,101 +33,90 @@
 
 (defn- read-source-hash
   "Read file and compute hash.
-   
+
    Arguments:
      source-path - Path to source file
-   
+
    Returns:
      {:hash \"SHA256-HASH\" :exists? boolean} if file exists
      nil if file does not exist
-   
+
    Note: Uses SHA-256 for content fingerprinting."
   [source-path]
-  (rescue nil
-          (let [file (io/file source-path)]
-            (if (.exists file)
-              (let [content (slurp file)
-                    hash-bytes (.digest (java.security.MessageDigest/getInstance "SHA-256")
-                                        (.getBytes content "UTF-8"))
-                    hash-hex (apply str (map #(format "%02x" (bit-and % 0xff)) hash-bytes))]
-                {:hash hash-hex :exists? true})
-              {:exists? false}))))
+  (r/rescue nil
+            (let [file (io/file source-path)]
+              (if (.exists file)
+                (let [content (slurp file)
+                      hash-bytes (.digest (java.security.MessageDigest/getInstance "SHA-256")
+                                          (.getBytes content "UTF-8"))
+                      hash-hex (apply str (map #(format "%02x" (bit-and % 0xff)) hash-bytes))]
+                  {:hash hash-hex :exists? true})
+                {:exists? false}))))
+
+(defn- reground-entry-impl
+  "Pure implementation of re-grounding logic (no top-level try/catch)."
+  [entry-id]
+  (log/info "Regrounding entry" {:entry-id entry-id})
+  (let [entry (chroma/get-entry-by-id entry-id)]
+    (if (nil? entry)
+      {:status :not-found :entry-id entry-id}
+      (let [metadata (:metadata entry)
+            source-file (:source-file metadata)]
+        (if (or (nil? source-file) (str/blank? source-file))
+          {:status :no-source-metadata :entry-id entry-id}
+          (let [source-info (read-source-hash source-file)]
+            (if (nil? source-info)
+              {:status :hash-failed :entry-id entry-id :source-file source-file}
+              (let [{:keys [hash exists?]} source-info
+                    stored-hash (:source-hash metadata)
+                    hash-differs? (and stored-hash hash (not= stored-hash hash))
+                    status (cond
+                             (not exists?) :source-missing
+                             hash-differs? :needs-review
+                             :else :regrounded)
+                    update-data (when exists?
+                                  {:grounded-at (java.util.Date.)
+                                   :source-hash hash})]
+                (when (and update-data (not= :source-missing status))
+                  (chroma/update-entry! entry-id update-data))
+                {:status status
+                 :drift? hash-differs?
+                 :entry-id entry-id
+                 :source-file source-file
+                 :source-exists? exists?
+                 :stored-hash stored-hash
+                 :current-hash hash
+                 :updated? (some? update-data)}))))))))
 
 (defn reground-entry!
   "Re-ground a single knowledge entry by verifying against source file.
-   
+
    Steps:
    1. Fetch entry by ID from Chroma
    2. Check if entry has :source-file metadata
    3. Compute current source hash
    4. Compare with stored :source-hash (if any)
    5. Update entry with new grounding timestamp
-   
+
    Arguments:
      entry-id - Knowledge entry ID
-   
+
    Returns:
      {:status :regrounded|:needs-review|:source-missing
       :drift? boolean
       :entry-id id
       :source-file path}
-   
+
    Status meanings:
      :regrounded     - Entry successfully verified and updated
      :needs-review   - Source exists but hash differs (potential drift)
      :source-missing - Source file not found"
   [entry-id]
-  (try
-    (log/info "Regrounding entry" {:entry-id entry-id})
-
-    ;; 1. Get entry from Chroma
-    (let [entry (chroma/get-entry-by-id entry-id)]
-      (if (nil? entry)
-        {:status :not-found :entry-id entry-id}
-
-        ;; 2. Check if entry has source-file metadata
-        (let [metadata (:metadata entry)
-              source-file (:source-file metadata)]
-          (if (or (nil? source-file) (str/blank? source-file))
-            {:status :no-source-metadata :entry-id entry-id}
-
-            ;; 3. Read current source hash
-            (let [source-info (read-source-hash source-file)]
-              (if (nil? source-info)
-                {:status :hash-failed :entry-id entry-id :source-file source-file}
-
-                ;; 4. Determine status based on source existence and hash
-                (let [{:keys [hash exists?]} source-info
-                      stored-hash (:source-hash metadata)
-                      hash-differs? (and stored-hash hash (not= stored-hash hash))
-
-                      ;; Status logic
-                      status (cond
-                               (not exists?) :source-missing
-                               hash-differs? :needs-review
-                               :else :regrounded)
-
-                      ;; Update if source exists (even if hash differs)
-                      update-data (when exists?
-                                    {:grounded-at (java.util.Date.)
-                                     :source-hash hash})]
-
-                  ;; 5. Update entry in Chroma if needed
-                  (when (and update-data (not= :source-missing status))
-                    (chroma/update-entry! entry-id update-data))
-
-                  {:status status
-                   :drift? hash-differs?
-                   :entry-id entry-id
-                   :source-file source-file
-                   :source-exists? exists?
-                   :stored-hash stored-hash
-                   :current-hash hash
-                   :updated? (some? update-data)})))))))
-
-    (catch Exception e
-      (log/error "Failed to reground entry" {:entry-id entry-id :error e})
-      {:status :error :error (.getMessage e) :entry-id entry-id})))
+  (let [result (r/try-effect* :kg/reground-failed (reground-entry-impl entry-id))]
+    (if (r/ok? result)
+      (:ok result)
+      (do (log/error "Failed to reground entry" {:entry-id entry-id :error (:message result)})
+          {:status :error :error (:message result) :entry-id entry-id}))))
 
 (defn reground-batch!
   "Re-ground multiple knowledge entries.
@@ -177,44 +166,36 @@
        :or {limit 500 force? false max-age-days 7}}]]
   (log/info "backfill-grounding! starting"
             {:project-id project-id :limit limit :force? force? :max-age-days max-age-days})
-  (try
-    (let [;; 1. Query all entries from Chroma
-          entries (chroma/query-entries :project-id project-id
-                                        :limit limit
-                                        :include-expired? true)
-          total-scanned (count entries)
-
-          ;; 2. Filter to entries with source-file metadata
-          with-source (->> entries
-                           (filter (fn [entry]
-                                     (let [sf (or (get-in entry [:metadata :source-file])
-                                                  (:source-file entry))]
-                                       (and sf (not (str/blank? (str sf)))))))
-                           vec)
-
-          ;; 3. Filter to entries needing regrounding (unless forced)
-          needs-work (if force?
-                       with-source
-                       (filter #(needs-regrounding? % max-age-days) with-source))
-          entry-ids (mapv :id needs-work)
-
-          ;; 4. Run batch regrounding
-          result (when (seq entry-ids)
-                   (reground-batch! entry-ids))]
-
-      (log/info "backfill-grounding! complete"
-                {:total-scanned total-scanned
-                 :with-source (count with-source)
-                 :processed (count entry-ids)
-                 :by-status (:by-status result)})
-      {:total-scanned total-scanned
-       :with-source (count with-source)
-       :processed (count entry-ids)
-       :by-status (or (:by-status result) {})
-       :drifted-entries (or (:drifted-entries result) [])})
-
-    (catch Exception e
-      (log/error "backfill-grounding! failed" {:error e})
-      {:error (.getMessage e)
-       :total-scanned 0
-       :processed 0})))
+  (let [result (r/try-effect* :kg/backfill-grounding-failed
+                              (let [entries (chroma/query-entries :project-id project-id
+                                                                  :limit limit
+                                                                  :include-expired? true)
+                                    total-scanned (count entries)
+                                    with-source (->> entries
+                                                     (filter (fn [entry]
+                                                               (let [sf (or (get-in entry [:metadata :source-file])
+                                                                            (:source-file entry))]
+                                                                 (and sf (not (str/blank? (str sf)))))))
+                                                     vec)
+                                    needs-work (if force?
+                                                 with-source
+                                                 (filter #(needs-regrounding? % max-age-days) with-source))
+                                    entry-ids (mapv :id needs-work)
+                                    batch-result (when (seq entry-ids)
+                                                   (reground-batch! entry-ids))]
+                                (log/info "backfill-grounding! complete"
+                                          {:total-scanned total-scanned
+                                           :with-source (count with-source)
+                                           :processed (count entry-ids)
+                                           :by-status (:by-status batch-result)})
+                                {:total-scanned total-scanned
+                                 :with-source (count with-source)
+                                 :processed (count entry-ids)
+                                 :by-status (or (:by-status batch-result) {})
+                                 :drifted-entries (or (:drifted-entries batch-result) [])}))]
+    (if (r/ok? result)
+      (:ok result)
+      (do (log/error "backfill-grounding! failed" {:error (:message result)})
+          {:error (:message result)
+           :total-scanned 0
+           :processed 0}))))

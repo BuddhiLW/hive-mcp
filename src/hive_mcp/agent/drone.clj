@@ -19,6 +19,7 @@
             [hive-mcp.events.core :as ev]
             [hive-mcp.telemetry.prometheus :as prom]
             [clojure.set]
+            [hive-dsl.result :as r]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -253,17 +254,18 @@
                :current-task-id current-task-id))))
 
   (kill! [this]
-    (try
-      (.release-claims! this)
-      (ds/remove-slave! id)
-      (ev/dispatch [:drone/failed {:drone-id id
-                                   :error "Killed by request"
-                                   :error-type :killed}])
-      (log/info "Drone killed" {:id id})
-      {:killed? true :id id}
-      (catch Exception e
-        (log/error "Error killing drone" {:id id :error (ex-message e)})
-        {:killed? false :id id :error (ex-message e)})))
+    (let [result (r/try-effect* :drone/kill-failed
+                                (.release-claims! this)
+                                (ds/remove-slave! id)
+                                (ev/dispatch [:drone/failed {:drone-id id
+                                                             :error "Killed by request"
+                                                             :error-type :killed}])
+                                (log/info "Drone killed" {:id id})
+                                {:killed? true :id id})]
+      (if (r/ok? result)
+        (:ok result)
+        (do (log/error "Error killing drone" {:id id :error (:message result)})
+            {:killed? false :id id :error (:message result)}))))
 
   (agent-type [_]
     :drone)
@@ -303,21 +305,22 @@
       files-count))
 
   (upgrade! [_this]
-    (try
-      (let [ling-id (str "ling-" (java.util.UUID/randomUUID))
-            current-claims (or (:claimed-files @state-atom) [])]
-        (ds/update-slave! id {:slave/status :upgraded})
-        (log/info "Drone upgrade requested" {:drone-id id
-                                             :ling-id ling-id
-                                             :claims current-claims})
-        {:ling-id ling-id
-         :cwd cwd
-         :inherited-claims current-claims
-         :parent-id parent-id
-         :project-id project-id})
-      (catch Exception e
-        (log/error "Drone upgrade failed" {:id id :error (ex-message e)})
-        nil))))
+    (let [result (r/try-effect* :drone/upgrade-failed
+                                (let [ling-id (str "ling-" (java.util.UUID/randomUUID))
+                                      current-claims (or (:claimed-files @state-atom) [])]
+                                  (ds/update-slave! id {:slave/status :upgraded})
+                                  (log/info "Drone upgrade requested" {:drone-id id
+                                                                       :ling-id ling-id
+                                                                       :claims current-claims})
+                                  {:ling-id ling-id
+                                   :cwd cwd
+                                   :inherited-claims current-claims
+                                   :parent-id parent-id
+                                   :project-id project-id}))]
+      (if (r/ok? result)
+        (:ok result)
+        (do (log/error "Drone upgrade failed" {:id id :error (:message result)})
+            nil)))))
 
 (defn ->drone
   "Create a new Drone agent instance."

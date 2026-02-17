@@ -1,6 +1,7 @@
 (ns hive-mcp.agent.drone.feedback
   "Drone feedback loop for learning from execution results and pattern-based routing."
   (:require [hive-mcp.tools.memory.crud :as mem-crud]
+            [hive-dsl.result :as r]
             [clojure.string :as str]
             [clojure.data.json :as json]
             [taoensso.timbre :as log]))
@@ -90,40 +91,40 @@
 (defn record-pattern!
   "Record a drone execution pattern to memory."
   [task-type model result-class & [{:keys [duration-ms directory agent-id]}]]
-  (try
-    (let [content (make-pattern-content task-type model result-class duration-ms)
-          tags (make-pattern-tags task-type model result-class)
-          params {:type "note"
-                  :content content
-                  :tags tags
-                  :duration "short"
-                  :directory directory
-                  :agent_id agent-id}]
-      (mem-crud/handle-add params)
-      (log/debug "Recorded drone pattern" {:task-type task-type
-                                           :model model
-                                           :result result-class}))
-    (catch Exception e
-      (log/warn e "Failed to record drone pattern"))))
+  (let [result (r/guard Exception nil
+                        (let [content (make-pattern-content task-type model result-class duration-ms)
+                              tags (make-pattern-tags task-type model result-class)
+                              params {:type "note"
+                                      :content content
+                                      :tags tags
+                                      :duration "short"
+                                      :directory directory
+                                      :agent_id agent-id}]
+                          (mem-crud/handle-add params)
+                          (log/debug "Recorded drone pattern" {:task-type task-type
+                                                               :model model
+                                                               :result result-class})))]
+    (when-let [err (::r/error (meta result))]
+      (log/warn "Failed to record drone pattern" {:error (:message err)}))))
 
 (defn query-patterns
   "Query historical patterns for a task type and/or model."
   [{:keys [task-type model limit directory]
     :or {limit 20}}]
-  (try
-    (let [tags (cond-> ["drone-pattern"]
-                 task-type (conj (str "task:" (name task-type)))
-                 model (conj (str "model:" model)))
-          result (mem-crud/handle-query {:type "note"
-                                         :tags tags
-                                         :limit limit
-                                         :directory directory})
-          parsed (when (:text result)
-                   (json/read-str (:text result) :key-fn keyword))]
-      (or (:entries parsed) []))
-    (catch Exception e
-      (log/warn e "Failed to query drone patterns")
-      [])))
+  (let [result (r/guard Exception []
+                        (let [tags (cond-> ["drone-pattern"]
+                                     task-type (conj (str "task:" (name task-type)))
+                                     model (conj (str "model:" model)))
+                              query-result (mem-crud/handle-query {:type "note"
+                                                                   :tags tags
+                                                                   :limit limit
+                                                                   :directory directory})
+                              parsed (when (:text query-result)
+                                       (json/read-str (:text query-result) :key-fn keyword))]
+                          (or (:entries parsed) [])))]
+    (when-let [err (::r/error (meta result))]
+      (log/warn "Failed to query drone patterns" {:error (:message err)}))
+    result))
 
 (defn get-success-rate
   "Calculate success rate for a task-type/model combination."

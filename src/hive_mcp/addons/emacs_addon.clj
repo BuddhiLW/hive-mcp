@@ -9,6 +9,7 @@
    Extraction boundary: this addon + emacs/* + Emacs-specific tool files
    will move to a separate hive-emacs library in the future."
   (:require [hive-mcp.addons.protocol :as proto]
+            [hive-mcp.dns.result :as r]
             [hive-mcp.protocols.editor :as ed]
             [hive-mcp.emacs.editor-adapter :as ema]
             [taoensso.timbre :as log]))
@@ -29,17 +30,17 @@
                     hive-mcp.tools.docs]]
     (->> tool-nses
          (mapcat (fn [ns-sym]
-                   (try
-                     (require ns-sym)
-                     (let [tools-var (ns-resolve ns-sym 'tools)
-                           docs-var (ns-resolve ns-sym 'docs-tools)]
-                       (cond
-                         tools-var @tools-var
-                         docs-var @docs-var
-                         :else []))
-                     (catch Exception e
-                       (log/warn "Failed to load tools from" ns-sym ":" (ex-message e))
-                       []))))
+                   (let [tools (r/guard Exception []
+                                        (require ns-sym)
+                                        (let [tools-var (ns-resolve ns-sym 'tools)
+                                              docs-var (ns-resolve ns-sym 'docs-tools)]
+                                          (cond
+                                            tools-var @tools-var
+                                            docs-var @docs-var
+                                            :else [])))]
+                     (when-let [err (:hive-dsl.result/error (meta tools))]
+                       (log/warn "Failed to load tools from" ns-sym ":" (:message err)))
+                     tools)))
          vec)))
 
 (defrecord EmacsAddon [state-atom]
@@ -55,16 +56,18 @@
   (initialize! [_ _config]
     (if @state-atom
       {:success? true :already-initialized? true}
-      (try
-        (ed/set-editor! (ema/->emacsclient-editor))
-        (reset! state-atom true)
-        (log/info "EmacsAddon initialized — EmacsclientEditor wired as active IEditor")
-        {:success? true
-         :metadata {:editor-id (ed/editor-id (ed/get-editor))}}
-        (catch Exception e
-          (log/error e "EmacsAddon initialization failed")
-          {:success? false
-           :errors [(.getMessage e)]}))))
+      (let [result (r/try-effect* :addon/emacs-init-error
+                                  (ed/set-editor! (ema/->emacsclient-editor))
+                                  (reset! state-atom true)
+                                  (log/info "EmacsAddon initialized — EmacsclientEditor wired as active IEditor")
+                                  {:success? true
+                                   :metadata {:editor-id (ed/editor-id (ed/get-editor))}})]
+        (if (r/ok? result)
+          (:ok result)
+          (do (log/error "EmacsAddon initialization failed"
+                         {:error (:message result) :class (:class result)})
+              {:success? false
+               :errors [(:message result)]})))))
 
   (shutdown! [_]
     (when @state-atom

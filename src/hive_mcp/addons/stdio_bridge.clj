@@ -12,7 +12,7 @@
      (bridge/unregister-bridge! :bridge/echo)"
   (:require [hive-mcp.addons.protocol :as proto]
             [hive-mcp.addons.mcp-bridge :as bridge]
-            [hive-mcp.dns.result :refer [rescue]]
+            [hive-mcp.dns.result :as r]
             [clojure.data.json :as json]
             [taoensso.timbre :as log])
   (:import [java.io BufferedReader InputStreamReader OutputStreamWriter BufferedWriter]
@@ -108,69 +108,73 @@
   (transport-type [_] :stdio)
 
   (start-bridge! [_ opts]
-    (try
-      (let [command    (:command opts)
-            env        (:env opts)
-            pb         (ProcessBuilder. ^java.util.List (vec command))
-            _          (when env
-                         (let [pe (.environment pb)]
-                           (doseq [[k v] env]
-                             (.put pe (str k) (str v)))))
-            _          (.redirectErrorStream pb false)
-            process    (.start pb)
-            writer     (BufferedWriter.
-                        (OutputStreamWriter. (.getOutputStream process) "UTF-8"))
-            reader     (BufferedReader.
-                        (InputStreamReader. (.getInputStream process) "UTF-8"))
-            id-counter (AtomicLong. 1)
-            started-at (System/currentTimeMillis)
-            init-resp  (send-request! writer reader id-counter
-                                      "initialize"
-                                      {"protocolVersion" "2024-11-05"
-                                       "capabilities"    {}
-                                       "clientInfo"      {"name"    "hive-mcp-bridge"
-                                                          "version" "0.1.0"}})]
+    (let [effect (r/try-effect* :bridge/start-failed
+                                (let [command    (:command opts)
+                                      env        (:env opts)
+                                      pb         (ProcessBuilder. ^java.util.List (vec command))
+                                      _          (when env
+                                                   (let [pe (.environment pb)]
+                                                     (doseq [[k v] env]
+                                                       (.put pe (str k) (str v)))))
+                                      _          (.redirectErrorStream pb false)
+                                      process    (.start pb)
+                                      writer     (BufferedWriter.
+                                                  (OutputStreamWriter. (.getOutputStream process) "UTF-8"))
+                                      reader     (BufferedReader.
+                                                  (InputStreamReader. (.getInputStream process) "UTF-8"))
+                                      id-counter (AtomicLong. 1)
+                                      started-at (System/currentTimeMillis)
+                                      init-resp  (send-request! writer reader id-counter
+                                                                "initialize"
+                                                                {"protocolVersion" "2024-11-05"
+                                                                 "capabilities"    {}
+                                                                 "clientInfo"      {"name"    "hive-mcp-bridge"
+                                                                                    "version" "0.1.0"}})]
 
-        (when-not (get-in init-resp [:result :protocolVersion])
-          (throw (ex-info "MCP initialize handshake failed"
-                          {:response init-resp :bridge id})))
+                                  (when-not (get-in init-resp [:result :protocolVersion])
+                                    (throw (ex-info "MCP initialize handshake failed"
+                                                    {:response init-resp :bridge id})))
 
-        ;; Send initialized notification
-        (send-notification! writer "notifications/initialized" nil)
+                     ;; Send initialized notification
+                                  (send-notification! writer "notifications/initialized" nil)
 
-        ;; Store process state
-        (reset! state {:process    process
-                       :writer     writer
-                       :reader     reader
-                       :id-counter id-counter
-                       :started-at started-at
-                       :init-resp  init-resp})
+                     ;; Store process state
+                                  (reset! state {:process    process
+                                                 :writer     writer
+                                                 :reader     reader
+                                                 :id-counter id-counter
+                                                 :started-at started-at
+                                                 :init-resp  init-resp})
 
-        (log/info "Stdio bridge started"
-                  {:bridge id
-                   :server-info (get-in init-resp [:result :serverInfo])})
+                                  (log/info "Stdio bridge started"
+                                            {:bridge id
+                                             :server-info (get-in init-resp [:result :serverInfo])})
 
-        {:success? true
-         :errors   []
-         :metadata {:server-info (get-in init-resp [:result :serverInfo])}})
-      (catch Exception e
-        (log/error e "Failed to start stdio bridge" {:bridge id})
-        {:success? false
-         :errors   [(.getMessage e)]})))
+                                  {:success? true
+                                   :errors   []
+                                   :metadata {:server-info (get-in init-resp [:result :serverInfo])}}))]
+      (if (r/ok? effect)
+        (:ok effect)
+        (do (log/error "Failed to start stdio bridge"
+                       {:bridge id :error (:message effect)})
+            {:success? false
+             :errors   [(:message effect)]}))))
 
   (stop-bridge! [_]
-    (try
-      (when-let [{:keys [^Process process ^BufferedWriter writer ^BufferedReader reader]} @state]
-        (rescue nil (.close writer))
-        (rescue nil (.close reader))
-        (.destroyForcibly process)
-        (.waitFor process 5 TimeUnit/SECONDS))
-      (reset! state nil)
-      (log/info "Stdio bridge stopped" {:bridge id})
-      {:success? true :errors []}
-      (catch Exception e
-        (log/error e "Error stopping stdio bridge" {:bridge id})
-        {:success? false :errors [(.getMessage e)]})))
+    (let [effect (r/try-effect* :bridge/stop-failed
+                                (when-let [{:keys [^Process process ^BufferedWriter writer ^BufferedReader reader]} @state]
+                                  (r/rescue nil (.close writer))
+                                  (r/rescue nil (.close reader))
+                                  (.destroyForcibly process)
+                                  (.waitFor process 5 TimeUnit/SECONDS))
+                                (reset! state nil)
+                                (log/info "Stdio bridge stopped" {:bridge id})
+                                {:success? true :errors []})]
+      (if (r/ok? effect)
+        (:ok effect)
+        (do (log/error "Error stopping stdio bridge"
+                       {:bridge id :error (:message effect)})
+            {:success? false :errors [(:message effect)]}))))
 
   (bridge-status [_]
     (if-let [s @state]

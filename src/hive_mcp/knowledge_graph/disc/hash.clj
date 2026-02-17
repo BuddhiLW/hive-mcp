@@ -1,6 +1,7 @@
 (ns hive-mcp.knowledge-graph.disc.hash
   "Hash computation utilities for disc entities."
   (:require [clojure.java.io :as io]
+            [hive-dsl.result :as r]
             [taoensso.timbre :as log])
   (:import [java.security MessageDigest]))
 
@@ -20,11 +21,11 @@
   "Read file and compute content hash.
    Returns {:hash \"..\" :exists? true} or {:exists? false}."
   [path]
-  (try
-    (let [file (io/file path)]
-      (if (.exists file)
-        {:hash (compute-hash (slurp file)) :exists? true}
-        {:exists? false}))
-    (catch Exception e
-      (log/warn "Failed to hash file" {:path path :error (.getMessage e)})
-      {:exists? false :error (.getMessage e)})))
+  (let [result (r/guard Exception {:exists? false}
+                        (let [file (io/file path)]
+                          (if (.exists file)
+                            {:hash (compute-hash (slurp file)) :exists? true}
+                            {:exists? false})))]
+    (when-let [err (::r/error (meta result))]
+      (log/warn "Failed to hash file" {:path path :error (:message err)}))
+    result))

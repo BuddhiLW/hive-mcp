@@ -3,6 +3,7 @@
   (:require [hive-mcp.knowledge-graph.disc.hash :as hash]
             [hive-mcp.knowledge-graph.disc.crud :as crud]
             [hive-mcp.knowledge-graph.disc.volatility :as vol]
+            [hive-dsl.result :as r]
             [taoensso.timbre :as log]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -59,43 +60,38 @@
          (take n)
          vec)))
 
+(def ^:private missing-disc-entry
+  "Default entry for a path with no disc data."
+  {:disc nil
+   :status :missing
+   :staleness-score 1.0
+   :days-since-read nil
+   :hash-mismatch? false
+   :never-analyzed? true
+   :read-count 0
+   :last-read-at nil})
+
 (defn- classify-disc
   "Classify a single file path's KG status as fresh, stale, or missing."
   [path staleness-threshold]
-  (try
-    (if-let [disc (crud/get-disc path)]
-      (let [{:keys [score days-since-read hash-mismatch? never-analyzed?]}
-            (staleness-report disc)]
-        {:path path
-         :disc disc
-         :status (if (<= score staleness-threshold) :fresh :stale)
-         :staleness-score score
-         :days-since-read days-since-read
-         :hash-mismatch? hash-mismatch?
-         :never-analyzed? never-analyzed?
-         :read-count (or (:disc/read-count disc) 0)
-         :last-read-at (:disc/last-read-at disc)})
-      {:path path
-       :disc nil
-       :status :missing
-       :staleness-score 1.0
-       :days-since-read nil
-       :hash-mismatch? false
-       :never-analyzed? true
-       :read-count 0
-       :last-read-at nil})
-    (catch Exception e
+  (let [result (r/guard Exception (assoc missing-disc-entry :path path)
+                        (if-let [disc (crud/get-disc path)]
+                          (let [{:keys [score days-since-read hash-mismatch? never-analyzed?]}
+                                (staleness-report disc)]
+                            {:path path
+                             :disc disc
+                             :status (if (<= score staleness-threshold) :fresh :stale)
+                             :staleness-score score
+                             :days-since-read days-since-read
+                             :hash-mismatch? hash-mismatch?
+                             :never-analyzed? never-analyzed?
+                             :read-count (or (:disc/read-count disc) 0)
+                             :last-read-at (:disc/last-read-at disc)})
+                          (assoc missing-disc-entry :path path)))]
+    (when-let [err (::r/error (meta result))]
       (log/warn "KG classify-disc failed, treating as missing"
-                {:path path :error (.getMessage e)})
-      {:path path
-       :disc nil
-       :status :missing
-       :staleness-score 1.0
-       :days-since-read nil
-       :hash-mismatch? false
-       :never-analyzed? true
-       :read-count 0
-       :last-read-at nil})))
+                {:path path :error (:message err)}))
+    result))
 
 (defn kg-first-context
   "Classify file paths by KG freshness to determine which need reading."

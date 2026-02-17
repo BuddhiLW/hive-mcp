@@ -1,7 +1,6 @@
 (ns hive-mcp.tools.catchup.scope
   "Scope resolution and query functions for catchup workflow."
-  (:require [hive-mcp.emacs.client :as ec]
-            [hive-mcp.chroma.core :as chroma]
+  (:require [hive-mcp.chroma.core :as chroma]
             [hive-mcp.knowledge-graph.scope :as kg-scope]
             [hive-mcp.dns.result :refer [rescue]]
             [clojure.string :as str]
@@ -27,17 +26,18 @@
   (sort-by :created #(compare %2 %1) entries))
 
 (defn get-current-project-name
-  "Get current project name from Emacs."
+  "Get current project name from .hive-project.edn or directory path (no Emacs dependency)."
   ([] (get-current-project-name nil))
   ([directory]
    (rescue nil
-           (let [elisp (if directory
-                         (format "(hive-mcp-memory--get-project-name %s)" (pr-str directory))
-                         "(hive-mcp-memory--get-project-name)")
-                 {:keys [success result timed-out]} (ec/eval-elisp-with-timeout elisp 10000)]
-             (if (and success result (not= result "nil") (not timed-out))
-               (str/replace result #"\"" "")
-               nil)))))
+           (when directory
+             (or
+              ;; Priority 1: :name from .hive-project.edn
+              (let [config (kg-scope/read-direct-project-config directory)]
+                (or (:name config) (:project-id config)))
+              ;; Priority 2: last path segment
+              (let [parts (str/split (str directory) #"/")]
+                (last parts)))))))
 
 (defn filter-by-tags
   "Filter entries to only those containing all specified tags."

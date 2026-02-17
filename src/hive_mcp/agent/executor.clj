@@ -5,6 +5,7 @@
             [hive-mcp.agent.drone.tool-allowlist :as allowlist]
             [hive-mcp.hivemind.core :as hivemind]
             [hive-mcp.server.permissions :as permissions]
+            [hive-dsl.result :as r]
             [clojure.data.json :as json]
             [taoensso.timbre :as log]))
 
@@ -38,13 +39,13 @@
   "Execute a tool by name with arguments."
   [tool-name arguments]
   (if-let [tool (registry/get-tool tool-name)]
-    (try
-      (let [handler (:handler tool)
-            result (handler arguments)]
-        {:success true :result result})
-      (catch Exception e
-        (log/error e "Tool execution failed:" tool-name)
-        {:success false :error (ex-message e)}))
+    (let [result (r/try-effect* :agent/tool-execution-failed
+                                (let [handler (:handler tool)]
+                                  (handler arguments)))]
+      (if (r/ok? result)
+        {:success true :result (:ok result)}
+        (do (log/error "Tool execution failed:" tool-name {:error (:message result)})
+            {:success false :error (:message result)})))
     {:success false :error (str "Unknown tool: " tool-name)}))
 
 (defn format-tool-result

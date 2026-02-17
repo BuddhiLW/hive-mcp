@@ -99,19 +99,28 @@
 (defun hive-mcp-olympus--get-ling-buffers ()
   "Get list of all ling terminal buffers.
 Returns list of (ling-id . buffer) pairs, sorted by spawn time.
-Only returns lings with live buffers."
+Only returns lings with live buffers.
+Checks both legacy swarm state and hive-claude-state."
   (let (result)
-    ;; Check if swarm module is loaded and has slaves
+    ;; Check legacy swarm module
     (when (and (boundp 'hive-mcp-swarm--slaves)
                (hash-table-p hive-mcp-swarm--slaves))
       (maphash
        (lambda (slave-id slave-plist)
          (let ((buffer (plist-get slave-plist :buffer)))
-           ;; Only include slaves with live buffers
            (when (and buffer (buffer-live-p buffer))
              (push (cons slave-id buffer) result))))
        hive-mcp-swarm--slaves))
-    ;; Sort by slave-id (which includes timestamp) for consistent ordering
+    ;; Check hive-claude-state (post-migration)
+    (when (fboundp 'hive-claude-state-for-each-session)
+      (hive-claude-state-for-each-session
+       (lambda (slave-id session)
+         (let ((buffer (plist-get session :buffer)))
+           (when (and buffer (buffer-live-p buffer)
+                      ;; Avoid duplicates if in both registries
+                      (not (assoc slave-id result)))
+             (push (cons slave-id buffer) result))))))
+    ;; Sort by slave-id for consistent ordering
     (sort result (lambda (a b) (string< (car a) (car b))))))
 
 (defun hive-mcp-olympus--calculate-layout (n)
@@ -551,8 +560,10 @@ Default 5 minutes."
 
 (defun hive-mcp-olympus--get-ling-status-for-monitor ()
   "Get ling status data for monitoring.
-Returns list of ling plists with :slave-id :name :status :duration."
-  (let ((lings nil))
+Returns list of ling plists with :slave-id :name :status :duration.
+Checks both legacy swarm state and hive-claude-state."
+  (let ((lings nil)
+        (seen (make-hash-table :test 'equal)))
     (when (and (boundp 'hive-mcp-swarm--slaves)
                (hash-table-p hive-mcp-swarm--slaves))
       (maphash
@@ -562,8 +573,19 @@ Returns list of ling plists with :slave-id :name :status :duration."
                      :status (plist-get slave :status)
                      :current-task (plist-get slave :current-task)
                      :last-activity (plist-get slave :last-activity))
-               lings))
+               lings)
+         (puthash id t seen))
        hive-mcp-swarm--slaves))
+    (when (fboundp 'hive-claude-state-for-each-session)
+      (hive-claude-state-for-each-session
+       (lambda (id session)
+         (unless (gethash id seen)
+           (push (list :slave-id id
+                       :name (plist-get session :name)
+                       :status (plist-get session :status)
+                       :current-task (plist-get session :current-task)
+                       :last-activity (plist-get session :last-activity))
+                 lings)))))
     lings))
 
 (defun hive-mcp-olympus--monitor-tick ()
@@ -684,32 +706,45 @@ Default 5 seconds."
           (format "%ds" secs)))
     "-"))
 
+(defun hive-mcp-olympus--make-dashboard-entry (id slave)
+  "Build a dashboard entry for ling ID with state SLAVE plist."
+  (let* ((name (or (plist-get slave :name) "unnamed"))
+         (status (or (plist-get slave :status) 'unknown))
+         (status-str (symbol-name status))
+         (start-time (plist-get slave :task-start-time))
+         (duration-str (hive-mcp-olympus--format-duration start-time))
+         (duration-secs (if start-time (- (float-time) start-time) 0))
+         (task (or (plist-get slave :current-task) "-"))
+         (task-preview (truncate-string-to-width task 40))
+         (face (hive-mcp-olympus--status-to-face status duration-secs)))
+    (list id
+          (vector
+           (propertize (truncate-string-to-width id 25) 'face face)
+           (propertize name 'face face)
+           (propertize status-str 'face face)
+           (propertize duration-str 'face face)
+           (propertize task-preview 'face face)))))
+
 (defun hive-mcp-olympus--get-dashboard-entries ()
   "Get entries for the dashboard tabulated list.
-Returns list of (ID [ID NAME STATUS DURATION TASK]) entries."
-  (let ((entries nil))
+Returns list of (ID [ID NAME STATUS DURATION TASK]) entries.
+Checks both legacy swarm state and hive-claude-state."
+  (let ((entries nil)
+        (seen (make-hash-table :test 'equal)))
+    ;; Legacy swarm state
     (when (and (boundp 'hive-mcp-swarm--slaves)
                (hash-table-p hive-mcp-swarm--slaves))
       (maphash
        (lambda (id slave)
-         (let* ((name (or (plist-get slave :name) "unnamed"))
-                (status (or (plist-get slave :status) 'unknown))
-                (status-str (symbol-name status))
-                (start-time (plist-get slave :task-start-time))
-                (duration-str (hive-mcp-olympus--format-duration start-time))
-                (duration-secs (if start-time (- (float-time) start-time) 0))
-                (task (or (plist-get slave :current-task) "-"))
-                (task-preview (truncate-string-to-width task 40))
-                (face (hive-mcp-olympus--status-to-face status duration-secs)))
-           (push (list id
-                       (vector
-                        (propertize (truncate-string-to-width id 25) 'face face)
-                        (propertize name 'face face)
-                        (propertize status-str 'face face)
-                        (propertize duration-str 'face face)
-                        (propertize task-preview 'face face)))
-                 entries)))
+         (push (hive-mcp-olympus--make-dashboard-entry id slave) entries)
+         (puthash id t seen))
        hive-mcp-swarm--slaves))
+    ;; hive-claude-state (post-migration)
+    (when (fboundp 'hive-claude-state-for-each-session)
+      (hive-claude-state-for-each-session
+       (lambda (id session)
+         (unless (gethash id seen)
+           (push (hive-mcp-olympus--make-dashboard-entry id session) entries)))))
     (nreverse entries)))
 
 (defun hive-mcp-olympus-dashboard-refresh ()
@@ -735,12 +770,16 @@ Returns list of (ID [ID NAME STATUS DURATION TASK]) entries."
   "Switch to the buffer of ling at point."
   (interactive)
   (when-let* ((id (tabulated-list-get-id)))
-    (when (and (boundp 'hive-mcp-swarm--slaves)
-               (hash-table-p hive-mcp-swarm--slaves))
-      (when-let* ((slave (gethash id hive-mcp-swarm--slaves))
-                  (buffer (plist-get slave :buffer)))
-        (when (buffer-live-p buffer)
-          (switch-to-buffer buffer))))))
+    (let ((buffer (or
+                   ;; Legacy swarm
+                   (when (and (boundp 'hive-mcp-swarm--slaves)
+                              (hash-table-p hive-mcp-swarm--slaves))
+                     (plist-get (gethash id hive-mcp-swarm--slaves) :buffer))
+                   ;; hive-claude-state
+                   (when (fboundp 'hive-claude-state-get-field)
+                     (hive-claude-state-get-field id :buffer)))))
+      (when (and buffer (buffer-live-p buffer))
+        (switch-to-buffer buffer)))))
 
 (defvar hive-mcp-olympus-dashboard-mode-map
   (let ((map (make-sparse-keymap)))

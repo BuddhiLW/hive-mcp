@@ -5,6 +5,7 @@
    between knowledge nodes (memory entries) via the IGraphStore protocol."
   (:require [hive-mcp.knowledge-graph.connection :as conn]
             [hive-mcp.knowledge-graph.schema :as schema]
+            [hive-dsl.result :as r]
             [taoensso.timbre :as log]))
 
 (defn generate-edge-id
@@ -427,27 +428,30 @@
         ;; Track promotion results
         results (reduce
                  (fn [acc edge]
-                   (try
-                     (if-not (co-access-edge-promotable? edge threshold)
-                       (update acc :below inc)
-                       (let [from-id (:kg-edge/from edge)
-                             to-id (:kg-edge/to edge)]
-                         (if (depends-on-exists? from-id to-id)
-                           (update acc :skipped inc)
-                           ;; Create the promoted :depends-on edge
-                           (do
-                             (add-edge! (cond-> {:from from-id
-                                                 :to to-id
-                                                 :relation :depends-on
-                                                 :confidence confidence
-                                                 :source-type :inferred}
-                                          scope (assoc :scope scope)
-                                          created-by (assoc :created-by created-by)))
-                             (update acc :promoted inc)))))
-                     (catch Exception e
-                       (log/debug "Co-access promotion failed for edge"
-                                  (:kg-edge/id edge) ":" (.getMessage e))
-                       (update acc :errors inc))))
+                   (let [v (r/guard Exception nil
+                                    (if-not (co-access-edge-promotable? edge threshold)
+                                      :below
+                                      (let [from-id (:kg-edge/from edge)
+                                            to-id (:kg-edge/to edge)]
+                                        (if (depends-on-exists? from-id to-id)
+                                          :skipped
+                                          (do
+                                            (add-edge! (cond-> {:from from-id
+                                                                :to to-id
+                                                                :relation :depends-on
+                                                                :confidence confidence
+                                                                :source-type :inferred}
+                                                         scope (assoc :scope scope)
+                                                         created-by (assoc :created-by created-by)))
+                                            :promoted)))))]
+                     (case v
+                       :below (update acc :below inc)
+                       :skipped (update acc :skipped inc)
+                       :promoted (update acc :promoted inc)
+                       (do (when-let [err (::r/error (meta v))]
+                             (log/debug "Co-access promotion failed for edge"
+                                        (:kg-edge/id edge) ":" (:message err)))
+                           (update acc :errors inc)))))
                  {:promoted 0 :skipped 0 :below 0 :errors 0}
                  sorted-edges)]
     (when (pos? (:promoted results))
@@ -563,29 +567,31 @@
         ;; Process each edge
         results (reduce
                  (fn [acc edge]
-                   (try
-                     (if-not (edge-stale? edge staleness-days now-millis)
-                       (update acc :fresh inc)
-                       (let [edge-id (:kg-edge/id edge)
-                             rate (decay-rate-for-edge edge)
-                             old-confidence (or (:kg-edge/confidence edge) 1.0)
-                             new-confidence (- old-confidence rate)]
-                         (if (< new-confidence prune-threshold)
-                           ;; Below threshold — prune the edge
-                           (do
-                             (remove-edge! edge-id)
-                             (log/debug "Pruned stale edge" edge-id
-                                        "confidence:" old-confidence "->" new-confidence
-                                        "relation:" (:kg-edge/relation edge))
-                             (update acc :pruned inc))
-                           ;; Still above threshold — decay confidence
-                           (do
-                             (update-edge-confidence! edge-id new-confidence)
-                             (update acc :decayed inc)))))
-                     (catch Exception e
-                       (log/debug "Edge decay failed for edge"
-                                  (:kg-edge/id edge) ":" (.getMessage e))
-                       (update acc :errors inc))))
+                   (let [v (r/guard Exception nil
+                                    (if-not (edge-stale? edge staleness-days now-millis)
+                                      :fresh
+                                      (let [edge-id (:kg-edge/id edge)
+                                            rate (decay-rate-for-edge edge)
+                                            old-confidence (or (:kg-edge/confidence edge) 1.0)
+                                            new-confidence (- old-confidence rate)]
+                                        (if (< new-confidence prune-threshold)
+                                          (do
+                                            (remove-edge! edge-id)
+                                            (log/debug "Pruned stale edge" edge-id
+                                                       "confidence:" old-confidence "->" new-confidence
+                                                       "relation:" (:kg-edge/relation edge))
+                                            :pruned)
+                                          (do
+                                            (update-edge-confidence! edge-id new-confidence)
+                                            :decayed)))))]
+                     (case v
+                       :fresh (update acc :fresh inc)
+                       :pruned (update acc :pruned inc)
+                       :decayed (update acc :decayed inc)
+                       (do (when-let [err (::r/error (meta v))]
+                             (log/debug "Edge decay failed for edge"
+                                        (:kg-edge/id edge) ":" (:message err)))
+                           (update acc :errors inc)))))
                  {:decayed 0 :pruned 0 :fresh 0 :errors 0}
                  sorted-edges)]
     (when (or (pos? (:decayed results)) (pos? (:pruned results)))

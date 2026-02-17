@@ -37,7 +37,7 @@
      (register-addon! (->HaystackBridge (atom nil)))"
   (:require [hive-mcp.addons.protocol :as proto]
             [hive-mcp.addons.core :as addon]
-            [hive-mcp.dns.result :refer [rescue]]
+            [hive-mcp.dns.result :as r]
             [clojure.string :as str]
             [clojure.walk :as walk]
             [taoensso.timbre :as log]))
@@ -335,23 +335,23 @@
    - Wraps transport errors as text error responses"
   [bridge tool-name]
   (fn [params]
-    (try
-      (let [result (call-tool bridge tool-name params)]
-        (if (:isError result)
-          {:type "text"
-           :text (str "Remote tool error: "
-                      (->> (:content result)
-                           (keep :text)
-                           (str/join "\n")))}
-          (let [content (:content result)]
-            (if (and (sequential? content) (> (count content) 1))
-              content ;; Multi-item: return seq (normalize-content handles)
-              {:type "text"
-               :text (or (-> content first :text)
-                         (pr-str result))}))))
-      (catch Exception e
+    (let [effect (r/try-effect* :bridge/call-failed (call-tool bridge tool-name params))]
+      (if (r/err? effect)
         {:type "text"
-         :text (str "Bridge call failed: " (.getMessage e))}))))
+         :text (str "Bridge call failed: " (:message effect))}
+        (let [result (:ok effect)]
+          (if (:isError result)
+            {:type "text"
+             :text (str "Remote tool error: "
+                        (->> (:content result)
+                             (keep :text)
+                             (str/join "\n")))}
+            (let [content (:content result)]
+              (if (and (sequential? content) (> (count content) 1))
+                content ;; Multi-item: return seq (normalize-content handles)
+                {:type "text"
+                 :text (or (-> content first :text)
+                           (pr-str result))}))))))))
 
 (defn proxy-tool-def
   "Generate a local tool-def that proxies to a remote tool via bridge.
@@ -424,13 +424,13 @@
   ([bridge bridge-prefix]
    (proxy-tool-defs bridge bridge-prefix {}))
   ([bridge bridge-prefix opts]
-   (rescue (do (log/warn "Failed to generate proxy tool-defs"
-                         {:bridge bridge-prefix})
-               [])
-           (let [remote-tools (list-remote-tools bridge)
-                 filtered     (cond->> remote-tools
-                                (:tool-filter opts) (filter (:tool-filter opts)))]
-             (mapv #(proxy-tool-def bridge bridge-prefix % opts) filtered)))))
+   (r/rescue (do (log/warn "Failed to generate proxy tool-defs"
+                           {:bridge bridge-prefix})
+                 [])
+             (let [remote-tools (list-remote-tools bridge)
+                   filtered     (cond->> remote-tools
+                                  (:tool-filter opts) (filter (:tool-filter opts)))]
+               (mapv #(proxy-tool-def bridge bridge-prefix % opts) filtered)))))
 
 ;; =============================================================================
 ;; NoopMcpBridge (Fallback for development/testing)

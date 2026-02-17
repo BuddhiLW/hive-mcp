@@ -3,7 +3,7 @@
   (:require [hive-mcp.analysis.resolve :as resolve]
             [hive-mcp.chroma.core :as chroma]
             [hive-mcp.knowledge-graph.disc :as kg-disc]
-            [hive-mcp.dns.result :refer [rescue]]
+            [hive-dsl.result :as r]
             [clojure.string :as str]
             [clojure.java.io :as io]
             [taoensso.timbre :as log]))
@@ -14,9 +14,9 @@
 (defn- read-file-lines
   "Read file as vector of lines, returning nil if file doesn't exist."
   [path]
-  (rescue nil
-          (when (.exists (io/file path))
-            (str/split-lines (slurp path)))))
+  (r/rescue nil
+            (when (.exists (io/file path))
+              (str/split-lines (slurp path)))))
 
 (defn read-surrounding-lines
   "Read surrounding lines around a target line number."
@@ -40,14 +40,14 @@
 (defn- parse-ns-form
   "Parse ns form from file content, returning nil on failure."
   [content]
-  (rescue nil
-          (let [forms (read-string (str "[" content "]"))]
-            (first (filter #(and (list? %) (= 'ns (first %))) forms)))))
+  (r/rescue nil
+            (let [forms (read-string (str "[" content "]"))]
+              (first (filter #(and (list? %) (= 'ns (first %))) forms)))))
 
 (defn extract-imports
   "Extract require/import clauses from a Clojure file."
   [path]
-  (when-let [content (rescue nil (slurp path))]
+  (when-let [content (r/rescue nil (slurp path))]
     (when-let [ns-form (parse-ns-form content)]
       (let [ns-name (second ns-form)
             clauses (drop 2 ns-form)
@@ -77,29 +77,29 @@
   "Find function signatures related to the task using kondo analysis."
   [path task]
   (if-let [run-analysis (resolve/resolve-kondo-analysis)]
-    (try
-      (let [{:keys [analysis]} (run-analysis path)
-            var-defs (:var-definitions analysis)
-            task-words (-> task
-                           str/lower-case
-                           (str/replace #"[^a-z0-9\-]" " ")
-                           (str/split #"\s+")
-                           set)
-            relevant-defs (->> var-defs
-                               (filter (fn [vdef]
-                                         (let [var-name (str/lower-case (str (:name vdef)))]
-                                           (some #(str/includes? var-name %) task-words))))
-                               (take 10))]
-        (mapv (fn [vdef]
-                {:name (str (:name vdef))
-                 :ns (str (:ns vdef))
-                 :arglists (:arglist-strs vdef)
-                 :row (:row vdef)
-                 :private (:private vdef)})
-              relevant-defs))
-      (catch Exception e
-        (log/debug "Could not analyze file for related symbols:" path (.getMessage e))
-        []))
+    (let [result (r/guard Exception []
+                          (let [{:keys [analysis]} (run-analysis path)
+                                var-defs (:var-definitions analysis)
+                                task-words (-> task
+                                               str/lower-case
+                                               (str/replace #"[^a-z0-9\-]" " ")
+                                               (str/split #"\s+")
+                                               set)
+                                relevant-defs (->> var-defs
+                                                   (filter (fn [vdef]
+                                                             (let [var-name (str/lower-case (str (:name vdef)))]
+                                                               (some #(str/includes? var-name %) task-words))))
+                                                   (take 10))]
+                            (mapv (fn [vdef]
+                                    {:name (str (:name vdef))
+                                     :ns (str (:ns vdef))
+                                     :arglists (:arglist-strs vdef)
+                                     :row (:row vdef)
+                                     :private (:private vdef)})
+                                  relevant-defs)))]
+      (when-let [err (::r/error (meta result))]
+        (log/debug "Could not analyze file for related symbols:" path (:message err)))
+      result)
     []))
 
 (defn format-related-symbols
@@ -118,18 +118,18 @@
   "Get existing lint warnings for a file."
   [path & [{:keys [level] :or {level :warning}}]]
   (if-let [run-analysis (resolve/resolve-kondo-analysis)]
-    (try
-      (let [{:keys [findings]} (run-analysis path)]
-        (->> findings
-             (filter #(case level
-                        :error (= (:level %) :error)
-                        :warning (#{:error :warning} (:level %))
-                        :info true))
-             (mapv #(select-keys % [:row :col :level :type :message]))
-             (take 15)))
-      (catch Exception e
-        (log/debug "Could not lint file:" path (.getMessage e))
-        []))
+    (let [result (r/guard Exception []
+                          (let [{:keys [findings]} (run-analysis path)]
+                            (->> findings
+                                 (filter #(case level
+                                            :error (= (:level %) :error)
+                                            :warning (#{:error :warning} (:level %))
+                                            :info true))
+                                 (mapv #(select-keys % [:row :col :level :type :message]))
+                                 (take 15))))]
+      (when-let [err (::r/error (meta result))]
+        (log/debug "Could not lint file:" path (:message err)))
+      result)
     []))
 
 (defn format-lint-context
@@ -147,36 +147,36 @@
 (defn get-relevant-conventions
   "Query memory for conventions relevant to the task."
   [task project-id]
-  (try
-    ;; Try semantic search first (filter by project at DB level)
-    (let [results (chroma/search-similar task :type "convention" :limit 5
-                                         :project-ids (when project-id [project-id]))]
-      (if (seq results)
-        (->> results
-             (map (fn [r]
-                    (or (get-in r [:metadata :content])
-                        (:document r))))
-             (remove nil?)
-             (take 3)
-             vec)
-        ;; Fallback: query all conventions and filter
-        (let [all-convs (chroma/query-entries :type "convention"
-                                              :project-id project-id
-                                              :limit 20)]
-          (->> all-convs
-               (filter (fn [conv]
-                         (let [content (str/lower-case (str (:content conv)))
-                               tags (set (map str/lower-case (or (:tags conv) [])))]
-                           ;; Basic relevance: check if any task word appears
-                           (or (some #(str/includes? content %)
-                                     (str/split (str/lower-case task) #"\s+"))
-                               (some #(tags %) ["drone" "coding" "clojure"])))))
-               (map :content)
-               (take 3)
-               vec))))
-    (catch Exception e
-      (log/debug "Could not query conventions:" (.getMessage e))
-      [])))
+  (let [result (r/guard Exception []
+                 ;; Try semantic search first (filter by project at DB level)
+                        (let [results (chroma/search-similar task :type "convention" :limit 5
+                                                             :project-ids (when project-id [project-id]))]
+                          (if (seq results)
+                            (->> results
+                                 (map (fn [r]
+                                        (or (get-in r [:metadata :content])
+                                            (:document r))))
+                                 (remove nil?)
+                                 (take 3)
+                                 vec)
+                     ;; Fallback: query all conventions and filter
+                            (let [all-convs (chroma/query-entries :type "convention"
+                                                                  :project-id project-id
+                                                                  :limit 20)]
+                              (->> all-convs
+                                   (filter (fn [conv]
+                                             (let [content (str/lower-case (str (:content conv)))
+                                                   tags (set (map str/lower-case (or (:tags conv) [])))]
+                                        ;; Basic relevance: check if any task word appears
+                                               (or (some #(str/includes? content %)
+                                                         (str/split (str/lower-case task) #"\s+"))
+                                                   (some #(tags %) ["drone" "coding" "clojure"])))))
+                                   (map :content)
+                                   (take 3)
+                                   vec)))))]
+    (when-let [err (::r/error (meta result))]
+      (log/debug "Could not query conventions:" (:message err)))
+    result))
 
 (defn format-conventions-context
   "Format conventions as context string."
@@ -195,28 +195,29 @@
 (defn get-kg-file-knowledge
   "Check KG for existing knowledge about a file before reading it."
   [file-path]
-  (try
-    (let [disc (kg-disc/get-disc file-path)
-          stale? (when disc
-                   (let [{:keys [hash exists?]} (kg-disc/file-content-hash file-path)]
-                     (or (not exists?)
-                         (and hash (:disc/content-hash disc)
-                              (not= hash (:disc/content-hash disc))))))
-          staleness (when disc (kg-disc/staleness-score disc))
-          grounded-entries (rescue nil
-                                   (when (chroma/embedding-configured?)
-                                     (->> (chroma/query-entries :limit 10)
-                                          (filter #(= file-path (get-in % [:metadata :source-file])))
-                                          (take 5))))]
-      {:disc disc
-       :stale? (boolean stale?)
-       :staleness-score (or staleness 1.0)
-       :knowledge-entries (vec (or grounded-entries []))
-       :has-knowledge? (or (some? disc) (seq grounded-entries))})
-    (catch Exception e
-      (log/debug "KG file knowledge lookup failed:" (.getMessage e))
-      {:disc nil :stale? true :staleness-score 1.0
-       :knowledge-entries [] :has-knowledge? false})))
+  (let [fallback {:disc nil :stale? true :staleness-score 1.0
+                  :knowledge-entries [] :has-knowledge? false}
+        result (r/guard Exception fallback
+                        (let [disc (kg-disc/get-disc file-path)
+                              stale? (when disc
+                                       (let [{:keys [hash exists?]} (kg-disc/file-content-hash file-path)]
+                                         (or (not exists?)
+                                             (and hash (:disc/content-hash disc)
+                                                  (not= hash (:disc/content-hash disc))))))
+                              staleness (when disc (kg-disc/staleness-score disc))
+                              grounded-entries (r/rescue nil
+                                                         (when (chroma/embedding-configured?)
+                                                           (->> (chroma/query-entries :limit 10)
+                                                                (filter #(= file-path (get-in % [:metadata :source-file])))
+                                                                (take 5))))]
+                          {:disc disc
+                           :stale? (boolean stale?)
+                           :staleness-score (or staleness 1.0)
+                           :knowledge-entries (vec (or grounded-entries []))
+                           :has-knowledge? (or (some? disc) (seq grounded-entries))}))]
+    (when-let [err (::r/error (meta result))]
+      (log/debug "KG file knowledge lookup failed:" (:message err)))
+    result))
 
 (defn format-kg-file-context
   "Format KG knowledge about a file as context string for drone injection."
@@ -253,15 +254,15 @@
   (let [file-obj (io/file (if (str/starts-with? file-path "/")
                             file-path
                             (str project-root "/" file-path)))
-        abs-path (rescue nil
-                         (let [canonical (.getCanonicalPath file-obj)
-                               root-canonical (.getCanonicalPath (io/file project-root))]
-                           (if (str/starts-with? canonical root-canonical)
-                             canonical
-                             (do
-                               (log/warn "Path escapes project directory in build-drone-context"
-                                         {:file file-path :canonical canonical :root root-canonical})
-                               nil))))]
+        abs-path (r/rescue nil
+                           (let [canonical (.getCanonicalPath file-obj)
+                                 root-canonical (.getCanonicalPath (io/file project-root))]
+                             (if (str/starts-with? canonical root-canonical)
+                               canonical
+                               (do
+                                 (log/warn "Path escapes project directory in build-drone-context"
+                                           {:file file-path :canonical canonical :root root-canonical})
+                                 nil))))]
     (when-not abs-path
       (log/warn "Skipping context build for invalid path" {:file file-path}))
     (when abs-path

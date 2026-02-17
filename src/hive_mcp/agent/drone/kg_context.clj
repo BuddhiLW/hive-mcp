@@ -3,6 +3,7 @@
   (:require [hive-mcp.knowledge-graph.disc :as disc]
             [hive-mcp.chroma.core :as chroma]
             [hive-mcp.agent.drone.sandbox :as sandbox]
+            [hive-dsl.result :as r]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
 
@@ -25,29 +26,29 @@
 (defn- get-related-knowledge
   "Query for knowledge entries related to a file path."
   [file-path]
-  (try
-    (when (chroma/embedding-configured?)
-      (->> (chroma/query-entries :limit 20)
-           (filter #(= file-path (get-in % [:metadata :source-file])))
-           (take 5)
-           vec))
-    (catch Exception e
-      (log/debug "Could not query related knowledge:" (.getMessage e))
-      [])))
+  (let [result (r/guard Exception []
+                        (when (chroma/embedding-configured?)
+                          (->> (chroma/query-entries :limit 20)
+                               (filter #(= file-path (get-in % [:metadata :source-file])))
+                               (take 5)
+                               vec)))]
+    (when-let [err (::r/error (meta result))]
+      (log/debug "Could not query related knowledge:" (:message err)))
+    result))
 
 (defn- get-kg-edges
   "Get KG edges where this file's entities are involved."
   [file-path]
-  (try
-    (let [file-name (last (str/split file-path #"/"))
-          source-edges (when (resolve 'hive-mcp.knowledge-graph.edges/query-by-source)
-                         ((resolve 'hive-mcp.knowledge-graph.edges/query-by-source)
-                          {:source-pattern file-name
-                           :limit 5}))]
-      (vec (or source-edges [])))
-    (catch Exception e
-      (log/debug "Could not query KG edges:" (.getMessage e))
-      [])))
+  (let [result (r/guard Exception []
+                        (let [file-name (last (str/split file-path #"/"))
+                              source-edges (when (resolve 'hive-mcp.knowledge-graph.edges/query-by-source)
+                                             ((resolve 'hive-mcp.knowledge-graph.edges/query-by-source)
+                                              {:source-pattern file-name
+                                               :limit 5}))]
+                          (vec (or source-edges []))))]
+    (when-let [err (::r/error (meta result))]
+      (log/debug "Could not query KG edges:" (:message err)))
+    result))
 
 (defn build-kg-summary
   "Build a summary string from KG knowledge for known files."
@@ -90,16 +91,17 @@
 (defn- read-file-content
   "Read file content with path validation."
   [path project-root]
-  (try
-    (let [validation (sandbox/validate-path-containment path project-root)]
-      (if (:valid? validation)
-        {:content (slurp (:canonical-path validation))
-         :path (:canonical-path validation)}
-        {:error (:error validation)
-         :path path}))
-    (catch Exception e
-      {:error (.getMessage e)
-       :path path})))
+  (let [fallback {:error "Unknown error" :path path}
+        result (r/guard Exception fallback
+                        (let [validation (sandbox/validate-path-containment path project-root)]
+                          (if (:valid? validation)
+                            {:content (slurp (:canonical-path validation))
+                             :path (:canonical-path validation)}
+                            {:error (:error validation)
+                             :path path})))]
+    (if-let [err (::r/error (meta result))]
+      {:error (:message err) :path path}
+      result)))
 
 (defn- format-file-content-block
   "Format a single file's content as a markdown block."
