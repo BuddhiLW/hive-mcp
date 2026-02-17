@@ -12,6 +12,7 @@
    Idempotent: skips if edge already exists between pair."
   (:require [hive-mcp.chroma.core :as chroma]
             [hive-mcp.knowledge-graph.edges :as kg-edges]
+            [hive-dsl.result :as r]
             [clojure.string :as str]
             [clojure.set :as cset]
             [taoensso.timbre :as log]))
@@ -121,21 +122,22 @@
   "Try to create an edge, returning :created or :skipped or :error.
    Idempotent: skips if edge already exists."
   [from-id to-id relation confidence source-type]
-  (try
-    (if (edge-exists? from-id to-id relation)
-      :skipped
-      (do
-        (kg-edges/add-edge! {:from from-id
-                             :to to-id
-                             :relation relation
-                             :confidence confidence
-                             :source-type source-type
-                             :created-by "system:kg-bootstrap"})
-        :created))
-    (catch Exception e
-      (log/debug "Bootstrap edge creation failed:" from-id "->" to-id
-                 relation (.getMessage e))
-      :error)))
+  (let [result (r/guard Exception :error
+                        (if (edge-exists? from-id to-id relation)
+                          :skipped
+                          (do
+                            (kg-edges/add-edge! {:from from-id
+                                                 :to to-id
+                                                 :relation relation
+                                                 :confidence confidence
+                                                 :source-type source-type
+                                                 :created-by "system:kg-bootstrap"})
+                            :created)))]
+    (when (= :error result)
+      (when-let [err (::r/error (meta result))]
+        (log/debug "Bootstrap edge creation failed:" from-id "->" to-id
+                   relation (:message err))))
+    result))
 
 ;; =============================================================================
 ;; Backfill Orchestrator

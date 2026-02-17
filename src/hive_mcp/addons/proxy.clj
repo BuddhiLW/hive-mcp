@@ -32,6 +32,7 @@
    - hive-mcp.addons.protocol  — IAddon multiplexer protocol
    - hive-mcp.extensions.registry — Dynamic tool registration"
   (:require [hive-mcp.addons.mcp-bridge :as bridge]
+            [hive-mcp.dns.result :as r]
             [hive-mcp.extensions.registry :as ext]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
@@ -59,42 +60,42 @@
   [call-fn tool-name]
   {:pre [(ifn? call-fn) (string? tool-name)]}
   (fn [params]
-    (try
-      (let [result (call-fn tool-name params)]
-        (cond
-          ;; Error response from remote
-          (:isError result)
-          {:type "text"
-           :text (str "Remote tool error: "
-                      (->> (:content result)
-                           (keep :text)
-                           (str/join "\n")))}
-
-          ;; Multi-content response — return seq (normalize-content handles)
-          (and (sequential? (:content result))
-               (> (count (:content result)) 1))
-          (:content result)
-
-          ;; Single content response
-          (:content result)
-          {:type "text"
-           :text (or (-> (:content result) first :text)
-                     (pr-str result))}
-
-          ;; Raw string result
-          (string? result)
-          {:type "text" :text result}
-
-          ;; Raw map with :type (already MCP content item)
-          (and (map? result) (:type result))
-          result
-
-          ;; Fallback: pr-str anything else
-          :else
-          {:type "text" :text (pr-str result)}))
-      (catch Exception e
+    (let [effect (r/try-effect* :proxy/call-failed (call-fn tool-name params))]
+      (if (r/err? effect)
         {:type "text"
-         :text (str "Proxy call failed: " (.getMessage e))}))))
+         :text (str "Proxy call failed: " (:message effect))}
+        (let [result (:ok effect)]
+          (cond
+            ;; Error response from remote
+            (:isError result)
+            {:type "text"
+             :text (str "Remote tool error: "
+                        (->> (:content result)
+                             (keep :text)
+                             (str/join "\n")))}
+
+            ;; Multi-content response — return seq (normalize-content handles)
+            (and (sequential? (:content result))
+                 (> (count (:content result)) 1))
+            (:content result)
+
+            ;; Single content response
+            (:content result)
+            {:type "text"
+             :text (or (-> (:content result) first :text)
+                       (pr-str result))}
+
+            ;; Raw string result
+            (string? result)
+            {:type "text" :text result}
+
+            ;; Raw map with :type (already MCP content item)
+            (and (map? result) (:type result))
+            result
+
+            ;; Fallback: pr-str anything else
+            :else
+            {:type "text" :text (pr-str result)}))))))
 
 ;; =============================================================================
 ;; Declarative Middleware Resolution
@@ -282,19 +283,17 @@
    (from-bridge bridge {}))
   ([bridge opts]
    {:pre [(bridge/bridge? bridge)]}
-   (let [name-kw (try
-                   (if-let [addon-id-fn (requiring-resolve
-                                         'hive-mcp.addons.protocol/addon-id)]
-                     (addon-id-fn bridge)
-                     :unknown)
-                   (catch Exception _ :unknown))
+   (let [name-kw (r/guard Exception :unknown
+                          (if-let [addon-id-fn (requiring-resolve
+                                                'hive-mcp.addons.protocol/addon-id)]
+                            (addon-id-fn bridge)
+                            :unknown))
          prefix  (clojure.core/name name-kw)
-         tools   (try
-                   (bridge/list-remote-tools bridge)
-                   (catch Exception e
+         tools   (let [t (r/guard Exception [] (bridge/list-remote-tools bridge))]
+                   (when-let [err (:hive-dsl.result/error (meta t))]
                      (log/warn "Failed to discover remote tools from bridge"
-                               {:bridge prefix :error (.getMessage e)})
-                     []))
+                               {:bridge prefix :error (:message err)}))
+                   t)
          call-fn (fn [tool-name params]
                    (bridge/call-tool bridge tool-name params))]
      (merge {:call-fn call-fn

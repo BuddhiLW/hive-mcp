@@ -2,7 +2,7 @@
   "Headless ling process management - subprocess-based Claude Code instances."
   (:require [clojure.string :as str]
             [hive-mcp.agent.ring-buffer :as rb]
-            [hive-mcp.dns.result :as result]
+            [hive-dsl.result :as result]
             [hive-mcp.server.guards :as guards]
             [taoensso.timbre :as log])
   (:import [java.lang ProcessBuilder]
@@ -96,14 +96,14 @@
       (fn []
         (log/info "JVM shutdown hook: killing" (.size process-registry) "headless processes")
         (doseq [[ling-id entry] process-registry]
-          (try
-            (when-let [^Process process (:process entry)]
-              (when (.isAlive process)
-                (log/info "Killing headless process" {:ling-id ling-id :pid (.pid process)})
-                (.destroyForcibly process)))
-            (catch Exception e
+          (let [res (result/guard Exception nil
+                                  (when-let [^Process process (:process entry)]
+                                    (when (.isAlive process)
+                                      (log/info "Killing headless process" {:ling-id ling-id :pid (.pid process)})
+                                      (.destroyForcibly process))))]
+            (when-let [err (::result/error (meta res))]
               (log/warn "Failed to kill headless process on shutdown"
-                        {:ling-id ling-id :error (.getMessage e)})))))
+                        {:ling-id ling-id :error (:message err)})))))
       "hive-headless-shutdown-hook"))
     (log/info "Registered JVM shutdown hook for headless processes")))
 
@@ -258,7 +258,7 @@
 (defn- close-writer-quietly!
   "Close a writer, ignoring any exceptions."
   [^BufferedWriter writer]
-  (try (.close writer) (catch Exception _)))
+  (result/rescue nil (.close writer)))
 
 (defn- terminate-process!
   "Terminate process gracefully or forcibly."
@@ -276,10 +276,9 @@
 (defn- await-exit-code
   "Wait for process exit and return exit code (-1 on timeout)."
   [^Process process]
-  (try
-    (.waitFor process 5000 java.util.concurrent.TimeUnit/MILLISECONDS)
-    (.exitValue process)
-    (catch Exception _ -1)))
+  (result/guard Exception -1
+                (.waitFor process 5000 java.util.concurrent.TimeUnit/MILLISECONDS)
+                (.exitValue process)))
 
 ;; ===========================================================================
 ;; Internal Logic (returns Result)
@@ -379,7 +378,7 @@
        :pid (:pid entry)
        :alive? alive?
        :exit-code (when-not alive?
-                    (try (.exitValue process) (catch Exception _ nil)))
+                    (result/guard Exception nil (.exitValue process)))
        :cwd (:cwd entry)
        :model (:model entry)
        :started-at (:started-at entry)
@@ -449,19 +448,19 @@
   []
   (let [ids (vec (.keySet process-registry))
         results (for [id ids]
-                  (try
-                    (kill-headless! id {:force? true})
-                    {:success true :id id}
-                    (catch Exception e
-                      {:success false :id id :error (.getMessage e)})))]
+                  (let [res (result/guard Exception nil
+                                          (kill-headless! id {:force? true}))]
+                    (if-let [err (::result/error (meta res))]
+                      {:success false :id id :error (:message err)}
+                      {:success true :id id})))]
     {:killed (count (filter :success results))
      :errors (count (remove :success results))}))
 
-(comment
+(comment)
   ;; (spawn-headless! "test-ling-1" {:cwd "/home/user/project"})
   ;; (headless-status "test-ling-1")
   ;; (get-stdout "test-ling-1" {:last-n 50})
   ;; (dispatch-via-stdin! "test-ling-1" "Find all test files and list them")
   ;; (kill-headless! "test-ling-1")
   ;; (list-headless)
-  )
+

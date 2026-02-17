@@ -9,6 +9,7 @@
   (:require [hive-mcp.knowledge-graph.connection :as conn]
             [hive-mcp.knowledge-graph.protocol :as proto]
             [hive-mcp.knowledge-graph.store.datascript :as ds-store]
+            [hive-dsl.result :as r]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.string :as str]
@@ -91,6 +92,18 @@
   [entity]
   (dissoc entity :db/id))
 
+(defn- import-entities!
+  "Import a batch of entities with error tracking. Uses r/guard per entity."
+  [entities entity-type transact-fn! imported errors]
+  (doseq [entity entities]
+    (let [v (r/guard Exception nil
+                     (transact-fn! [(clean-entity-for-import entity)])
+                     :ok)]
+      (if (= :ok v)
+        (swap! imported update entity-type inc)
+        (swap! errors conj {:type entity-type :entity entity
+                            :error (some-> (meta v) ::r/error :message)})))))
+
 (defn import-from-edn
   "Import KG data from an EDN map into the current store.
 
@@ -104,31 +117,9 @@
   (log/info "Importing KG data from EDN" {:counts (:counts data)})
   (let [errors (atom [])
         imported (atom {:edges 0 :disc 0 :synthetic 0})]
-
-    ;; Import disc entities first (dependencies for edges)
-    (doseq [disc (:disc data)]
-      (try
-        (conn/transact! [(clean-entity-for-import disc)])
-        (swap! imported update :disc inc)
-        (catch Exception e
-          (swap! errors conj {:type :disc :entity disc :error (.getMessage e)}))))
-
-    ;; Import synthetic nodes
-    (doseq [synth (:synthetic data)]
-      (try
-        (conn/transact! [(clean-entity-for-import synth)])
-        (swap! imported update :synthetic inc)
-        (catch Exception e
-          (swap! errors conj {:type :synthetic :entity synth :error (.getMessage e)}))))
-
-    ;; Import edges last (may reference disc/synthetic)
-    (doseq [edge (:edges data)]
-      (try
-        (conn/transact! [(clean-entity-for-import edge)])
-        (swap! imported update :edges inc)
-        (catch Exception e
-          (swap! errors conj {:type :edge :entity edge :error (.getMessage e)}))))
-
+    (import-entities! (:disc data) :disc conn/transact! imported errors)
+    (import-entities! (:synthetic data) :synthetic conn/transact! imported errors)
+    (import-entities! (:edges data) :edges conn/transact! imported errors)
     (let [result {:imported @imported :errors @errors}]
       (log/info "Import complete" {:imported @imported :error-count (count @errors)})
       result)))
@@ -376,31 +367,11 @@
     ;; Import to target store directly (bypass global conn)
     (log/info "Importing to sync target" {:target target-backend})
     (let [errors (atom [])
-          imported (atom {:edges 0 :disc 0 :synthetic 0})]
-
-      ;; Import disc entities first
-      (doseq [disc (:disc export-data)]
-        (try
-          (proto/transact! target-store [(clean-entity-for-import disc)])
-          (swap! imported update :disc inc)
-          (catch Exception e
-            (swap! errors conj {:type :disc :entity disc :error (.getMessage e)}))))
-
-      ;; Import synthetic nodes
-      (doseq [synth (:synthetic export-data)]
-        (try
-          (proto/transact! target-store [(clean-entity-for-import synth)])
-          (swap! imported update :synthetic inc)
-          (catch Exception e
-            (swap! errors conj {:type :synthetic :entity synth :error (.getMessage e)}))))
-
-      ;; Import edges last
-      (doseq [edge (:edges export-data)]
-        (try
-          (proto/transact! target-store [(clean-entity-for-import edge)])
-          (swap! imported update :edges inc)
-          (catch Exception e
-            (swap! errors conj {:type :edge :entity edge :error (.getMessage e)}))))
+          imported (atom {:edges 0 :disc 0 :synthetic 0})
+          target-transact! (fn [tx-data] (proto/transact! target-store tx-data))]
+      (import-entities! (:disc export-data) :disc target-transact! imported errors)
+      (import-entities! (:synthetic export-data) :synthetic target-transact! imported errors)
+      (import-entities! (:edges export-data) :edges target-transact! imported errors)
 
       ;; Validate on target
       (let [target-counts {:edges (count (proto/query target-store

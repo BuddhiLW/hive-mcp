@@ -2,6 +2,7 @@
   "Tool and agent registry for delegation."
   (:require [hive-mcp.agent.protocol :refer [IAgentRegistry agent-type]]
             [hive-mcp.swarm.datascript.queries :as ds-queries]
+            [hive-dsl.result :as r]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -19,14 +20,14 @@
   (when (and (empty? @registry)
              (not @initialized?))
     (reset! initialized? true)
-    (try
-      (log/info "Auto-registering tools for agent delegation...")
-      (require 'hive-mcp.tools.registry)
-      (let [tools-var (resolve 'hive-mcp.tools.registry/tools)]
-        (when tools-var
-          (register! @tools-var)))
-      (catch Exception e
-        (log/warn "Failed to auto-register tools:" (ex-message e))))))
+    (let [v (r/guard Exception nil
+                     (log/info "Auto-registering tools for agent delegation...")
+                     (require 'hive-mcp.tools.registry)
+                     (let [tools-var (resolve 'hive-mcp.tools.registry/tools)]
+                       (when tools-var
+                         (register! @tools-var))))]
+      (when-let [err (::r/error (meta v))]
+        (log/warn "Failed to auto-register tools:" (:message err))))))
 
 (defn register!
   "Register tools for agent use."
@@ -59,17 +60,18 @@
   []
   (reset! registry {})
   (reset! initialized? true)
-  (try
-    (log/info "[hot-reload] Refreshing tool registry...")
-    (require 'hive-mcp.tools.registry :reload)
-    (let [tools-var (resolve 'hive-mcp.tools.registry/tools)]
-      (when tools-var
-        (register! @tools-var))
-      (log/info "[hot-reload] Tool registry refreshed:" (count @registry) "tools")
-      (count @registry))
-    (catch Exception e
-      (log/error "[hot-reload] Failed to refresh tools:" (ex-message e))
-      0)))
+  (let [result (r/try-effect* :agent/tool-refresh-failed
+                              (log/info "[hot-reload] Refreshing tool registry...")
+                              (require 'hive-mcp.tools.registry :reload)
+                              (let [tools-var (resolve 'hive-mcp.tools.registry/tools)]
+                                (when tools-var
+                                  (register! @tools-var))
+                                (log/info "[hot-reload] Tool registry refreshed:" (count @registry) "tools")
+                                (count @registry)))]
+    (if (r/ok? result)
+      (:ok result)
+      (do (log/error "[hot-reload] Failed to refresh tools:" (:message result))
+          0))))
 
 (defonce ^:private agents (atom {}))
 

@@ -2,6 +2,7 @@
   "Pre/post execution validation for drone agents."
   (:require [hive-mcp.analysis.resolve :as resolve]
             [hive-mcp.swarm.logic :as logic]
+            [hive-dsl.result :as r]
             [clojure.java.io :as io]
             [clojure.set :as set]
             [clojure.string :as str]
@@ -56,30 +57,28 @@
 (defn- file-size
   "Get file size in bytes, or nil if file doesn't exist."
   [path]
-  (try
-    (let [f (io/file path)]
-      (when (.exists f)
-        (.length f)))
-    (catch Exception _ nil)))
+  (r/rescue nil
+            (let [f (io/file path)]
+              (when (.exists f)
+                (.length f)))))
 
 (defn- file-readable?
   "Check if file exists and is readable."
   [path]
-  (try
-    (let [f (io/file path)]
-      (and (.exists f) (.canRead f)))
-    (catch Exception _ false)))
+  (r/rescue false
+            (let [f (io/file path)]
+              (and (.exists f) (.canRead f)))))
 
 (defn- has-valid-claim?
   "Check if drone has a valid claim on the file."
   [task-id file]
-  (try
-    (let [file-claim (logic/get-claim-for-file file)]
-      (or (nil? file-claim)
-          (= task-id (:slave-id file-claim))))
-    (catch Exception e
-      (log/warn "Failed to check file claim:" (.getMessage e))
-      true)))
+  (let [result (r/guard Exception true
+                        (let [file-claim (logic/get-claim-for-file file)]
+                          (or (nil? file-claim)
+                              (= task-id (:slave-id file-claim)))))]
+    (when-let [err (::r/error (meta result))]
+      (log/warn "Failed to check file claim:" (:message err)))
+    result))
 
 (defn validate-pre-execution
   "Validate file before drone mutation."
@@ -143,22 +142,23 @@
   "Run kondo lint on file and extract errors."
   [file lint-level]
   (if-let [run-analysis (resolve/resolve-kondo-analysis)]
-    (try
-      (let [{:keys [findings]} (run-analysis file)
-            level-kw (keyword (or lint-level "error"))
-            filtered (->> findings
-                          (filter #(case level-kw
-                                     :error (= (:level %) :error)
-                                     :warning (#{:error :warning} (:level %))
-                                     :info true))
-                          (mapv #(select-keys % [:filename :row :col :level :type :message])))]
-        filtered)
-      (catch Exception e
-        (log/warn "Lint check failed for" file ":" (.getMessage e))
-        [{:filename file
-          :level :error
-          :type :lint-failed
-          :message (str "Lint check failed: " (.getMessage e))}]))
+    (let [fallback [{:filename file
+                     :level :error
+                     :type :lint-failed
+                     :message "Lint check failed"}]
+          result (r/guard Exception fallback
+                          (let [{:keys [findings]} (run-analysis file)
+                                level-kw (keyword (or lint-level "error"))
+                                filtered (->> findings
+                                              (filter #(case level-kw
+                                                         :error (= (:level %) :error)
+                                                         :warning (#{:error :warning} (:level %))
+                                                         :info true))
+                                              (mapv #(select-keys % [:filename :row :col :level :type :message])))]
+                            filtered))]
+      (when-let [err (::r/error (meta result))]
+        (log/warn "Lint check failed for" file ":" (:message err)))
+      result)
     (do
       (log/warn "clj-kondo-mcp not available, skipping lint for" file)
       [])))
@@ -166,12 +166,12 @@
 (defn- file-was-modified?
   "Check if file was actually modified by comparing content."
   [file old-content]
-  (try
-    (let [new-content (slurp file)]
-      (not= old-content new-content))
-    (catch Exception e
-      (log/warn "Could not check file modification:" (.getMessage e))
-      false)))
+  (let [result (r/guard Exception false
+                        (let [new-content (slurp file)]
+                          (not= old-content new-content)))]
+    (when-let [err (::r/error (meta result))]
+      (log/warn "Could not check file modification:" (:message err)))
+    result))
 
 (defn validate-post-execution
   "Validate file after drone mutation."
@@ -203,7 +203,7 @@
                  :warnings @warnings})))
 
       :else
-      (let [new-content (try (slurp file) (catch Exception _ nil))
+      (let [new-content (r/rescue nil (slurp file))
             diff-lines (count-diff-lines old-content new-content)
             lint-errors (run-lint-check file lint-level)
             has-errors? (seq lint-errors)]

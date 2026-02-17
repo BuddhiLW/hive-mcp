@@ -14,7 +14,7 @@
             [hive-mcp.knowledge-graph.store.datascript :as ds-store]
             [hive-mcp.knowledge-graph.scope :as scope]
             [hive-mcp.config.core :as config]
-            [hive-mcp.dns.result :refer [rescue]]
+            [hive-dsl.result :as r]
             [clojure.java.io :as io]
             [taoensso.timbre :as log]))
 
@@ -27,27 +27,27 @@
    Parent is more authoritative than child — first match walking UP wins.
    Returns keyword or nil."
   []
-  (rescue nil
-          (let [cwd (System/getProperty "user.dir")
-                home (System/getProperty "user.home")]
-            (loop [dir (io/file cwd)
-             ;; Collect configs child→parent, then reverse for parent-first
-                   configs []]
-              (cond
-                (nil? dir) nil
-                (= (.getAbsolutePath dir) home)
-          ;; Check home dir then stop
-                (let [all-configs (if-let [cfg (scope/read-direct-project-config (.getAbsolutePath dir))]
-                                    (conj configs cfg)
-                                    configs)
-                ;; Parent-first: last found = most ancestral = highest authority
-                      parent-first (reverse all-configs)]
-                  (some :kg-backend parent-first))
+  (r/rescue nil
+            (let [cwd (System/getProperty "user.dir")
+                  home (System/getProperty "user.home")]
+              (loop [dir (io/file cwd)
+               ;; Collect configs child→parent, then reverse for parent-first
+                     configs []]
+                (cond
+                  (nil? dir) nil
+                  (= (.getAbsolutePath dir) home)
+            ;; Check home dir then stop
+                  (let [all-configs (if-let [cfg (scope/read-direct-project-config (.getAbsolutePath dir))]
+                                      (conj configs cfg)
+                                      configs)
+                  ;; Parent-first: last found = most ancestral = highest authority
+                        parent-first (reverse all-configs)]
+                    (some :kg-backend parent-first))
 
-                :else
-                (let [cfg (scope/read-direct-project-config (.getAbsolutePath dir))]
-                  (recur (.getParentFile dir)
-                         (if cfg (conj configs cfg) configs))))))))
+                  :else
+                  (let [cfg (scope/read-direct-project-config (.getAbsolutePath dir))]
+                    (recur (.getParentFile dir)
+                           (if cfg (conj configs cfg) configs))))))))
 
 (defn- detect-backend
   "Detect the desired KG backend from configuration sources.
@@ -80,34 +80,26 @@
       (log/info "Auto-initializing KG backend" {:backend backend})
       (case backend
         :datalevin
-        (try
-          (require 'hive-mcp.knowledge-graph.store.datalevin)
-          (let [create-fn (resolve 'hive-mcp.knowledge-graph.store.datalevin/create-store)
-                store (create-fn)]
-            (if store
-              (proto/set-store! store)
-              (do
-                (log/warn "Datalevin store creation returned nil, falling back to DataScript")
-                (proto/set-store! (ds-store/create-store)))))
-          (catch Exception e
-            (log/warn "Failed to initialize Datalevin, falling back to DataScript"
-                      {:error (.getMessage e)})
-            (proto/set-store! (ds-store/create-store))))
+        (let [store (r/guard Exception nil
+                             (require 'hive-mcp.knowledge-graph.store.datalevin)
+                             (let [create-fn (resolve 'hive-mcp.knowledge-graph.store.datalevin/create-store)]
+                               (create-fn)))]
+          (if store
+            (proto/set-store! store)
+            (do
+              (log/warn "Failed to initialize Datalevin, falling back to DataScript")
+              (proto/set-store! (ds-store/create-store)))))
 
         :datahike
-        (try
-          (require 'hive-mcp.knowledge-graph.store.datahike)
-          (let [create-fn (resolve 'hive-mcp.knowledge-graph.store.datahike/create-store)
-                store (create-fn)]
-            (if store
-              (proto/set-store! store)
-              (do
-                (log/warn "Datahike store creation returned nil, falling back to DataScript")
-                (proto/set-store! (ds-store/create-store)))))
-          (catch Exception e
-            (log/warn "Failed to initialize Datahike, falling back to DataScript"
-                      {:error (.getMessage e)})
-            (proto/set-store! (ds-store/create-store))))
+        (let [store (r/guard Exception nil
+                             (require 'hive-mcp.knowledge-graph.store.datahike)
+                             (let [create-fn (resolve 'hive-mcp.knowledge-graph.store.datahike/create-store)]
+                               (create-fn)))]
+          (if store
+            (proto/set-store! store)
+            (do
+              (log/warn "Failed to initialize Datahike, falling back to DataScript")
+              (proto/set-store! (ds-store/create-store)))))
 
         ;; Default: DataScript
         (proto/set-store! (ds-store/create-store)))))

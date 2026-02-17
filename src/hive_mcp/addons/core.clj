@@ -9,6 +9,7 @@
    - registry-status / reset-registry!"
   (:require [clojure.set]
             [hive-mcp.addons.protocol :as proto]
+            [hive-mcp.dns.result :as r]
             [hive-mcp.extensions.registry :as ext]
             [taoensso.timbre :as log]))
 
@@ -75,13 +76,15 @@
   (if-let [{:keys [addon state]} (get-addon-entry id)]
     (do
       (when (= state :active)
-        (try
-          (let [result (proto/shutdown! addon)]
-            (when-not (:success? result)
-              (log/warn "Addon shutdown had errors during unregister"
-                        {:addon id :errors (:errors result)})))
-          (catch Exception e
-            (log/error e "Addon shutdown failed during unregister" {:addon id}))))
+        (let [result (r/try-effect* :addon/shutdown-error (proto/shutdown! addon))]
+          (cond
+            (r/err? result)
+            (log/error "Addon shutdown failed during unregister"
+                       {:addon id :error (:message result)})
+
+            (and (r/ok? result) (not (:success? (:ok result))))
+            (log/warn "Addon shutdown had errors during unregister"
+                      {:addon id :errors (:errors (:ok result))}))))
       (swap! addon-registry dissoc id)
       (log/info "Addon unregistered" {:addon id})
       {:success? true :addon-name id})
@@ -99,47 +102,50 @@
       (do
         (log/info "Addon already active, skipping init" {:addon id})
         {:success? true :addon-name id :already-active? true})
-      (try
-        (let [start-time (System/nanoTime)
-              result (proto/initialize! addon (or opts {}))
-              elapsed-ms (/ (- (System/nanoTime) start-time) 1e6)]
-          (if (:success? result)
-            (do
-              (swap! addon-registry assoc-in [id :state] :active)
-              (swap! addon-registry assoc-in [id :init-time]
-                     (java.time.Instant/now))
-              (swap! addon-registry assoc-in [id :init-result] result)
-              ;; Register schema extensions from protocol method
-              (let [schema-exts (proto/schema-extensions addon)]
-                (when (seq schema-exts)
-                  (doseq [[tool-name props] schema-exts]
-                    (ext/register-schema! tool-name props))
-                  (log/debug "Addon registered schema extensions"
-                             {:addon id :tools (keys schema-exts)})))
-              ;; Register extensions from init result metadata (opaque fn registry)
-              (when-let [exts (:extensions (:metadata result))]
-                (ext/register-many! exts)
-                (log/debug "Addon registered extensions"
-                           {:addon id :keys (keys exts)}))
-              ;; Register tools
-              (doseq [t (proto/tools addon)]
-                (ext/register-tool! t))
+      (let [init-result
+            (r/try-effect* :addon/init-exception
+                           (let [start-time (System/nanoTime)
+                                 result (proto/initialize! addon (or opts {}))
+                                 elapsed-ms (/ (- (System/nanoTime) start-time) 1e6)]
+                             (if (:success? result)
+                               (do
+                                 (swap! addon-registry assoc-in [id :state] :active)
+                                 (swap! addon-registry assoc-in [id :init-time]
+                                        (java.time.Instant/now))
+                                 (swap! addon-registry assoc-in [id :init-result] result)
+                    ;; Register schema extensions from protocol method
+                                 (let [schema-exts (proto/schema-extensions addon)]
+                                   (when (seq schema-exts)
+                                     (doseq [[tool-name props] schema-exts]
+                                       (ext/register-schema! tool-name props))
+                                     (log/debug "Addon registered schema extensions"
+                                                {:addon id :tools (keys schema-exts)})))
+                    ;; Register extensions from init result metadata (opaque fn registry)
+                                 (when-let [exts (:extensions (:metadata result))]
+                                   (ext/register-many! exts)
+                                   (log/debug "Addon registered extensions"
+                                              {:addon id :keys (keys exts)}))
+                    ;; Register tools
+                                 (doseq [t (proto/tools addon)]
+                                   (ext/register-tool! t))
 
-              (log/info "Addon initialized" {:addon id
-                                             :elapsed-ms elapsed-ms})
-              (assoc result :addon-name id :elapsed-ms elapsed-ms))
-            (do
-              (swap! addon-registry assoc-in [id :state] :error)
-              (swap! addon-registry assoc-in [id :init-result] result)
-              (log/warn "Addon init failed" {:addon id
-                                             :errors (:errors result)})
-              (assoc result :addon-name id))))
-        (catch Exception e
-          (swap! addon-registry assoc-in [id :state] :error)
-          (log/error e "Addon init threw exception" {:addon id})
-          {:success? false
-           :addon-name id
-           :errors [(.getMessage e)]})))
+                                 (log/info "Addon initialized" {:addon id
+                                                                :elapsed-ms elapsed-ms})
+                                 (assoc result :addon-name id :elapsed-ms elapsed-ms))
+                               (do
+                                 (swap! addon-registry assoc-in [id :state] :error)
+                                 (swap! addon-registry assoc-in [id :init-result] result)
+                                 (log/warn "Addon init failed" {:addon id
+                                                                :errors (:errors result)})
+                                 (assoc result :addon-name id)))))]
+        (if (r/err? init-result)
+          (do (swap! addon-registry assoc-in [id :state] :error)
+              (log/error "Addon init threw exception"
+                         {:addon id :error (:message init-result)})
+              {:success? false
+               :addon-name id
+               :errors [(:message init-result)]})
+          (:ok init-result))))
     {:success? false
      :addon-name id
      :errors [(str "Addon " id " is not registered")]}))
@@ -152,27 +158,30 @@
       (do
         (log/info "Addon not active, skipping shutdown" {:addon id :state state})
         {:success? true :addon-name id :already-inactive? true})
-      (try
-        ;; Deregister extensions stored during init
-        (when-let [exts (:extensions (:metadata init-result))]
-          (doseq [k (keys exts)] (ext/deregister! k))
-          (log/debug "Addon deregistered extensions" {:addon id :keys (keys exts)}))
-        ;; Deregister tools
-        (doseq [t (proto/tools addon)]
-          (ext/deregister-tool! (:name t)))
-        ;; Retract composite tool contributions
-        (ext/retract-all-by-addon! id)
-        (let [result (proto/shutdown! addon)]
-          (swap! addon-registry assoc-in [id :state] :registered)
-          (swap! addon-registry assoc-in [id :init-time] nil)
-          (log/info "Addon shut down" {:addon id})
-          (assoc result :addon-name id))
-        (catch Exception e
-          (swap! addon-registry assoc-in [id :state] :error)
-          (log/error e "Addon shutdown threw exception" {:addon id})
-          {:success? false
-           :addon-name id
-           :errors [(.getMessage e)]})))
+      (let [shutdown-result
+            (r/try-effect* :addon/shutdown-exception
+              ;; Deregister extensions stored during init
+                           (when-let [exts (:extensions (:metadata init-result))]
+                             (doseq [k (keys exts)] (ext/deregister! k))
+                             (log/debug "Addon deregistered extensions" {:addon id :keys (keys exts)}))
+              ;; Deregister tools
+                           (doseq [t (proto/tools addon)]
+                             (ext/deregister-tool! (:name t)))
+              ;; Retract composite tool contributions
+                           (ext/retract-all-by-addon! id)
+                           (let [result (proto/shutdown! addon)]
+                             (swap! addon-registry assoc-in [id :state] :registered)
+                             (swap! addon-registry assoc-in [id :init-time] nil)
+                             (log/info "Addon shut down" {:addon id})
+                             (assoc result :addon-name id)))]
+        (if (r/err? shutdown-result)
+          (do (swap! addon-registry assoc-in [id :state] :error)
+              (log/error "Addon shutdown threw exception"
+                         {:addon id :error (:message shutdown-result)})
+              {:success? false
+               :addon-name id
+               :errors [(:message shutdown-result)]})
+          (:ok shutdown-result))))
     {:success? false
      :addon-name id
      :errors [(str "Addon " id " is not registered")]}))
@@ -199,9 +208,7 @@
   "Get excluded-tools set from addon, returning #{} for legacy addons
    that don't implement the method."
   [addon]
-  (try (proto/excluded-tools addon)
-       (catch AbstractMethodError _ #{})
-       (catch IllegalArgumentException _ #{})))
+  (r/rescue #{} (proto/excluded-tools addon)))
 
 (defn active-addon-tools
   "Get all MCP tools from active addons.
@@ -264,7 +271,7 @@
    Dependencies come from health details: {:details {:dependencies #{...}}}"
   [id]
   (if-let [addon (get-addon id)]
-    (let [h (try (proto/health addon) (catch Exception _ {}))
+    (let [h (r/guard Exception {} (proto/health addon))
           deps (or (get-in h [:details :dependencies]) #{})
           available (set (keys @addon-registry))
           missing (clojure.set/difference deps available)]

@@ -9,7 +9,7 @@
             [hive-mcp.swarm.datascript.queries :as ds-queries]
             [hive-mcp.swarm.datascript.schema :as schema]
             [hive-mcp.protocols.dispatch :as dispatch-ctx]
-            [hive-mcp.dns.result :refer [rescue]]
+            [hive-dsl.result :as r]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -96,11 +96,11 @@
                 effective-model depth parent kanban-task-id
                 max-budget-usd task]} plan
         ling-context-str (when task
-                           (rescue nil
-                                   (catchup-ling/ling-catchup
-                                    {:directory cwd
-                                     :task task
-                                     :kanban-task-id kanban-task-id})))
+                           (r/rescue nil
+                                     (catchup-ling/ling-catchup
+                                      {:directory cwd
+                                       :task task
+                                       :kanban-task-id kanban-task-id})))
         enriched-task (when task
                         (if ling-context-str
                           (str ling-context-str "\n\n---\n\n" task)
@@ -129,19 +129,29 @@
                                        (assoc :ling/process-alive? true)))
 
     (when (and max-budget-usd (pos? max-budget-usd))
-      (rescue nil
-              (when-let [register-fn (requiring-resolve 'hive-mcp.agent.hooks.budget/register-budget!)]
-                (register-fn slave-id max-budget-usd {:model (or effective-model "claude")})
-                (log/info "Budget guardrail registered for ling"
-                          {:ling-id slave-id :max-budget-usd max-budget-usd}))))
+      (r/rescue nil
+                (when-let [register-fn (requiring-resolve 'hive-mcp.agent.hooks.budget/register-budget!)]
+                  (register-fn slave-id max-budget-usd {:model (or effective-model "claude")})
+                  (log/info "Budget guardrail registered for ling"
+                            {:ling-id slave-id :max-budget-usd max-budget-usd}))))
 
     (when (and enriched-task (not headless?))
-      (let [task-ling (->ling slave-id {:cwd cwd
-                                        :presets presets
-                                        :project-id project-id
-                                        :spawn-mode mode
-                                        :model effective-model})]
-        (.dispatch! task-ling {:task enriched-task})))
+      ;; Terminal processes (vterm, claude-code-ide) need time to initialize
+      ;; before accepting input. Dispatch immediately after spawn kills the
+      ;; process. Delay dispatch in a background thread to let the terminal
+      ;; become ready.
+      (future
+        (Thread/sleep 5000)
+        (let [result (r/guard Exception nil
+                              (let [task-ling (->ling slave-id {:cwd cwd
+                                                                :presets presets
+                                                                :project-id project-id
+                                                                :spawn-mode mode
+                                                                :model effective-model})]
+                                (.dispatch! task-ling {:task enriched-task})))]
+          (when-let [err (::r/error (meta result))]
+            (log/error "Delayed dispatch after spawn failed"
+                       {:ling-id slave-id :error (:message err)})))))
 
     slave-id))
 
@@ -207,9 +217,9 @@
       (if can-kill?
         (do
           (.release-claims! this)
-          (rescue nil
-                  (when-let [deregister-fn (requiring-resolve 'hive-mcp.agent.hooks.budget/deregister-budget!)]
-                    (deregister-fn id)))
+          (r/rescue nil
+                    (when-let [deregister-fn (requiring-resolve 'hive-mcp.agent.hooks.budget/deregister-budget!)]
+                      (deregister-fn id)))
           (let [strat (resolve-strategy mode)
                 result (strategy/strategy-kill! strat (ling-ctx this))]
             (when (:killed? result)

@@ -3,6 +3,7 @@
   (:require [clojure.core.async :as async]
             [hive-mcp.protocols.agent-bridge :as bridge]
             [hive-mcp.workflows.saa-workflow :as saa]
+            [hive-dsl.result :as r]
             [taoensso.timbre :as log]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -25,14 +26,13 @@
                                         :agent-id  agent-id
                                         :message   message}))
                   (when user-shout
-                    (try (user-shout agent-id phase message)
-                         (catch Exception _ nil))))})))
+                    (r/rescue nil (user-shout agent-id phase message))))})))
 
 (defn- resolve-agent-id
   "Resolve agent-id from session, falling back to opts or default."
   [session opts]
   (or (:agent-id opts)
-      (try (bridge/session-id session) (catch Exception _ nil))
+      (r/rescue nil (bridge/session-id session))
       "unknown"))
 
 (defrecord FSMSAAOrchestrator [config]

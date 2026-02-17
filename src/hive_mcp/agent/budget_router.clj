@@ -19,7 +19,7 @@
      :services.forge.budget-routing  — enable/disable (default false)
      :services.forge.fleet-budget    — fleet-wide USD cap (default 20.0)"
   (:require [hive-mcp.config.core :as config]
-            [hive-mcp.dns.result :refer [rescue]]
+            [hive-dsl.result :as r]
             [taoensso.timbre :as log]))
 
 ;; ---------------------------------------------------------------------------
@@ -103,29 +103,29 @@
 (defn- resolve-budget-status
   "Resolve budget status for an agent via hooks.budget."
   [agent-id]
-  (rescue nil
-          (when-let [status-fn (requiring-resolve 'hive-mcp.agent.hooks.budget/get-budget-status)]
-            (status-fn agent-id))))
+  (r/rescue nil
+            (when-let [status-fn (requiring-resolve 'hive-mcp.agent.hooks.budget/get-budget-status)]
+              (status-fn agent-id))))
 
 (defn- resolve-all-budget-statuses
   "Get all agent budget statuses."
   []
-  (try
-    (when-let [all-fn (requiring-resolve 'hive-mcp.agent.hooks.budget/get-all-budget-statuses)]
-      (all-fn))
-    (catch Exception e
-      (log/debug "[budget-router] Could not resolve all budgets" {:error (ex-message e)})
-      [])))
+  (let [result (r/guard Exception []
+                        (when-let [all-fn (requiring-resolve 'hive-mcp.agent.hooks.budget/get-all-budget-statuses)]
+                          (all-fn)))]
+    (when-let [err (::r/error (meta result))]
+      (log/debug "[budget-router] Could not resolve all budgets" {:error (:message err)}))
+    result))
 
 (defn- resolve-total-spend
   "Get total spend across all agents."
   []
-  (try
-    (when-let [spend-fn (requiring-resolve 'hive-mcp.agent.hooks.budget/get-total-spend)]
-      (spend-fn))
-    (catch Exception e
-      (log/debug "[budget-router] Could not resolve total spend" {:error (ex-message e)})
-      {:total-spend-usd 0.0 :agent-count 0 :agents []})))
+  (let [result (r/guard Exception {:total-spend-usd 0.0 :agent-count 0 :agents []}
+                        (when-let [spend-fn (requiring-resolve 'hive-mcp.agent.hooks.budget/get-total-spend)]
+                          (spend-fn)))]
+    (when-let [err (::r/error (meta result))]
+      (log/debug "[budget-router] Could not resolve total spend" {:error (:message err)}))
+    result))
 
 ;; ---------------------------------------------------------------------------
 ;; Cost estimation

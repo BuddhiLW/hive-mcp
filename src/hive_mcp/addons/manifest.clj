@@ -31,7 +31,7 @@
             [clojure.java.io :as io]
             [clojure.walk :as walk]
             [hive-mcp.addons.protocol :as proto]
-            [hive-mcp.dns.result :refer [rescue]]
+            [hive-mcp.dns.result :as r]
             [malli.core :as m]
             [malli.error :as me]
             [clojure.string :as str]
@@ -150,22 +150,23 @@
    On parse failure (malformed EDN), returns :valid? false with
    parse error in :errors."
   [edn-str]
-  (try
-    (let [parsed (edn/read-string edn-str)
-          validation (validate-manifest parsed)]
-      (if (:valid? validation)
-        {:valid?   true
-         :manifest parsed
-         :errors   nil
-         :raw      edn-str}
-        {:valid?   false
-         :manifest nil
-         :errors   (:errors validation)
-         :raw      edn-str}))
-    (catch Exception e
+  (let [result (r/try-effect* :manifest/parse-error
+                              (let [parsed (edn/read-string edn-str)
+                                    validation (validate-manifest parsed)]
+                                (if (:valid? validation)
+                                  {:valid?   true
+                                   :manifest parsed
+                                   :errors   nil
+                                   :raw      edn-str}
+                                  {:valid?   false
+                                   :manifest nil
+                                   :errors   (:errors validation)
+                                   :raw      edn-str})))]
+    (if (r/ok? result)
+      (:ok result)
       {:valid?   false
        :manifest nil
-       :errors   [{:parse-error (.getMessage e)}]
+       :errors   [{:parse-error (:message result)}]
        :raw      edn-str})))
 
 (defn parse-manifest-file
@@ -176,20 +177,16 @@
 
    Returns same format as parse-manifest, with :path added."
   [path]
-  (try
-    (let [content (slurp path)
-          result  (parse-manifest content)]
-      (assoc result :path path))
-    (catch java.io.FileNotFoundException _
-      {:valid? false
+  (let [result (r/try-effect* :manifest/file-error
+                              (let [content (slurp path)
+                                    parsed  (parse-manifest content)]
+                                (assoc parsed :path path)))]
+    (if (r/ok? result)
+      (:ok result)
+      {:valid?   false
        :manifest nil
-       :errors [{:file-error (str "Manifest file not found: " path)}]
-       :path path})
-    (catch Exception e
-      {:valid? false
-       :manifest nil
-       :errors [{:file-error (.getMessage e)}]
-       :path path})))
+       :errors   [{:file-error (:message result)}]
+       :path     path})))
 
 ;; =============================================================================
 ;; Manifest Utilities
@@ -216,9 +213,9 @@
    Returns:
      Function | nil"
   [manifest]
-  (rescue nil
-          (let [sym (manifest->init-sym manifest)]
-            (requiring-resolve sym))))
+  (r/rescue nil
+            (let [sym (manifest->init-sym manifest)]
+              (requiring-resolve sym))))
 
 (defn manifest-summary
   "Return a compact summary of a manifest for logging/display.
@@ -358,23 +355,23 @@
   "List .edn entries under META-INF/hive-addons/ inside a JAR.
    Returns URLs using jar: protocol."
   [^java.net.URL jar-url]
-  (rescue []
-          (let [jar-path (-> (.getPath jar-url)
+  (r/rescue []
+            (let [jar-path (-> (.getPath jar-url)
                        ;; jar:file:/path/to.jar!/META-INF/hive-addons → /path/to.jar
-                             (str/replace #"^file:" "")
-                             (str/replace #"!.*$" ""))
-                jar-file (JarFile. jar-path)
-                prefix   (str manifest-resource-path "/")
-                entries  (->> (enumeration-seq (.entries jar-file))
-                              (filter (fn [e]
-                                        (let [n (.getName e)]
-                                          (and (str/starts-with? n prefix)
-                                               (str/ends-with? n ".edn")
-                                               (not (.isDirectory e))))))
-                              (mapv (fn [e]
-                                      (java.net.URL. (str "jar:file:" jar-path "!/" (.getName e))))))]
-            (.close jar-file)
-            entries)))
+                               (str/replace #"^file:" "")
+                               (str/replace #"!.*$" ""))
+                  jar-file (JarFile. jar-path)
+                  prefix   (str manifest-resource-path "/")
+                  entries  (->> (enumeration-seq (.entries jar-file))
+                                (filter (fn [e]
+                                          (let [n (.getName e)]
+                                            (and (str/starts-with? n prefix)
+                                                 (str/ends-with? n ".edn")
+                                                 (not (.isDirectory e))))))
+                                (mapv (fn [e]
+                                        (java.net.URL. (str "jar:file:" jar-path "!/" (.getName e))))))]
+              (.close jar-file)
+              entries)))
 
 (defn- discover-manifest-urls
   "Scan the classpath for all META-INF/hive-addons/*.edn files.
@@ -405,14 +402,18 @@
   (let [urls (discover-manifest-urls)]
     (reduce
      (fn [acc ^java.net.URL url]
-       (try
-         (let [content (slurp url)
-               result  (parse-manifest content)]
-           (if (:valid? result)
-             (update acc :manifests conj (:manifest result))
-             (update acc :errors conj {:url (str url) :errors (:errors result)})))
-         (catch Exception e
-           (update acc :errors conj {:url (str url) :errors [{:read-error (.getMessage e)}]}))))
+       (let [effect (r/try-effect* :manifest/scan-error
+                                   (let [content (slurp url)
+                                         result  (parse-manifest content)]
+                                     (if (:valid? result)
+                                       {:manifests [(:manifest result)]}
+                                       {:errors [{:url (str url) :errors (:errors result)}]})))]
+         (if (r/ok? effect)
+           (let [{:keys [manifests errors]} (:ok effect)]
+             (cond-> acc
+               manifests (update :manifests into manifests)
+               errors    (update :errors into errors)))
+           (update acc :errors conj {:url (str url) :errors [{:read-error (:message effect)}]}))))
      {:manifests [] :errors []}
      urls)))
 
@@ -434,25 +435,26 @@
    Returns:
      {:success? true/false :addon/id \"...\"} or nil on resolution failure."
   [manifest register-fn! init-addon-fn!]
-  (let [addon-id (:addon/id manifest)]
-    (try
-      (if-let [ctor (resolve-constructor manifest)]
-        (let [config (prepare-config manifest)
-              result (ctor config)]
-          (if (satisfies? proto/IAddon result)
-            (do
-              (register-fn! result)
-              (let [init-result (init-addon-fn! addon-id)]
-                (log/info "Addon initialized from manifest" {:addon/id addon-id})
-                (assoc init-result :addon/id addon-id :source :manifest)))
-            (do
-              (log/warn "Constructor did not return IAddon" {:addon/id addon-id})
-              {:success? false :addon/id addon-id
-               :errors ["Constructor did not return IAddon instance"]})))
-        (do
-          (log/debug "Could not resolve constructor for manifest" {:addon/id addon-id})
-          nil))
-      (catch Exception e
-        (log/warn "Failed to init addon from manifest"
-                  {:addon/id addon-id :error (.getMessage e)})
-        {:success? false :addon/id addon-id :errors [(.getMessage e)]}))))
+  (let [addon-id (:addon/id manifest)
+        effect   (r/try-effect* :manifest/init-error
+                                (if-let [ctor (resolve-constructor manifest)]
+                                  (let [config (prepare-config manifest)
+                                        result (ctor config)]
+                                    (if (satisfies? proto/IAddon result)
+                                      (do
+                                        (register-fn! result)
+                                        (let [init-result (init-addon-fn! addon-id)]
+                                          (log/info "Addon initialized from manifest" {:addon/id addon-id})
+                                          (assoc init-result :addon/id addon-id :source :manifest)))
+                                      (do
+                                        (log/warn "Constructor did not return IAddon" {:addon/id addon-id})
+                                        {:success? false :addon/id addon-id
+                                         :errors ["Constructor did not return IAddon instance"]})))
+                                  (do
+                                    (log/debug "Could not resolve constructor for manifest" {:addon/id addon-id})
+                                    nil)))]
+    (if (r/ok? effect)
+      (:ok effect)
+      (do (log/warn "Failed to init addon from manifest"
+                    {:addon/id addon-id :error (:message effect)})
+          {:success? false :addon/id addon-id :errors [(:message effect)]}))))
