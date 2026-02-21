@@ -1,7 +1,6 @@
 (ns hive-mcp.agent.drone.backend.legacy-loop
   "LegacyLoopBackend -- IDroneExecutionBackend wrapping the existing OpenRouter drone loop."
   (:require [hive-mcp.agent.drone.backend :as backend]
-            [hive-mcp.agent.drone.loop :as loop]
             [hive-mcp.agent.drone.tool-allowlist :as allowlist]
             [hive-mcp.agent.registry :as registry]
             [hive-mcp.config.core :as config]
@@ -14,7 +13,7 @@
 (defn- create-llm-backend
   "Create an OpenRouter LLM backend for the given model and preset."
   [model preset]
-  (let [factory-fn (requiring-resolve 'hive-mcp.agent.config/openrouter-backend)]
+  (let [factory-fn (requiring-resolve 'hive-mcp.agent.openrouter/openrouter-backend)]
     (factory-fn {:model model :preset preset})))
 
 (defn- resolve-effective-tools
@@ -72,7 +71,8 @@
         (let [llm-backend     (create-llm-backend effective-model preset)
               _               (registry/ensure-registered!)
               effective-tools (resolve-effective-tools tools)
-              loop-result     (loop/run-agentic-loop
+              run-loop!       @(requiring-resolve 'hive-mcp.agent.drone.loop/run-agentic-loop)
+              loop-result     (run-loop!
                                {:task task :files [] :cwd cwd}
                                {:drone-id effective-id :kg-store nil}
                                {:max-turns    (or max-steps 10)

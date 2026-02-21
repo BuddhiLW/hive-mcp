@@ -87,18 +87,29 @@
           (if store
             (proto/set-store! store)
             (do
-              (log/warn "Failed to initialize Datalevin, falling back to DataScript")
+              (log/error "CRITICAL: Failed to initialize Datalevin, falling back to ephemeral DataScript. KG data on disk will NOT be accessible.")
               (proto/set-store! (ds-store/create-store)))))
 
         :datahike
         (let [store (r/guard Exception nil
+                             ;; Pre-load konserve namespaces in correct order before datahike.
+                             ;; konserve.impl.defaults requires konserve.impl.storage-layout
+                             ;; which defines -atomic-move. If storage-layout is partially
+                             ;; loaded (e.g. from a concurrent require), method vars don't
+                             ;; get interned and defaults.cljc fails with
+                             ;; "-atomic-move does not exist". Loading the full chain here
+                             ;; prevents the race.
+                             (require 'konserve.protocols)
+                             (require 'konserve.impl.storage-layout)
+                             (require 'konserve.impl.defaults)
+                             (require 'konserve.cache)
                              (require 'hive-mcp.knowledge-graph.store.datahike)
                              (let [create-fn (resolve 'hive-mcp.knowledge-graph.store.datahike/create-store)]
                                (create-fn)))]
           (if store
             (proto/set-store! store)
             (do
-              (log/warn "Failed to initialize Datahike, falling back to DataScript")
+              (log/error "CRITICAL: Failed to initialize Datahike, falling back to ephemeral DataScript. KG data on disk will NOT be accessible.")
               (proto/set-store! (ds-store/create-store)))))
 
         ;; Default: DataScript
@@ -207,7 +218,11 @@
           (proto/set-store! (ds-store/create-store)))))
 
     :datahike
-    (let [;; Require datahike store dynamically to avoid hard dep
+    (let [;; Pre-load konserve namespaces in correct order (see ensure-store! comment)
+          _ (require 'konserve.protocols)
+          _ (require 'konserve.impl.storage-layout)
+          _ (require 'konserve.impl.defaults)
+          _ (require 'konserve.cache)
           _ (require 'hive-mcp.knowledge-graph.store.datahike)
           create-fn (resolve 'hive-mcp.knowledge-graph.store.datahike/create-store)
           store (create-fn opts)]

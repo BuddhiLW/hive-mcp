@@ -39,7 +39,12 @@
               :presets {:mode :local :dir nil}
               :kg {:mode :local :backend :datalevin}
               :project {:mode :local :id nil :dir nil :src-dirs ["src"]}
-              :forge {:mode :local :legacy false :budget-routing false}
+              :forge {:mode :local :legacy false :budget-routing false
+                      ;; Max ms to wait for a ling to register in DataScript + pass CLI
+                      ;; check before dispatch is attempted. Claude CLI can take 10-30s
+                      ;; to start, so 60s is the safe default. Configurable via:
+                      ;;   {:services {:forge {:readiness-timeout-ms 90000}}}
+                      :readiness-timeout-ms 60000}
               :drone {:mode :local :default-model "devstral-small:24b" :default-backend :openrouter}
               :nats {:mode :local
                      :enabled false

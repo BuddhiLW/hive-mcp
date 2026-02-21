@@ -176,6 +176,25 @@
        (filter #(contains? #{:message :complete :result} (:type %)))
        (mapv #(or (:content %) (:data %) (str %)))))
 
+(defn- pipe-phase!
+  "Pipe all messages from phase-ch to out-ch, then return the value of state-key
+   from the agent's current state. Returns a go channel; use <! to await."
+  [phase-ch out-ch agent-id state-key]
+  (go-loop []
+    (if-let [msg (<! phase-ch)]
+      (do (>! out-ch msg) (recur))
+      (get (get-agent-state agent-id) state-key))))
+
+(defn- handle-phase-error!
+  "Common error handling for SAA phase failures. Uses put! (safe for buffered channels)."
+  [config agent-id phase out-ch e]
+  (log/error (str "[saa] " (name phase) " phase failed")
+             {:agent-id agent-id :error (ex-message e)})
+  (transition-phase! agent-id :error)
+  (update-agent-state! agent-id {:error (ex-message e)})
+  (maybe-shout! config agent-id phase (str "FAILED: " (ex-message e)))
+  (async/put! out-ch {:type :error :saa-phase phase :error (ex-message e)}))
+
 (defrecord SAAOrchestrator [config]
   bridge/ISAAOrchestrator
 
@@ -201,11 +220,7 @@
                         :observations observations
                         :observation-count (count observations)}))
           (catch Exception e
-            (log/error "[saa] Silence phase failed" {:agent-id agent-id :error (ex-message e)})
-            (transition-phase! agent-id :error)
-            (update-agent-state! agent-id {:error (ex-message e)})
-            (maybe-shout! config agent-id :silence (str "FAILED: " (ex-message e)))
-            (>! out-ch {:type :error :saa-phase :silence :error (ex-message e)}))
+            (handle-phase-error! config agent-id :silence out-ch e))
           (finally
             (close! out-ch))))
       out-ch))
@@ -233,11 +248,7 @@
                         :saa-phase :abstract
                         :plan final-plan}))
           (catch Exception e
-            (log/error "[saa] Abstract phase failed" {:agent-id agent-id :error (ex-message e)})
-            (transition-phase! agent-id :error)
-            (update-agent-state! agent-id {:error (ex-message e)})
-            (maybe-shout! config agent-id :abstract (str "FAILED: " (ex-message e)))
-            (>! out-ch {:type :error :saa-phase :abstract :error (ex-message e)}))
+            (handle-phase-error! config agent-id :abstract out-ch e))
           (finally
             (close! out-ch))))
       out-ch))
@@ -265,11 +276,7 @@
                         :result {:messages result-content
                                  :message-count (count messages)}}))
           (catch Exception e
-            (log/error "[saa] Act phase failed" {:agent-id agent-id :error (ex-message e)})
-            (transition-phase! agent-id :error)
-            (update-agent-state! agent-id {:error (ex-message e)})
-            (maybe-shout! config agent-id :act (str "FAILED: " (ex-message e)))
-            (>! out-ch {:type :error :saa-phase :act :error (ex-message e)}))
+            (handle-phase-error! config agent-id :act out-ch e))
           (finally
             (close! out-ch))))
       out-ch))
@@ -290,27 +297,16 @@
         (try
           (let [observations
                 (if-not skip-silence?
-                  (let [silence-ch (bridge/run-silence! this session task silence-opts)]
-                    (loop []
-                      (when-let [msg (<! silence-ch)]
-                        (>! out-ch msg)
-                        (recur)))
-                    (:observations (get-agent-state agent-id)))
+                  (<! (pipe-phase! (bridge/run-silence! this session task silence-opts)
+                                   out-ch agent-id :observations))
                   [])
                 plan
                 (if-not skip-abstract?
-                  (let [abstract-ch (bridge/run-abstract! this session observations abstract-opts)]
-                    (loop []
-                      (when-let [msg (<! abstract-ch)]
-                        (>! out-ch msg)
-                        (recur)))
-                    (:plan (get-agent-state agent-id)))
-                  nil)
-                act-ch (bridge/run-act! this session (or plan task) act-opts)]
-            (loop []
-              (when-let [msg (<! act-ch)]
-                (>! out-ch msg)
-                (recur)))
+                  (<! (pipe-phase! (bridge/run-abstract! this session observations abstract-opts)
+                                   out-ch agent-id :plan))
+                  nil)]
+            (<! (pipe-phase! (bridge/run-act! this session (or plan task) act-opts)
+                             out-ch agent-id :result))
 
             (let [final-state (get-agent-state agent-id)]
               (maybe-shout! config agent-id :complete
@@ -326,12 +322,7 @@
                           :elapsed-ms (- (System/currentTimeMillis)
                                          (:started-at final-state))})))
           (catch Exception e
-            (log/error "[saa] Full SAA cycle failed"
-                       {:agent-id agent-id :error (ex-message e)})
-            (transition-phase! agent-id :error)
-            (update-agent-state! agent-id {:error (ex-message e)})
-            (maybe-shout! config agent-id :error (str "SAA cycle FAILED: " (ex-message e)))
-            (>! out-ch {:type :error :error (ex-message e)}))
+            (handle-phase-error! config agent-id :error out-ch e))
           (finally
             (close! out-ch))))
       out-ch)))

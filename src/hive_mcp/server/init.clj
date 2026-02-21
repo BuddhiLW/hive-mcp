@@ -135,6 +135,14 @@
                                          (embedding-config/ollama-config {:host ollama-host :model ollama-model})))
                          (log/warn "Plans collection using Ollama (no OPENROUTER_API_KEY) - entries >1500 chars may be truncated")))
 
+        ;; Ingest collection: OpenRouter (same model used by hive-ingestor OpenRouterEmbedder)
+                     (when (global-config/get-secret :openrouter-api-key)
+                       (result/rescue nil
+                                      (embedding-service/configure-collection!
+                                       "hive-ingest"
+                                       (embedding-config/openrouter-config {:model openrouter-model})))
+                       (log/info "Ingest collection configured with OpenRouter"))
+
         ;; Set global fallback provider (Ollama) for backward compatibility
                      (let [provider (ollama/->provider {:host ollama-host})]
                        (chroma/set-embedding-provider! provider)
@@ -385,10 +393,13 @@
   "Register default implementations for forge belt :fb/* extension points.
    Must run before load-extensions! so extensions can override."
   []
-  (result/rescue nil
-                 (require 'hive-mcp.workflows.forge-belt-defaults)
-                 (when-let [register! (resolve 'hive-mcp.workflows.forge-belt-defaults/register-forge-belt-defaults!)]
-                   (register!))))
+  (try
+    (require 'hive-mcp.workflows.forge-belt-defaults)
+    (when-let [register! (resolve 'hive-mcp.workflows.forge-belt-defaults/register-forge-belt-defaults!)]
+      (register!))
+    (catch Throwable e
+      (log/warn "register-forge-belt-defaults! failed — forge-belt extension points will return noop:"
+                (.getMessage e)))))
 
 ;; =============================================================================
 ;; Extension Loading

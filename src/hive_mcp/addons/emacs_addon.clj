@@ -18,30 +18,11 @@
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 (defn- collect-tools
-  "Lazily collect tool definitions from Emacs-specific tool namespaces.
-   Uses requiring-resolve to avoid compile-time coupling."
+  "All Emacs-specific tools (magit, cider, emacs, project, kanban) are now
+   registered as consolidated tools via get-base-tools in registry.clj.
+   The addon no longer contributes flat tool defs to the MCP listing."
   []
-  (let [tool-nses '[hive-mcp.tools.buffer
-                    hive-mcp.tools.consolidated.emacs
-                    hive-mcp.tools.cider
-                    hive-mcp.tools.magit
-                    hive-mcp.tools.kanban
-                    hive-mcp.tools.projectile
-                    hive-mcp.tools.docs]]
-    (->> tool-nses
-         (mapcat (fn [ns-sym]
-                   (let [tools (r/guard Exception []
-                                        (require ns-sym)
-                                        (let [tools-var (ns-resolve ns-sym 'tools)
-                                              docs-var (ns-resolve ns-sym 'docs-tools)]
-                                          (cond
-                                            tools-var @tools-var
-                                            docs-var @docs-var
-                                            :else [])))]
-                     (when-let [err (:hive-dsl.result/error (meta tools))]
-                       (log/warn "Failed to load tools from" ns-sym ":" (:message err)))
-                     tools)))
-         vec)))
+  [])
 
 (defrecord EmacsAddon [state-atom]
   proto/IAddon

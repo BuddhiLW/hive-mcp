@@ -308,30 +308,5 @@
 
 ;; Tool definitions
 (def tools
-  [{:name "wrap_gather"
-    :description "Gather session data for wrap workflow. Returns recent notes, git commits, kanban activity without storing. Use before wrap to preview/confirm data."
-    :inputSchema {:type "object"
-                  :properties {:directory {:type "string"
-                                           :description "Working directory for git operations. Pass your cwd to ensure git context comes from your project, not the MCP server's directory."}}
-                  :required []}
-    :handler handle-wrap-gather}
-
-   {:name "wrap_crystallize"
-    :description "Crystallize session data into long-term memory. Creates session summary, promotes entries meeting score threshold, and flushes recall buffer. Call after wrap_gather to persist. CRITICAL FOR LINGS: You MUST pass your CLAUDE_SWARM_SLAVE_ID as agent_id parameter - the MCP server runs in coordinator's JVM so env vars won't work. Without explicit agent_id, wrap_notify will show 'coordinator' instead of your ling ID."
-    :inputSchema {:type "object"
-                  :properties {:agent_id {:type "string"
-                                          :description "REQUIRED FOR LINGS: Your CLAUDE_SWARM_SLAVE_ID. Without this, wrap attribution shows 'coordinator' instead of your ling ID. MCP server runs in coordinator's JVM - System.getenv reads coordinator's env, not yours."}
-                               :directory {:type "string"
-                                           :description "Working directory for project scoping. Pass your cwd to ensure wrap is tagged with correct project-id for scoped permeation."}}
-                  :required []}
-    :handler handle-wrap-crystallize}
-
-   {:name "mcp_permeate_crystals"
-    :description "Process wrap queue from ling sessions. Coordinator calls this to permeate ling session data. Returns stats about processed wraps including agent IDs and counts. IMPORTANT: Pass directory to scope permeation to current project only."
-    :inputSchema {:type "object"
-                  :properties {:directory {:type "string"
-                                           :description "Working directory for project scoping. Pass your cwd to ensure only wraps from the current project are permeated, preventing cross-project contamination."}
-                               :include_children {:type "boolean"
-                                                  :description "When true (default), includes wraps from child projects using hierarchical prefix matching. E.g., 'myproject' also matches 'myproject:submodule'. Set to false for exact project matching only."}}
-                  :required []}
-    :handler handle-permeate-crystals}])
+  "REMOVED: Flat crystal tools no longer exposed. Use consolidated `session` tool with `wrap` command."
+  [])

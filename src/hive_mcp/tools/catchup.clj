@@ -53,6 +53,28 @@
   (enrichment/check-grounding-freshness project-id opts))
 
 ;; =============================================================================
+;; Parallel Execution Helpers
+;; =============================================================================
+
+(defn- safe-deref
+  "Deref a future with timeout-ms. Returns default on timeout or exception."
+  [fut timeout-ms default]
+  (try
+    (let [result (deref fut timeout-ms ::timeout)]
+      (if (= result ::timeout)
+        (do (future-cancel fut)
+            (log/debug "catchup: parallel query timed out")
+            default)
+        result))
+    (catch Exception e
+      (log/debug "catchup: parallel deref failed:" (.getMessage e))
+      default)))
+
+(def ^:private ^:const query-timeout-ms
+  "Timeout for individual parallel query futures."
+  15000)
+
+;; =============================================================================
 ;; Main Catchup Handler
 ;; =============================================================================
 
@@ -72,40 +94,67 @@
               project-name (catchup-scope/get-current-project-name directory)
               scopes (fmt/build-scopes project-name project-id)
 
-              ;; Query entries (use project-id for scoping, aligned with crud.clj)
-              axioms (catchup-scope/query-axioms project-id)
-              principles (catchup-scope/query-scoped-entries "principle" nil project-id 50)
-              priority-conventions (catchup-scope/query-scoped-entries "convention" ["catchup-priority"]
-                                                                       project-id 50)
-              sessions (catchup-scope/query-scoped-entries "note" ["session-summary"] project-id 10)
-              decisions (catchup-scope/query-scoped-entries "decision" nil project-id 50)
+              ;; ── Wave 1: Fire independent queries in parallel ──
+              f-axioms      (future (catchup-scope/query-axioms project-id))
+              f-principles  (future (catchup-scope/query-scoped-entries "principle" nil project-id 50))
+              f-priority    (future (catchup-scope/query-scoped-entries "convention" ["catchup-priority"]
+                                                                        project-id 50))
+              f-sessions    (future (catchup-scope/query-scoped-entries "note" ["session-summary"] project-id 10))
+              f-decisions   (future (catchup-scope/query-scoped-entries "decision" nil project-id 50))
+              f-snippets    (future (catchup-scope/query-scoped-entries "snippet" nil project-id 20))
+              f-expiring    (future (catchup-scope/query-expiring-entries project-id 20))
+              f-git         (future (catchup-git/gather-git-info directory))
+
+              ;; ── Wave 1: Collect with timeout ──
+              axioms               (safe-deref f-axioms query-timeout-ms [])
+              principles           (safe-deref f-principles query-timeout-ms [])
+              priority-conventions (safe-deref f-priority query-timeout-ms [])
+              sessions             (safe-deref f-sessions query-timeout-ms [])
+              decisions            (safe-deref f-decisions query-timeout-ms [])
+              snippets             (safe-deref f-snippets query-timeout-ms [])
+              expiring             (safe-deref f-expiring query-timeout-ms [])
+              git-info             (safe-deref f-git query-timeout-ms {})
+
+              ;; ── Wave 2: Dependent query (needs axiom + priority IDs) ──
               conventions (catchup-scope/query-regular-conventions project-id
                                                                    (set (map :id axioms))
                                                                    (set (map :id priority-conventions)))
-              snippets (catchup-scope/query-scoped-entries "snippet" nil project-id 20)
-              expiring (catchup-scope/query-expiring-entries project-id 20)
-              git-info (catchup-git/gather-git-info directory)
 
-              ;; Convert to metadata
+              ;; Convert to metadata (pure, fast)
               axioms-meta (mapv fmt/entry->axiom-meta axioms)
               principles-meta (mapv #(fmt/entry->catchup-meta % 80) principles)
               priority-meta (mapv fmt/entry->priority-meta priority-conventions)
               sessions-meta (mapv #(fmt/entry->catchup-meta % 80) sessions)
-
-              ;; Phase 2 KG Integration: Enrich decisions and conventions
-              ;; This surfaces relationships like supersedes, depends-on, contradicts
               decisions-base (mapv #(fmt/entry->catchup-meta % 80) decisions)
               conventions-base (mapv #(fmt/entry->catchup-meta % 80) conventions)
-              decisions-enriched (:entries (enrichment/enrich-entries-with-kg decisions-base))
-              conventions-enriched (:entries (enrichment/enrich-entries-with-kg conventions-base))
+              snippets-meta (mapv #(fmt/entry->catchup-meta % 60) snippets)
+              expiring-meta (mapv #(fmt/entry->catchup-meta % 80) expiring)
 
-              ;; Gather KG insights for high-level visibility
-              ;; Pass sessions-meta and project-id for traversal queries
+              ;; ── Wave 3: Fire enrichment + side effects in parallel ──
+              ;; All are independent — overlap I/O for maximum throughput
+              f-decisions-kg   (future (:entries (enrichment/enrich-entries-with-kg decisions-base)))
+              f-conventions-kg (future (:entries (enrichment/enrich-entries-with-kg conventions-base)))
+              f-permeation     (future (permeation/auto-permeate-wraps directory))
+              f-project-tree   (future
+                                 (try (project-tree/maybe-scan-project-tree! (or directory "."))
+                                      (catch Exception e
+                                        (log/debug "Project tree scan failed (non-fatal):" (.getMessage e))
+                                        {:scanned false :error (.getMessage e)})))
+              f-disc-decay     (future
+                                 (try (disc/apply-time-decay-to-all-discs! :project-id project-id)
+                                      (catch Exception e
+                                        (log/debug "Disc time-decay failed (non-fatal):" (.getMessage e))
+                                        {:updated 0 :skipped 0 :errors 1 :error (.getMessage e)})))
+
+              ;; ── Wave 3: Collect enrichment results ──
+              decisions-enriched   (safe-deref f-decisions-kg query-timeout-ms decisions-base)
+              conventions-enriched (safe-deref f-conventions-kg query-timeout-ms conventions-base)
+
+              ;; KG insights (depends on enriched results)
               kg-insights (enrichment/gather-kg-insights decisions-enriched conventions-enriched
                                                          sessions-meta project-id)
 
-              ;; Phase 3: Co-access suggestions
-              ;; Surface entries frequently recalled alongside current context
+              ;; Co-access suggestions
               all-entry-ids (mapv :id (concat axioms principles priority-conventions
                                               decisions conventions sessions))
               co-access-suggestions (enrichment/find-co-accessed-suggestions
@@ -114,30 +163,10 @@
                             (assoc kg-insights :co-access-suggestions co-access-suggestions)
                             kg-insights)
 
-              snippets-meta (mapv #(fmt/entry->catchup-meta % 60) snippets)
-              expiring-meta (mapv #(fmt/entry->catchup-meta % 80) expiring)
-
-              ;; Auto-permeate pending ling wraps (Architecture > LLM behavior)
-              ;; This ensures coordinator always gets ling learnings without explicit call
-              permeation-result (permeation/auto-permeate-wraps directory)
-
-              ;; HCR Wave 2: Check project tree staleness and rescan if needed
-              ;; This ensures hierarchy is fresh for hierarchical memory scoping
-              project-tree-scan (try
-                                  (project-tree/maybe-scan-project-tree! (or directory "."))
-                                  (catch Exception e
-                                    (log/debug "Project tree scan failed (non-fatal):" (.getMessage e))
-                                    {:scanned false :error (.getMessage e)}))
-
-              ;; P0.2: Apply disc certainty time-decay at catchup (disc maintenance)
-              ;; Discs lose certainty over time proportional to their volatility class.
-              ;; Catchup is the natural cadence: runs at session start, periodic.
-              ;; Bounded, idempotent, non-blocking (errors caught inside).
-              disc-decay-stats (try
-                                 (disc/apply-time-decay-to-all-discs! :project-id project-id)
-                                 (catch Exception e
-                                   (log/debug "Disc time-decay failed (non-fatal):" (.getMessage e))
-                                   {:updated 0 :skipped 0 :errors 1 :error (.getMessage e)}))
+              ;; ── Collect side effects ──
+              permeation-result (safe-deref f-permeation query-timeout-ms nil)
+              project-tree-scan (safe-deref f-project-tree query-timeout-ms {:scanned false})
+              disc-decay-stats  (safe-deref f-disc-decay query-timeout-ms {:updated 0 :skipped 0 :errors 0})
               _ (when (pos? (:updated disc-decay-stats 0))
                   (log/info "catchup: disc time-decay applied"
                             {:updated (:updated disc-decay-stats)

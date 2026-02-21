@@ -186,3 +186,51 @@
       ;; Both cursors advanced — re-read returns nil
       (is (nil? (pb/get-messages "coordinator-proj-A" :project-id "proj-A")))
       (is (nil? (pb/get-messages "coordinator-proj-B" :project-id "proj-B"))))))
+
+;; =============================================================================
+;; Multi-Coordinator Instance Isolation (bb-mcp instance-id)
+;; =============================================================================
+
+(deftest multi-coordinator-instance-isolation-test
+  (testing "Two coordinator instances with different instance-ids get independent cursors"
+    ;; Simulates the real scenario: two bb-mcp processes both have
+    ;; CLAUDE_SWARM_SLAVE_ID="coordinator", but each appends a unique
+    ;; instance-id (e.g. "coordinator:a1b2c3d4" vs "coordinator:e5f6g7h8").
+    ;; Neither should consume the other's messages.
+    (let [messages (atom [{:agent-id "ling-worker" :event-type :progress
+                           :message "building widgets" :timestamp 1000
+                           :project-id "proj-X"}
+                          {:agent-id "ling-tester" :event-type :completed
+                           :message "tests pass" :timestamp 2000
+                           :project-id "proj-X"}])
+          coord-a "coordinator:a1b2c3d4"
+          coord-b "coordinator:e5f6g7h8"]
+      (pb/register-message-source! (fn [] @messages))
+
+      ;; Coordinator A reads — gets both messages
+      (let [ra (pb/get-messages coord-a :project-id "proj-X")]
+        (is (= 2 (count ra)) "coord-A gets all messages on first read"))
+
+      ;; Coordinator B reads — also gets both (independent cursor)
+      (let [rb (pb/get-messages coord-b :project-id "proj-X")]
+        (is (= 2 (count rb)) "coord-B gets all messages independently"))
+
+      ;; Both re-read — nothing new for either
+      (is (nil? (pb/get-messages coord-a :project-id "proj-X"))
+          "coord-A cursor advanced, nothing new")
+      (is (nil? (pb/get-messages coord-b :project-id "proj-X"))
+          "coord-B cursor advanced, nothing new")
+
+      ;; New message arrives
+      (swap! messages conj {:agent-id "ling-deployer" :event-type :started
+                            :message "deploying" :timestamp 3000
+                            :project-id "proj-X"})
+
+      ;; Both coordinators independently see the new message
+      (let [ra2 (pb/get-messages coord-a :project-id "proj-X")]
+        (is (= 1 (count ra2)) "coord-A sees only the new message")
+        (is (= "deploying" (:m (first ra2)))))
+
+      (let [rb2 (pb/get-messages coord-b :project-id "proj-X")]
+        (is (= 1 (count rb2)) "coord-B sees only the new message")
+        (is (= "deploying" (:m (first rb2))))))))

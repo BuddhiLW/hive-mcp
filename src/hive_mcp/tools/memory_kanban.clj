@@ -150,6 +150,8 @@
 ;; ============================================================
 
 (defn- create* [{:keys [title priority context directory agent_id]}]
+  (when (or (nil? title) (and (string? title) (str/blank? title)))
+    (throw (ex-info "Kanban task requires a non-empty title" {:type :validation-error})))
   (let [eff-dir (effective-dir directory)
         eff-agent (if-let [a agent_id] a
                           (if-let [c (ctx/current-agent-id)] c
@@ -169,7 +171,8 @@
       crud-result
       {:type "text" :text (:text crud-result)})))
 
-(defn- list-slim* [{:keys [status directory include_descendants]}]
+(defn- list-slim* [{:keys [status directory include_descendants]
+                    :or {include_descendants true}}]
   (let [eff-dir (effective-dir directory)
         project-id (scope/get-current-project-id eff-dir)
         status-tag (when-let [s status] (get status-enum->tag s s))
@@ -244,7 +247,8 @@
       (mcp-error (str "Task not found: " task_id)))
     (mcp-error (str "Invalid status: " new_status ". Valid: todo, doing, review, done"))))
 
-(defn- stats* [{:keys [directory include_descendants]}]
+(defn- stats* [{:keys [directory include_descendants]
+                :or {include_descendants true}}]
   (let [eff-dir (effective-dir directory)
         project-id (scope/get-current-project-id eff-dir)
         {:keys [entries multi-project?]} (query-kanban-entries
@@ -304,46 +308,5 @@
 ;; Tool definitions
 
 (def tools
-  [{:name "mcp_mem_kanban_create"
-    :description "Create a kanban task in memory (short-term duration, 7 days)"
-    :inputSchema {:type "object"
-                  :properties {:title {:type "string" :description "Task title"}
-                               :priority {:type "string" :enum ["high" "medium" "low"] :description "Priority (default: medium)"}
-                               :context {:type "string" :description "Additional notes"}
-                               :directory {:type "string" :description "Working directory to determine project scope (auto-extracted from context if not provided)"}
-                               :agent_id {:type "string" :description "Agent identifier for attribution (auto-extracted from context if not provided)"}}
-                  :required ["title"]}
-    :handler handle-mem-kanban-create}
-
-   {:name "mcp_mem_kanban_list_slim"
-    :description "List kanban tasks with minimal data (id, title, status, priority only). Use for token-efficient overviews (~10x fewer tokens than full list)."
-    :inputSchema {:type "object"
-                  :properties {:status {:type "string" :enum ["todo" "doing" "review"] :description "Filter by status"}
-                               :directory {:type "string" :description "Working directory to determine project scope (auto-extracted from context if not provided)"}
-                               :include_descendants {:type "boolean" :description "Include child project tasks (HCR Wave 4). Default false."}}}
-    :handler handle-mem-kanban-list-slim}
-
-   {:name "mcp_mem_kanban_move"
-    :description "Move task to new status. Moving to 'done' DELETES the task from memory"
-    :inputSchema {:type "object"
-                  :properties {:task_id {:type "string" :description "Task ID"}
-                               :new_status {:type "string" :enum ["todo" "doing" "review" "done"] :description "New status"}
-                               :directory {:type "string" :description "Working directory to determine project scope (auto-extracted from context if not provided)"}}
-                  :required ["task_id" "new_status"]}
-    :handler handle-mem-kanban-move}
-
-   {:name "mcp_mem_kanban_stats"
-    :description "Get kanban statistics (counts by status)"
-    :inputSchema {:type "object"
-                  :properties {:directory {:type "string" :description "Working directory to determine project scope (auto-extracted from context if not provided)"}
-                               :include_descendants {:type "boolean" :description "Include child project stats (HCR Wave 4). Default false."}}}
-    :handler handle-mem-kanban-stats}
-
-   {:name "mcp_mem_kanban_quick"
-    :description "Quick add task with defaults (todo status, medium priority)"
-    :inputSchema {:type "object"
-                  :properties {:title {:type "string" :description "Task title"}
-                               :directory {:type "string" :description "Working directory to determine project scope (auto-extracted from context if not provided)"}
-                               :agent_id {:type "string" :description "Agent identifier for attribution (auto-extracted from context if not provided)"}}
-                  :required ["title"]}
-    :handler handle-mem-kanban-quick}])
+  "REMOVED: Flat mem-kanban tools no longer exposed. Use consolidated `kanban` tool."
+  [])

@@ -315,16 +315,5 @@
                     :auto-assign? auto_assign)))
 
 (def tools
-  [{:name "plan_to_kanban"
-    :description "Convert a plan (from memory or file) to kanban tasks with KG linking. Parses plan steps from EDN or markdown format, creates kanban tasks, and creates KG edges for plan->task and task->task dependencies. Use plan_id for memory entries or plan_path for direct file loading (zero-token for large plans)."
-    :inputSchema {:type "object"
-                  :properties {"plan_id" {:type "string"
-                                          :description "Memory entry ID containing the plan (alternative to plan_path)"}
-                               "plan_path" {:type "string"
-                                            :description "File path to a plan file. Slurps content directly — zero-token plan loading for large plans (alternative to plan_id)."}
-                               "directory" {:type "string"
-                                            :description "Working directory for project scope (optional)"}
-                               "auto_assign" {:type "boolean"
-                                              :description "Auto-assign tasks to lings (optional, not yet implemented)"}}
-                  :required []}
-    :handler handle-plan-to-kanban}])
+  "REMOVED: Flat plan_to_kanban tool no longer exposed. Use consolidated `kanban` tool with `plan-to-kanban` command."
+  [])

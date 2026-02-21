@@ -28,7 +28,8 @@
   "Setup mock embedder and reset KG for each test."
   [f]
   ;; Save original Chroma state
-  (let [original-provider (chroma/get-embedding-provider)]
+  (let [original-provider (chroma/get-embedding-provider)
+        original-config   (chroma/get-config)]
     ;; Configure Chroma with mock embedder
     (chroma/set-embedding-provider! (fixtures/->MockEmbedder 384))
     (chroma/configure! {:host "localhost"
@@ -39,8 +40,9 @@
     (try
       (f)
       (finally
-        ;; Cleanup
+        ;; Cleanup — restore original collection name + provider
         (chroma/reset-collection-cache!)
+        (chroma/configure! (select-keys original-config [:host :port :collection-name]))
         (kg-conn/reset-conn!)
         (chroma/set-embedding-provider! original-provider)))))
 

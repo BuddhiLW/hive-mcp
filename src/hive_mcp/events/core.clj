@@ -304,6 +304,45 @@
          {:interceptors interceptors
           :handler handler-fn}))
 
+(defn- chain-has-id?
+  "True if the interceptor chain already contains the given :id."
+  [chain interceptor-id]
+  (boolean (some #(= interceptor-id (:id %)) chain)))
+
+(defn- append-to-chain
+  "Append interceptor to an event entry's chain. Pure — returns updated entry."
+  [entry interceptor]
+  (update entry :interceptors #(conj (vec %) interceptor)))
+
+(defn- try-append-interceptor
+  "Pure swap fn: append interceptor to event-id's chain if not already present.
+   Returns [updated-handlers appended?]."
+  [handlers event-id interceptor]
+  (if-let [entry (get handlers event-id)]
+    (if (chain-has-id? (:interceptors entry) (:id interceptor))
+      [handlers false]
+      [(assoc handlers event-id (append-to-chain entry interceptor)) true])
+    [handlers false]))
+
+(defn append-interceptor!
+  "Append an interceptor to an existing event's chain.
+   Idempotent — skips if :id already present.
+   Returns true if interceptor was added, false otherwise."
+  [event-id interceptor]
+  {:pre [(keyword? event-id) (map? interceptor) (:id interceptor)]}
+  (let [appended? (atom false)]
+    (swap! *event-handlers
+           (fn [handlers]
+             (let [[updated did-append?] (try-append-interceptor handlers event-id interceptor)]
+               (reset! appended? did-append?)
+               updated)))
+    @appended?))
+
+(defn get-interceptors
+  "Get the interceptor chain for an event. For debugging/verification."
+  [event-id]
+  (get-in @*event-handlers [event-id :interceptors]))
+
 (defn dispatch
   "Dispatch an event through its registered handler chain.
 
@@ -326,8 +365,8 @@
                                  :id :handler
                                  :before (fn [context]
                                            (let [coeffects (:coeffects context)
-                                                 effects (handler coeffects event)]
-                                             (update context :effects merge effects))))
+                                                 ctx-event (:event coeffects)]
+                                             (update context :effects merge (handler coeffects ctx-event)))))
             ;; Build full chain: registered interceptors + handler
             full-chain (conj (vec interceptors) handler-interceptor)
             ;; Execute via hive.events interceptor engine
@@ -556,10 +595,14 @@
                 :error (log/error message)
                 (log/info message))))
 
+    ;; No-op effect: :mcp-response is a data-only effect read by dispatch-sync callers
+    ;; (not executed as a side-effect, just carried in the context)
+    (reg-fx :mcp-response (fn [_] nil))
+
     ;; Mark as initialized
     (reset! *initialized true)
     (log/info "Event system initialized with coeffects: :now :random :agent-context :db-snapshot")
-    (log/info "Registered effects: :channel-publish"))
+    (log/info "Registered effects: :channel-publish :mcp-response"))
   @*initialized)
 
 ;; =============================================================================

@@ -9,8 +9,8 @@
    - Server spec building with capability-based filtering
    - Hot-reload support for tools"
   (:require [hive-mcp.tools.registry :as tools]
-            [hive-mcp.tools.docs :as docs]
             [hive-mcp.server.guards :as guards]
+            [hive-mcp.server.registration]              ; side-effect: tools/list defmethod (filters deprecated)
             [hive-mcp.agent.context :as ctx]
             [hive-mcp.crystal.core :as crystal]
             [hive-mcp.channel.async-result :as async-buf]
@@ -567,7 +567,7 @@
                   "dynamic:" (count dynamic-tools) "addon:" (count addon-tools))
         {:name "hive-mcp"
          :version "0.1.0"
-         :tools (mapv make-tool (concat child-tools docs/docs-tools
+         :tools (mapv make-tool (concat child-tools
                                         dynamic-tools addon-tools))})
       ;; Coordinator: full tool set including deprecated shims
       (let [all-tools (tools/get-all-tools :include-deprecated? true)
@@ -578,7 +578,7 @@
                   "dynamic:" (count dynamic-tools) "addon:" (count addon-tools))
         {:name "hive-mcp"
          :version "0.1.0"
-         :tools (mapv make-tool (concat all-tools docs/docs-tools
+         :tools (mapv make-tool (concat all-tools
                                         dynamic-tools addon-tools))}))))
 
 ;; DEPRECATED: Static spec kept for backward compatibility with tests
@@ -587,7 +587,7 @@
   {:name "hive-mcp"
    :version "0.1.0"
    ;; hivemind/tools already included in tools/tools aggregation
-   :tools (mapv make-tool (concat tools/tools docs/docs-tools))})
+   :tools (mapv make-tool tools/tools)})
 
 ;; =============================================================================
 ;; Hot-Reload Support
@@ -617,7 +617,7 @@
           selected-tools (if child?
                            (tools/get-child-ling-tools)
                            (tools/get-all-tools :include-deprecated? true))
-          new-tools (mapv make-tool (concat selected-tools docs/docs-tools))
+          new-tools (mapv make-tool selected-tools)
           deprecated-count (if child?
                              0
                              (count (filter :deprecated selected-tools)))]

@@ -10,15 +10,22 @@
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 (defn search-similar
-  "Search for memory entries similar to the query text."
-  [query-text & {:keys [limit type project-ids] :or {limit 10}}]
+  "Search for memory entries similar to the query text.
+   :exclude-tags — seq of tags to exclude via $not_contains."
+  [query-text & {:keys [limit type project-ids exclude-tags] :or {limit 10}}]
   (emb/require-embedding!)
   (let [coll (conn/get-or-create-collection)
         query-embedding (emb/embed-text (emb/get-embedding-provider) query-text)
-        where-clause (cond-> {}
-                       type (assoc :type type)
-                       project-ids (assoc :project-id {:$in (vec project-ids)}))
-        where-clause (when (seq where-clause) where-clause)
+        base-clause (cond-> {}
+                      type (assoc :type type)
+                      project-ids (assoc :project-id {:$in (vec project-ids)}))
+        exclude-conditions (when (seq exclude-tags)
+                             (mapv (fn [t] {:tags {:$not_contains t}}) exclude-tags))
+        where-clause (if (seq exclude-conditions)
+                       (let [base (when (seq base-clause)
+                                    (mapv (fn [[k v]] {k v}) base-clause))]
+                         {:$and (vec (concat base exclude-conditions))})
+                       (when (seq base-clause) base-clause))
         results @(chroma/query coll query-embedding
                                :num-results limit
                                :where where-clause

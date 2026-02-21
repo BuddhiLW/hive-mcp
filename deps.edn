@@ -105,7 +105,10 @@
 
         ;; hive-dsl — Result monad, rescue/guard DSL, error taxonomy
         io.github.hive-agi/hive-dsl
-        {:git/tag "v0.3.0" :git/sha "2845fbf7eb4e09fcf0251d68b91c7ac189a0c068"}}
+        {:git/tag "v0.3.0" :git/sha "2845fbf7eb4e09fcf0251d68b91c7ac189a0c068"}
+
+        ;; hive-emacs — Emacs vessel addon (IEditor, daemon, CIDER/Magit/Projectile)
+        io.github.hive-agi/hive-emacs {:local/root "../hive-emacs"}}
 
  :aliases
  {:mcp
@@ -166,6 +169,6 @@
 ;; Local dev overrides for sibling :local/root projects.
   ;; start-mcp.sh auto-merges deps.local.edn via -Sdeps when present.
   ;; Create deps.local.edn (gitignored) with :deps key, e.g.:
-  ;;   {:deps {io.github.hive-agi/hive-events {:local/root "../hive-events"}}}
+  ;;   {:deps {io.github.hive-agi/hive-events {:git/tag "v0.4.0" :git/sha "e3d9f7c"}}}
   ;; NOTE: Use :deps (top-level key), NOT :override-deps (alias-level only).
   }}

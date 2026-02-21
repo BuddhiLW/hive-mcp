@@ -76,20 +76,47 @@
     {:agent-id   (or (:agent-id spawn-parsed) fallback-name)
      :spawn-mode (when-let [sm (:spawn-mode spawn-parsed)] (keyword sm))}))
 
-(defn- dispatch-to-ling!
-  "Send task prompt to a ready ling and update kanban status."
-  [{:keys [agent-id task effective-dir]}]
+(defn- try-dispatch!
+  "Single dispatch attempt. Returns the raw handle-dispatch result map."
+  [agent-id task]
   (dispatch/handle-dispatch
    {:agent_id agent-id
     :prompt   (str (or (:title task) (:id task) "untitled")
                    (when-let [desc (:description task)]
                      (str "\n\n" desc))
-                   "\n\nDO NOT spawn drones. Implement directly.")})
-  (when-let [task-id (:id task)]
-    (result/rescue nil
-                   (c-kanban/handle-kanban {:command "update" :task_id task-id
-                                            :new_status "inprogress"
-                                            :directory effective-dir}))))
+                   "\n\nDO NOT spawn drones. Implement directly.")}))
+
+(defn- dispatch-to-ling!
+  "Send task prompt to a ready ling and update kanban status.
+   Returns nil on success, or {:dispatch-error <msg>} on failure.
+   Retries once after 2s on first failure."
+  [{:keys [agent-id task effective-dir]}]
+  (let [result1 (try-dispatch! agent-id task)]
+    (if (:isError result1)
+      (do
+        (log/warn "DISPATCH: first attempt failed, retrying in 2s"
+                  {:agent-id agent-id :error (:text result1)})
+        (Thread/sleep 2000)
+        (let [result2 (try-dispatch! agent-id task)]
+          (if (:isError result2)
+            (do
+              (log/error "DISPATCH: both attempts failed"
+                         {:agent-id agent-id :error (:text result2)})
+              {:dispatch-error (str "dispatch failed after 2 attempts: " (:text result2))})
+            (do
+              (when-let [task-id (:id task)]
+                (result/rescue nil
+                               (c-kanban/handle-kanban {:command "update" :task_id task-id
+                                                        :new_status "inprogress"
+                                                        :directory effective-dir})))
+              nil))))
+      (do
+        (when-let [task-id (:id task)]
+          (result/rescue nil
+                         (c-kanban/handle-kanban {:command "update" :task_id task-id
+                                                  :new_status "inprogress"
+                                                  :directory effective-dir})))
+        nil))))
 
 (defn- spawn-one!
   "Spawn and dispatch a single ling. Unified from spawn-one-vterm! and
@@ -117,13 +144,19 @@
                  reported-mode (or (:spawn-mode parsed) ready-mode)
                  ready         (ready/wait-for-ling-ready agent-id reported-mode)]
              (if (:ready? ready)
-               (do
-                 (dispatch-to-ling! {:agent-id agent-id :task task :effective-dir effective-dir})
-                 (log/info (str "SPARK[" (name route) "]: spawned+dispatched")
-                           {:agent agent-id :task title :model (or model "claude")})
-                 (cond-> {:agent-id agent-id :task-title title :task-id task-id
-                          :spawned true :route route :model (or model "claude")}
-                   (not= :claude route) (assoc :spawn-mode ready-mode)))
+               (let [dispatch-result (dispatch-to-ling! {:agent-id agent-id :task task
+                                                         :effective-dir effective-dir})]
+                 (if-let [dispatch-err (:dispatch-error dispatch-result)]
+                   (do
+                     (log/warn (str "SPARK[" (name route) "]: dispatch failed after spawn")
+                               {:agent agent-id :task title :error dispatch-err})
+                     (assoc base-result :agent-id agent-id :error dispatch-err))
+                   (do
+                     (log/info (str "SPARK[" (name route) "]: spawned+dispatched")
+                               {:agent agent-id :task title :model (or model "claude")})
+                     (cond-> {:agent-id agent-id :task-title title :task-id task-id
+                              :spawned true :route route :model (or model "claude")}
+                       (not= :claude route) (assoc :spawn-mode ready-mode)))))
                (do
                  (log/warn (str "SPARK[" (name route) "]: ling not ready, skipping dispatch")
                            {:agent-id agent-id :elapsed-ms (:elapsed-ms ready) :phase (:phase ready)})
@@ -173,17 +206,31 @@
         [vt-batch hl-batch]))))
 
 (defn- execute-spawn-batches
-  "Spawn lings for vterm and headless task batches."
+  "Spawn lings for vterm and headless task batches.
+   Headless spawns run in parallel (futures) since they're independent subprocesses.
+   Vterm spawns run sequentially to avoid overwhelming Emacs."
   [{:keys [vterm-tasks headless-tasks effective-dir default-presets model
            headless-spawn-mode]}]
-  {:vt-results (doall (for [task vterm-tasks]
-                        (spawn-one! {:task task :effective-dir effective-dir
-                                     :default-presets default-presets :model model
-                                     :route :claude})))
-   :hl-results (doall (for [task headless-tasks]
-                        (spawn-one! {:task task :effective-dir effective-dir
-                                     :default-presets default-presets :model model
-                                     :route :headless :spawn-mode-kw headless-spawn-mode})))})
+  (let [;; Headless: spawn all in parallel via futures, then deref
+        hl-futures (doall (for [task headless-tasks]
+                            (future
+                              (spawn-one! {:task task :effective-dir effective-dir
+                                           :default-presets default-presets :model model
+                                           :route :headless :spawn-mode-kw headless-spawn-mode}))))
+        ;; Vterm: sequential to avoid Emacs contention
+        vt-results (doall (for [task vterm-tasks]
+                            (spawn-one! {:task task :effective-dir effective-dir
+                                         :default-presets default-presets :model model
+                                         :route :claude})))
+        ;; Collect headless results with per-future timeout
+        ;; Per-future timeout: 2x readiness (60s + 5s retry + 60s) + spawn/dispatch overhead = 140s
+        per-future-timeout-ms 140000
+        hl-results (mapv (fn [f]
+                           (deref f per-future-timeout-ms
+                                  {:spawned false :error "Future deref timeout"}))
+                         hl-futures)]
+    {:vt-results vt-results
+     :hl-results hl-results}))
 
 (defn- build-spark-response
   "Merge spawn batch results into unified spark! response."

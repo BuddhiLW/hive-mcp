@@ -60,22 +60,34 @@
     entry-id))
 
 (defn index-memory-entries!
-  "Index multiple memory entries in batch."
+  "Index multiple memory entries in batch with full metadata.
+   Uses embed-batch for single GPU call. Entries should have :id pre-set."
   [entries]
   (emb/require-embedding!)
   (let [coll (conn/get-or-create-collection)
+        now  (h/iso-timestamp)
         docs (mapv h/memory-to-document entries)
         embeddings (emb/embed-batch (emb/get-embedding-provider) docs)
         records (mapv (fn [entry doc emb-vec]
-                        {:id (:id entry)
-                         :embedding emb-vec
-                         :document doc
-                         :metadata {:type (:type entry)
-                                    :tags (or (h/join-tags (:tags entry)) "")
-                                    :created (or (:created entry) "")}})
+                        (let [provided {:type          (:type entry)
+                                        :tags          (h/join-tags (:tags entry))
+                                        :content       (h/serialize-content (:content entry))
+                                        :content-hash  (:content-hash entry)
+                                        :created       (or (:created entry) now)
+                                        :updated       (or (:updated entry) now)
+                                        :duration      (:duration entry)
+                                        :project-id    (:project-id entry)
+                                        :access-count  (:access-count entry)
+                                        :source-file   (:source-file entry)}
+                              meta (merge h/metadata-defaults
+                                          (into {} (remove (comp nil? val) provided)))]
+                          {:id        (:id entry)
+                           :embedding emb-vec
+                           :document  doc
+                           :metadata  meta}))
                       entries docs embeddings)]
     @(chroma/add coll records :upsert? true)
-    (log/info "Indexed" (count entries) "memory entries")
+    (log/info "Indexed" (count entries) "memory entries in batch")
     (mapv :id entries)))
 
 (defn get-entry-by-id
@@ -87,8 +99,9 @@
     (some-> (first results) h/metadata->entry)))
 
 (defn query-entries
-  "Query memory entries from Chroma with filtering."
-  [& {:keys [type project-id project-ids tags limit include-expired?]
+  "Query memory entries from Chroma with filtering.
+   :exclude-tags — seq of tags to exclude via $not_contains."
+  [& {:keys [type project-id project-ids tags exclude-tags limit include-expired?]
       :or {limit 100 include-expired? false}}]
   (emb/require-embedding!)
   (let [coll (conn/get-or-create-collection)
@@ -98,10 +111,13 @@
                       (and project-id (not project-ids)) (assoc :project-id project-id))
         tag-conditions (when (seq tags)
                          (mapv (fn [tag] {:tags {:$contains tag}}) tags))
+        exclude-conditions (when (seq exclude-tags)
+                             (mapv (fn [tag] {:tags {:$not_contains tag}}) exclude-tags))
+        all-extra (concat tag-conditions exclude-conditions)
         where (cond
-                (seq tag-conditions)
+                (seq all-extra)
                 (let [base-conditions (mapv (fn [[k v]] {k v}) base-clause)]
-                  {:$and (into base-conditions tag-conditions)})
+                  {:$and (into base-conditions all-extra)})
                 (seq base-clause) base-clause
                 :else nil)
         fetch-limit (if include-expired? limit (+ limit 50))

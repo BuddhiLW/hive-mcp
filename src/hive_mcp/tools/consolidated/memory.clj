@@ -2,17 +2,31 @@
   "Consolidated memory tool using CLI dispatcher pattern."
   (:require [hive-mcp.tools.cli :refer [make-cli-handler make-batch-handler]]
             [hive-mcp.tools.memory :as mem]
-            [hive-mcp.memory.type-registry :as type-registry]))
+            [hive-mcp.memory.type-registry :as type-registry]
+            [hive-mcp.events.core :as ev]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
+(defn- dispatch-memory-read
+  "Dispatch a memory read event and extract :mcp-response.
+   Falls back to direct call if event system not initialized."
+  [event-id params]
+  (if (ev/handler-registered? event-id)
+    (get-in (ev/dispatch-sync [event-id params]) [:effects :mcp-response])
+    ;; Fallback for early startup before event handlers are registered
+    (case event-id
+      :memory/query  (mem/handle-mcp-memory-query params)
+      :memory/search (mem/handle-mcp-memory-search-semantic params)
+      :memory/get    (mem/handle-mcp-memory-get-full params))))
+
 (def handlers
   {:add         mem/handle-mcp-memory-add
-   :query       mem/handle-mcp-memory-query
-   :metadata    mem/handle-mcp-memory-query-metadata
-   :get         mem/handle-mcp-memory-get-full
-   :search      mem/handle-mcp-memory-search-semantic
+   :query       (fn [params] (dispatch-memory-read :memory/query params))
+   :metadata    (fn [params] (dispatch-memory-read :memory/query
+                                                   (assoc params :verbosity "metadata")))
+   :get         (fn [params] (dispatch-memory-read :memory/get params))
+   :search      (fn [params] (dispatch-memory-read :memory/search params))
    :duration    mem/handle-mcp-memory-set-duration
    :promote     mem/handle-mcp-memory-promote
    :demote      mem/handle-mcp-memory-demote
@@ -66,7 +80,7 @@
                                           :enum ["ephemeral" "short" "medium" "long" "permanent"]
                                           :description "[add/query] Duration/TTL category"}
                               "directory" {:type "string"
-                                           :description "[add/query] Working directory for project scope"}
+                                           :description "[add/query/search] Working directory for project scope"}
                               "agent_id" {:type "string"
                                           :description "[add] Agent identifier for attribution"}
                               "kg_implements" {:type "array"
@@ -88,7 +102,7 @@
                               "limit" {:type "integer"
                                        :description "[query/search/expiring] Maximum number of results"}
                               "scope" {:type "string"
-                                       :description "[query] Scope filter: nil=auto, 'all', 'global', or specific"}
+                                       :description "[query/search] Scope filter: nil=auto, 'all', 'global', or specific"}
                               "verbosity" {:type "string"
                                            :enum ["full" "metadata"]
                                            :description "[query] Output detail: 'full' (default) returns complete entries, 'metadata' returns only id/type/preview/tags/created (~10x fewer tokens)"}
@@ -99,6 +113,9 @@
                                      :description "[batch-get] Array of memory entry IDs to retrieve"}
                               "query" {:type "string"
                                        :description "[search] Natural language query for semantic search"}
+                              "exclude_tags" {:type "array"
+                                              :items {:type "string"}
+                                              :description "[query/search] Tags to exclude from results (search defaults to [\"carto\"] — pass [] to include codebase snippets)"}
                               "feedback" {:type "string"
                                           :enum ["helpful" "unhelpful"]
                                           :description "[feedback] Helpfulness rating"}

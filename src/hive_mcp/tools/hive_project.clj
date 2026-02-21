@@ -447,15 +447,5 @@
 ;; =============================================================================
 
 (def tools
-  "Tool definitions for hive-project generation."
-  [{:name "generate_hive_project"
-    :description "Generate .hive-project.edn from Projectile detection. Creates project-specific config with stable ID, project type, inferred watch directories, and hot-reload settings. Clojure projects get [src test dev], Node gets [src lib], Go gets [cmd pkg internal]."
-    :inputSchema {:type "object"
-                  :properties {"directory" {:type "string"
-                                            :description "Project directory (uses current project if not specified)"}
-                               "force" {:type "boolean"
-                                        :description "Overwrite existing .hive-project.edn (default: false)"}
-                               "project_id" {:type "string"
-                                             :description "Custom project ID (auto-generated if not specified)"}}
-                  :required []}
-    :handler handle-generate-hive-project}])
+  "REMOVED: Flat hive-project tools no longer exposed. Use consolidated `project` tool."
+  [])

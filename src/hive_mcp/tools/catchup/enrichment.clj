@@ -16,13 +16,16 @@
   (when (seq session-ids)
     (try
       (->> session-ids
-           (mapcat (fn [session-id]
+           (pmap (fn [session-id]
+                   (try
                      (let [results (kg-queries/traverse
                                     session-id
                                     {:direction :incoming
                                      :relations #{:derived-from}
                                      :max-depth 2})]
-                       (map :node-id results))))
+                       (mapv :node-id results))
+                     (catch Exception _ []))))
+           (apply concat)
            (distinct)
            (vec))
       (catch Exception e
@@ -35,15 +38,18 @@
   (when (seq decision-ids)
     (try
       (->> decision-ids
-           (mapcat (fn [decision-id]
+           (pmap (fn [decision-id]
+                   (try
                      (let [results (kg-queries/traverse
                                     decision-id
                                     {:direction :both
                                      :relations #{:implements :refines :depends-on}
                                      :max-depth 2})]
-                       (map :node-id results))))
+                       (mapv :node-id results))
+                     (catch Exception _ []))))
+           (apply concat)
            (distinct)
-           (remove (set decision-ids))  ; Exclude original decisions
+           (remove (set decision-ids))
            (vec))
       (catch Exception e
         (log/debug "Decision traversal failed:" (.getMessage e))
@@ -135,8 +141,10 @@
     (try
       (let [excluded (set exclude-ids)
             co-accessed (->> entry-ids
-                             (mapcat (fn [eid]
-                                       (kg-edges/get-co-accessed eid)))
+                             (pmap (fn [eid]
+                                     (try (kg-edges/get-co-accessed eid)
+                                          (catch Exception _ []))))
+                             (apply concat)
                              (remove #(contains? excluded (:entry-id %)))
                              (group-by :entry-id)
                              (map (fn [[eid entries]]
@@ -199,7 +207,7 @@
   "Enrich a collection of entries with KG context."
   [entries]
   (try
-    (let [enriched (mapv enrich-entry-with-kg entries)
+    (let [enriched (vec (pmap enrich-entry-with-kg entries))
           kg-count (count (filter :kg enriched))]
       (when (pos? kg-count)
         (log/debug "Enriched" kg-count "entries with KG context"))
@@ -222,13 +230,22 @@
           session-ids (mapv :id sessions-meta)
           decision-ids (mapv :id decisions-meta)
 
-          related-from-sessions (find-related-via-session-summaries session-ids project-id)
-          related-decisions (find-related-decisions-via-kg decision-ids project-id)
-
-          grounding-check (check-grounding-freshness project-id
-                                                     {:max-age-days 7
-                                                      :limit 20
-                                                      :timeout-ms 5000})
+          ;; Fire independent KG queries in parallel
+          f-sessions-related (future (find-related-via-session-summaries session-ids project-id))
+          f-decisions-related (future (find-related-decisions-via-kg decision-ids project-id))
+          f-grounding (future (check-grounding-freshness project-id
+                                                         {:max-age-days 7
+                                                          :limit 20
+                                                          :timeout-ms 5000}))
+          f-stale-files (future
+                          (try
+                            (kg-disc/top-stale-files :n 10 :project-id project-id :threshold 0.5)
+                            (catch Exception e
+                              (log/debug "KG insights stale-files query failed:" (.getMessage e))
+                              [])))
+          related-from-sessions (deref f-sessions-related 10000 [])
+          related-decisions (deref f-decisions-related 10000 [])
+          grounding-check (deref f-grounding 10000 {:stale-count 0})
 
           all-entries (concat decisions-meta conventions-meta)
           contradictions (->> all-entries
@@ -242,11 +259,7 @@
                                       (seq (get-in % [:kg :depended-by]))))
                          (count))
 
-          stale-files (try
-                        (kg-disc/top-stale-files :n 10 :project-id project-id :threshold 0.5)
-                        (catch Exception e
-                          (log/debug "KG insights stale-files query failed:" (.getMessage e))
-                          []))]
+          stale-files (deref f-stale-files 10000 [])]
 
       (cond-> {:edge-count edge-count}
         (seq by-relation) (assoc :by-relation by-relation)

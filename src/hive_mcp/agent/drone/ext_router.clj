@@ -13,23 +13,34 @@
    [:legacy-loop 'hive-mcp.agent.drone.backend.legacy-loop]])
 
 (defonce ^:private available-backends (atom nil))
+(defonce ^:private failed-backends (atom #{}))
 
 (defn load-available-backends!
-  "Attempt to require each backend namespace. Idempotent after first successful load."
+  "Attempt to require each backend namespace. Retries previously failed backends."
   []
-  (when-not @available-backends
-    (let [loaded (reduce
-                  (fn [acc [k ns-sym]]
-                    (try
-                      (require ns-sym)
-                      (conj acc k)
-                      (catch Exception e
-                        (log/debug "ext-router: backend not available" {:backend k :error (ex-message e)})
-                        acc)))
-                  []
-                  backend-nses)]
-      (reset! available-backends loaded)
-      (log/info "ext-router: loaded backends" {:available loaded}))))
+  (let [need-retry? (seq @failed-backends)
+        need-init?  (nil? @available-backends)]
+    (when (or need-init? need-retry?)
+      (let [targets (if need-init?
+                      backend-nses
+                      (filterv (fn [[k _]] (contains? @failed-backends k)) backend-nses))
+            {:keys [loaded failed]}
+            (reduce
+             (fn [acc [k ns-sym]]
+               (try
+                 (require ns-sym :reload)
+                 (update acc :loaded conj k)
+                 (catch Exception e
+                   (log/debug "ext-router: backend not available" {:backend k :error (ex-message e)})
+                   (update acc :failed conj k))))
+             {:loaded [] :failed #{}}
+             targets)]
+        (if need-init?
+          (reset! available-backends loaded)
+          (swap! available-backends into loaded))
+        (reset! failed-backends failed)
+        (log/info "ext-router: loaded backends" {:available @available-backends
+                                                 :failed   failed})))))
 
 (defn best-backend
   "Return the highest-priority available backend keyword, or :legacy-loop as fallback."

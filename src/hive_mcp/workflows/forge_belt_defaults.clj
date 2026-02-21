@@ -116,7 +116,7 @@
                     kg-node-ids (assoc :kg_node_ids kg-node-ids)))
                  (spawn-fn
                   (cond-> {:directory      directory
-                           :max-slots      (or max-slots 10)
+                           :max_slots      (or max-slots 10)
                            :presets        (or presets ["ling" "mcp-first" "saa"])
                            :tasks          tasks
                            :dispatch-fn    dispatch-fn
@@ -126,11 +126,12 @@
                     model        (assoc :model model)
                     preset       (assoc :preset preset)
                     seeds        (assoc :seeds seeds)
-                    ctx-refs     (assoc :ctx-refs ctx-refs)
-                    kg-node-ids  (assoc :kg-node-ids kg-node-ids))))]
+                    ctx-refs     (assoc :ctx_refs ctx-refs)
+                    kg-node-ids  (assoc :kg_node_ids kg-node-ids))))]
     (-> data
         (assoc :phase ::cycle-complete
-               :spark-result result)
+               :spark-result result
+               :last-strike (str (java.time.Instant/now)))
         (update :total-sparked + (:count result 0))
         (update :strike-count (fnil inc 0)))))
 
@@ -141,7 +142,8 @@
                            (pos? (get-in data [:spark-result :count] 0)))]
     (merge (select-keys data [:strike-count :total-smited :total-sparked
                               :smite-result :survey-result
-                              :spark-result :quenched? :continuous?])
+                              :spark-result :quenched? :continuous?
+                              :last-strike])
            {:success any-succeeded?})))
 
 (defn- handle-halt*

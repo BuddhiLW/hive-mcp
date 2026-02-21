@@ -65,9 +65,19 @@
     (scope/inject-project-scope tags-with-kg project-id)))
 
 (defn- validate-plan-gate!
-  "Validate plan content before storage via FSM gate."
+  "Validate plan content before storage via FSM gate.
+   Strict: type=plan MUST pass validation. No heuristic bypass."
   [content]
-  (when (plan-gate/plan-content? content)
+  (if-not (plan-gate/plan-content? content)
+    ;; Content declared as plan but doesn't look like one — reject
+    (throw (ex-info (str "Content declared as type=plan but is not parseable as a plan.\n"
+                         "Plan content must contain either:\n"
+                         "  1. EDN with {:steps [{:id \"step-1\" :title \"...\"}]}\n"
+                         "  2. Markdown with ## headers for each step\n"
+                         "Use type=note or type=decision for free-form content.")
+                    {:type :plan-gate-rejected
+                     :phase :detection
+                     :errors ["Content does not match plan format"]}))
     (let [gate-result (plan-gate/validate-for-storage content)]
       (when-not (:valid? gate-result)
         (throw (ex-info (plan-gate/format-gate-error gate-result)
