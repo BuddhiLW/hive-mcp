@@ -229,16 +229,32 @@
                              :target-project-id (:target-project-id compat)
                              :hint "Use :force-cross-project true to override"})))
 
-          (let [data (if (= adapter :edn)
-                       (:data backup-data)
-                       (adapter/transform-import adapter (:data backup-data)))
-                result (kg-mig/import-from-edn data)]
-            {:success (empty? (:errors result))
-             :path backup-path
-             :imported (:imported result)
-             :errors (:errors result)
-             :project-id target-pid
-             :scope-check compat}))))))
+          (let [raw-data (if (= adapter :edn)
+                           (:data backup-data)
+                           (adapter/transform-import adapter (:data backup-data)))
+                ;; Detect backup scope and extract KG data accordingly
+                ;; :full backups wrap as {:kg {...} :memory {...}}
+                ;; :kg backups have flat {:edges [...] :disc [...] :synthetic [...]}
+                scope (:backup/scope backup-data)
+                kg-data (case scope
+                          :full (:kg raw-data)
+                          :kg   raw-data
+                          ;; Fallback: detect from data structure
+                          (if (:edges raw-data) raw-data (:kg raw-data)))]
+            (if kg-data
+              (let [result (kg-mig/import-from-edn kg-data)]
+                {:success (empty? (:errors result))
+                 :path backup-path
+                 :imported (:imported result)
+                 :errors (:errors result)
+                 :project-id target-pid
+                 :scope-check compat})
+              {:success false
+               :path backup-path
+               :error "No KG data found in backup"
+               :backup-scope scope
+               :project-id target-pid
+               :scope-check compat})))))))
 
 ;; =============================================================================
 ;; List Command

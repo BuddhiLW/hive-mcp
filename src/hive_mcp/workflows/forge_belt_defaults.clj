@@ -62,10 +62,12 @@
   "fb/h1: Initialize a forge strike cycle.
    Sets phase marker, cycle-start timestamp, nils previous results."
   [resources data]
-  (let [clock-fn (or (:clock-fn resources) #(java.time.Instant/now))]
+  (let [clock-fn (or (:clock-fn resources) #(java.time.Instant/now))
+        now      (str (clock-fn))]
     (assoc data
            :phase ::smite
-           :cycle-start (str (clock-fn))
+           :cycle-start now
+           :last-strike now
            :smite-result nil
            :survey-result nil
            :spark-result nil

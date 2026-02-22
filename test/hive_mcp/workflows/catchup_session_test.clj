@@ -139,14 +139,20 @@
                     resources
                     {:directory "/test/project"}))))))
 
-(deftest test-catchup-session-query-failure
-  (testing "Query exception sets query-failed? and transitions to error"
+(deftest test-catchup-session-query-graceful-degradation
+  (testing "Individual query exceptions degrade gracefully with parallel futures"
     (let [resources (make-test-resources
-                     {:query-axioms-fn (fn [_] (throw (ex-info "Chroma down" {})))})]
-      (is (thrown? clojure.lang.ExceptionInfo
-                   (catchup/run-catchup-session
-                    resources
-                    {:directory "/test/project"}))))))
+                     {:query-axioms-fn (fn [_] (throw (ex-info "Chroma down" {})))})
+          result (catchup/run-catchup-session
+                  resources
+                  {:directory "/test/project"})]
+      ;; Parallel futures catch individual exceptions and return empty defaults.
+      ;; The session completes successfully with empty axioms (graceful degradation).
+      (is (= "hive-mcp" (:project-id result)))
+      (is (empty? (:axioms-meta result)))
+      ;; Other queries still succeed
+      (is (seq (:decisions-meta result)))
+      (is (seq (:sessions-meta result))))))
 
 ;; =============================================================================
 ;; Handler Unit Tests
@@ -201,12 +207,17 @@
       (is (seq (:snippets result)))
       (is (seq (:expiring result))))))
 
-(deftest test-handle-query-memory-failure
-  (testing "handle-query-memory catches exceptions and sets query-failed?"
+(deftest test-handle-query-memory-graceful-degradation
+  (testing "handle-query-memory degrades gracefully when individual queries throw"
     (let [resources {:query-axioms-fn (fn [_] (throw (ex-info "boom" {})))}
           result (catchup/handle-query-memory resources {:project-id "p1"})]
-      (is (true? (:query-failed? result)))
-      (is (string? (:error result))))))
+      ;; Parallel futures catch individual query exceptions via safe-deref.
+      ;; The query phase succeeds with empty axioms (graceful degradation).
+      (is (false? (:query-failed? result)))
+      (is (= [] (:axioms result)))
+      ;; Other categories still populated (empty because no query-fn provided)
+      (is (some? (:sessions result)))
+      (is (some? (:decisions result))))))
 
 (deftest test-handle-gather-context
   (testing "handle-gather-context transforms entries to metadata"
@@ -261,6 +272,22 @@
           result (catchup/handle-enrich-kg resources data)]
       (is (= [{:id "d1"}] (:decisions-meta result)))
       (is (= [{:id "c1"}] (:conventions-meta result))))))
+
+(deftest test-handle-enrich-kg-parallel-enrichment-failure
+  (testing "handle-enrich-kg degrades gracefully when enrichment throws"
+    (let [resources {:kg-enrich-fn (fn [_entries] (throw (ex-info "KG unavailable" {})))
+                     :kg-insights-fn (fn [_ _ _ _] {:insight-count 0})
+                     :co-access-fn (fn [_ _] [])}
+          data {:decisions-base [{:id "d1" :content "decision"}]
+                :conventions-base [{:id "c1" :content "convention"}]
+                :sessions-meta []
+                :axioms [] :priority-conventions []
+                :decisions [] :conventions [] :sessions []
+                :project-id "p1"}
+          result (catchup/handle-enrich-kg resources data)]
+      ;; Falls back to unenriched base data on exception
+      (is (= [{:id "d1" :content "decision"}] (:decisions-meta result)))
+      (is (= [{:id "c1" :content "convention"}] (:conventions-meta result))))))
 
 (deftest test-handle-maintenance
   (testing "handle-maintenance runs all maintenance tasks"

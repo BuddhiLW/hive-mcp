@@ -1,7 +1,7 @@
 (ns hive-mcp.channel.context-store-test
   "TDD tests for ephemeral context store.
    Tests: put/get lifecycle, TTL expiry, query by tags,
-   concurrent access, eviction, stats."
+   concurrent access, eviction, stats, batch put."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [hive-mcp.channel.context-store :as ctx]))
 
@@ -253,6 +253,95 @@
     ;; Only 1 live entry with "target" tag now
     (let [n (ctx/evict-by-tags! #{"target"})]
       (is (= 1 n)))))
+
+;; =============================================================================
+;; Batch Put
+;; =============================================================================
+
+(deftest test-batch-put-stores-all-categories
+  (testing "context-put-batch! stores all non-empty categories and returns refs map"
+    (let [refs (ctx/context-put-batch!
+                {:axioms    {:data [{:id "a1"}]
+                             :tags #{"catchup" "axioms"}
+                             :ttl-ms 60000}
+                 :decisions {:data [{:id "d1"} {:id "d2"}]
+                             :tags #{"catchup" "decisions"}
+                             :ttl-ms 60000}
+                 :snippets  {:data [{:id "s1"}]
+                             :tags #{"catchup" "snippets"}
+                             :ttl-ms 60000}})]
+      (is (= 3 (count refs)))
+      (is (contains? refs :axioms))
+      (is (contains? refs :decisions))
+      (is (contains? refs :snippets))
+      ;; All values are ctx-id strings
+      (is (every? #(re-matches #"ctx-\d+-[0-9a-f]{8}" %) (vals refs)))
+      ;; All entries retrievable
+      (doseq [[_cat id] refs]
+        (is (some? (ctx/context-get id))))
+      ;; Store has exactly 3 entries
+      (is (= 3 (:total (ctx/context-stats)))))))
+
+(deftest test-batch-put-skips-empty-data
+  (testing "context-put-batch! skips entries with nil or empty data"
+    (let [refs (ctx/context-put-batch!
+                {:axioms    {:data [{:id "a1"}]
+                             :tags #{"catchup" "axioms"}
+                             :ttl-ms 60000}
+                 :sessions  {:data nil
+                             :tags #{"catchup" "sessions"}
+                             :ttl-ms 60000}
+                 :decisions {:data []
+                             :tags #{"catchup" "decisions"}
+                             :ttl-ms 60000}})]
+      (is (= 1 (count refs)))
+      (is (contains? refs :axioms))
+      (is (not (contains? refs :sessions)))
+      (is (not (contains? refs :decisions)))
+      (is (= 1 (:total (ctx/context-stats)))))))
+
+(deftest test-batch-put-empty-map
+  (testing "context-put-batch! with empty map returns empty map"
+    (let [refs (ctx/context-put-batch! {})]
+      (is (= {} refs))
+      (is (= 0 (:total (ctx/context-stats)))))))
+
+(deftest test-batch-put-preserves-tags
+  (testing "context-put-batch! preserves tags on stored entries"
+    (let [refs (ctx/context-put-batch!
+                {:axioms {:data [{:id "a1"}]
+                          :tags #{"catchup" "axioms" "my-project"}
+                          :ttl-ms 60000}})
+          entry (ctx/context-get (:axioms refs))]
+      (is (= 1 (count refs)))
+      (is (= #{"catchup" "axioms" "my-project"} (:tags entry))))))
+
+(deftest test-batch-put-preserves-ttl
+  (testing "context-put-batch! preserves custom TTL on stored entries"
+    (let [refs (ctx/context-put-batch!
+                {:axioms {:data [{:id "a1"}]
+                          :tags #{"catchup"}
+                          :ttl-ms 120000}})
+          entry (ctx/context-get (:axioms refs))]
+      (is (= 120000 (:ttl-ms entry))))))
+
+(deftest test-batch-put-data-roundtrip
+  (testing "context-put-batch! data is retrievable via context-get"
+    (let [axiom-data [{:id "a1" :content "axiom one"}]
+          decision-data [{:id "d1" :content "decision one"} {:id "d2" :content "decision two"}]
+          refs (ctx/context-put-batch!
+                {:axioms    {:data axiom-data    :tags #{"catchup"} :ttl-ms 60000}
+                 :decisions {:data decision-data :tags #{"catchup"} :ttl-ms 60000}})]
+      (is (= axiom-data (:data (ctx/context-get (:axioms refs)))))
+      (is (= decision-data (:data (ctx/context-get (:decisions refs))))))))
+
+(deftest test-batch-put-defaults-ttl-when-omitted
+  (testing "context-put-batch! uses default TTL when :ttl-ms not provided"
+    (let [refs (ctx/context-put-batch!
+                {:axioms {:data [{:id "a1"}]
+                          :tags #{"catchup"}}})
+          entry (ctx/context-get (:axioms refs))]
+      (is (= ctx/default-ttl-ms (:ttl-ms entry))))))
 
 ;; =============================================================================
 ;; Reset

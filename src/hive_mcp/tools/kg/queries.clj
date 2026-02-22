@@ -32,8 +32,8 @@
   (try
     (or (validate-node-id start_node "start_node")
         (let [dir-kw (case direction
-                       "incoming" :incoming
-                       "both" :both
+                       (:incoming "incoming") :incoming
+                       (:both "both")         :both
                        :outgoing)  ;; default
               rel-set (parse-relations-filter relations)
               opts (cond-> {:direction dir-kw}
@@ -85,8 +85,8 @@
     (or (validate-node-id from_node "from_node")
         (validate-node-id to_node "to_node")
         (let [dir-kw (case direction
-                       "outgoing" :outgoing
-                       "incoming" :incoming
+                       (:outgoing "outgoing") :outgoing
+                       (:incoming "incoming") :incoming
                        :both)
               rel-set (parse-relations-filter relations)
               opts (cond-> {:direction dir-kw}

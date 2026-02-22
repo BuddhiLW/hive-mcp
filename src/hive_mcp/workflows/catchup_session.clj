@@ -81,7 +81,8 @@
       :error                any}"
 
   (:require [hive.events.fsm :as fsm]
-            [hive-mcp.dns.result :as result]))
+            [hive-mcp.dns.result :as result]
+            [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -105,6 +106,28 @@
     (try (apply f args)
          (catch Exception _e fallback))
     fallback))
+
+;; =============================================================================
+;; Parallel Execution Helpers
+;; =============================================================================
+
+(def ^:private ^:const query-timeout-ms
+  "Timeout for individual parallel query futures (matches production catchup.clj)."
+  15000)
+
+(defn- safe-deref
+  "Deref a future with timeout-ms. Returns default on timeout or exception."
+  [fut timeout-ms default]
+  (try
+    (let [result (deref fut timeout-ms ::timeout)]
+      (if (= result ::timeout)
+        (do (future-cancel fut)
+            (log/debug "catchup-fsm: parallel query timed out")
+            default)
+        result))
+    (catch Exception e
+      (log/debug "catchup-fsm: parallel deref failed:" (.getMessage e))
+      default)))
 
 ;; =============================================================================
 ;; Data-Driven Specs
@@ -138,27 +161,47 @@
 ;; =============================================================================
 
 (defn- run-standard-queries
-  "Run data-driven standard queries via :query-fn resource.
+  "Run data-driven standard queries via :query-fn resource IN PARALLEL.
+   Fires all 4 independent queries as futures and collects with timeout.
    Returns map of {category-key -> entries-vector}."
   [query-fn project-id]
-  (reduce (fn [acc [data-key type tags limit]]
-            (assoc acc data-key
-                   (or (when query-fn (query-fn type tags project-id limit))
-                       [])))
-          {}
-          standard-queries))
+  (if-not query-fn
+    ;; No query-fn: return empty vectors for all categories
+    (reduce (fn [acc [data-key _ _ _]] (assoc acc data-key []))
+            {} standard-queries)
+    ;; Fire all standard queries as parallel futures
+    (let [futures (mapv (fn [[data-key type tags limit]]
+                          [data-key (future (or (query-fn type tags project-id limit) []))])
+                        standard-queries)]
+      (reduce (fn [acc [data-key fut]]
+                (assoc acc data-key (safe-deref fut query-timeout-ms [])))
+              {} futures))))
 
 (defn- run-special-queries
-  "Run queries that need dedicated resource fns or have dependencies.
-   conventions depends on axiom-ids and priority-convention-ids."
+  "Run queries that need dedicated resource fns, with parallelism for independent queries.
+
+   Dependency graph:
+   - axioms:      independent (fires as future)
+   - expiring:    independent (fires as future)
+   - conventions: DEPENDS on axiom-ids + priority-convention-ids (Wave 2, sequential)
+
+   Axioms and expiring fire in parallel (Wave 1), then conventions runs
+   after axiom results are available (Wave 2)."
   [resources project-id standard-results]
-  (let [axioms      (or (call-resource resources :query-axioms-fn project-id) [])
+  (let [;; Wave 1: Fire independent queries in parallel
+        f-axioms   (future (or (call-resource resources :query-axioms-fn project-id) []))
+        f-expiring (future (or (call-resource resources :query-expiring-fn project-id 20) []))
+
+        ;; Wave 1: Collect independent results
+        axioms   (safe-deref f-axioms query-timeout-ms [])
+        expiring (safe-deref f-expiring query-timeout-ms [])
+
+        ;; Wave 2: Dependent query (needs axiom-ids + priority-convention-ids)
         axiom-ids   (set (map :id axioms))
         pc-ids      (set (map :id (:priority-conventions standard-results)))
         conventions (or (call-resource resources :query-conventions-fn
                                        project-id axiom-ids pc-ids)
-                        [])
-        expiring    (or (call-resource resources :query-expiring-fn project-id 20) [])]
+                        [])]
     {:axioms axioms
      :conventions conventions
      :expiring expiring}))
@@ -235,12 +278,13 @@
            :scopes scopes)))
 
 (defn handle-query-memory
-  "Query all Chroma memory categories with project scoping.
+  "Query all Chroma memory categories with project scoping IN PARALLEL.
    EDN handler key: :query-memory
 
    Uses Result DSL: wraps all queries in try-effect* for railway error handling.
-   Standard queries (4 categories via :query-fn) are data-driven.
-   Special queries (axioms, conventions, expiring) use dedicated resource fns."
+   Standard queries (4 categories via :query-fn) fire as parallel futures.
+   Special queries (axioms, expiring) fire in parallel, then conventions
+   runs sequentially (depends on axiom-ids + priority-convention-ids)."
   [resources data]
   (let [r (result/try-effect* :catchup/query-failed
             (let [project-id (:project-id data)
@@ -268,23 +312,36 @@
   "Enrich decisions/conventions with KG relationships and gather insights.
    EDN handler key: :enrich-kg
 
-   Uses call-resource to eliminate nil-fn guards.
-   Local enrich-entries fn handles optional :kg-enrich-fn with passthrough fallback."
+   Fires decisions and conventions enrichment as parallel futures (Wave 1),
+   then runs kg-insights sequentially (depends on enriched results).
+   Co-access query fires independently alongside enrichment."
   [resources data]
   (let [enrich-entries   (fn [entries]
                            (if-let [f (:kg-enrich-fn resources)]
                              (:entries (f entries))
                              entries))
-        decisions-meta   (enrich-entries (:decisions-base data))
-        conventions-meta (enrich-entries (:conventions-base data))
-        kg-insights      (call-resource resources :kg-insights-fn
-                                        decisions-meta conventions-meta
-                                        (:sessions-meta data) (:project-id data))
+        ;; Wave 1: Fire independent enrichment tasks in parallel
+        f-decisions      (future (enrich-entries (:decisions-base data)))
+        f-conventions    (future (enrich-entries (:conventions-base data)))
         all-entry-ids    (mapv :id (concat (:axioms data) (:priority-conventions data)
                                            (:decisions data) (:conventions data)
                                            (:sessions data)))
-        co-access        (call-resource resources :co-access-fn
-                                        all-entry-ids all-entry-ids)
+        f-co-access      (future (call-resource resources :co-access-fn
+                                                all-entry-ids all-entry-ids))
+
+        ;; Wave 1: Collect enrichment results
+        decisions-meta   (safe-deref f-decisions query-timeout-ms
+                                     (or (:decisions-base data) []))
+        conventions-meta (safe-deref f-conventions query-timeout-ms
+                                     (or (:conventions-base data) []))
+
+        ;; Wave 2: KG insights depends on enriched results
+        kg-insights      (call-resource resources :kg-insights-fn
+                                        decisions-meta conventions-meta
+                                        (:sessions-meta data) (:project-id data))
+
+        ;; Collect co-access (independent, may already be done)
+        co-access        (safe-deref f-co-access query-timeout-ms [])
         kg-insights      (if (seq co-access)
                            (assoc (or kg-insights {}) :co-access-suggestions co-access)
                            kg-insights)]
@@ -294,24 +351,32 @@
            :kg-insights kg-insights)))
 
 (defn handle-maintenance
-  "Run maintenance tasks using safe-call for graceful error recovery.
+  "Run maintenance tasks IN PARALLEL using futures for graceful error recovery.
    EDN handler key: :maintenance
 
-   Each task uses safe-call: call optional resource fn, return fallback on error."
+   All three tasks (permeation, tree-scan, disc-decay) are independent.
+   Fires all as futures, collects with timeout and fallback defaults."
   [resources data]
   (let [directory  (:directory data)
-        project-id (:project-id data)]
+        project-id (:project-id data)
+        ;; Fire all independent maintenance tasks in parallel
+        f-permeation  (future (safe-call resources :permeate-fn
+                                         [directory]
+                                         {:permeated 0 :error "permeation failed"}))
+        f-tree-scan   (future (safe-call resources :tree-scan-fn
+                                         [(or directory ".")]
+                                         {:scanned false :error "tree scan failed"}))
+        f-disc-decay  (future (safe-call resources :disc-decay-fn
+                                         [project-id]
+                                         {:updated 0 :skipped 0 :errors 1}))]
     (assoc data
-           :permeation (or (safe-call resources :permeate-fn
-                                      [directory]
-                                      {:permeated 0 :error "permeation failed"})
+           :permeation (or (safe-deref f-permeation query-timeout-ms
+                                       {:permeated 0 :error "permeation timed out"})
                            {:permeated 0})
-           :project-tree-scan (safe-call resources :tree-scan-fn
-                                        [(or directory ".")]
-                                        {:scanned false :error "tree scan failed"})
-           :disc-decay (safe-call resources :disc-decay-fn
-                                  [project-id]
-                                  {:updated 0 :skipped 0 :errors 1}))))
+           :project-tree-scan (safe-deref f-tree-scan query-timeout-ms
+                                          {:scanned false :error "tree scan timed out"})
+           :disc-decay (safe-deref f-disc-decay query-timeout-ms
+                                   {:updated 0 :skipped 0 :errors 1}))))
 
 (defn handle-deliver
   "Enqueue piggyback entries and cache in context-store.

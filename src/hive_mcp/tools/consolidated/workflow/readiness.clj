@@ -24,16 +24,16 @@
   60000)
 
 (def ^:private vterm-ling-ready-timeout-ms
-  "Shorter readiness timeout for vterm/claude spawn modes (ms).
-   Emacs is already running so 20s is sufficient — no CLI startup delay."
-  20000)
+  "Readiness timeout for vterm/claude spawn modes (ms).
+   Emacs buffer creation takes 3-5s, CLI init adds a few more."
+  10000)
 
 (def ^:private ling-ready-poll-ms 50)
 
 (def ^:private readiness-retry-wait-ms
   "Extra wait before the single retry attempt after a readiness timeout.
-   5s allows the ling process a final window to register / become CLI-ready."
-  5000)
+   2s allows the ling process a final window to register / become CLI-ready."
+  2000)
 
 (defn- configured-timeout-ms
   "Return the configured readiness timeout, falling back to the default."
@@ -43,7 +43,7 @@
 
 (defn- timeout-ms-for-spawn-mode
   "Return the appropriate readiness timeout for the given spawn-mode.
-   vterm/claude modes use a shorter timeout (20s) since Emacs is already live.
+   vterm/claude modes use a shorter timeout (10s) since Emacs is already live.
    All other modes (headless, agent-sdk, etc.) use the configured timeout (default 60s)."
   [spawn-mode]
   (case spawn-mode
@@ -148,7 +148,7 @@
    hasn't registered in DataScript or produced stdout within the initial window.
 
    Timeout is spawn-mode aware:
-   - vterm/claude: 20s (Emacs already live, no CLI startup delay)
+   - vterm/claude: 10s (Emacs buffer creation ~3-5s + CLI init)
    - headless/agent-sdk and others: configurable via
      {:services {:forge {:readiness-timeout-ms N}}} in
      ~/.config/hive-mcp/config.edn (default: 60000 ms)."

@@ -37,6 +37,27 @@
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 ;; =============================================================================
+;; Embedding Warm-Up
+;; =============================================================================
+
+(defn warmup-embedding!
+  "Fire a background future to warm up the Ollama embedding model.
+
+   First embedding call via ollama/nomic-embed-text takes ~3.5s (cold start
+   model loading). Subsequent calls are ~50ms. This pre-loads the model so
+   the first real catchup or memory search does not pay the cold start penalty.
+
+   Non-blocking: runs in a future so it does not delay server startup."
+  []
+  (future
+    (try
+      (embedding-service/embed-for-collection "hive-mcp-memory" "warmup")
+      (log/info "Ollama embedding model warmed up")
+      (catch Exception e
+        (log/warn "Embedding warmup failed (non-fatal):" (ex-message e))))))
+
+
+;; =============================================================================
 ;; Hot-Reload State
 ;; =============================================================================
 

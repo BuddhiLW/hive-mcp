@@ -1,14 +1,19 @@
 (ns hive-mcp.swarm.protocol
-  "ISwarmRegistry protocol for swarm state management.
+  "Swarm state management protocols (ISP-segregated).
 
-   Provides a unified interface for swarm registry persistence,
-   enabling multiple backend implementations:
-   - DataScript (in-memory, persistent via serialization)
-   - Datomic (cloud or on-prem, full history)
-   - XTDB (bitemporality, document-centric)
-   - Atom (simple in-memory for testing)
+   Provides unified interfaces for swarm persistence, enabling
+   multiple backend implementations (DataScript, Datalevin, etc.).
 
-   DDD: Repository pattern for swarm entity lifecycle management.")
+   Protocols (ISP — Interface Segregation Principle):
+   - ISwarmRegistry   — Slave + Task CRUD
+   - IClaimStore      — File claim lifecycle
+   - ICriticalOps     — Kill guard operations
+   - ICoordination    — Wrap queue, plans, waves, coordinators
+   - ISwarmDb         — Low-level DB access boundary
+
+   Design: Functional DDD Repository pattern.
+   OCP via protocols + records (compiles to Java interfaces).
+   DIP: All consumer code depends on these abstractions, never on backends.")
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -167,6 +172,232 @@
 
      Returns:
        Seq of task maps (may be empty)."))
+
+;;; =============================================================================
+;;; IClaimStore — File claim lifecycle (ISP: separate from registry)
+;;; =============================================================================
+
+(defprotocol IClaimStore
+  "File claim management: acquire, release, conflict detection, history.
+
+   Claims enforce mutual exclusion on files across lings/drones.
+   Implementations must handle:
+   - Upsert semantics on claim-file! (same file = update existing)
+   - Cascading release on slave/task removal
+   - Stale claim detection via timestamps"
+
+  (-claim-file! [this file-path slave-id]
+    [this file-path slave-id opts]
+    "Acquire a file claim. Upserts if claim exists.
+     opts: {:task-id string, :prior-hash string, :wave-id string}")
+
+  (-release-claim! [this file-path]
+    "Release a file claim and dispatch :claim/file-released event.")
+
+  (-release-claims-for-slave! [this slave-id]
+    "Release all claims held by a slave. Returns count released.")
+
+  (-release-claims-for-task! [this task-id]
+    "Release all claims associated with a task. Returns count released.")
+
+  (-get-claims-for-file [this file-path]
+    "Get claim info for a file. Returns map or nil if unclaimed.")
+
+  (-get-all-claims [this]
+    "Get all active claims. Returns seq of claim maps.")
+
+  (-has-conflict? [this file-path requesting-slave]
+    "Check if a file claim would conflict. Returns {:conflict? bool :held-by id}.")
+
+  (-check-file-conflicts [this requesting-slave files]
+    "Check conflicts on multiple files. Returns seq of conflicting files.")
+
+  (-refresh-claim! [this file-path]
+    "Refresh claim timestamp to prevent staleness.")
+
+  (-cleanup-stale-claims! [this]
+    [this threshold-ms]
+    "Release claims older than threshold. Returns {:released-count N :released-files [...]}.")
+
+  (-archive-claim-to-history! [this file-path opts]
+    "Archive a released claim to history for CC.6 tracking.
+     opts: {:slave-id :prior-hash :released-hash :lines-added :lines-removed}")
+
+  (-get-recent-claim-history [this opts]
+    "Query recent claim history. opts: {:file :slave-id :since :limit}")
+
+  (-add-to-wait-queue! [this ling-id file-path]
+    "Add ling to wait queue for a file (file-claim cascade)."))
+
+;;; =============================================================================
+;;; ICriticalOps — Kill guard operations (ISP: separate concern)
+;;; =============================================================================
+
+(defprotocol ICriticalOps
+  "Critical operation guard for kill protection (ADR-003).
+
+   When a ling is in a critical operation (:wrap :commit :dispatch),
+   swarm_kill must wait or be rejected. These operations ensure
+   data integrity during session crystallization and git commits."
+
+  (-enter-critical-op! [this slave-id op-type]
+    "Mark slave as in critical operation. op-type: :wrap :commit :dispatch")
+
+  (-exit-critical-op! [this slave-id op-type]
+    "Mark slave as having completed a critical operation.")
+
+  (-get-critical-ops [this slave-id]
+    "Get current critical operations for a slave. Returns set.")
+
+  (-can-kill? [this slave-id]
+    "Check if slave can be killed safely.
+     Returns {:can-kill? bool :blocking-ops #{...}}."))
+
+;;; =============================================================================
+;;; ICoordination — Wrap queue, plans, waves, coordinators (ISP)
+;;; =============================================================================
+
+(defprotocol ICoordination
+  "Multi-agent coordination: wrap queue, change plans, waves, coordinators.
+
+   Application Service layer for swarm orchestration.
+   Manages the lifecycle of coordination entities that span
+   multiple agents and require transactional consistency."
+
+  ;;; --- Wrap Queue (Crystal Convergence) ---
+
+  (-add-wrap-notification! [this wrap-id opts]
+    "Record a ling wrap for coordinator permeation.
+     opts: {:agent-id :session-id :project-id :created-ids :stats}")
+
+  (-get-unprocessed-wraps [this]
+    "Get all unprocessed wrap notifications.")
+
+  (-get-unprocessed-wraps-for-project [this project-id]
+    "Get unprocessed wraps for a specific project.")
+
+  (-get-unprocessed-wraps-for-hierarchy [this project-id-prefix]
+    "Get unprocessed wraps for project and all children (prefix match).")
+
+  (-mark-wrap-processed! [this wrap-id]
+    "Mark a wrap notification as processed.")
+
+  ;;; --- Change Plans ---
+
+  (-create-plan! [this tasks preset]
+    "Create a change plan with items. Returns plan-id.")
+
+  (-get-plan [this plan-id]
+    "Get a change plan by ID.")
+
+  (-get-pending-items [this plan-id]
+    "Get pending items for a plan.")
+
+  (-get-plan-items [this plan-id]
+    "Get all items for a plan.")
+
+  (-update-item-status! [this item-id status]
+    [this item-id status opts]
+    "Update a change item's status. opts: {:drone-id :result}")
+
+  (-update-plan-status! [this plan-id status]
+    "Update a change plan's status.")
+
+  ;;; --- Waves ---
+
+  (-create-wave! [this plan-id]
+    [this plan-id opts]
+    "Create a wave execution. opts: {:concurrency N}. Returns wave-id.")
+
+  (-get-wave [this wave-id]
+    "Get a wave by ID.")
+
+  (-get-all-waves [this]
+    "Get all waves.")
+
+  (-update-wave-counts! [this wave-id delta]
+    "Update wave counts. delta: {:active N :completed N :failed N}")
+
+  (-complete-wave! [this wave-id status]
+    "Mark a wave as completed with final status.")
+
+  ;;; --- Coordinators ---
+
+  (-register-coordinator! [this coordinator-id opts]
+    "Register a coordinator instance. opts: {:project :pid :session-id}")
+
+  (-update-heartbeat! [this coordinator-id]
+    "Update coordinator heartbeat timestamp.")
+
+  (-get-coordinator [this coordinator-id]
+    "Get a coordinator by ID.")
+
+  (-get-all-coordinators [this]
+    "Get all coordinators.")
+
+  (-get-coordinators-for-project [this project]
+    "Get coordinators for a project.")
+
+  (-mark-coordinator-terminated! [this coordinator-id]
+    "Mark coordinator as terminated (graceful shutdown).")
+
+  (-cleanup-stale-coordinators! [this]
+    [this opts]
+    "Find and mark stale coordinators. Returns seq of marked IDs.")
+
+  (-remove-coordinator! [this coordinator-id]
+    "Remove a coordinator entity.")
+
+  ;;; --- Completed Tasks (session-scoped) ---
+
+  (-register-completed-task! [this task-id opts]
+    "Register a completed task for wrap. opts: {:title :agent-id :project-id}")
+
+  (-get-completed-tasks-this-session [this]
+    [this opts]
+    "Get completed tasks. opts: {:agent-id :project-id}")
+
+  (-clear-completed-tasks! [this]
+    "Clear all completed tasks. Returns count cleared."))
+
+;;; =============================================================================
+;;; ISwarmDb — Low-level DB access boundary
+;;; =============================================================================
+
+(defprotocol ISwarmDb
+  "Low-level database access boundary.
+
+   Provides the minimal surface for code that needs direct DB access:
+   - Raw transaction execution (event effects)
+   - Change listening (Olympus bridge)
+   - Stats and diagnostics
+
+   DIP: Consumer code depends on this abstraction, never on
+   datascript.core or datalevin.core directly."
+
+  (-transact! [this tx-data]
+    "Execute a raw transaction. Returns tx-report.")
+
+  (-current-db [this]
+    "Get the current database value (snapshot).")
+
+  (-listen! [this key callback]
+    "Register a transaction listener. callback: (fn [tx-report] ...).
+     Returns the listener key for unlisten!.
+     Note: Datalevin doesn't have native listen!; implementations
+     must provide equivalent notification semantics.")
+
+  (-unlisten! [this key]
+    "Remove a transaction listener.")
+
+  (-db-stats [this]
+    "Get statistics about the current swarm state.")
+
+  (-reset-db! [this]
+    "Reset the database to empty state.")
+
+  (-close! [this]
+    "Close the database connection and release resources."))
 
 ;;; =============================================================================
 ;;; Registry Status Constants (for reference by implementations)

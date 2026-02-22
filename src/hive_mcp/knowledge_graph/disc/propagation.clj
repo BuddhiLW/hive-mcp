@@ -11,27 +11,33 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
+(defn- decay-single-disc!
+  "Apply time decay to a single disc entity. Returns :updated or :errors."
+  [disc]
+  (let [v (r/guard Exception nil
+                    (let [path (:disc/path disc)
+                          decayed (vol/apply-time-decay disc)
+                          updates {:disc/certainty-beta (:disc/certainty-beta decayed)
+                                   :disc/last-observation (:disc/last-observation decayed)}]
+                      (crud/update-disc! path updates)
+                      :ok))]
+    (if (= :ok v)
+      :updated
+      (do (when-let [err (::r/error (meta v))]
+            (log/warn "Failed to apply decay to disc"
+                      {:path (:disc/path disc) :error (:message err)}))
+          :errors))))
+
 (defn apply-time-decay-to-all-discs!
-  "Apply time-based certainty decay to all disc entities."
+  "Apply time-based certainty decay to all disc entities.
+   Uses pmap for data-parallel decay — each disc is independent."
   [& {:keys [project-id]}]
   (let [discs (crud/get-all-discs :project-id project-id)
-        results (reduce
-                 (fn [acc disc]
-                   (let [v (r/guard Exception nil
-                                    (let [path (:disc/path disc)
-                                          decayed (vol/apply-time-decay disc)
-                                          updates {:disc/certainty-beta (:disc/certainty-beta decayed)
-                                                   :disc/last-observation (:disc/last-observation decayed)}]
-                                      (crud/update-disc! path updates)
-                                      :ok))]
-                     (if (= :ok v)
-                       (update acc :updated inc)
-                       (do (when-let [err (::r/error (meta v))]
-                             (log/warn "Failed to apply decay to disc"
-                                       {:path (:disc/path disc) :error (:message err)}))
-                           (update acc :errors inc)))))
-                 {:updated 0 :skipped 0 :errors 0}
-                 discs)]
+        outcomes (doall (pmap decay-single-disc! discs))
+        freqs (frequencies outcomes)
+        results {:updated (get freqs :updated 0)
+                 :skipped 0
+                 :errors  (get freqs :errors 0)}]
     (log/info "Time decay applied to discs" results)
     results))
 

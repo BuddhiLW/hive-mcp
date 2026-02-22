@@ -1,0 +1,30 @@
+{:tx-data
+ [{:db/ident       :knowledge/abstraction-level
+   :db/valueType   :db.type/long
+   :db/cardinality :db.cardinality/one
+   :db/doc         "Abstraction level 1-4 (1=File, 2=Semantic, 3=Pattern, 4=Intent)"}
+
+  {:db/ident       :knowledge/grounded-at
+   :db/valueType   :db.type/instant
+   :db/cardinality :db.cardinality/one
+   :db/doc         "Timestamp of last verification against lower level (inst)"}
+
+  {:db/ident       :knowledge/grounded-from
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc         "Ref to disc entity (file/commit) verified against"}
+
+  {:db/ident       :knowledge/gaps
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/many
+   :db/doc         "Set of known abstraction gaps (keywords)"}
+
+  {:db/ident       :knowledge/source-hash
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc         "Content hash of source when abstracted (for drift detection)"}
+
+  {:db/ident       :knowledge/source-type
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc         "How this knowledge was created: :manual, :automated, :inferred, :co-access"}]}

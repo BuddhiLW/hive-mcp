@@ -72,6 +72,29 @@
                :selected backend})
     backend))
 
+(defn- detect-writer-config
+  "Detect the writer backend config from :services.kg.writer in config.edn.
+   Returns nil for :self (local) or the writer map for remote backends.
+
+   Example config.edn:
+     {:services {:kg {:backend :datahike
+                      :writer {:backend :datahike-server
+                               :url \"http://localhost:4444\"
+                               :token \"your-token\"}}}}
+
+   Or for kabel:
+     {:services {:kg {:backend :datahike
+                      :writer {:backend :kabel
+                               :peer-id #uuid \"aaaa...\"
+                               :local-peer <peer-atom>}}}}"
+  []
+  (r/rescue nil
+            (let [writer-cfg (config/get-service-value :kg :writer)]
+              (when (and (map? writer-cfg)
+                         (not= :self (:backend writer-cfg)))
+                (log/info "KG writer config detected" {:writer writer-cfg})
+                writer-cfg))))
+
 (defn- ensure-store!
   "Ensure a store is configured. Auto-detects backend from config."
   []
@@ -91,7 +114,8 @@
               (proto/set-store! (ds-store/create-store)))))
 
         :datahike
-        (let [store (r/guard Exception nil
+        (let [writer-cfg (detect-writer-config)
+              store (r/guard Exception nil
                              ;; Pre-load konserve namespaces in correct order before datahike.
                              ;; konserve.impl.defaults requires konserve.impl.storage-layout
                              ;; which defines -atomic-move. If storage-layout is partially
@@ -105,7 +129,7 @@
                              (require 'konserve.cache)
                              (require 'hive-mcp.knowledge-graph.store.datahike)
                              (let [create-fn (resolve 'hive-mcp.knowledge-graph.store.datahike/create-store)]
-                               (create-fn)))]
+                               (create-fn (when writer-cfg {:writer writer-cfg}))))]
           (if store
             (proto/set-store! store)
             (do
@@ -225,7 +249,9 @@
           _ (require 'konserve.cache)
           _ (require 'hive-mcp.knowledge-graph.store.datahike)
           create-fn (resolve 'hive-mcp.knowledge-graph.store.datahike/create-store)
-          store (create-fn opts)]
+          ;; Pass writer config if present (for datahike-server/kabel backends)
+          store (create-fn (cond-> (or opts {})
+                             (:writer opts) (assoc :writer (:writer opts))))]
       (if store
         (proto/set-store! store)
         (do

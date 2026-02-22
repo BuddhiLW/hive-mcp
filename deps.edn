@@ -28,9 +28,11 @@
 
         ;; Datascript for in-memory graph storage (GraphStore backend)
         datascript/datascript {:mvn/version "1.7.8"}
-        ;; Pin: datascript code uses me.tonsky namespace, which only exists in 0.3.x
-        ;; (0.4.x renamed to org.replikativ namespace, breaking datascript)
-        org.replikativ/persistent-sorted-set {:mvn/version "0.3.118"}
+        ;; me.tonsky namespace for datascript/datahike: provided by local 0.3.118 jar.
+        ;; org.replikativ namespace for Proximum: provided by hive-knowledge addon (0.4.119).
+        ;; Different group IDs → both on classpath, non-overlapping namespaces.
+        persistent-sorted-set/persistent-sorted-set-compat
+        {:local/root "../lib/persistent-sorted-set-0.3.118.jar"}
 
         ;; Datalevin for durable graph storage (GraphStore backend, optional)
         ;; LMDB-backed Datalog — requires Java 21+
@@ -99,6 +101,11 @@
         io.github.java-diff-utils/java-diff-utils {:mvn/version "4.15"}
         org.replikativ/yggdrasil {:mvn/version "0.2.14"}
 
+        ;; Kabel — WebSocket transport for distributed Datahike writer backend
+        ;; Symmetric peer-to-peer with middleware, transit/fressian serialization
+        ;; Used by :kabel writer backend for real-time reactive KG writes
+        io.replikativ/kabel {:mvn/version "0.3.92"}
+
         ;; Process execution - babashka.process for CLI wrappers
         ;; Used by overarch, scc, and other CLI tool integrations
         babashka/process {:mvn/version "0.6.25"}
@@ -123,9 +130,11 @@
                 cider/cider-nrepl {:mvn/version "0.58.0"}
                 refactor-nrepl/refactor-nrepl {:mvn/version "3.11.0"}}
    ;; Suppress Netty sun.misc.Unsafe warnings on Java 17+
+   ;; Proximum HNSW (via hive-knowledge addon) needs jdk.incubator.vector for SIMD
    :jvm-opts ["--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED"
               "--add-opens=java.base/java.nio=ALL-UNNAMED"
-              "-Dio.netty.tryReflectionSetAccessible=true"]}
+              "-Dio.netty.tryReflectionSetAccessible=true"
+              "--add-modules=jdk.incubator.vector"]}
 
   :nrepl
   {:extra-paths ["dev" "test"]
@@ -133,9 +142,11 @@
                 cider/cider-nrepl {:mvn/version "0.58.0"}
                 refactor-nrepl/refactor-nrepl {:mvn/version "3.11.0"}}
    ;; Suppress Netty sun.misc.Unsafe warnings on Java 17+
+   ;; Proximum HNSW (via hive-knowledge addon) needs jdk.incubator.vector for SIMD
    :jvm-opts ["--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED"
               "--add-opens=java.base/java.nio=ALL-UNNAMED"
-              "-Dio.netty.tryReflectionSetAccessible=true"]
+              "-Dio.netty.tryReflectionSetAccessible=true"
+              "--add-modules=jdk.incubator.vector"]
    :main-opts ["-m" "nrepl.cmdline"
                "--port" "7910"
                "--middleware" "[cider.nrepl/cider-middleware,refactor-nrepl.middleware/wrap-refactor]"]}

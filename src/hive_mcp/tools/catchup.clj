@@ -27,6 +27,7 @@
             [hive-mcp.tools.catchup.permeation :as permeation]
             [hive-mcp.channel.memory-piggyback :as memory-piggyback]
             [hive-mcp.channel.context-store :as context-store]
+            [hive-mcp.knowledge-graph.edges :as kg-edges]
             [hive-mcp.knowledge-graph.disc :as disc]
             [hive-mcp.project.tree :as project-tree]
             [hive-mcp.dns.result :refer [rescue]]
@@ -130,8 +131,9 @@
               snippets-meta (mapv #(fmt/entry->catchup-meta % 60) snippets)
               expiring-meta (mapv #(fmt/entry->catchup-meta % 80) expiring)
 
-              ;; ── Wave 3: Fire enrichment + side effects in parallel ──
-              ;; All are independent — overlap I/O for maximum throughput
+              ;; ── Wave 3: Fire enrichment + KG pre-fetch + side effects in parallel ──
+              ;; KG stats and stale-files are independent of enrichment results,
+              ;; so we fire them here alongside enrichment instead of sequentially after.
               f-decisions-kg   (future (:entries (enrichment/enrich-entries-with-kg decisions-base)))
               f-conventions-kg (future (:entries (enrichment/enrich-entries-with-kg conventions-base)))
               f-permeation     (future (permeation/auto-permeate-wraps directory))
@@ -145,16 +147,35 @@
                                       (catch Exception e
                                         (log/debug "Disc time-decay failed (non-fatal):" (.getMessage e))
                                         {:updated 0 :skipped 0 :errors 1 :error (.getMessage e)})))
+              ;; Pre-fetch KG stats + stale-files in parallel with enrichment (Wave 3)
+              ;; These do NOT depend on enriched entries — they query global KG state.
+              f-kg-stats       (future
+                                 (try (kg-edges/edge-stats)
+                                      (catch Exception e
+                                        (log/debug "KG stats query failed (non-fatal):" (.getMessage e))
+                                        {:total-edges 0})))
+              f-stale-files    (future
+                                 (try (disc/top-stale-files :n 10 :project-id project-id :threshold 0.5)
+                                      (catch Exception e
+                                        (log/debug "KG stale-files query failed (non-fatal):" (.getMessage e))
+                                        [])))
 
               ;; ── Wave 3: Collect enrichment results ──
               decisions-enriched   (safe-deref f-decisions-kg query-timeout-ms decisions-base)
               conventions-enriched (safe-deref f-conventions-kg query-timeout-ms conventions-base)
 
-              ;; KG insights (depends on enriched results)
-              kg-insights (enrichment/gather-kg-insights decisions-enriched conventions-enriched
-                                                         sessions-meta project-id)
+              ;; Collect pre-fetched KG data
+              kg-stats    (safe-deref f-kg-stats query-timeout-ms {:total-edges 0})
+              stale-files (safe-deref f-stale-files query-timeout-ms [])
 
-              ;; Co-access suggestions
+              ;; ── Wave 4: KG insights (depends on enriched results + pre-fetched data) ──
+              ;; Pass pre-computed kg-stats and stale-files to avoid redundant queries
+              kg-insights (enrichment/gather-kg-insights decisions-enriched conventions-enriched
+                                                         sessions-meta project-id
+                                                         {:pre-kg-stats kg-stats
+                                                          :pre-stale-files stale-files})
+
+              ;; Co-access suggestions (batch query: 2 queries instead of 2*N)
               all-entry-ids (mapv :id (concat axioms principles priority-conventions
                                               decisions conventions sessions))
               co-access-suggestions (enrichment/find-co-accessed-suggestions
@@ -188,48 +209,36 @@
               piggyback-entries (into (into (vec axioms) principles) priority-conventions)
 
               ;; Dual-write: Cache entry categories in context-store for pass-by-ref mode.
+              ;; Uses context-put-batch! to write all categories in parallel via futures.
               ;; Each category gets its own ctx-id with 'catchup' + category tags.
               ;; TTL: 10 minutes (catchup context useful for the session duration).
               ;; Non-fatal: context-store failure doesn't break catchup.
               catchup-ttl 600000
+              scope-tag  (or project-id "global")
               context-refs
               (rescue nil
-                      (let [refs (cond-> {}
-                                   (seq axioms)
-                                   (assoc :axioms (context-store/context-put!
-                                                   axioms
-                                                   :tags #{"catchup" "axioms" (or project-id "global")}
-                                                   :ttl-ms catchup-ttl))
-                                   (seq principles)
-                                   (assoc :principles (context-store/context-put!
-                                                       principles
-                                                       :tags #{"catchup" "principles" (or project-id "global")}
-                                                       :ttl-ms catchup-ttl))
-                                   (seq priority-conventions)
-                                   (assoc :priority-conventions (context-store/context-put!
-                                                                 priority-conventions
-                                                                 :tags #{"catchup" "priority-conventions" (or project-id "global")}
-                                                                 :ttl-ms catchup-ttl))
-                                   (seq sessions)
-                                   (assoc :sessions (context-store/context-put!
-                                                     sessions
-                                                     :tags #{"catchup" "sessions" (or project-id "global")}
-                                                     :ttl-ms catchup-ttl))
-                                   (seq decisions)
-                                   (assoc :decisions (context-store/context-put!
-                                                      decisions
-                                                      :tags #{"catchup" "decisions" (or project-id "global")}
-                                                      :ttl-ms catchup-ttl))
-                                   (seq conventions)
-                                   (assoc :conventions (context-store/context-put!
-                                                        conventions
-                                                        :tags #{"catchup" "conventions" (or project-id "global")}
-                                                        :ttl-ms catchup-ttl))
-                                   (seq snippets)
-                                   (assoc :snippets (context-store/context-put!
-                                                     snippets
-                                                     :tags #{"catchup" "snippets" (or project-id "global")}
-                                                     :ttl-ms catchup-ttl)))]
+                      (let [refs (context-store/context-put-batch!
+                                  {:axioms                {:data axioms
+                                                           :tags #{"catchup" "axioms" scope-tag}
+                                                           :ttl-ms catchup-ttl}
+                                   :principles            {:data principles
+                                                           :tags #{"catchup" "principles" scope-tag}
+                                                           :ttl-ms catchup-ttl}
+                                   :priority-conventions  {:data priority-conventions
+                                                           :tags #{"catchup" "priority-conventions" scope-tag}
+                                                           :ttl-ms catchup-ttl}
+                                   :sessions              {:data sessions
+                                                           :tags #{"catchup" "sessions" scope-tag}
+                                                           :ttl-ms catchup-ttl}
+                                   :decisions             {:data decisions
+                                                           :tags #{"catchup" "decisions" scope-tag}
+                                                           :ttl-ms catchup-ttl}
+                                   :conventions           {:data conventions
+                                                           :tags #{"catchup" "conventions" scope-tag}
+                                                           :ttl-ms catchup-ttl}
+                                   :snippets              {:data snippets
+                                                           :tags #{"catchup" "snippets" scope-tag}
+                                                           :ttl-ms catchup-ttl}})]
                         (when (seq refs)
                           (log/info "catchup: stored" (count refs) "categories in context-store"
                                     {:refs (keys refs)}))

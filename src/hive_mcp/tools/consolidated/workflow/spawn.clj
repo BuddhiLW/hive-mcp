@@ -157,11 +157,29 @@
                      (cond-> {:agent-id agent-id :task-title title :task-id task-id
                               :spawned true :route route :model (or model "claude")}
                        (not= :claude route) (assoc :spawn-mode ready-mode)))))
-               (do
-                 (log/warn (str "SPARK[" (name route) "]: ling not ready, skipping dispatch")
-                           {:agent-id agent-id :elapsed-ms (:elapsed-ms ready) :phase (:phase ready)})
-                 (assoc base-result :agent-id agent-id
-                        :error (str "Readiness timeout (" (name (or (:phase ready) :unknown)) ")"))))))]
+               (if (:slave ready)
+                 (do
+                   (log/warn (str "SPARK[" (name route) "]: readiness timeout but slave exists — dispatching anyway")
+                             {:agent-id agent-id :elapsed-ms (:elapsed-ms ready) :phase (:phase ready)})
+                   (let [dispatch-result (dispatch-to-ling! {:agent-id agent-id :task task
+                                                             :effective-dir effective-dir})]
+                     (if-let [dispatch-err (:dispatch-error dispatch-result)]
+                       (do
+                         (log/warn (str "SPARK[" (name route) "]: best-effort dispatch failed")
+                                   {:agent agent-id :task title :error dispatch-err})
+                         (assoc base-result :agent-id agent-id :error dispatch-err))
+                       (do
+                         (log/info (str "SPARK[" (name route) "]: best-effort dispatch succeeded")
+                                   {:agent agent-id :task title})
+                         (cond-> {:agent-id agent-id :task-title title :task-id task-id
+                                  :spawned true :route route :model (or model "claude")
+                                  :best-effort true}
+                           (not= :claude route) (assoc :spawn-mode ready-mode))))))
+                 (do
+                   (log/warn (str "SPARK[" (name route) "]: ling not in DB, skipping dispatch")
+                             {:agent-id agent-id :elapsed-ms (:elapsed-ms ready) :phase (:phase ready)})
+                   (assoc base-result :agent-id agent-id
+                          :error (str "Readiness timeout (" (name (or (:phase ready) :unknown)) ")")))))))]
     (cond-> r
       (and (not (:spawned r)) (not (:error r)) (::result/error (meta r)))
       (assoc :error (get-in (meta r) [::result/error :message] "unknown")))))

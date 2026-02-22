@@ -88,7 +88,8 @@
           (swap! forge-state assoc :strike-in-progress? true)
           (future
             (try
-              (do-forge-strike-fsm params)
+              (let [result (forge-cycle/fsm-forge-strike* params forge-state)]
+                (swap! forge-state assoc :last-fsm-result result))
               (catch Exception e
                 (log/error e "forge-strike background execution failed"))
               (finally

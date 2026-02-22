@@ -1,8 +1,8 @@
 (ns hive-mcp.knowledge-graph.store.datahike
   "Datahike implementation of IKGStore protocol."
   (:require [datahike.api :as d]
+            [datahike.norm.norm :as norm]
             [hive-mcp.protocols.kg :as kg]
-            [hive-mcp.knowledge-graph.schema :as schema]
             [hive-mcp.dns.result :refer [rescue]]
             [clojure.java.io :as io]
             [taoensso.timbre :as log]))
@@ -13,28 +13,54 @@
 
 (def ^:private default-db-path "data/kg/datahike")
 
+(defn- make-writer-config
+  "Build the :writer section of Datahike config.
+   Supports :self (default local), :datahike-server (HTTP), and :kabel (WebSocket).
+
+   :datahike-server requires {:url \"http://...:4444\" :token \"...\"}
+   :kabel requires {:peer-id #uuid \"...\" :local-peer <peer-atom>}
+
+   See https://github.com/replikativ/datahike/blob/main/doc/distributed.md"
+  [writer-opts]
+  (case (get writer-opts :backend :self)
+    :self            {:backend :self}
+    :datahike-server {:backend :datahike-server
+                      :url (:url writer-opts)
+                      :token (:token writer-opts)}
+    :kabel           {:backend :kabel
+                      :peer-id (:peer-id writer-opts)
+                      :local-peer (:local-peer writer-opts)}
+    ;; Unknown writer backend — default to local
+    {:backend :self}))
+
 (defn- make-config
-  "Create Datahike configuration map."
-  [& [{:keys [db-path backend index id]
+  "Create Datahike configuration map.
+   Accepts optional :writer key for distributed write backends:
+     {:writer {:backend :datahike-server :url \"http://...\" :token \"...\"}}
+     {:writer {:backend :kabel :peer-id #uuid \"...\" :local-peer peer-atom}}"
+  [& [{:keys [db-path backend index id writer]
        :or {db-path default-db-path
             backend :file
             index :datahike.index/persistent-set}}]]
-  (let [store-id (or id (java.util.UUID/nameUUIDFromBytes (.getBytes "hive-mcp-kg")))]
-    (case backend
-      :file {:store {:backend :file
-                     :path db-path
-                     :id store-id}
-             :schema-flexibility :read
-             :index index}
-      (:mem :memory) {:store {:backend :memory
-                              :id store-id}
-                      :schema-flexibility :read
-                      :index index}
-      {:store {:backend :file
-               :path db-path
-               :id store-id}
-       :schema-flexibility :read
-       :index index})))
+  (let [store-id (or id (java.util.UUID/nameUUIDFromBytes (.getBytes "hive-mcp-kg")))
+        store-cfg (case backend
+                    :file {:store {:backend :file
+                                   :path db-path
+                                   :id store-id}
+                           :schema-flexibility :read
+                           :index index}
+                    (:mem :memory) {:store {:backend :memory
+                                            :id store-id}
+                                    :schema-flexibility :read
+                                    :index index}
+                    {:store {:backend :file
+                             :path db-path
+                             :id store-id}
+                     :schema-flexibility :read
+                     :index index})
+        writer-cfg (when writer (make-writer-config writer))]
+    (cond-> store-cfg
+      writer-cfg (assoc :writer writer-cfg))))
 
 (defn- validate-config!
   "Validate Datahike configuration and create directories if needed."
@@ -62,16 +88,17 @@
     (when (nil? @conn-atom)
       (log/info "Initializing Datahike KG store" {:cfg cfg})
       (validate-config! cfg)
-      (let [dh-schema (schema/full-schema)]
-        (log/debug "Datahike schema" {:attributes (count dh-schema)})
-        (when-not (d/database-exists? cfg)
-          (when (= :file (get-in cfg [:store :backend]))
-            (let [dir (io/file (get-in cfg [:store :path]))]
-              (when (and (.exists dir) (empty? (.listFiles dir)))
-                (.delete dir))))
-          (log/info "Creating new Datahike database" {:cfg cfg})
-          (d/create-database cfg))
-        (reset! conn-atom (d/connect cfg))))
+      (when-not (d/database-exists? cfg)
+        (when (= :file (get-in cfg [:store :backend]))
+          (let [dir (io/file (get-in cfg [:store :path]))]
+            (when (and (.exists dir) (empty? (.listFiles dir)))
+              (.delete dir))))
+        (log/info "Creating new Datahike database" {:cfg cfg})
+        (d/create-database cfg))
+      (let [conn (d/connect cfg)]
+        (log/info "Applying KG norms" {:path "hive_mcp/norms/kg"})
+        (norm/ensure-norms! conn (io/resource "hive_mcp/norms/kg"))
+        (reset! conn-atom conn)))
     @conn-atom)
 
   (transact! [this tx-data]

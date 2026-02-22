@@ -37,7 +37,8 @@
               :olympus {:mode :local :ws-port 7911}
               :overarch {:mode :local :jar nil}
               :presets {:mode :local :dir nil}
-              :kg {:mode :local :backend :datalevin}
+              :kg {:mode :local :backend :datalevin
+                   :writer {:backend :self}}
               :project {:mode :local :id nil :dir nil :src-dirs ["src"]}
               :forge {:mode :local :legacy false :budget-routing false
                       ;; Max ms to wait for a ling to register in DataScript + pass CLI

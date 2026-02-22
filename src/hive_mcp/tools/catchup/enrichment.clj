@@ -135,15 +135,15 @@
       result)))
 
 (defn find-co-accessed-suggestions
-  "Find memory entries frequently co-accessed with the given entries."
+  "Find memory entries frequently co-accessed with the given entries.
+   Uses batch KG query (2 queries total) instead of 2*N individual queries."
   [entry-ids exclude-ids]
   (when (seq entry-ids)
     (try
       (let [excluded (set exclude-ids)
-            co-accessed (->> entry-ids
-                             (pmap (fn [eid]
-                                     (try (kg-edges/get-co-accessed eid)
-                                          (catch Exception _ []))))
+            ;; Single batch call: 2 queries instead of 2*N
+            co-accessed-map (kg-edges/batch-get-co-accessed entry-ids)
+            co-accessed (->> (vals co-accessed-map)
                              (apply concat)
                              (remove #(contains? excluded (:entry-id %)))
                              (group-by :entry-id)
@@ -204,13 +204,27 @@
       entry)))
 
 (defn enrich-entries-with-kg
-  "Enrich a collection of entries with KG context."
+  "Enrich a collection of entries with KG context.
+   Uses batch KG query (2 queries total) instead of 2*N individual queries."
   [entries]
   (try
-    (let [enriched (vec (pmap enrich-entry-with-kg entries))
+    (let [;; Collect all entry IDs, batch-fetch all contexts in 2 queries
+          entry-ids (keep :id entries)
+          contexts-map (kg-queries/batch-get-node-contexts entry-ids)
+          ;; Map over entries, looking up pre-fetched context
+          enriched (mapv (fn [entry]
+                           (if-let [entry-id (:id entry)]
+                             (if-let [context (get contexts-map entry-id)]
+                               (let [relations (extract-kg-relations context)]
+                                 (if (seq relations)
+                                   (assoc entry :kg relations)
+                                   entry))
+                               entry)
+                             entry))
+                         entries)
           kg-count (count (filter :kg enriched))]
       (when (pos? kg-count)
-        (log/debug "Enriched" kg-count "entries with KG context"))
+        (log/debug "Enriched" kg-count "entries with KG context (batch)"))
       {:entries enriched
        :kg-count kg-count})
     (catch Exception e
@@ -220,10 +234,13 @@
        :warnings [(.getMessage e)]})))
 
 (defn gather-kg-insights
-  "Gather high-level KG insights for the catchup summary."
-  [decisions-meta conventions-meta sessions-meta project-id]
+  "Gather high-level KG insights for the catchup summary.
+   Accepts optional pre-computed kg-stats and stale-files to avoid redundant work
+   when these are computed in parallel by the caller (Wave 3)."
+  [decisions-meta conventions-meta sessions-meta project-id
+   & [{:keys [pre-kg-stats pre-stale-files]}]]
   (try
-    (let [kg-stats (kg-edges/edge-stats)
+    (let [kg-stats (or pre-kg-stats (kg-edges/edge-stats))
           edge-count (:total-edges kg-stats)
           by-relation (:by-relation kg-stats)
 
@@ -237,12 +254,13 @@
                                                          {:max-age-days 7
                                                           :limit 20
                                                           :timeout-ms 5000}))
-          f-stale-files (future
-                          (try
-                            (kg-disc/top-stale-files :n 10 :project-id project-id :threshold 0.5)
-                            (catch Exception e
-                              (log/debug "KG insights stale-files query failed:" (.getMessage e))
-                              [])))
+          f-stale-files (when-not pre-stale-files
+                          (future
+                            (try
+                              (kg-disc/top-stale-files :n 10 :project-id project-id :threshold 0.5)
+                              (catch Exception e
+                                (log/debug "KG insights stale-files query failed:" (.getMessage e))
+                                []))))
           related-from-sessions (deref f-sessions-related 10000 [])
           related-decisions (deref f-decisions-related 10000 [])
           grounding-check (deref f-grounding 10000 {:stale-count 0})
@@ -259,7 +277,8 @@
                                       (seq (get-in % [:kg :depended-by]))))
                          (count))
 
-          stale-files (deref f-stale-files 10000 [])]
+          stale-files (or pre-stale-files
+                         (deref f-stale-files 10000 []))]
 
       (cond-> {:edge-count edge-count}
         (seq by-relation) (assoc :by-relation by-relation)

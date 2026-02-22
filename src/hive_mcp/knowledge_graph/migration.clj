@@ -93,16 +93,28 @@
   (dissoc entity :db/id))
 
 (defn- import-entities!
-  "Import a batch of entities with error tracking. Uses r/guard per entity."
+  "Import entities in batches for performance.
+   Partitions into chunks of batch-size (default 500), transacts each batch.
+   On batch failure, falls back to per-entity import for that batch."
   [entities entity-type transact-fn! imported errors]
-  (doseq [entity entities]
-    (let [v (r/guard Exception nil
-                     (transact-fn! [(clean-entity-for-import entity)])
-                     :ok)]
-      (if (= :ok v)
-        (swap! imported update entity-type inc)
-        (swap! errors conj {:type entity-type :entity entity
-                            :error (some-> (meta v) ::r/error :message)})))))
+  (let [batch-size 500
+        cleaned (mapv clean-entity-for-import entities)
+        batches (partition-all batch-size cleaned)]
+    (doseq [batch batches]
+      (let [v (r/guard Exception nil
+                       (transact-fn! (vec batch))
+                       :ok)]
+        (if (= :ok v)
+          (swap! imported update entity-type + (count batch))
+          ;; Batch failed — fall back to per-entity for granular error tracking
+          (doseq [entity batch]
+            (let [v2 (r/guard Exception nil
+                              (transact-fn! [entity])
+                              :ok)]
+              (if (= :ok v2)
+                (swap! imported update entity-type inc)
+                (swap! errors conj {:type entity-type :entity entity
+                                    :error (some-> (meta v2) ::r/error :message)})))))))))
 
 (defn import-from-edn
   "Import KG data from an EDN map into the current store.

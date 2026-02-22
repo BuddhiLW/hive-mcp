@@ -90,6 +90,7 @@
 
     ;; Phase 4: Services (embedding, memory store, tool delegation)
     (init/init-embedding-provider!)
+    (init/warmup-embedding!)
     (init/wire-memory-store!)
     (routes/register-tools-for-delegation!)
 
