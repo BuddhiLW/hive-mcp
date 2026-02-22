@@ -86,19 +86,20 @@
 
   (ensure-conn! [_this]
     (when (nil? @conn-atom)
-      (log/info "Initializing Datahike KG store" {:cfg cfg})
-      (validate-config! cfg)
-      (when-not (d/database-exists? cfg)
-        (when (= :file (get-in cfg [:store :backend]))
-          (let [dir (io/file (get-in cfg [:store :path]))]
-            (when (and (.exists dir) (empty? (.listFiles dir)))
-              (.delete dir))))
-        (log/info "Creating new Datahike database" {:cfg cfg})
-        (d/create-database cfg))
-      (let [conn (d/connect cfg)]
-        (log/info "Applying KG norms" {:path "hive_mcp/norms/kg"})
-        (norm/ensure-norms! conn (io/resource "hive_mcp/norms/kg"))
-        (reset! conn-atom conn)))
+      (rescue nil
+              (log/info "Initializing Datahike KG store" {:cfg cfg})
+              (validate-config! cfg)
+              (when-not (d/database-exists? cfg)
+                (when (= :file (get-in cfg [:store :backend]))
+                  (let [dir (io/file (get-in cfg [:store :path]))]
+                    (when (and (.exists dir) (empty? (.listFiles dir)))
+                      (.delete dir))))
+                (log/info "Creating new Datahike database" {:cfg cfg})
+                (d/create-database cfg))
+              (let [conn (d/connect cfg)]
+                (log/info "Applying KG norms" {:path "hive_mcp/norms/kg"})
+                (norm/ensure-norms! conn (io/resource "hive_mcp/norms/kg"))
+                (reset! conn-atom conn))))
     @conn-atom)
 
   (transact! [this tx-data]
