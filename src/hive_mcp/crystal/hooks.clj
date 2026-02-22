@@ -445,7 +445,7 @@
 ;; Lifecycle Operations — delegates to extensions
 ;; =============================================================================
 
-(def ^:private ^:const op-timeout 15000)
+(def ^:private ^:const op-timeout 5000)
 
 (defn- timed-deref [fut default]
   (try
