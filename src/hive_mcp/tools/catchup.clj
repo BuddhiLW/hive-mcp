@@ -8,7 +8,6 @@
    - catchup.scope     — scope-filtered Chroma queries, project context
    - catchup.format    — entry metadata transforms, response builders
    - catchup.git       — git status via Emacs
-   - catchup.enrichment — KG enrichment, grounding, co-access
    - catchup.spawn     — spawn-time context injection (dual-mode)
    - catchup.permeation — auto-permeation of ling wraps
 
@@ -17,19 +16,14 @@
    - handle-native-wrap     — wrap/crystallize handler
    - spawn-context          — re-export from catchup.spawn"
   (:require [hive-mcp.chroma.core :as chroma]
-            [hive-mcp.crystal.hooks :as crystal-hooks]
             [hive-mcp.tools.memory.scope :as scope]
             [hive-mcp.tools.catchup.scope :as catchup-scope]
             [hive-mcp.tools.catchup.format :as fmt]
             [hive-mcp.tools.catchup.git :as catchup-git]
-            [hive-mcp.tools.catchup.enrichment :as enrichment]
             [hive-mcp.tools.catchup.spawn :as catchup-spawn]
-            [hive-mcp.tools.catchup.permeation :as permeation]
             [hive-mcp.channel.memory-piggyback :as memory-piggyback]
             [hive-mcp.channel.context-store :as context-store]
-            [hive-mcp.knowledge-graph.edges :as kg-edges]
-            [hive-mcp.knowledge-graph.disc :as disc]
-            [hive-mcp.project.tree :as project-tree]
+            [hive-mcp.extensions.registry :as ext]
             [hive-mcp.dns.result :refer [rescue]]
             [clojure.data.json :as json]
             [taoensso.timbre :as log]))
@@ -46,12 +40,6 @@
    Delegates to catchup.spawn/spawn-context. See that ns for full docs."
   ([directory] (catchup-spawn/spawn-context directory))
   ([directory opts] (catchup-spawn/spawn-context directory opts)))
-
-(defn check-grounding-freshness
-  "Check grounding freshness of top project entries.
-   Delegates to catchup.enrichment/check-grounding-freshness."
-  [project-id & [opts]]
-  (enrichment/check-grounding-freshness project-id opts))
 
 ;; =============================================================================
 ;; Parallel Execution Helpers
@@ -117,9 +105,12 @@
               git-info             (safe-deref f-git query-timeout-ms {})
 
               ;; ── Wave 2: Dependent query (needs axiom + priority IDs) ──
-              conventions (catchup-scope/query-regular-conventions project-id
-                                                                   (set (map :id axioms))
-                                                                   (set (map :id priority-conventions)))
+              conventions (safe-deref
+                           (future (catchup-scope/query-regular-conventions
+                                    project-id
+                                    (set (map :id axioms))
+                                    (set (map :id priority-conventions))))
+                           query-timeout-ms [])
 
               ;; Convert to metadata (pure, fast)
               axioms-meta (mapv fmt/entry->axiom-meta axioms)
@@ -131,67 +122,24 @@
               snippets-meta (mapv #(fmt/entry->catchup-meta % 60) snippets)
               expiring-meta (mapv #(fmt/entry->catchup-meta % 80) expiring)
 
-              ;; ── Wave 3: Fire enrichment + KG pre-fetch + side effects in parallel ──
-              ;; KG stats and stale-files are independent of enrichment results,
-              ;; so we fire them here alongside enrichment instead of sequentially after.
-              f-decisions-kg   (future (:entries (enrichment/enrich-entries-with-kg decisions-base)))
-              f-conventions-kg (future (:entries (enrichment/enrich-entries-with-kg conventions-base)))
-              f-permeation     (future (permeation/auto-permeate-wraps directory))
-              f-project-tree   (future
-                                 (try (project-tree/maybe-scan-project-tree! (or directory "."))
-                                      (catch Exception e
-                                        (log/debug "Project tree scan failed (non-fatal):" (.getMessage e))
-                                        {:scanned false :error (.getMessage e)})))
-              f-disc-decay     (future
-                                 (try (disc/apply-time-decay-to-all-discs! :project-id project-id)
-                                      (catch Exception e
-                                        (log/debug "Disc time-decay failed (non-fatal):" (.getMessage e))
-                                        {:updated 0 :skipped 0 :errors 1 :error (.getMessage e)})))
-              ;; Pre-fetch KG stats + stale-files in parallel with enrichment (Wave 3)
-              ;; These do NOT depend on enriched entries — they query global KG state.
-              f-kg-stats       (future
-                                 (try (kg-edges/edge-stats)
-                                      (catch Exception e
-                                        (log/debug "KG stats query failed (non-fatal):" (.getMessage e))
-                                        {:total-edges 0})))
-              f-stale-files    (future
-                                 (try (disc/top-stale-files :n 10 :project-id project-id :threshold 0.5)
-                                      (catch Exception e
-                                        (log/debug "KG stale-files query failed (non-fatal):" (.getMessage e))
-                                        [])))
-
-              ;; ── Wave 3: Collect enrichment results ──
-              decisions-enriched   (safe-deref f-decisions-kg query-timeout-ms decisions-base)
-              conventions-enriched (safe-deref f-conventions-kg query-timeout-ms conventions-base)
-
-              ;; Collect pre-fetched KG data
-              kg-stats    (safe-deref f-kg-stats query-timeout-ms {:total-edges 0})
-              stale-files (safe-deref f-stale-files query-timeout-ms [])
-
-              ;; ── Wave 4: KG insights (depends on enriched results + pre-fetched data) ──
-              ;; Pass pre-computed kg-stats and stale-files to avoid redundant queries
-              kg-insights (enrichment/gather-kg-insights decisions-enriched conventions-enriched
-                                                         sessions-meta project-id
-                                                         {:pre-kg-stats kg-stats
-                                                          :pre-stale-files stale-files})
-
-              ;; Co-access suggestions (batch query: 2 queries instead of 2*N)
-              all-entry-ids (mapv :id (concat axioms principles priority-conventions
-                                              decisions conventions sessions))
-              co-access-suggestions (enrichment/find-co-accessed-suggestions
-                                     all-entry-ids all-entry-ids)
-              kg-insights (if (seq co-access-suggestions)
-                            (assoc kg-insights :co-access-suggestions co-access-suggestions)
-                            kg-insights)
-
-              ;; ── Collect side effects ──
-              permeation-result (safe-deref f-permeation query-timeout-ms nil)
-              project-tree-scan (safe-deref f-project-tree query-timeout-ms {:scanned false})
-              disc-decay-stats  (safe-deref f-disc-decay query-timeout-ms {:updated 0 :skipped 0 :errors 0})
-              _ (when (pos? (:updated disc-decay-stats 0))
-                  (log/info "catchup: disc time-decay applied"
-                            {:updated (:updated disc-decay-stats)
-                             :errors (:errors disc-decay-stats)}))
+              ;; Addon extension (optional)
+              enrich-fn (ext/get-extension :cu/a)
+              enriched (when enrich-fn
+                         (safe-deref
+                          (future (enrich-fn {:directory directory
+                                              :project-id project-id
+                                              :decisions decisions-base
+                                              :conventions conventions-base
+                                              :sessions sessions-meta
+                                              :axioms axioms
+                                              :principles principles
+                                              :priority-conventions priority-conventions}))
+                          query-timeout-ms nil))
+              decisions-enriched   (or (:decisions enriched) decisions-base)
+              conventions-enriched (or (:conventions enriched) conventions-base)
+              kg-insights          (or (:kg-insights enriched) {})
+              permeation-result    (:permeation enriched)
+              project-tree-scan    (or (:project-tree enriched) {:scanned false})
 
               ;; Memory piggyback: enqueue axioms + priority conventions for
               ;; incremental delivery via ---MEMORY--- blocks on subsequent calls.
@@ -266,25 +214,29 @@
 
 (defn handle-native-wrap
   "Native Clojure wrap implementation that persists to Chroma directly.
-   Uses crystal hooks for harvesting and crystallization."
+   Delegates to :catchup/wrap extension (provided by hive-knowledge)
+   for harvesting and crystallization."
   [args]
   (let [directory (:directory args)
         agent-id (:agent_id args)]
     (log/info "native-wrap: crystallizing to Chroma" {:directory directory :agent-id agent-id})
     (if-not (chroma/embedding-configured?)
       (fmt/chroma-not-configured-error)
-      (try
-        (let [harvested (crystal-hooks/harvest-all {:directory directory})
-              result (crystal-hooks/crystallize-session harvested)
-              project-id (scope/get-current-project-id directory)]
-          (if (:error result)
+      (if-let [wrap-fn (ext/get-extension :catchup/wrap)]
+        (try
+          (let [result (wrap-fn {:directory directory :agent-id agent-id})
+                project-id (scope/get-current-project-id directory)]
+            (if (:error result)
+              {:type "text"
+               :text (json/write-str {:error (:error result) :session (:session result)})
+               :isError true}
+              {:type "text"
+               :text (json/write-str (assoc result :project-id project-id))}))
+          (catch Exception e
+            (log/error e "native-wrap failed")
             {:type "text"
-             :text (json/write-str {:error (:error result) :session (:session result)})
-             :isError true}
-            {:type "text"
-             :text (json/write-str (assoc result :project-id project-id))}))
-        (catch Exception e
-          (log/error e "native-wrap failed")
-          {:type "text"
-           :text (json/write-str {:error (.getMessage e)})
-           :isError true})))))
+             :text (json/write-str {:error (.getMessage e)})
+             :isError true}))
+        {:type "text"
+         :text (json/write-str {:error "Wrap extension not registered. Load hive-knowledge addon."})
+         :isError true}))))

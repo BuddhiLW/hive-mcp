@@ -20,6 +20,7 @@
             [hive-mcp.chroma.core :as chroma]
             [hive-mcp.dns.result :as result]
             [clojure.data.json :as json]
+            [clojure.java.shell :refer [sh]]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -235,6 +236,101 @@
                                  :fn "harvest-git-commits"
                                  :msg error}}))))))
 
+;; =============================================================================
+;; Direct Harvest Functions (bypass Emacs — JVM-native)
+;; =============================================================================
+;; These eliminate the Emacs single-threaded serialization bottleneck.
+;; Old Emacs-based versions are kept for on-kanban-done and fallback.
+
+(defn- harvest-progress-direct
+  "Harvest progress notes directly from Chroma (no Emacs roundtrip).
+   Queries ephemeral notes for the project, filtered client-side by duration."
+  [{:keys [directory]}]
+  (result/rescue {:notes [] :count 0}
+                 (let [dir (or directory (ctx/current-directory))
+                       project-id (when dir (scope/get-current-project-id dir))
+                       t0 (System/currentTimeMillis)
+          ;; Query Chroma directly — metadata-only, no embedding computation
+                       raw (chroma/query-entries :type "note"
+                                                 :project-id (or project-id "global")
+                                                 :limit 100)
+          ;; Filter to ephemeral duration (progress notes)
+                       notes (->> raw
+                                  (filter #(= "ephemeral" (:duration %)))
+                                  (take 50)
+                                  vec)
+                       ms (- (System/currentTimeMillis) t0)]
+                   (log/info "harvest-progress-direct:" (count notes) "notes in" ms "ms"
+                             "(from" (count raw) "total entries)")
+                   {:notes notes
+                    :count (count notes)
+                    :project-id project-id})))
+
+(defn- harvest-tasks-direct
+  "Harvest completed tasks directly from DataScript + Chroma (no Emacs roundtrip).
+   DataScript has in-session tasks; Chroma has kanban-tagged notes."
+  [{:keys [directory]}]
+  (result/rescue {:tasks [] :count 0 :ds-count 0 :chroma-count 0}
+                 (let [dir (or directory (ctx/current-directory))
+                       project-id (when dir (scope/get-current-project-id dir))
+                       t0 (System/currentTimeMillis)
+          ;; DataScript registry (in-process, instant)
+                       ds-tasks (result/rescue []
+                                               (->> (ds/get-completed-tasks-this-session
+                                                     :project-id project-id)
+                                                    (mapv (fn [t]
+                                                            {:id (:completed-task/id t)
+                                                             :title (:completed-task/title t)
+                                                             :completed-at (:completed-task/completed-at t)
+                                                             :agent-id (:completed-task/agent-id t)
+                                                             :source :datascript}))))
+          ;; Chroma query for kanban-tagged notes (replaces Emacs memory query)
+                       chroma-tasks (result/rescue []
+                                                   (let [entries (chroma/query-entries :type "note"
+                                                                                       :tags ["kanban"]
+                                                                                       :project-id (or project-id "global")
+                                                                                       :limit 50)]
+                                                     (->> entries
+                                                          (filter map?)
+                                                          (mapv #(assoc % :source :chroma)))))
+                       all-tasks (concat ds-tasks chroma-tasks)
+                       ms (- (System/currentTimeMillis) t0)]
+                   (log/info "harvest-tasks-direct:" (count all-tasks) "tasks in" ms "ms"
+                             "(ds:" (count ds-tasks) "chroma:" (count chroma-tasks) ")")
+                   {:tasks all-tasks
+                    :count (count all-tasks)
+                    :ds-count (count ds-tasks)
+                    :chroma-count (count chroma-tasks)
+                    :project-id project-id})))
+
+(defn- harvest-commits-direct
+  "Harvest git commits directly via JVM subprocess (no Emacs roundtrip).
+   Uses clojure.java.shell/sh instead of emacsclient eval."
+  [{:keys [directory agent-id]}]
+  (result/rescue {:commits [] :count 0}
+                 (let [dir (or directory (ctx/current-directory))
+                       since (if-let [start (crystal/get-session-start (or agent-id (ctx/current-agent-id)))]
+                               (.toString start)
+                               "midnight")
+                       t0 (System/currentTimeMillis)
+                       {:keys [exit out err]} (sh "git" "log"
+                                                  (str "--since=" since)
+                                                  "--oneline"
+                                                  :dir (or dir "."))
+                       ms (- (System/currentTimeMillis) t0)]
+                   (if (zero? exit)
+                     (let [commits (when (and out (not (str/blank? out)))
+                                     (str/split-lines (str/trim out)))]
+                       (log/info "harvest-commits-direct:" (count (or commits [])) "commits in" ms "ms")
+                       {:commits (or commits [])
+                        :count (count (or commits []))
+                        :directory dir})
+                     (do
+                       (log/warn "harvest-commits-direct: git failed exit=" exit "err=" err "in" ms "ms")
+                       {:commits []
+                        :count 0
+                        :error {:type :git-failed :exit exit :err err}})))))
+
 (defn harvest-all
   "Harvest all session data for wrap crystallization.
    Returns map with :progress-notes, :completed-tasks, :git-commits, :recalls,
@@ -264,10 +360,22 @@
                   (let [dir (or directory (ctx/current-directory))
                         effective-agent (or agent-id (ctx/current-agent-id))
                         project-id (when dir (scope/get-current-project-id dir))
-                        progress (harvest-session-progress {:directory dir})
-                        tasks (harvest-completed-tasks {:directory dir})
-                        commits (harvest-git-commits {:directory dir :agent-id effective-agent})
-                        recalls (result/rescue {} (recall/get-buffered-recalls))
+                        t0 (System/currentTimeMillis)
+                        ;; Fire all 3 harvests in parallel using DIRECT functions
+                        ;; (bypass Emacs serialization — JVM-native Chroma + git)
+                        f-progress (future (harvest-progress-direct {:directory dir}))
+                        f-tasks    (future (harvest-tasks-direct {:directory dir}))
+                        f-commits  (future (harvest-commits-direct {:directory dir :agent-id effective-agent}))
+                        f-recalls  (future (result/rescue {} (recall/get-buffered-recalls)))
+                        ;; Collect with 10s timeout (direct calls: Chroma ~200ms, git ~100ms)
+                        harvest-timeout 10000
+                        progress (deref f-progress harvest-timeout {:notes [] :count 0 :error {:type :harvest-timeout :fn "harvest-session-progress"}})
+                        tasks    (deref f-tasks harvest-timeout {:tasks [] :count 0 :error {:type :harvest-timeout :fn "harvest-completed-tasks"}})
+                        commits  (deref f-commits harvest-timeout {:commits [] :count 0 :error {:type :harvest-timeout :fn "harvest-git-commits"}})
+                        recalls  (deref f-recalls harvest-timeout {})
+                        _ (log/info "harvest-all: parallel collection" (- (System/currentTimeMillis) t0) "ms"
+                                    "progress:" (:count progress) "tasks:" (:count tasks)
+                                    "commits:" (:count commits) "recalls:" (count recalls))
                         session-timing (result/rescue
                                         {:session-start nil :session-end nil :duration-minutes 0}
                                         (crystal/session-timing-metadata
@@ -275,6 +383,9 @@
                                          (java.time.Instant/now)))
            ;; Flush created IDs (project-scoped, destructive read)
                         memory-ids-created (result/rescue [] (recall/flush-created-ids! project-id))
+                        _ (log/info "harvest-all: flushed" (count memory-ids-created)
+                                    "created-ids for project-id" project-id
+                                    "ids:" (mapv :id memory-ids-created))
            ;; Auto-KG: memory IDs accessed this session (from recall buffer keys)
                         memory-ids-accessed (vec (keys recalls))
            ;; Aggregate errors from sub-harvests
@@ -324,59 +435,48 @@
     (assoc m :error (:message err))
     m))
 
-(def ^:private empty-promotion-stats
-  {:promoted 0 :skipped 0 :below 0 :evaluated 0})
-
-(def ^:private empty-decay-stats
-  {:decayed 0 :pruned 0 :fresh 0 :evaluated 0})
-
-(def ^:private empty-xpoll-stats
-  {:promoted 0 :candidates 0 :total-scanned 0})
-
-(def ^:private empty-memory-decay-stats
-  {:decayed 0 :expired 0 :total-scanned 0})
-
-(def ^:private empty-file-provenance-stats
-  {:files-captured 0})
+(def ^:private noop-a {:promoted 0 :skipped 0 :below 0 :evaluated 0})
+(def ^:private noop-b {:decayed 0 :pruned 0 :fresh 0 :evaluated 0})
+(def ^:private noop-c {:promoted 0 :candidates 0 :total-scanned 0})
+(def ^:private noop-d {:decayed 0 :expired 0 :total-scanned 0})
+(def ^:private noop-e {:files-captured 0})
 
 ;; =============================================================================
 ;; Lifecycle Operations — delegates to extensions
 ;; =============================================================================
 
-(defn- run-lifecycle-ops!
-  "Run post-crystallization lifecycle operations. Delegates to extensions.
-   All non-blocking. Returns map with :promotion-stats :decay-stats
-   :xpoll-stats :memory-decay-stats :file-provenance-stats.
+(def ^:private ^:const op-timeout 15000)
 
-   Optional harvested map is passed through to :ch/e for provenance capture."
+(defn- timed-deref [fut default]
+  (try
+    (let [r (deref fut op-timeout ::timeout)]
+      (if (= r ::timeout)
+        (do (future-cancel fut) (assoc default :error "timed-out"))
+        r))
+    (catch Exception e (assoc default :error (.getMessage e)))))
+
+(defn- run-lifecycle-ops!
+  "Run post-crystallization lifecycle operations in parallel with timeout guard.
+   Optional harvested map is passed through to :ch/e."
   [project-id directory & {:keys [harvested]}]
-  (let [promo   (surface-rescue-error
-                 (result/rescue empty-promotion-stats
-                                (delegate-or-noop :ch/a empty-promotion-stats
-                                                  [{:scope project-id :created-by "crystallize-session"}])))
-        decay   (surface-rescue-error
-                 (result/rescue empty-decay-stats
-                                (delegate-or-noop :ch/b empty-decay-stats
-                                                  [{:scope project-id :created-by "crystallize-session"}])))
-        xpoll   (surface-rescue-error
-                 (result/rescue empty-xpoll-stats
-                                (delegate-or-noop :ch/c empty-xpoll-stats
-                                                  [{:directory directory :limit 100}])))
-        mdecay  (surface-rescue-error
-                 (result/rescue empty-memory-decay-stats
-                                (delegate-or-noop :ch/d empty-memory-decay-stats
-                                                  [{:directory directory :limit 50}])))
-        fprov   (surface-rescue-error
-                 (result/rescue empty-file-provenance-stats
-                                (delegate-or-noop :ch/e empty-file-provenance-stats
-                                                  [{:directory directory
-                                                    :project-id project-id
-                                                    :harvested harvested}])))]
-    {:promotion-stats       (select-keys promo  [:promoted :skipped :below :evaluated :error])
-     :decay-stats           (select-keys decay  [:decayed :pruned :fresh :evaluated :error])
-     :xpoll-stats           (select-keys xpoll  [:promoted :candidates :total-scanned :error])
-     :memory-decay-stats    (select-keys mdecay [:decayed :expired :total-scanned :error])
-     :file-provenance-stats (select-keys fprov  [:files-captured :files-skipped :edges-created :error])}))
+  (let [scope-arg [{:scope project-id :created-by "crystallize-session"}]
+        run (fn [k noop args]
+              (future (surface-rescue-error
+                       (result/rescue noop (delegate-or-noop k noop args)))))
+        fa (run :ch/a noop-a scope-arg)
+        fb (run :ch/b noop-b scope-arg)
+        fc (run :ch/c noop-c [{:directory directory :limit 100}])
+        fd (run :ch/d noop-d [{:directory directory :limit 50}])
+        fe (run :ch/e noop-e [{:directory directory
+                               :project-id project-id
+                               :harvested harvested}])
+        [ra rb rc rd re] (mapv timed-deref [fa fb fc fd fe]
+                               [noop-a noop-b noop-c noop-d noop-e])]
+    {:promotion-stats (select-keys ra [:promoted :skipped :below :evaluated :error])
+     :decay-stats (select-keys rb [:decayed :pruned :fresh :evaluated :error])
+     :xpoll-stats (select-keys rc [:promoted :candidates :total-scanned :error])
+     :memory-decay-stats (select-keys rd [:decayed :expired :total-scanned :error])
+     :file-provenance-stats (select-keys re [:files-captured :files-skipped :edges-created :error])}))
 
 ;; =============================================================================
 ;; Temporal Block Formatting (Step-5: Auto-KG wrap metadata)
@@ -429,12 +529,16 @@
                 :session-timing session-timing
                 :stats (:summary harvested)}
                lifecycle))
-      ;; Content exists — store summary with temporal block then run lifecycle ops
+      ;; Content exists — start lifecycle IN PARALLEL with Chroma indexing
+      ;; (lifecycle ops don't depend on the Chroma entry-id)
       (let [temporal-block (format-temporal-block session-timing harvested)
             content (str (:content summary) temporal-block)
             base-tags (into (or (:tags summary) []) ["auto-kg" "session-wrap" "temporal"])
             tags (scope/inject-project-scope base-tags project-id)
             expires (dur/calculate-expires "short")
+            ;; Start lifecycle ops NOW — they run concurrently with embedding
+            lifecycle-fut (future (run-lifecycle-ops! project-id directory :harvested harvested))
+            t0 (System/currentTimeMillis)
             store-r (result/try-effect* :crystal/store-failed
                                         (chroma/index-memory-entry!
                                          {:type "note"
@@ -443,10 +547,16 @@
                                           :duration "short"
                                           :expires (or expires "")
                                           :project-id project-id
-                                          :content-hash (chroma/content-hash content)}))]
+                                          :content-hash (chroma/content-hash content)}))
+            chroma-ms (- (System/currentTimeMillis) t0)
+            ;; Collect lifecycle results (likely already done — they ran during embedding)
+            ;; Use full op-timeout: lifecycle started before chroma, so it's been running
+            ;; for chroma-ms already. If not done after op-timeout total, give up.
+            lifecycle (deref lifecycle-fut op-timeout
+                             {:error "lifecycle-timeout"})]
+        (log/info "crystallize-session: chroma" chroma-ms "ms, lifecycle overlapped")
         (if (result/ok? store-r)
-          (let [entry-id (:ok store-r)
-                lifecycle (run-lifecycle-ops! project-id directory :harvested harvested)]
+          (let [entry-id (:ok store-r)]
             (log/info "Created session summary in Chroma:" entry-id "project:" project-id)
             (merge {:summary-id entry-id
                     :session (crystal/session-id)

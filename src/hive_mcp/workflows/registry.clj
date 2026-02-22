@@ -370,8 +370,8 @@
      :start          -> handle-start
      :scope-resolve  -> handle-scope-resolve
      :query-memory   -> handle-query-memory
-     :gather-context -> handle-gather-context
-     :enrich-kg      -> handle-enrich-kg
+     :transform      -> handle-transform
+     :addon-pass     -> handle-addon-pass
      :maintenance    -> handle-maintenance
      :deliver        -> handle-deliver
      :end            -> handle-end
@@ -384,8 +384,8 @@
      {:start          (ns-resolve ns' 'handle-start)
       :scope-resolve  (ns-resolve ns' 'handle-scope-resolve)
       :query-memory   (ns-resolve ns' 'handle-query-memory)
-      :gather-context (ns-resolve ns' 'handle-gather-context)
-      :enrich-kg      (ns-resolve ns' 'handle-enrich-kg)
+      :transform      (ns-resolve ns' 'handle-transform)
+      :addon-pass     (ns-resolve ns' 'handle-addon-pass)
       :maintenance    (ns-resolve ns' 'handle-maintenance)
       :deliver        (ns-resolve ns' 'handle-deliver)
       :end            (ns-resolve ns' 'handle-end)

@@ -2,8 +2,8 @@
   "hive-events FSM handlers for the Catchup workflow.
 
    The catchup workflow restores session context from Chroma memory,
-   enriches it with KG relationships, runs maintenance tasks, and
-   delivers entries via piggyback + context-store for pass-by-reference.
+   runs optional addon hooks, maintenance tasks, and delivers entries
+   via piggyback + context-store for pass-by-reference.
 
    This is the Clojure handler implementation matching resources/fsm/catchup.edn.
    The EDN spec uses keyword handlers (:start, :scope-resolve, :query-memory, etc.)
@@ -25,9 +25,7 @@
      :query-expiring-fn    -- (project-id, limit) -> entries
      :git-fn               -- (directory) -> git-info
      :entry->meta-fns      -- {:axiom fn, :priority fn, :catchup fn}
-     :kg-enrich-fn         -- (entries) -> {:entries [...] :kg-count N}
-     :kg-insights-fn       -- (decisions, conventions, sessions, project-id) -> map
-     :co-access-fn         -- (entry-ids, exclude-ids) -> suggestions
+     :addon-fn             -- optional, addon-provided
      :permeate-fn          -- (directory) -> {:permeated N :agents [...]}
      :tree-scan-fn         -- (directory) -> scan-result
      :disc-decay-fn        -- (project-id) -> decay-stats
@@ -60,13 +58,13 @@
       :axioms-meta          vector
       :priority-meta        vector
       :sessions-meta        vector
-      :decisions-meta       vector    ;; KG-enriched
-      :conventions-meta     vector    ;; KG-enriched
+      :decisions-meta       vector
+      :conventions-meta     vector
       :snippets-meta        vector
       :expiring-meta        vector
 
-      ;; KG enrichment
-      :kg-insights          map
+      ;; Addon-provided
+      :addon-data           map
 
       ;; Maintenance results
       :permeation           map       ;; {:permeated N :agents [...]}
@@ -147,7 +145,7 @@
 
 (def ^:private meta-transforms
   "Entry metadata transforms: [target-key source-key meta-fn-key].
-   Applied in handle-gather-context to produce *-meta keys."
+   Applied in handle-transform to produce *-meta keys."
   [[:axioms-meta      :axioms              :axiom]
    [:priority-meta    :priority-conventions :priority]
    [:sessions-meta    :sessions            :catchup]
@@ -244,8 +242,8 @@
 ;; =============================================================================
 ;; Handlers (pure functions: resources x data -> data')
 ;;
-;; EDN handler-map keys: :start, :scope-resolve, :query-memory, :gather-context,
-;;                       :enrich-kg, :maintenance, :deliver, :end, :error
+;; EDN handler-map keys: :start, :scope-resolve, :query-memory, :transform,
+;;                       :addon-pass, :maintenance, :deliver, :end, :error
 ;; =============================================================================
 
 (defn handle-start
@@ -287,68 +285,39 @@
    runs sequentially (depends on axiom-ids + priority-convention-ids)."
   [resources data]
   (let [r (result/try-effect* :catchup/query-failed
-            (let [project-id (:project-id data)
-                  standard   (run-standard-queries (:query-fn resources) project-id)
-                  special    (run-special-queries resources project-id standard)]
-              (merge standard special)))]
+                              (let [project-id (:project-id data)
+                                    standard   (run-standard-queries (:query-fn resources) project-id)
+                                    special    (run-special-queries resources project-id standard)]
+                                (merge standard special)))]
     (if (result/ok? r)
       (merge data (:ok r) {:query-failed? false})
       (assoc data
              :query-failed? true
              :error (str "Query failed: " (:message r))))))
 
-(defn handle-gather-context
-  "Gather git info and transform entries to metadata.
-   EDN handler key: :gather-context
-
-   Uses data-driven meta-transforms spec instead of per-field mapv calls."
+(defn handle-transform
+  "Transform raw entries to metadata and fetch git info.
+   EDN handler key: :transform"
   [resources data]
   (let [git-info   (when-let [dir (:directory data)]
                      (call-resource resources :git-fn dir))
         transforms (apply-meta-transforms (:entry->meta-fns resources) data)]
     (merge data transforms {:git-info git-info})))
 
-(defn handle-enrich-kg
-  "Enrich decisions/conventions with KG relationships and gather insights.
-   EDN handler key: :enrich-kg
+(defn handle-addon-pass
+  "Addon processing step. Delegates to :addon-fn if provided.
+   EDN handler key: :addon-pass
 
-   Fires decisions and conventions enrichment as parallel futures (Wave 1),
-   then runs kg-insights sequentially (depends on enriched results).
-   Co-access query fires independently alongside enrichment."
+   Gracefully degrades to pass-through when addon not loaded."
   [resources data]
-  (let [enrich-entries   (fn [entries]
-                           (if-let [f (:kg-enrich-fn resources)]
-                             (:entries (f entries))
-                             entries))
-        ;; Wave 1: Fire independent enrichment tasks in parallel
-        f-decisions      (future (enrich-entries (:decisions-base data)))
-        f-conventions    (future (enrich-entries (:conventions-base data)))
-        all-entry-ids    (mapv :id (concat (:axioms data) (:priority-conventions data)
-                                           (:decisions data) (:conventions data)
-                                           (:sessions data)))
-        f-co-access      (future (call-resource resources :co-access-fn
-                                                all-entry-ids all-entry-ids))
-
-        ;; Wave 1: Collect enrichment results
-        decisions-meta   (safe-deref f-decisions query-timeout-ms
-                                     (or (:decisions-base data) []))
-        conventions-meta (safe-deref f-conventions query-timeout-ms
-                                     (or (:conventions-base data) []))
-
-        ;; Wave 2: KG insights depends on enriched results
-        kg-insights      (call-resource resources :kg-insights-fn
-                                        decisions-meta conventions-meta
-                                        (:sessions-meta data) (:project-id data))
-
-        ;; Collect co-access (independent, may already be done)
-        co-access        (safe-deref f-co-access query-timeout-ms [])
-        kg-insights      (if (seq co-access)
-                           (assoc (or kg-insights {}) :co-access-suggestions co-access)
-                           kg-insights)]
-    (assoc data
-           :decisions-meta (or decisions-meta [])
-           :conventions-meta (or conventions-meta [])
-           :kg-insights kg-insights)))
+  (if-let [f (:addon-fn resources)]
+    (let [result (safe-deref
+                  (future (f data))
+                  query-timeout-ms nil)]
+      (if result
+        (merge data result)
+        data))
+    data))
 
 (defn handle-maintenance
   "Run maintenance tasks IN PARALLEL using futures for graceful error recovery.
@@ -407,7 +376,7 @@
                        :permeation :context-refs :piggyback-enqueued?
                        :axioms-meta :priority-meta :sessions-meta
                        :decisions-meta :conventions-meta :snippets-meta
-                       :expiring-meta :kg-insights
+                       :expiring-meta :addon-data
                        :project-tree-scan :disc-decay])))
 
 (defn handle-error
@@ -430,8 +399,8 @@
   {:start         handle-start
    :scope-resolve handle-scope-resolve
    :query-memory  handle-query-memory
-   :gather-context handle-gather-context
-   :enrich-kg     handle-enrich-kg
+   :transform handle-transform
+   :addon-pass    handle-addon-pass
    :maintenance   handle-maintenance
    :deliver       handle-deliver
    :end           handle-end
@@ -449,12 +418,12 @@
 
    State graph:
    ```
-   ::fsm/start --> ::scope-resolve -+--> ::query-memory --> ::gather-context
+   ::fsm/start --> ::scope-resolve -+--> ::query-memory --> ::transform
                                     |        |
                                     |        +--> ::error (query failed)
                                     |
                                     +--> ::error (no chroma / no project-id)
-   ::gather-context --> ::enrich-kg --> ::maintenance --> ::deliver --> ::end
+   ::transform --> ::addon-pass --> ::maintenance --> ::deliver --> ::end
    ```"
   {:fsm
    {::fsm/start
@@ -469,15 +438,15 @@
 
     ::query-memory
     {:handler    handle-query-memory
-     :dispatches [[::gather-context (fn [data] (not (:query-failed? data)))]
+     :dispatches [[::transform (fn [data] (not (:query-failed? data)))]
                   [::fsm/error (fn [data] (true? (:query-failed? data)))]]}
 
-    ::gather-context
-    {:handler    handle-gather-context
-     :dispatches [[::enrich-kg always]]}
+    ::transform
+    {:handler    handle-transform
+     :dispatches [[::addon-pass always]]}
 
-    ::enrich-kg
-    {:handler    handle-enrich-kg
+    ::addon-pass
+    {:handler    handle-addon-pass
      :dispatches [[::maintenance always]]}
 
     ::maintenance
@@ -550,9 +519,7 @@
       :entry->meta-fns  {:axiom fmt/entry->axiom-meta
                           :priority fmt/entry->priority-meta
                           :catchup #(fmt/entry->catchup-meta % 80)}
-      :kg-enrich-fn     enrichment/enrich-entries-with-kg
-      :kg-insights-fn   enrichment/gather-kg-insights
-      :co-access-fn     enrichment/find-co-accessed-suggestions
+      ;; :addon-fn — optional
       :permeate-fn      permeation/auto-permeate-wraps
       :tree-scan-fn     project-tree/maybe-scan-project-tree!
       :disc-decay-fn    #(disc/apply-time-decay-to-all-discs! :project-id %)

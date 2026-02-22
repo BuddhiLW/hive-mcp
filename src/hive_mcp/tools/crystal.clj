@@ -18,7 +18,6 @@
             [hive-mcp.events.effects]
             [hive-mcp.agent.context :as ctx]
             [hive-mcp.extensions.registry :as ext]
-            [hive-mcp.knowledge-graph.edges :as kg-edges]
             [clojure.data.json :as json]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -61,24 +60,6 @@
   (let [{:keys [success result]} (ec/eval-elisp "(featurep 'hive-mcp)")]
     (and success (= result "t"))))
 
-(defn- extract-source-ids
-  "Extract memory entry IDs from harvested session data.
-
-   Sources include:
-   - progress-notes: ephemeral notes created during session
-   - completed-tasks: kanban tasks that moved to DONE
-   - memory-ids-created: IDs tracked by crystal/recall created-ids-buffer (step 2/4)
-
-   Returns a vector of non-nil IDs suitable for KG edge creation.
-   Used as :source-ids-fn in the wrap FSM."
-  [{:keys [progress-notes completed-tasks memory-ids-created]}]
-  (->> (concat (keep :id progress-notes)
-               (keep :id completed-tasks)
-               (keep :id memory-ids-created))
-       (filter some?)
-       (distinct)
-       (vec)))
-
 (defn- resolve-agent
   "Resolve effective agent-id with fallback chain. Logs warnings for fallbacks."
   [{:keys [agent_id]}]
@@ -108,40 +89,17 @@
              (catch Exception _ nil))))))
 
 ;;; =============================================================================
-;;; Auto-KG Edge Creation — FOSS default + extension override
+;;; Auto-KG Edge Creation
 ;;; =============================================================================
 
 (defn- build-crystal-edges-default
-  "FOSS default: create derived-from edges from summary to source entries.
-   Extensions (:ck/a) can override with richer logic (co-accessed, etc.)."
-  [{:keys [summary-id harvested project-id agent-id]}]
-  (let [source-ids (extract-source-ids harvested)
-        edge-ids (reduce
-                  (fn [acc source-id]
-                    (try
-                      (let [eid (kg-edges/add-edge!
-                                 {:from summary-id
-                                  :to source-id
-                                  :relation :derived-from
-                                  :scope project-id
-                                  :created-by agent-id
-                                  :source-type :automated})]
-                        (conj acc eid))
-                      (catch Exception e
-                        (log/warn "Failed to create derived-from edge"
-                                  summary-id "->" source-id ":" (.getMessage e))
-                        acc)))
-                  []
-                  source-ids)]
-    {:derived-from {:created-count (count edge-ids)
-                    :edge-ids edge-ids}
-     :co-accessed nil
-     :total-edges (count edge-ids)
-     :capped? false}))
+  "Default: no KG edges. Addon overrides when available."
+  [_params]
+  {:derived-from nil :co-accessed nil :total-edges 0 :capped? false})
 
 (defn- ck-a
   "Create KG edges for wrap crystallization.
-   Delegates to :ck/a extension if available, otherwise uses FOSS default."
+   Delegates to addon extension if available, otherwise uses default."
   [summary-id harvested project-id agent-id & {:as opts}]
   (let [params (merge {:summary-id summary-id
                        :harvested harvested
@@ -217,21 +175,29 @@
   [{:keys [directory] :as params}]
   (let [effective-dir (or directory (ctx/current-directory))
         effective-agent (resolve-agent params)
-        project-id (scope/get-current-project-id effective-dir)]
+        project-id (scope/get-current-project-id effective-dir)
+        t-start (System/currentTimeMillis)]
     (log/info "wrap-crystallize" (str "agent-id:" effective-agent " directory:" effective-dir))
     (result/let-ok [harvested (harvest effective-dir effective-agent)
-                    cr-result (crystallize-session-result harvested project-id)]
+                    _t1 (do (log/info "wrap-crystallize: harvest" (- (System/currentTimeMillis) t-start) "ms")
+                            (result/ok nil))
+                    cr-result (crystallize-session-result harvested project-id)
+                    _t2 (do (log/info "wrap-crystallize: crystallize" (- (System/currentTimeMillis) t-start) "ms")
+                            (result/ok nil))]
                    (let [safe-stats (or (when (map? (:stats cr-result)) (:stats cr-result)) {})
                          summary-id (:summary-id cr-result)
-                         ;; Auto-KG edges — delegates to extension
-                         kg-result (when summary-id
-                                     (ck-a summary-id harvested project-id effective-agent))]
+                         ;; Auto-KG edges — fire concurrently with notify/reset
+                         kg-fut (when summary-id
+                                  (future (ck-a summary-id harvested project-id effective-agent)))]
                      (emit-wrap-notify! effective-agent cr-result project-id safe-stats)
                      ;; Reset session-start for this agent so next session measures fresh
                      (crystal/reset-session-start! effective-agent)
-                     (log/info "wrap-crystallize: reset session-start for" effective-agent)
-                     (result/ok (cond-> (assoc cr-result :project-id project-id)
-                                  kg-result (assoc :kg-edges kg-result)))))))
+                     ;; Collect KG result (likely done by now — ran during notify/reset)
+                     (let [kg-result (when kg-fut (deref kg-fut 15000 nil))]
+                       (log/info "wrap-crystallize: total" (- (System/currentTimeMillis) t-start) "ms"
+                                 "kg-edges:" (some-> kg-result :total-edges))
+                       (result/ok (cond-> (assoc cr-result :project-id project-id)
+                                    kg-result (assoc :kg-edges kg-result))))))))
 
 (defn- permeate*
   "Process wrap queue entries. Returns Result."

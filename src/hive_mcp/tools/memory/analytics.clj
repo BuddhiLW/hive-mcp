@@ -4,6 +4,7 @@
             [hive-mcp.tools.memory.scope :as scope]
             [hive-mcp.tools.memory.format :as fmt]
             [hive-mcp.tools.core :refer [mcp-json]]
+            [hive-mcp.memory.temporal :as temporal]
             [hive-mcp.chroma.core :as chroma]
             [clojure.string :as str]
             [taoensso.timbre :as log])
@@ -55,6 +56,13 @@
                         (assoc base-updates :tags tag-str))
                       base-updates)
             updated (chroma/update-entry! id updates)]
+        ;; Temporal dual-write: record access pattern
+        (temporal/record-mutation-silent!
+         {:entry-id   id
+          :op         :log-access
+          :data       {:access-count new-count
+                       :cross-project cross-project-id}
+          :project-id (or (:project-id entry) accessing-project)})
         (mcp-json (merge (fmt/entry->json-alist updated)
                          (when cross-project-id
                            {:xpoll {:detected true
@@ -68,11 +76,23 @@
   (log/info "mcp-memory-feedback:" id feedback)
   (with-chroma
     (if-let [entry (chroma/get-entry-by-id id)]
-      (let [updates (case feedback
-                      "helpful" {:helpful-count (inc (or (:helpful-count entry) 0))}
-                      "unhelpful" {:unhelpful-count (inc (or (:unhelpful-count entry) 0))}
+      (let [prev-helpful (or (:helpful-count entry) 0)
+            prev-unhelpful (or (:unhelpful-count entry) 0)
+            updates (case feedback
+                      "helpful" {:helpful-count (inc prev-helpful)}
+                      "unhelpful" {:unhelpful-count (inc prev-unhelpful)}
                       (throw (ex-info "Invalid feedback type" {:feedback feedback})))
             updated (chroma/update-entry! id updates)]
+        ;; Temporal dual-write: record feedback event
+        (temporal/record-mutation-silent!
+         {:entry-id       id
+          :op             :feedback
+          :data           {:feedback feedback
+                           :new-helpful (:helpful-count updates)
+                           :new-unhelpful (:unhelpful-count updates)}
+          :previous-value {:helpful-count prev-helpful
+                           :unhelpful-count prev-unhelpful}
+          :project-id     (:project-id entry)})
         (mcp-json (fmt/entry->json-alist updated)))
       (mcp-json {:error "Entry not found"}))))
 

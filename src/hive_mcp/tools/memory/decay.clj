@@ -9,6 +9,7 @@
             [hive-mcp.tools.memory.scope :as scope]
             [hive-mcp.chroma.core :as chroma]
             [hive-mcp.crystal.core :as crystal]
+            [hive-mcp.memory.temporal :as temporal]
             [hive-mcp.tools.core :refer [mcp-json]]
             [hive-mcp.agent.context :as ctx]
             [taoensso.timbre :as log]))
@@ -55,8 +56,16 @@
   (when (crystal/decay-candidate? entry opts)
     (when-let [plan (build-decay-plan entry opts)]
       (chroma/update-staleness! (:id entry)
-                                 {:beta (:new-beta plan)
-                                  :source :time-decay})
+                                {:beta (:new-beta plan)
+                                 :source :time-decay})
+      ;; Temporal dual-write: record decay event
+      (temporal/record-mutation-silent!
+       {:entry-id   (:id entry)
+        :op         :decay
+        :data       {:delta (:delta plan)
+                     :old-beta (:old-beta plan)
+                     :new-beta (:new-beta plan)}
+        :project-id (:project-id entry)})
       (select-keys plan [:id :delta :old-beta :new-beta]))))
 
 (defn- resolve-directory

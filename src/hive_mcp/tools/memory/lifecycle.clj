@@ -18,6 +18,7 @@
             [hive-mcp.tools.result-bridge :as rb]
             [hive-mcp.dns.result :as result]
             [hive-mcp.memory.types :as mt]
+            [hive-mcp.memory.temporal :as temporal]
             [hive-mcp.chroma.core :as chroma]
             [hive-mcp.knowledge-graph.edges :as kg-edges]
             [hive-mcp.agent.context :as ctx]
@@ -82,6 +83,14 @@
                           (reduce (fn [total id]
                                     (+ total (kg-edges/remove-edges-for-node! id)))
                                   0 deleted-ids))]
+      ;; Temporal dual-write: batch record all deletions from cleanup
+      (when (seq deleted-ids)
+        (temporal/record-mutations-batch!
+         (mapv (fn [did]
+                 {:entry-id   did
+                  :op         :cleanup
+                  :data       {:reason "expired"}})
+               deleted-ids)))
       (when (pos? (or edges-removed 0))
         (log/info "Cleaned up" edges-removed "KG edges for" count "deleted entries"))
       {:type "text" :text (json/write-str {:deleted count
@@ -92,8 +101,17 @@
   "Force-expire (delete) a memory entry by ID and clean up its KG edges."
   [{:keys [id]}]
   (log/info "mcp-memory-expire:" id)
-  (with-entry [_entry id]
+  (with-entry [entry id]
     (let [edges-removed (kg-edges/remove-edges-for-node! id)]
+      ;; Temporal dual-write: record deletion with full previous state
+      (temporal/record-mutation-silent!
+       {:entry-id       id
+        :op             :expire
+        :data           {:edges-removed edges-removed}
+        :previous-value (select-keys entry [:type :content :tags :duration
+                                            :helpful-count :unhelpful-count
+                                            :access-count :project-id])
+        :project-id     (:project-id entry)})
       (chroma/delete-entry! id)
       (when (pos? edges-removed)
         (log/info "Cleaned up" edges-removed "KG edges for expired entry" id))

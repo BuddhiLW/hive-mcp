@@ -127,20 +127,22 @@
   "Wrap session -- crystallize learnings without commit.
    Delegates to crystal/handle-wrap-crystallize which already returns MCP response."
   [{:keys [agent_id directory]}]
-  (log/info "session-wrap" {:agent agent_id})
-  (let [r (rb/try-result :session/wrap-failed
-                         #(let [mcp-resp (crystal/handle-wrap-crystallize {:directory directory
-                                                                           :agent_id agent_id})
-                                effective-agent (or agent_id
-                                                    (ctx/current-agent-id)
-                                                    (System/getenv "CLAUDE_SWARM_SLAVE_ID"))
-                                eviction (evict-agent-context! effective-agent)]
-                            (when eviction
-                              (log/info "session-wrap: context eviction" eviction))
-                            (result/ok mcp-resp)))]
-    (if (result/ok? r)
-      (:ok r)
-      (mcp-error (str "Wrap failed: " (or (:message r) (str (:error r))))))))
+  (let [t0 (System/currentTimeMillis)]
+    (log/info "session-wrap: START" {:agent agent_id :directory directory})
+    (let [r (rb/try-result :session/wrap-failed
+                           #(let [mcp-resp (crystal/handle-wrap-crystallize {:directory directory
+                                                                             :agent_id agent_id})
+                                  effective-agent (or agent_id
+                                                      (ctx/current-agent-id)
+                                                      (System/getenv "CLAUDE_SWARM_SLAVE_ID"))
+                                  eviction (evict-agent-context! effective-agent)]
+                              (when eviction
+                                (log/info "session-wrap: context eviction" eviction))
+                              (result/ok mcp-resp)))]
+      (log/info "session-wrap: DONE" (- (System/currentTimeMillis) t0) "ms")
+      (if (result/ok? r)
+        (:ok r)
+        (mcp-error (str "Wrap failed: " (or (:message r) (str (:error r)))))))))
 
 (defn handle-catchup
   "Restore session context from Chroma memory.

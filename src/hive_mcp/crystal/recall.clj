@@ -157,14 +157,15 @@
 ;; =============================================================================
 
 (defn partition-by-project
-  "Partition entries by project-id. Returns [matched retained]."
+  "Partition entries by project-id. Returns [matched retained].
+   Unscoped entries are included in matched (they belong to any project)."
   [entries project-id]
   (reduce (fn [[m r] entry]
             (adt-case CreatedEntry entry
                       :entry/scoped   (if (= project-id (:project-id entry))
                                         [(conj m entry) r]
                                         [m (conj r entry)])
-                      :entry/unscoped [m (conj r entry)]))
+                      :entry/unscoped [(conj m entry) r]))
           [[] []]
           entries))
 

@@ -73,20 +73,24 @@
     id))
 
 (defn mock-harvest-result
-  "Create a mock harvest result with given progress notes and completed tasks.
+  "Create a mock harvest result with given progress notes, completed tasks,
+   and memory-ids-created.
 
    source-ids: seq of {:id :content :type} maps"
-  [progress-notes completed-tasks]
-  {:progress-notes progress-notes
-   :completed-tasks completed-tasks
-   :git-commits []
-   :recalls {}
-   :session "2026-01-26"
-   :directory "/tmp/test-project"
-   :summary {:progress-count (count progress-notes)
-             :task-count (count completed-tasks)
-             :commit-count 0
-             :recall-count 0}})
+  ([progress-notes completed-tasks]
+   (mock-harvest-result progress-notes completed-tasks []))
+  ([progress-notes completed-tasks memory-ids-created]
+   {:progress-notes progress-notes
+    :completed-tasks completed-tasks
+    :memory-ids-created memory-ids-created
+    :git-commits []
+    :recalls {}
+    :session "2026-01-26"
+    :directory "/tmp/test-project"
+    :summary {:progress-count (count progress-notes)
+              :task-count (count completed-tasks)
+              :commit-count 0
+              :recall-count 0}}))
 
 (defn create-derived-from-edges!
   "Create :derived-from KG edges linking a summary to its source entries.
@@ -191,10 +195,10 @@
 ;; E2E Test: Full wrap_crystallize Handler Flow
 ;; =============================================================================
 
-(deftest wrap-crystallize-handler-noop-edges-e2e
-  (testing "handle-wrap-crystallize returns noop KG stats when :ck/a extension not registered"
-    ;; Without the :ck/a extension, edge creation is a no-op (IP migration stub).
-    ;; This test verifies the handler completes gracefully with noop defaults.
+(deftest wrap-crystallize-handler-creates-edges-e2e
+  (testing "handle-wrap-crystallize creates KG edges via FOSS default (build-crystal-edges-default)"
+    ;; Without the :ck/a extension, edge creation falls back to build-crystal-edges-default
+    ;; which creates :derived-from edges from summary to all source entries.
     (let [source-id-1 (create-source-entry! "Work note 1" :tags ["session-progress"])
           source-id-2 (create-source-entry! "Work note 2" :tags ["session-progress"])]
 
@@ -218,12 +222,16 @@
           (is (not (:error result-json)) "Handler should not return error")
           (is (some? (:summary-id result-json)) "Handler should return summary-id")
 
-          ;; With noop stub, :kg-edges returns default empty stats
+          ;; FOSS default creates :derived-from edges from summary to source entries
           (let [kg-edges-result (:kg-edges result-json)]
-            (is (some? kg-edges-result) "Handler should still return :kg-edges (noop defaults)")
-            (is (= 0 (:total-edges kg-edges-result)) "Noop stub should report 0 total edges")
-            (is (nil? (:derived-from kg-edges-result)) "Noop stub should have nil :derived-from")
-            (is (false? (:capped? kg-edges-result)) "Noop stub should have false :capped?")))))))
+            (is (some? kg-edges-result) "Handler should return :kg-edges")
+            (is (= 2 (:total-edges kg-edges-result))
+                "Should create 2 edges (one per source entry)")
+            (is (some? (:derived-from kg-edges-result))
+                "Should have :derived-from edge stats")
+            (is (= 2 (get-in kg-edges-result [:derived-from :created-count]))
+                "Should report 2 derived-from edges created")
+            (is (false? (:capped? kg-edges-result)) "Should not be capped")))))))
 
 ;; =============================================================================
 ;; E2E Test: Edge Creation with Mixed Source Types
