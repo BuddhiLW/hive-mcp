@@ -7,10 +7,12 @@
             [taoensso.timbre :as log])
   (:import [java.lang ProcessBuilder]
            [java.io BufferedReader InputStreamReader BufferedWriter OutputStreamWriter]
-           [java.util.concurrent ConcurrentHashMap]))
+           [java.util.concurrent ConcurrentHashMap Executors ScheduledExecutorService TimeUnit]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 
 (declare dispatch-via-stdin!)
+(declare stop-watchdog!)
+(declare start-watchdog!)
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
@@ -34,6 +36,32 @@
 
 (defonce ^:private shutdown-hook-registered?
   (atom false))
+
+(defonce ^:private watchdog-state
+  (atom {:running? false
+         :sweep-count 0
+         :last-sweep-at nil
+         :last-cleaned []}))
+
+;; Holds the ScheduledFuture returned by scheduleAtFixedRate.
+(defonce ^:private watchdog-handle
+  (atom nil))
+
+(defonce ^:private watchdog-executor
+  (delay
+    (Executors/newSingleThreadScheduledExecutor
+     (reify java.util.concurrent.ThreadFactory
+       (newThread [_ r]
+         (doto (Thread. r "hive-headless-watchdog")
+           (.setDaemon true)))))))
+
+(def ^:private ^:const watchdog-interval-s
+  "Watchdog sweep interval in seconds."
+  30)
+
+(def ^:private ^:const drain-timeout-ms
+  "Max time (ms) to drain reader output after process death."
+  60000)
 
 ;; ===========================================================================
 ;; Result DSL Helpers
@@ -87,13 +115,14 @@
 ;; ===========================================================================
 
 (defn- register-shutdown-hook!
-  "Register a JVM shutdown hook to kill all headless processes."
+  "Register a JVM shutdown hook to stop watchdog and kill all headless processes."
   []
   (when (compare-and-set! shutdown-hook-registered? false true)
     (.addShutdownHook
      (Runtime/getRuntime)
      (Thread.
       (fn []
+        (stop-watchdog!)
         (log/info "JVM shutdown hook: killing" (.size process-registry) "headless processes")
         (doseq [[ling-id entry] process-registry]
           (let [res (result/guard Exception nil
@@ -108,21 +137,45 @@
     (log/info "Registered JVM shutdown hook for headless processes")))
 
 (defn- start-stream-reader!
-  "Start a daemon thread reading lines from a stream into a ring buffer."
-  [stream buffer label ling-id]
+  "Start a daemon thread reading lines from a stream into a ring buffer.
+   Includes drain timeout: after process death, reads remaining output
+   for up to `drain-timeout-ms` before exiting."
+  [stream buffer label ling-id ^Process process]
   (let [reader (BufferedReader. (InputStreamReader. stream))
         thread (Thread.
                 (fn []
                   (try
-                    (loop []
-                      (when-let [line (.readLine reader)]
-                        (ring-buffer-append! buffer line)
-                        (when (str/includes? line "error")
-                          (log/debug (str "Headless " label " [" ling-id "]: " line)))
-                        (recur)))
+                    (loop [deadline nil]
+                      (let [dead? (not (.isAlive process))
+                            deadline (cond
+                                       deadline deadline
+                                       dead? (do (log/debug (str "Headless " label " process died, draining")
+                                                            {:ling-id ling-id :drain-ms drain-timeout-ms})
+                                                 (+ (System/currentTimeMillis) drain-timeout-ms))
+                                       :else nil)]
+                        (cond
+                          ;; Drain deadline exceeded — stop reading
+                          (and deadline (> (System/currentTimeMillis) deadline))
+                          (log/info (str "Headless " label " drain timeout reached")
+                                    {:ling-id ling-id})
+
+                          ;; Process dead, no data ready — poll with sleep
+                          (and dead? (not (.ready reader)))
+                          (do (Thread/sleep 1000)
+                              (recur deadline))
+
+                          ;; Normal read (or drain read with data available)
+                          :else
+                          (when-let [line (.readLine reader)]
+                            (ring-buffer-append! buffer line)
+                            (when (str/includes? line "error")
+                              (log/debug (str "Headless " label " [" ling-id "]: " line)))
+                            (recur deadline)))))
                     (log/debug (str "Headless " label " reader exited") {:ling-id ling-id})
                     (catch java.io.IOException _
                       (log/debug (str "Headless " label " stream closed") {:ling-id ling-id}))
+                    (catch InterruptedException _
+                      (log/debug (str "Headless " label " reader interrupted") {:ling-id ling-id}))
                     (catch Exception e
                       (log/warn (str "Headless " label " reader error")
                                 {:ling-id ling-id :error (.getMessage e)}))))
@@ -228,8 +281,8 @@
     {:stdout-buffer stdout-buf
      :stderr-buffer stderr-buf
      :stdin-writer (BufferedWriter. (OutputStreamWriter. (.getOutputStream process)))
-     :stdout-reader-thread (start-stream-reader! (.getInputStream process) stdout-buf "stdout" ling-id)
-     :stderr-reader-thread (start-stream-reader! (.getErrorStream process) stderr-buf "stderr" ling-id)}))
+     :stdout-reader-thread (start-stream-reader! (.getInputStream process) stdout-buf "stdout" ling-id process)
+     :stderr-reader-thread (start-stream-reader! (.getErrorStream process) stderr-buf "stderr" ling-id process)}))
 
 (defn- build-registry-entry
   "Build the registry entry map for a spawned process."
@@ -291,6 +344,7 @@
                  buffer-capacity default-buffer-capacity}}]
   (result/let-ok [_ (require-not-registered ling-id)]
                  (register-shutdown-hook!)
+                 (start-watchdog!)
                  (let [cmd-parts (build-command-parts claude-cmd model task system-prompt)
                        pb (create-process-builder cmd-parts cwd)]
                    (configure-process-env! pb ling-id {:cwd cwd :env-extra env-extra :model model})
@@ -343,6 +397,62 @@
                                  :ling-id ling-id
                                  :pid pid
                                  :exit-code exit-code})))))
+
+;; ===========================================================================
+;; Watchdog — periodic dead-process cleanup
+;; ===========================================================================
+
+(defn- watchdog-sweep!
+  "Scan process-registry for dead processes and clean them up.
+   Called periodically by the ScheduledExecutorService."
+  []
+  (try
+    (let [dead-ids (reduce-kv
+                    (fn [acc ling-id entry]
+                      (let [^Process process (:process entry)]
+                        (if (and process (not (.isAlive process)))
+                          (conj acc ling-id)
+                          acc)))
+                    []
+                    process-registry)]
+      (doseq [ling-id dead-ids]
+        (log/warn "Watchdog: dead headless process detected, cleaning up"
+                  {:ling-id ling-id
+                   :pid (:pid (.get process-registry ling-id))})
+        (result/guard Exception nil
+                      (kill-headless!* ling-id {:force? true})))
+      (swap! watchdog-state
+             (fn [s]
+               (-> s
+                   (update :sweep-count inc)
+                   (assoc :last-sweep-at (System/currentTimeMillis))
+                   (assoc :last-cleaned (vec dead-ids))))))
+    (catch Exception e
+      (log/error "Watchdog sweep error" {:error (.getMessage e)}))))
+
+(defn start-watchdog!
+  "Start the periodic watchdog sweep. Idempotent — no-op if already running."
+  []
+  (when-not (:running? @watchdog-state)
+    (let [^ScheduledExecutorService exec @watchdog-executor
+          handle (.scheduleAtFixedRate
+                  exec
+                  ^Runnable watchdog-sweep!
+                  (long watchdog-interval-s)
+                  (long watchdog-interval-s)
+                  TimeUnit/SECONDS)]
+      (reset! watchdog-handle handle)
+      (swap! watchdog-state assoc :running? true)
+      (log/info "Headless watchdog started" {:interval-s watchdog-interval-s}))))
+
+(defn stop-watchdog!
+  "Stop the periodic watchdog sweep."
+  []
+  (when-let [^java.util.concurrent.ScheduledFuture handle @watchdog-handle]
+    (.cancel handle false)
+    (reset! watchdog-handle nil)
+    (swap! watchdog-state assoc :running? false)
+    (log/info "Headless watchdog stopped")))
 
 ;; ===========================================================================
 ;; Public API
@@ -416,9 +526,25 @@
        vec))
 
 (defn headless-count
-  "Get count of active headless processes."
+  "Get count of registered headless processes (alive + dead)."
   []
   (.size process-registry))
+
+(defn active-process-count
+  "Get breakdown of alive vs dead headless processes in the registry."
+  []
+  (let [total (.size process-registry)
+        alive (reduce-kv
+               (fn [n _id entry]
+                 (if (.isAlive ^Process (:process entry)) (inc n) n))
+               0
+               process-registry)]
+    {:active alive :total total :dead (- total alive)}))
+
+(defn watchdog-status
+  "Get current watchdog state."
+  []
+  @watchdog-state)
 
 (defn headless?
   "Check if a ling-id corresponds to a headless process."

@@ -185,19 +185,24 @@
                     _t2 (do (log/info "wrap-crystallize: crystallize" (- (System/currentTimeMillis) t-start) "ms")
                             (result/ok nil))]
                    (let [safe-stats (or (when (map? (:stats cr-result)) (:stats cr-result)) {})
-                         summary-id (:summary-id cr-result)
-                         ;; Auto-KG edges — fire concurrently with notify/reset
-                         kg-fut (when summary-id
-                                  (future (ck-a summary-id harvested project-id effective-agent)))]
+                         summary-id (:summary-id cr-result)]
+                     ;; Auto-KG edges — fire-and-forget (takes ~5s for 50 edges).
+                     ;; Previously deref-blocked with 15s timeout. KG edge results
+                     ;; are not needed for the wrap response.
+                     (when summary-id
+                       (future
+                         (try
+                           (let [kg-result (ck-a summary-id harvested project-id effective-agent)]
+                             (log/info "wrap-crystallize: KG edges completed"
+                                       "edges:" (:total-edges kg-result)
+                                       "capped?" (:capped? kg-result)))
+                           (catch Throwable t
+                             (log/warn "wrap-crystallize: KG edges failed" (ex-message t))))))
                      (emit-wrap-notify! effective-agent cr-result project-id safe-stats)
                      ;; Reset session-start for this agent so next session measures fresh
                      (crystal/reset-session-start! effective-agent)
-                     ;; Collect KG result (likely done by now — ran during notify/reset)
-                     (let [kg-result (when kg-fut (deref kg-fut 15000 nil))]
-                       (log/info "wrap-crystallize: total" (- (System/currentTimeMillis) t-start) "ms"
-                                 "kg-edges:" (some-> kg-result :total-edges))
-                       (result/ok (cond-> (assoc cr-result :project-id project-id)
-                                    kg-result (assoc :kg-edges kg-result))))))))
+                     (log/info "wrap-crystallize: total" (- (System/currentTimeMillis) t-start) "ms")
+                     (result/ok (assoc cr-result :project-id project-id))))))
 
 (defn- permeate*
   "Process wrap queue entries. Returns Result."

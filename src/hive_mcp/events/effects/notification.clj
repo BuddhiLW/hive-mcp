@@ -98,20 +98,46 @@
     (log/info "[EVENT]" (str data))))
 
 ;; =============================================================================
-;; Effect: :channel-publish (EVENTS-04)
+;; Effect: :channel-publish (EVENTS-04, M1: NATS backbone routing)
 ;; =============================================================================
 
-(defn- handle-channel-publish
-  "Execute a :channel-publish effect - emit to WebSocket channel.
+(defn- nats-backbone-connected?
+  "Check if NATS backbone is connected. Uses requiring-resolve to avoid circular dep."
+  []
+  (try
+    (when-let [get-bb (requiring-resolve 'hive-mcp.protocols.event-backbone/get-backbone)]
+      (when-let [connected? (requiring-resolve 'hive-mcp.protocols.event-backbone/connected?)]
+        (connected? (get-bb))))
+    (catch Exception _ false)))
 
-   Broadcasts event to all connected Emacs clients and local subscribers.
+(defn- publish-tool-notification!
+  "Publish a tool notification through NATS backbone."
+  [event-type data]
+  (try
+    (when-let [publish-fn (requiring-resolve 'hive-mcp.nats.bridge/publish-tool-notification!)]
+      (publish-fn {:tool-name event-type
+                   :event-type event-type
+                   :timestamp (System/currentTimeMillis)
+                   :data (or data {})}))
+    (catch Exception e
+      (log/debug "[channel-publish] NATS tool notification failed (non-fatal):" (.getMessage e)))))
+
+(defn- handle-channel-publish
+  "Execute a :channel-publish effect - emit to event backbone.
+
+   M1 Architecture:
+   - If NATS connected: publish as tool notification → NATS subscribers handle fanout
+   - If NATS disconnected: fallback to direct channel/emit-event! (pre-M1 behavior)
 
    Expected data shape:
    {:event-type :task-completed | :ling-spawned | :memory-added | ...
     :data       {:key \"value\" ...}}"
   [{:keys [event-type data]}]
   (when event-type
-    (channel/emit-event! event-type (or data {}))))
+    (if (nats-backbone-connected?)
+      (publish-tool-notification! event-type data)
+      ;; Fallback: direct publish (pre-M1 behavior)
+      (channel/emit-event! event-type (or data {})))))
 
 ;; =============================================================================
 ;; Effect: :emit-system-error (Telemetry Phase 1)
@@ -168,16 +194,21 @@
 (defn- handle-olympus-broadcast
   "Execute an :olympus-broadcast effect - broadcast event to Olympus Web UI.
 
-   Sends typed events to all connected Olympus WebSocket clients (port 7911).
-   Uses requiring-resolve to avoid circular deps with transport.olympus.
+   M1 Architecture:
+   - If NATS connected: publish as tool notification → OlympusChannel receives via fanout
+   - If NATS disconnected: fallback to direct transport.olympus/broadcast! (pre-M1 behavior)
 
    Expected data shape: {:type :wave-update :wave-id \"...\" ...}"
   [event-data]
-  (try
-    (when-let [broadcast-fn (requiring-resolve 'hive-mcp.transport.olympus/broadcast!)]
-      (broadcast-fn event-data))
-    (catch Exception e
-      (log/debug "[EVENT] Olympus broadcast failed (non-fatal):" (.getMessage e)))))
+  (if (nats-backbone-connected?)
+    ;; M1: Route through NATS — OlympusChannel in delivery registry handles it
+    (publish-tool-notification! (or (:type event-data) :olympus-event) event-data)
+    ;; Fallback: direct Olympus broadcast (pre-M1 behavior)
+    (try
+      (when-let [broadcast-fn (requiring-resolve 'hive-mcp.transport.olympus/broadcast!)]
+        (broadcast-fn event-data))
+      (catch Exception e
+        (log/debug "[EVENT] Olympus broadcast failed (non-fatal):" (.getMessage e))))))
 
 ;; =============================================================================
 ;; Effect: :nats-publish (Push-based drone notifications)

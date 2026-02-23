@@ -84,11 +84,14 @@
         (do
           (log/warn "FORGE STRIKE: legacy mode enabled via config. Using imperative path.")
           (handle-forge-strike-legacy params))
-        (do
+        (let [cfg-spawn-mode (config/get-service-value :forge :spawn-mode :default nil)
+              effective-params (cond-> params
+                                 (and cfg-spawn-mode (not (:spawn_mode params)))
+                                 (assoc :spawn_mode cfg-spawn-mode))]
           (swap! forge-state assoc :strike-in-progress? true)
           (future
             (try
-              (let [result (forge-cycle/fsm-forge-strike* params forge-state)]
+              (let [result (forge-cycle/fsm-forge-strike* effective-params forge-state)]
                 (swap! forge-state assoc :last-fsm-result result))
               (catch Exception e
                 (log/error e "forge-strike background execution failed"))

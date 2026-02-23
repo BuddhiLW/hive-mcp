@@ -20,6 +20,7 @@
      (chroma/set-embedding-provider! 
        (ollama/->provider {:model \"mxbai-embed-large\"}))"
   (:require [hive-mcp.chroma.core :as chroma]
+            [hive-mcp.concurrency.pool :as pool]
             [clojure.data.json :as json]
             [taoensso.timbre :as log])
   (:import [java.net URI]
@@ -28,7 +29,6 @@
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
-
 
 (def ^:private models
   "Supported Ollama embedding models with their dimensions.
@@ -40,7 +40,6 @@
 
 (def ^:private default-model "nomic-embed-text")
 (def ^:private default-host "http://localhost:11434")
-
 
 (defonce ^:private http-client
   (delay
@@ -67,7 +66,6 @@
                       {:status status
                        :body body-str
                        :url url})))))
-
 
 (defn- context-length-error?
   "Check if exception message indicates content exceeded token limit."
@@ -100,11 +98,11 @@
 
 (defn- get-embeddings-batch
   "Get embeddings for multiple texts from Ollama.
-   Ollama doesn't have native batch API, so we parallelize requests."
+   Ollama doesn't have native batch API, so we parallelize requests.
+   Bounded by shared IO pool — no unbounded thread fan-out."
   [host model texts]
-  (let [futures (mapv #(future (get-embedding host model %)) texts)]
+  (let [futures (mapv (fn [text] (pool/with-io (get-embedding host model text))) texts)]
     (mapv deref futures)))
-
 
 (defrecord OllamaEmbedder [host model dimension]
   chroma/EmbeddingProvider
@@ -113,7 +111,6 @@
   (embed-batch [_ texts]
     (get-embeddings-batch host model texts))
   (embedding-dimension [_] dimension))
-
 
 (defn ->provider
   "Create an Ollama embedding provider.
@@ -145,7 +142,6 @@
          (log/warn "Could not connect to Ollama at" host "- ensure ollama is running")))
      (log/info "Created Ollama embedder with model:" model "dimension:" dimension)
      (->OllamaEmbedder host model dimension))))
-
 
 (defn list-models
   "List available models on the Ollama server."

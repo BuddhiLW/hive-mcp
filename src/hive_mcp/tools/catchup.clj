@@ -24,6 +24,7 @@
             [hive-mcp.channel.memory-piggyback :as memory-piggyback]
             [hive-mcp.channel.context-store :as context-store]
             [hive-mcp.extensions.registry :as ext]
+            [hive-mcp.concurrency.pool :as pool]
             [hive-mcp.dns.result :refer [rescue]]
             [clojure.data.json :as json]
             [taoensso.timbre :as log]))
@@ -83,16 +84,16 @@
               project-name (catchup-scope/get-current-project-name directory)
               scopes (fmt/build-scopes project-name project-id)
 
-              ;; ── Wave 1: Fire independent queries in parallel ──
-              f-axioms      (future (catchup-scope/query-axioms project-id))
-              f-principles  (future (catchup-scope/query-scoped-entries "principle" nil project-id 50))
-              f-priority    (future (catchup-scope/query-scoped-entries "convention" ["catchup-priority"]
-                                                                        project-id 50))
-              f-sessions    (future (catchup-scope/query-scoped-entries "note" ["session-summary"] project-id 10))
-              f-decisions   (future (catchup-scope/query-scoped-entries "decision" nil project-id 50))
-              f-snippets    (future (catchup-scope/query-scoped-entries "snippet" nil project-id 20))
-              f-expiring    (future (catchup-scope/query-expiring-entries project-id 20))
-              f-git         (future (catchup-git/gather-git-info directory))
+              ;; ── Wave 1: Fire independent queries in parallel (bounded by IO pool) ──
+              f-axioms      (pool/with-io (catchup-scope/query-axioms project-id))
+              f-principles  (pool/with-io (catchup-scope/query-scoped-entries "principle" nil project-id 50))
+              f-priority    (pool/with-io (catchup-scope/query-scoped-entries "convention" ["catchup-priority"]
+                                                                              project-id 50))
+              f-sessions    (pool/with-io (catchup-scope/query-scoped-entries "note" ["session-summary"] project-id 10))
+              f-decisions   (pool/with-io (catchup-scope/query-scoped-entries "decision" nil project-id 50))
+              f-snippets    (pool/with-io (catchup-scope/query-scoped-entries "snippet" nil project-id 20))
+              f-expiring    (pool/with-io (catchup-scope/query-expiring-entries project-id 20))
+              f-git         (pool/with-io (catchup-git/gather-git-info directory))
 
               ;; ── Wave 1: Collect with timeout ──
               axioms               (safe-deref f-axioms query-timeout-ms [])
@@ -106,10 +107,11 @@
 
               ;; ── Wave 2: Dependent query (needs axiom + priority IDs) ──
               conventions (safe-deref
-                           (future (catchup-scope/query-regular-conventions
-                                    project-id
-                                    (set (map :id axioms))
-                                    (set (map :id priority-conventions))))
+                           (pool/with-io
+                             (catchup-scope/query-regular-conventions
+                              project-id
+                              (set (map :id axioms))
+                              (set (map :id priority-conventions))))
                            query-timeout-ms [])
 
               ;; Convert to metadata (pure, fast)
@@ -126,14 +128,15 @@
               enrich-fn (ext/get-extension :cu/a)
               enriched (when enrich-fn
                          (safe-deref
-                          (future (enrich-fn {:directory directory
-                                              :project-id project-id
-                                              :decisions decisions-base
-                                              :conventions conventions-base
-                                              :sessions sessions-meta
-                                              :axioms axioms
-                                              :principles principles
-                                              :priority-conventions priority-conventions}))
+                          (pool/with-io
+                            (enrich-fn {:directory directory
+                                        :project-id project-id
+                                        :decisions decisions-base
+                                        :conventions conventions-base
+                                        :sessions sessions-meta
+                                        :axioms axioms
+                                        :principles principles
+                                        :priority-conventions priority-conventions}))
                           query-timeout-ms nil))
               decisions-enriched   (or (:decisions enriched) decisions-base)
               conventions-enriched (or (:conventions enriched) conventions-base)

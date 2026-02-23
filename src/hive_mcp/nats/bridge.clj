@@ -1,13 +1,21 @@
 (ns hive-mcp.nats.bridge
-  "NATS to event journal bridge for push-based drone completion.
+  "Universal event backbone bridge — routes hive events through IEventBackbone.
 
-   Subscribes to drone events on NATS and populates the event journal —
-   the same atom that `collect` already checks via check-event-journal.
+   Subject hierarchy (v1):
+     hive.v1.drone.{completed|failed}.{task-id}   — drone lifecycle
+     hive.v1.shout.{project}.{agent-id}            — hivemind shouts
+     hive.v1.event.{type}                           — system events
+     hive.v1.tool.{tool-name}                       — tool notifications
 
-   Publisher side: called from :nats-publish effect handler.
-   Subscriber side: populates event journal for instant collect."
+   Publisher side: called from shout!, effect handlers, drone bridge.
+   Subscriber side: delegates fanout to IDeliveryChannel registry.
 
-  (:require [hive-mcp.nats.client :as nats]
+   Design: backbone is protocol-mediated (IEventBackbone). All fanout
+   is via IDeliveryChannel registry — no hardcoded transport in publishers
+   or subscribers."
+
+  (:require [hive-mcp.protocols.event-backbone :as eb]
+            [hive-mcp.protocols.delivery-channel :as dc]
             [hive-mcp.tools.swarm.channel :as channel]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -15,32 +23,146 @@
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 ;; =============================================================================
-;; Subject Hierarchy
+;; Subject Hierarchy — Canonical Subject Definitions
 ;; =============================================================================
 
-(def ^:private subject-prefix "hive.v1.drone")
+;; Drone subjects (existing)
+(def ^:private drone-prefix "hive.v1.drone")
+
+;; Hivemind subjects (M1 — new)
+(def ^:private shout-prefix "hive.v1.shout")
+
+;; System event subjects (M1 — new)
+(def ^:private event-prefix "hive.v1.event")
+
+;; Tool notification subjects (M1 — new)
+(def ^:private tool-prefix "hive.v1.tool")
+
+;; --- Drone subjects ---
 
 (defn task-subject
-  "Build NATS subject for a specific task event.
+  "Build subject for a specific drone task event.
    E.g. hive.v1.drone.completed.task-123"
   [task-id event-type]
-  (str subject-prefix "." (name event-type) "." task-id))
+  (str drone-prefix "." (name event-type) "." task-id))
 
 (defn wildcard-subject
-  "Build NATS wildcard subject for all events of a type.
+  "Build wildcard subject for all drone events of a type.
    E.g. hive.v1.drone.completed.>"
   [event-type]
-  (str subject-prefix "." (name event-type) ".>"))
+  (str drone-prefix "." (name event-type) ".>"))
+
+;; --- Shout subjects ---
+
+(defn shout-subject
+  "Build subject for a hivemind shout.
+   E.g. hive.v1.shout.hive.forja-cl-123"
+  [project-id agent-id]
+  (str shout-prefix "." (or project-id "global") "." agent-id))
+
+(defn shout-wildcard
+  "Build wildcard subject for all shouts in a project.
+   hive.v1.shout.{project}.> or hive.v1.shout.> for all projects."
+  ([] (str shout-prefix ".>"))
+  ([project-id] (str shout-prefix "." project-id ".>")))
+
+;; --- System event subjects ---
+
+(defn event-subject
+  "Build subject for system events.
+   E.g. hive.v1.event.agent-spawn"
+  [event-type]
+  (str event-prefix "." (name event-type)))
+
+(defn event-wildcard
+  "Build wildcard subject for all system events.
+   hive.v1.event.>"
+  []
+  (str event-prefix ".>"))
+
+;; --- Tool notification subjects ---
+
+(defn tool-subject
+  "Build subject for tool notifications.
+   E.g. hive.v1.tool.memory-add"
+  [tool-name]
+  (str tool-prefix "." (name tool-name)))
+
+(defn tool-wildcard
+  "Build wildcard subject for all tool notifications.
+   hive.v1.tool.>"
+  []
+  (str tool-prefix ".>"))
 
 ;; =============================================================================
-;; Publisher Side (called from :nats-publish effect)
+;; Publisher Side — Drone Events (called from :nats-publish effect)
 ;; =============================================================================
 
 (defn publish-drone-event!
-  "Publish drone event to NATS. Called by :nats-publish effect handler."
+  "Publish drone event via IEventBackbone. Called by :nats-publish effect handler."
   [{:keys [event-type task-id] :as payload}]
-  (let [subject (task-subject task-id event-type)]
-    (nats/publish! subject payload)))
+  (let [backbone (eb/get-backbone)
+        subject (task-subject task-id event-type)]
+    (eb/publish! backbone subject payload)))
+
+;; =============================================================================
+;; Publisher Side — Hivemind Shouts (M1)
+;; =============================================================================
+
+(defn publish-shout!
+  "Publish hivemind shout via IEventBackbone. The single publish point for all shout events.
+   Subscribers receive via backbone subscriptions, fanout via IDeliveryChannel.
+
+   Payload shape:
+   {:agent-id   \"forja-cl-123\"
+    :event-type :progress
+    :message    \"Working on X\"
+    :task       \"Big task\"
+    :project-id \"hive\"
+    :timestamp  1234567890
+    :data       {...}}"
+  [{:keys [agent-id project-id] :as payload}]
+  (let [backbone (eb/get-backbone)
+        subject (shout-subject project-id agent-id)]
+    (eb/publish! backbone subject payload)
+    (log/debug "[Bridge] Published shout on" subject)))
+
+;; =============================================================================
+;; Publisher Side — System Events (M1)
+;; =============================================================================
+
+(defn publish-event!
+  "Publish system event via IEventBackbone. For agent lifecycle, vessel events, etc.
+
+   Payload shape:
+   {:type       :agent-spawn
+    :agent-id   \"ling-123\"
+    :timestamp  1234567890
+    :data       {...}}"
+  [{:keys [type] :as payload}]
+  (let [backbone (eb/get-backbone)
+        subject (event-subject type)]
+    (eb/publish! backbone subject payload)
+    (log/debug "[Bridge] Published event on" subject)))
+
+;; =============================================================================
+;; Publisher Side — Tool Notifications (M1)
+;; =============================================================================
+
+(defn publish-tool-notification!
+  "Publish tool notification via IEventBackbone. For tool execution events
+   (memory-add, kanban-update, wave-dispatch, etc.).
+
+   Payload shape:
+   {:tool-name  :memory-add
+    :event-type :tool-executed
+    :timestamp  1234567890
+    :data       {...}}"
+  [{:keys [tool-name] :as payload}]
+  (let [backbone (eb/get-backbone)
+        subject (tool-subject (or tool-name "unknown"))]
+    (eb/publish! backbone subject payload)
+    (log/debug "[Bridge] Published tool notification on" subject)))
 
 ;; =============================================================================
 ;; Callback Bridge (requiring-resolve to avoid circular deps)
@@ -54,7 +176,7 @@
     (when-let [notify! (requiring-resolve 'hive-mcp.swarm.callback/notify-completion!)]
       (notify! task-id event-data))
     (catch Exception e
-      (log/debug "[NATS] Callback fire failed for" task-id (.getMessage e)))))
+      (log/debug "[Bridge] Callback fire failed for" task-id (.getMessage e)))))
 
 ;; =============================================================================
 ;; Hivemind Auto-Shout (drone visibility via piggyback)
@@ -72,16 +194,16 @@
                 {:message summary-msg
                  :task (str "drone-task:" task-id)}))
     (catch Exception e
-      (log/debug "[NATS] Auto-shout failed for" task-id (.getMessage e)))))
+      (log/debug "[Bridge] Auto-shout failed for" task-id (.getMessage e)))))
 
 ;; =============================================================================
-;; Subscriber Side (populates event journal + fires callbacks + auto-shout)
+;; Subscriber Side — Drone Events (existing)
 ;; =============================================================================
 
 (defn- handle-drone-completed
-  "Handle drone completion from NATS — write to event journal, fire callback, and auto-shout."
+  "Handle drone completion — write to event journal, fire callback, and auto-shout."
   [{:keys [task-id parent-id result] :as _msg}]
-  (log/info "[NATS] drone completed:" task-id)
+  (log/info "[Bridge] drone completed:" task-id)
   (let [files-modified (get result :files-modified [])
         files-failed (get result :files-failed [])
         duration-ms (get result :duration-ms)
@@ -89,7 +211,7 @@
                     :result result
                     :slave-id parent-id
                     :timestamp (System/currentTimeMillis)
-                    :via "nats-push"}]
+                    :via "backbone-push"}]
     (channel/record-nats-event! task-id event-data)
     (fire-callback-if-registered! task-id event-data)
     (auto-shout-drone-event!
@@ -100,14 +222,14 @@
           (when duration-ms (str " (" duration-ms "ms)"))))))
 
 (defn- handle-drone-failed
-  "Handle drone failure from NATS — write to event journal, fire callback, and auto-shout."
+  "Handle drone failure — write to event journal, fire callback, and auto-shout."
   [{:keys [task-id parent-id error] :as _msg}]
-  (log/info "[NATS] drone failed:" task-id)
+  (log/info "[Bridge] drone failed:" task-id)
   (let [event-data {:status "failed"
                     :error error
                     :slave-id parent-id
                     :timestamp (System/currentTimeMillis)
-                    :via "nats-push"}]
+                    :via "backbone-push"}]
     (channel/record-nats-event! task-id event-data)
     (fire-callback-if-registered! task-id event-data)
     (auto-shout-drone-event!
@@ -115,21 +237,52 @@
      (str "Drone " task-id " failed: " (or error "unknown error")))))
 
 ;; =============================================================================
+;; Subscriber Side — Hivemind Shout Fanout (M1, protocol-mediated)
+;; =============================================================================
+
+(defn- handle-shout-fanout!
+  "Fanout a shout to all registered IDeliveryChannels.
+   Single backbone subscription, multiple local deliveries via protocol registry.
+   Each delivery is independent and non-fatal."
+  [payload]
+  (dc/fanout! payload))
+
+;; =============================================================================
+;; Subscriber Side — Tool Notification Fanout (M1)
+;; =============================================================================
+
+(defn- handle-tool-notification!
+  "Fanout a tool notification to all registered IDeliveryChannels.
+   Same pattern as shout fanout — single backbone subscription, protocol registry fanout."
+  [payload]
+  (dc/fanout! payload))
+
+;; =============================================================================
 ;; Lifecycle
 ;; =============================================================================
 
 (defn start-subscriptions!
-  "Subscribe to drone completion/failure events on NATS.
-   No-op if NATS is not connected."
+  "Subscribe to all event subjects via IEventBackbone.
+   Drone events + hivemind shout fanout + tool notification fanout.
+   No-op if backbone is not connected."
   []
-  (when (nats/connected?)
-    (nats/subscribe! (wildcard-subject :completed) handle-drone-completed)
-    (nats/subscribe! (wildcard-subject :failed) handle-drone-failed)
-    (log/info "[NATS] Bridge subscriptions started")))
+  (let [backbone (eb/get-backbone)]
+    (when (eb/connected? backbone)
+      ;; Drone subscriptions (existing)
+      (eb/subscribe! backbone (wildcard-subject :completed) handle-drone-completed)
+      (eb/subscribe! backbone (wildcard-subject :failed) handle-drone-failed)
+      ;; Shout fanout subscription (M1 — protocol-mediated)
+      (eb/subscribe! backbone (shout-wildcard) handle-shout-fanout!)
+      ;; Tool notification fanout subscription (M1)
+      (eb/subscribe! backbone (tool-wildcard) handle-tool-notification!)
+      (log/info "[Bridge] Subscriptions started (drone + shout + tool fanout)"))))
 
 (defn stop-subscriptions!
-  "Unsubscribe from drone events on NATS."
+  "Unsubscribe from all event subjects via IEventBackbone."
   []
-  (nats/unsubscribe! (wildcard-subject :completed))
-  (nats/unsubscribe! (wildcard-subject :failed))
-  (log/info "[NATS] Bridge subscriptions stopped"))
+  (let [backbone (eb/get-backbone)]
+    (eb/unsubscribe! backbone (wildcard-subject :completed))
+    (eb/unsubscribe! backbone (wildcard-subject :failed))
+    (eb/unsubscribe! backbone (shout-wildcard))
+    (eb/unsubscribe! backbone (tool-wildcard))
+    (log/info "[Bridge] Subscriptions stopped")))

@@ -104,8 +104,11 @@
 ;; =============================================================================
 
 (defn- spawn-ling-for-task
-  "Attempt to spawn a ling for a single DAG task. Returns Result."
-  [task-id title {:keys [cwd presets project-id]}]
+  "Attempt to spawn a ling for a single DAG task. Returns Result.
+   When :prefer-lightweight? is true (default), uses :headless spawn mode
+   which routes to TransparentAgenticLoop (~2MB vs ~280MB ProcessBuilder)."
+  [task-id title {:keys [cwd presets project-id prefer-lightweight?]
+                  :or {prefer-lightweight? true}}]
   (let [safe-title (-> (or title "task")
                        str/lower-case
                        (str/replace #"[^a-z0-9]+" "-"))
@@ -113,11 +116,13 @@
         ling-id (str "swarm-dag-" truncated "-" (System/currentTimeMillis))]
     (result/try-effect* :dag/spawn-failed
                         (ling/create-ling! ling-id
-                                           {:cwd cwd
-                                            :presets (or presets ["ling"])
-                                            :project-id project-id
-                                            :kanban-task-id task-id
-                                            :task title})
+                                           (cond-> {:cwd cwd
+                                                    :presets (or presets ["ling"])
+                                                    :project-id project-id
+                                                    :kanban-task-id task-id
+                                                    :task title}
+                                             prefer-lightweight?
+                                             (assoc :spawn-mode :headless)))
                         ling-id)))
 
 (defn dispatch-wave!

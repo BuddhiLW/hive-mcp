@@ -56,7 +56,6 @@
       (catch Exception e
         (log/warn "Embedding warmup failed (non-fatal):" (ex-message e))))))
 
-
 ;; =============================================================================
 ;; Hot-Reload State
 ;; =============================================================================
@@ -391,17 +390,30 @@
 ;; =============================================================================
 
 (defn init-nats!
-  "Initialize NATS client + bridge + callback listener for push-based drone notifications.
-   Startup sequence: NATS connect → bridge subscribe → callback listener start.
+  "Initialize NATS client + bridge + backbone + delivery channels for universal event backbone.
+   Startup sequence: NATS connect → set IEventBackbone → register delivery channels → bridge subscribe → callback listener.
    Opt-in via config: services.nats.enabled = true.
-   Non-fatal: system degrades to polling if NATS unavailable."
+   Non-fatal: system degrades to NoopBackbone + polling if NATS unavailable."
   []
+  ;; M1: Register delivery channels unconditionally — needed for both NATS and direct fallback
+  (try
+    (when-let [reg-channels! (requiring-resolve 'hive-mcp.delivery.channels/register-default-channels!)]
+      (reg-channels!))
+    (catch Exception e
+      (log/warn "[init] Failed to register delivery channels (non-fatal):" (ex-message e))))
+  ;; NATS backbone — opt-in via config
   (result/rescue nil
                  (let [nats-config (global-config/get-service-config :nats)]
                    (when (:enabled nats-config)
                      (let [start! (requiring-resolve 'hive-mcp.nats.client/start!)
-                           bridge! (requiring-resolve 'hive-mcp.nats.bridge/start-subscriptions!)]
+                           bridge! (requiring-resolve 'hive-mcp.nats.bridge/start-subscriptions!)
+                           create-bb (requiring-resolve 'hive-mcp.nats.backbone/create-backbone)
+                           set-bb! (requiring-resolve 'hive-mcp.protocols.event-backbone/set-backbone!)]
                        (start! nats-config)
+                       ;; M1: Wire NatsBackbone as active IEventBackbone
+                       (let [bb (create-bb)]
+                         (set-bb! bb)
+                         (log/info "[init] NatsBackbone set as active IEventBackbone"))
                        (bridge!)
                        (when-let [cb-start (requiring-resolve 'hive-mcp.swarm.callback/start-listener!)]
                          (cb-start)))))))

@@ -254,16 +254,22 @@
       :project-id project-id})
     (mcp-json (task->slim updated))))
 
-(defn- move* [{:keys [task_id new_status directory]}]
-  (if-let [_ (valid-statuses new_status)]
-    (if-let [entry (chroma/get-entry-by-id task_id)]
-      (if-let [_ (kanban-task-type? (:content entry))]
-        (case new_status
-          "done" (move-to-done! entry task_id)
-          (move-to-status! entry task_id new_status directory))
-        (mcp-error (str "Entry is not a kanban task: " task_id)))
-      (mcp-error (str "Task not found: " task_id)))
-    (mcp-error (str "Invalid status: " new_status ". Valid: todo, doing, review, done"))))
+(defn- move* [{:keys [task_id new_status status id directory]}]
+  ;; Normalize param aliases: DSL/multi may pass :status instead of :new_status,
+  ;; and :id instead of :task_id. In the update context these are unambiguous.
+  ;; Also normalize MCP enum values (inprogress→doing, inreview→review).
+  (let [raw-status (or new_status status)
+        new_status (get status-enum->tag raw-status raw-status)
+        task_id    (or task_id id)]
+    (if-let [_ (valid-statuses new_status)]
+      (if-let [entry (chroma/get-entry-by-id task_id)]
+        (if-let [_ (kanban-task-type? (:content entry))]
+          (case new_status
+            "done" (move-to-done! entry task_id)
+            (move-to-status! entry task_id new_status directory))
+          (mcp-error (str "Entry is not a kanban task: " task_id)))
+        (mcp-error (str "Task not found: " task_id)))
+      (mcp-error (str "Invalid status: " new_status ". Valid: todo, doing, review, done")))))
 
 (defn- stats* [{:keys [directory include_descendants]
                 :or {include_descendants true}}]

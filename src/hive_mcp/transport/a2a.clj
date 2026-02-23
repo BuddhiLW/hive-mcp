@@ -21,7 +21,8 @@
             [hive-mcp.dns.result :as result]
             [hive-mcp.swarm.datascript.queries :as ds-queries]
             [hive-mcp.transport.a2a.schema :as schema]
-            [hive-mcp.transport.a2a.handlers :as handlers]))
+            [hive-mcp.transport.a2a.handlers :as handlers]
+            [hive-mcp.concurrency.pool :as pool]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -170,7 +171,7 @@
                                      task-id "working" "Connected to SSE stream"))
                           "\n\n"))
       ;; Background loop: forward matching channel events to SSE
-      (future
+      (pool/with-io
         (try
           (loop []
             (when-let [event (async/<!! event-ch)]

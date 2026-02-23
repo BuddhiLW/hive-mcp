@@ -80,6 +80,7 @@
 
   (:require [hive.events.fsm :as fsm]
             [hive-mcp.dns.result :as result]
+            [hive-mcp.concurrency.pool :as pool]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -167,9 +168,9 @@
     ;; No query-fn: return empty vectors for all categories
     (reduce (fn [acc [data-key _ _ _]] (assoc acc data-key []))
             {} standard-queries)
-    ;; Fire all standard queries as parallel futures
+    ;; Fire all standard queries as parallel futures (bounded by IO pool)
     (let [futures (mapv (fn [[data-key type tags limit]]
-                          [data-key (future (or (query-fn type tags project-id limit) []))])
+                          [data-key (pool/with-io (or (query-fn type tags project-id limit) []))])
                         standard-queries)]
       (reduce (fn [acc [data-key fut]]
                 (assoc acc data-key (safe-deref fut query-timeout-ms [])))
@@ -186,9 +187,9 @@
    Axioms and expiring fire in parallel (Wave 1), then conventions runs
    after axiom results are available (Wave 2)."
   [resources project-id standard-results]
-  (let [;; Wave 1: Fire independent queries in parallel
-        f-axioms   (future (or (call-resource resources :query-axioms-fn project-id) []))
-        f-expiring (future (or (call-resource resources :query-expiring-fn project-id 20) []))
+  (let [;; Wave 1: Fire independent queries in parallel (bounded by IO pool)
+        f-axioms   (pool/with-io (or (call-resource resources :query-axioms-fn project-id) []))
+        f-expiring (pool/with-io (or (call-resource resources :query-expiring-fn project-id 20) []))
 
         ;; Wave 1: Collect independent results
         axioms   (safe-deref f-axioms query-timeout-ms [])
@@ -312,7 +313,7 @@
   [resources data]
   (if-let [f (:addon-fn resources)]
     (let [result (safe-deref
-                  (future (f data))
+                  (pool/with-io (f data))
                   query-timeout-ms nil)]
       (if result
         (merge data result)
@@ -328,16 +329,16 @@
   [resources data]
   (let [directory  (:directory data)
         project-id (:project-id data)
-        ;; Fire all independent maintenance tasks in parallel
-        f-permeation  (future (safe-call resources :permeate-fn
-                                         [directory]
-                                         {:permeated 0 :error "permeation failed"}))
-        f-tree-scan   (future (safe-call resources :tree-scan-fn
-                                         [(or directory ".")]
-                                         {:scanned false :error "tree scan failed"}))
-        f-disc-decay  (future (safe-call resources :disc-decay-fn
-                                         [project-id]
-                                         {:updated 0 :skipped 0 :errors 1}))]
+        ;; Fire all independent maintenance tasks in parallel (bounded by IO pool)
+        f-permeation  (pool/with-io (safe-call resources :permeate-fn
+                                               [directory]
+                                               {:permeated 0 :error "permeation failed"}))
+        f-tree-scan   (pool/with-io (safe-call resources :tree-scan-fn
+                                               [(or directory ".")]
+                                               {:scanned false :error "tree scan failed"}))
+        f-disc-decay  (pool/with-io (safe-call resources :disc-decay-fn
+                                               [project-id]
+                                               {:updated 0 :skipped 0 :errors 1}))]
     (assoc data
            :permeation (or (safe-deref f-permeation query-timeout-ms
                                        {:permeated 0 :error "permeation timed out"})

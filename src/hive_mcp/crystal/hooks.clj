@@ -19,6 +19,7 @@
             [hive-mcp.extensions.registry :as ext]
             [hive-mcp.chroma.core :as chroma]
             [hive-mcp.dns.result :as result]
+            [hive-mcp.concurrency.pool :as pool]
             [clojure.data.json :as json]
             [clojure.java.shell :refer [sh]]
             [clojure.string :as str]
@@ -363,10 +364,11 @@
                         t0 (System/currentTimeMillis)
                         ;; Fire all 3 harvests in parallel using DIRECT functions
                         ;; (bypass Emacs serialization — JVM-native Chroma + git)
-                        f-progress (future (harvest-progress-direct {:directory dir}))
-                        f-tasks    (future (harvest-tasks-direct {:directory dir}))
-                        f-commits  (future (harvest-commits-direct {:directory dir :agent-id effective-agent}))
-                        f-recalls  (future (result/rescue {} (recall/get-buffered-recalls)))
+                        ;; Bounded by shared IO pool
+                        f-progress (pool/with-io (harvest-progress-direct {:directory dir}))
+                        f-tasks    (pool/with-io (harvest-tasks-direct {:directory dir}))
+                        f-commits  (pool/with-io (harvest-commits-direct {:directory dir :agent-id effective-agent}))
+                        f-recalls  (pool/with-io (result/rescue {} (recall/get-buffered-recalls)))
                         ;; Collect with 10s timeout (direct calls: Chroma ~200ms, git ~100ms)
                         harvest-timeout 10000
                         progress (deref f-progress harvest-timeout {:notes [] :count 0 :error {:type :harvest-timeout :fn "harvest-session-progress"}})
@@ -461,8 +463,8 @@
   [project-id directory & {:keys [harvested]}]
   (let [scope-arg [{:scope project-id :created-by "crystallize-session"}]
         run (fn [k noop args]
-              (future (surface-rescue-error
-                       (result/rescue noop (delegate-or-noop k noop args)))))
+              (pool/with-io (surface-rescue-error
+                             (result/rescue noop (delegate-or-noop k noop args)))))
         fa (run :ch/a noop-a scope-arg)
         fb (run :ch/b noop-b scope-arg)
         fc (run :ch/c noop-c [{:directory directory :limit 100}])
@@ -537,7 +539,7 @@
             tags (scope/inject-project-scope base-tags project-id)
             expires (dur/calculate-expires "short")
             ;; Start lifecycle ops NOW — they run concurrently with embedding
-            lifecycle-fut (future (run-lifecycle-ops! project-id directory :harvested harvested))
+            lifecycle-fut (pool/with-io (run-lifecycle-ops! project-id directory :harvested harvested))
             t0 (System/currentTimeMillis)
             store-r (result/try-effect* :crystal/store-failed
                                         (chroma/index-memory-entry!

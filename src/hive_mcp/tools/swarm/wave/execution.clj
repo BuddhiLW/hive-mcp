@@ -6,6 +6,7 @@
             [hive-mcp.swarm.datascript :as ds]
             [hive-mcp.agent.core :as agent]
             [hive-mcp.knowledge-graph.disc :as kg-disc]
+            [hive-mcp.concurrency.pool :as pool]
             [taoensso.timbre :as log]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -190,7 +191,7 @@
         item-count (count items)
         spec-with-wave (assoc wave-spec :wave-id wave-id)]
 
-    (future
+    (pool/with-io
       (try
         (run-wave! spec-with-wave items)
         (catch Throwable e
