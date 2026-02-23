@@ -2,6 +2,7 @@
 .cpcache/
 .nrepl-port
 *.jar
+!lib/persistent-sorted-set-0.3.118.jar
 target/
 
 # IDE
