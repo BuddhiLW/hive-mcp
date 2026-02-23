@@ -15,10 +15,9 @@
   #{:implements :supersedes :refines :contradicts
     :depends-on :derived-from :applies-to})
 
-(defonce ^:private relation-type-extensions
-  "Registry atom for addon-contributed relation types.
-   Merged into relation-types at call time."
-  (atom #{}))
+;; Registry atom for addon-contributed relation types.
+;; Merged into relation-types at call time.
+(defonce ^:private relation-type-extensions (atom #{}))
 
 (defn register-relation-type!
   "Register an additional relation type from an addon.
@@ -261,10 +260,9 @@
 ;; initialization happens at startup before tool handlers run, so timing
 ;; is safe. DataScript schema is immutable after d/create-conn.
 
-(defonce ^:private kg-schema-extensions
-  "Registry atom for addon-contributed KG schema attributes.
-   Merged into full-schema at connection creation time."
-  (atom {}))
+;; Registry atom for addon-contributed KG schema attributes.
+;; Merged into full-schema at connection creation time.
+(defonce ^:private kg-schema-extensions (atom {}))
 
 (defn register-kg-schema!
   "Register additional DataScript schema attributes from an addon.
