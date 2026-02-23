@@ -43,7 +43,7 @@
         ;; Datahike for immutable graph storage with branching/time-travel
         ;; Content-addressable, supports branch/merge for multi-ling exploration
         ;; Part of replikativ ecosystem (pairs with yggdrasil)
-        org.replikativ/datahike {:mvn/version "0.7.1647"}
+        org.replikativ/datahike {:mvn/version "0.7.1650"}
 
         ;; Logging - SLF4J with Logback backend
         ;; clojure.tools.logging provides the Clojure facade
@@ -101,7 +101,7 @@
         ;; java-diff-utils for proper unified diff computation (hunks, context)
         ;; Used by drone diff protocol for token-efficient diff storage
         io.github.java-diff-utils/java-diff-utils {:mvn/version "4.15"}
-        org.replikativ/yggdrasil {:mvn/version "0.2.14"}
+        org.replikativ/yggdrasil {:mvn/version "0.2.20"}
 
         ;; Kabel — WebSocket transport for distributed Datahike writer backend
         ;; Symmetric peer-to-peer with middleware, transit/fressian serialization
