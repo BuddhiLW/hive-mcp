@@ -85,10 +85,9 @@
    :workflow   {:description "Workflow patterns" :abstraction 3 :duration :medium :mcp? false :catchup nil}
    :recipe     {:description "Recipe patterns" :abstraction 3 :duration :medium :mcp? false :catchup nil}))
 
-(defonce ^:private registry-extensions
-  "Addon-contributed memory types. Merged into registry at query time.
-   Register via register-memory-type! / register-memory-types! at addon init."
-  (atom {}))
+;; Addon-contributed memory types. Merged into registry at query time.
+;; Register via register-memory-type! / register-memory-types! at addon init.
+(defonce ^:private registry-extensions (atom {}))
 
 (defn register-memory-type!
   "Register an addon-contributed memory type.

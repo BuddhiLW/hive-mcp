@@ -141,6 +141,15 @@
   (proto/get-store))
 
 ;; =============================================================================
+;; Transaction Batching (Dynamic Var)
+;; =============================================================================
+
+(def ^:dynamic *tx-batch*
+  "When bound to an atom, transact! accumulates tx-data instead of writing.
+   Use with-tx-batch to bind. nil means normal (immediate) transact behavior."
+  nil)
+
+;; =============================================================================
 ;; Backward-Compatible API
 ;; =============================================================================
 
@@ -168,9 +177,35 @@
 
 (defn transact!
   "Transact data to the KG database.
-   Delegates to the active store."
+   When *tx-batch* is bound (via with-tx-batch), accumulates tx-data
+   for a single batched write. Otherwise delegates immediately to the store."
   [tx-data]
-  (proto/transact! (ensure-store!) tx-data))
+  (if *tx-batch*
+    (swap! *tx-batch* into (if (map? tx-data) [tx-data] tx-data))
+    (proto/transact! (ensure-store!) tx-data)))
+
+(defmacro with-tx-batch
+  "Collect all transact! calls within body into a single transaction.
+   Transparent to callers — existing transact! usage doesn't change.
+
+   Usage:
+     (with-tx-batch
+       (transact! [{:kg-edge/from \"a\" :kg-edge/to \"b\"}])
+       (transact! [{:kg-edge/from \"c\" :kg-edge/to \"d\"}]))
+     ;; => single transact! with both edges
+
+   Nested with-tx-batch is safe: inner batch accumulates into outer."
+  [& body]
+  `(if *tx-batch*
+     ;; Already batching (nested) — just run body, data accumulates to outer batch
+     (do ~@body)
+     ;; Outermost batch — collect and flush
+     (let [batch# (atom [])]
+       (binding [*tx-batch* batch#]
+         (let [result# (do ~@body)]
+           (when (seq @batch#)
+             (proto/transact! (#'ensure-store!) @batch#))
+           result#)))))
 
 (defn query
   "Query the KG database.
