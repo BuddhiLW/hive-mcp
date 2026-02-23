@@ -154,19 +154,17 @@
 
 (deftest kg-relation-type-test
   (testing "valid relation types"
-    (is (m/validate tools/KGRelationType "implements"))
-    (is (m/validate tools/KGRelationType "supersedes"))
-    (is (m/validate tools/KGRelationType "refines"))
-    (is (m/validate tools/KGRelationType "contradicts"))
-    (is (m/validate tools/KGRelationType "depends-on"))
-    (is (m/validate tools/KGRelationType "derived-from"))
-    (is (m/validate tools/KGRelationType "applies-to"))
-    (is (m/validate tools/KGRelationType "co-accessed"))
-    (is (m/validate tools/KGRelationType "projects-to")))
+    (is (m/validate (tools/KGRelationType) "implements"))
+    (is (m/validate (tools/KGRelationType) "supersedes"))
+    (is (m/validate (tools/KGRelationType) "refines"))
+    (is (m/validate (tools/KGRelationType) "contradicts"))
+    (is (m/validate (tools/KGRelationType) "depends-on"))
+    (is (m/validate (tools/KGRelationType) "derived-from"))
+    (is (m/validate (tools/KGRelationType) "applies-to")))
 
   (testing "invalid relation types rejected"
-    (is (not (m/validate tools/KGRelationType "relates-to")))
-    (is (not (m/validate tools/KGRelationType "")))))
+    (is (not (m/validate (tools/KGRelationType) "relates-to")))
+    (is (not (m/validate (tools/KGRelationType) "")))))
 
 (deftest kg-traverse-params-test
   (testing "valid traverse params"

@@ -13,8 +13,10 @@
 ;; =============================================================================
 
 (def MemoryType
-  "Valid memory entry types. Derived from type-registry (SST)."
-  (into [:enum] type-registry/all-type-strings))
+  "Valid memory entry types. Derived from type-registry (SST).
+   Note: captures core types at load time. Extension types are validated
+   dynamically via type-registry/valid-type? at runtime."
+  (into [:enum] (type-registry/all-type-strings)))
 
 (def MemoryDuration
   "Valid duration values for memory entries."

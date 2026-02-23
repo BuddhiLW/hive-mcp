@@ -27,12 +27,36 @@
 (declare scope-boost)
 
 ;; =============================================================================
-;; Recall Context Weights (data — kept inline for backward compat)
+;; Crystal Config Registry (OCP: injectable domain constants)
 ;; =============================================================================
 
-(def recall-weights
-  "Weights for different recall contexts.
-   Higher = more meaningful signal for promotion."
+(defonce ^:private crystal-config-extensions (atom {}))
+
+(defn register-crystal-config!
+  "Register crystal domain configuration values.
+   config-map: {:recall-weights {...} :promotion-thresholds {...}}
+   Thread-safe, idempotent (merges with existing)."
+  [config-map]
+  (swap! crystal-config-extensions merge config-map))
+
+(defn get-crystal-config
+  "Look up a registered crystal config by key."
+  [k]
+  (get @crystal-config-extensions k))
+
+(defn get-crystal-config-or
+  "Look up a registered crystal config by key, with default fallback."
+  [k default]
+  (get @crystal-config-extensions k default))
+
+;; =============================================================================
+;; Recall Context Weights (defaults — overridable via crystal config registry)
+;; =============================================================================
+
+(def default-recall-weights
+  "Default weights for different recall contexts.
+   Higher = more meaningful signal for promotion.
+   Can be overridden via register-crystal-config!"
   {:catchup-structural 0.1
    :wrap-structural 0.1
    :explicit-reference 1.0
@@ -43,20 +67,34 @@
    :behavioral-failure 0.0
    :behavioral-correction -2.0})
 
-(def promotion-thresholds
-  "Score thresholds for promotion between durations."
+(defn recall-weights
+  "Weights for different recall contexts.
+   Returns registered config if available, otherwise defaults."
+  []
+  (get-crystal-config-or :recall-weights default-recall-weights))
+
+(def default-promotion-thresholds
+  "Default score thresholds for promotion between durations.
+   Can be overridden via register-crystal-config!"
   {:ephemeral->short 5.0
    :short->medium 10.0
    :medium->long 15.0
    :long->permanent 25.0})
+
+(defn promotion-thresholds
+  "Score thresholds for promotion between durations.
+   Returns registered config if available, otherwise defaults."
+  []
+  (get-crystal-config-or :promotion-thresholds default-promotion-thresholds))
 
 ;; =============================================================================
 ;; Score Calculation — delegates to :cc/promotion-score
 ;; =============================================================================
 
 (defn- calculate-promotion-score-fallback [recalls]
-  (let [breakdown (for [{:keys [context count] :or {count 1}} recalls
-                        :let [weight (get recall-weights context 1.0)
+  (let [rw (recall-weights)
+        breakdown (for [{:keys [context count] :or {count 1}} recalls
+                        :let [weight (get rw context 1.0)
                               contribution (* weight count)]]
                     {:context context :weight weight :count count :contribution contribution})
         total-score (reduce + 0.0 (map :contribution breakdown))]
@@ -89,15 +127,16 @@
 (defn threshold-for-duration
   "Get promotion threshold for current duration."
   [duration]
-  (case (keyword duration)
-    :ephemeral (:ephemeral->short promotion-thresholds)
-    :short (:short->medium promotion-thresholds)
-    :short-term (:short->medium promotion-thresholds)
-    :medium (:medium->long promotion-thresholds)
-    :long (:long->permanent promotion-thresholds)
-    :long-term (:long->permanent promotion-thresholds)
-    :permanent Double/MAX_VALUE
-    10.0))
+  (let [pt (promotion-thresholds)]
+    (case (keyword duration)
+      :ephemeral (:ephemeral->short pt)
+      :short (:short->medium pt)
+      :short-term (:short->medium pt)
+      :medium (:medium->long pt)
+      :long (:long->permanent pt)
+      :long-term (:long->permanent pt)
+      :permanent Double/MAX_VALUE
+      10.0)))
 
 ;; =============================================================================
 ;; Promotion / Demotion — delegates to :cc/should-promote, :cc/should-demote

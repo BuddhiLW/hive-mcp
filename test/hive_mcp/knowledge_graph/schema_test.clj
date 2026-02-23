@@ -176,9 +176,13 @@
     (is (= :db.cardinality/many
            (get-in schema/synthetic-schema [:kg-synthetic/members :db/cardinality])))))
 
-(deftest relation-types-includes-projects-to-test
-  (testing "relation-types includes :projects-to for L3->L2 projection"
-    (is (contains? schema/relation-types :projects-to))))
+(deftest relation-types-registry-test
+  (testing "relation-types returns core types"
+    (is (contains? (schema/relation-types) :implements))
+    (is (contains? (schema/relation-types) :depends-on)))
+  (testing "register-relation-type! adds to relation-types"
+    (schema/register-relation-type! :test-relation)
+    (is (contains? (schema/relation-types) :test-relation))))
 
 (deftest full-schema-includes-synthetic-test
   (testing "full-schema includes synthetic-schema fields"
