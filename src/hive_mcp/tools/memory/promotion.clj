@@ -9,6 +9,7 @@
             [hive-mcp.tools.memory.duration :as dur]
             [hive-mcp.tools.core :refer [mcp-json]]
             [hive-mcp.crystal.core :as crystal]
+            [hive-mcp.memory.temporal :as temporal]
             [hive-mcp.chroma.core :as chroma]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -61,6 +62,14 @@
   (let [expires (dur/calculate-expires final-duration)]
     (chroma/update-entry! id {:duration final-duration
                               :expires (or expires "")})
+    ;; Temporal dual-write: record duration promotion
+    (temporal/record-mutation-silent!
+     {:entry-id       id
+      :op             :promote
+      :data           {:old-duration original-duration
+                       :new-duration final-duration
+                       :tiers-promoted tiers-promoted}
+      :previous-value {:duration original-duration}})
     (log/info "Cross-pollination auto-promote:" id
               original-duration "->" final-duration
               "(tiers:" tiers-promoted ")")

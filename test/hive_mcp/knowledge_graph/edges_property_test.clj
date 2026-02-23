@@ -66,7 +66,7 @@
 
 (def gen-relation
   "Generator for valid relation types from schema."
-  (gen/elements (vec schema/relation-types)))
+  (gen/elements (vec (schema/relation-types))))
 
 (def gen-confidence
   "Generator for valid confidence scores in [0.0, 1.0]."
@@ -227,7 +227,7 @@
     (dotimes [_ 20]
       (edges/add-edge! {:from (str "stat-" (random-uuid))
                         :to (str "stat-" (random-uuid))
-                        :relation (rand-nth (vec schema/relation-types))}))
+                        :relation (rand-nth (vec (schema/relation-types)))}))
     (let [stats (edges/edge-stats)
           relation-sum (reduce + 0 (vals (:by-relation stats)))]
       (is (= (:total-edges stats) relation-sum)
@@ -293,7 +293,7 @@
     (dotimes [_ 15]
       (edges/add-edge! {:from (str "cnt-" (random-uuid))
                         :to (str "cnt-" (random-uuid))
-                        :relation (rand-nth (vec schema/relation-types))}))
+                        :relation (rand-nth (vec (schema/relation-types)))}))
     (is (= (edges/count-edges) (count (edges/get-all-edges))))))
 
 ;; =============================================================================

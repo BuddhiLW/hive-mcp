@@ -26,12 +26,13 @@
 ;; ── Forge State ─────────────────────────────────────────────────────────────
 
 (defonce ^:private forge-state
-  (atom {:quenched?       false
-         :last-strike     nil
-         :last-fsm-result nil
-         :total-smited    0
-         :total-sparked   0
-         :total-strikes   0}))
+  (atom {:quenched?           false
+         :strike-in-progress? false
+         :last-strike         nil
+         :last-fsm-result     nil
+         :total-smited        0
+         :total-sparked       0
+         :total-strikes       0}))
 
 ;; ── Forge Strike Handlers ───────────────────────────────────────────────────
 
@@ -58,7 +59,10 @@
 
    Defense-in-depth: denies forge-strike when called from a child ling process
    (HIVE_MCP_ROLE=child-ling). Forge-strike spawns agents, which must be
-   restricted to the coordinator to prevent recursive self-call chains."
+   restricted to the coordinator to prevent recursive self-call chains.
+
+   Non-blocking: the FSM execution runs in a background future. Returns
+   immediately with a queued ack. Check progress via 'forge status'."
   [params]
   ;; Layer 3: Defense-in-depth forge-strike guard
   (if (guards/child-ling?)
@@ -80,7 +84,21 @@
         (do
           (log/warn "FORGE STRIKE: legacy mode enabled via config. Using imperative path.")
           (handle-forge-strike-legacy params))
-        (do-forge-strike-fsm params)))))
+        (let [cfg-spawn-mode (config/get-service-value :forge :spawn-mode :default nil)
+              effective-params (cond-> params
+                                 (and cfg-spawn-mode (not (:spawn_mode params)))
+                                 (assoc :spawn_mode cfg-spawn-mode))]
+          (swap! forge-state assoc :strike-in-progress? true)
+          (future
+            (try
+              (let [result (forge-cycle/fsm-forge-strike* effective-params forge-state)]
+                (swap! forge-state assoc :last-fsm-result result))
+              (catch Exception e
+                (log/error e "forge-strike background execution failed"))
+              (finally
+                (swap! forge-state assoc :strike-in-progress? false))))
+          (mcp-json {:queued true
+                     :message "Forge strike started in background. Check 'forge status' for results."}))))))
 
 ;; ── Forge Status ────────────────────────────────────────────────────────────
 

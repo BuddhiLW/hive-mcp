@@ -58,10 +58,7 @@
      :entry->meta-fns      {:axiom   (fn [e] (assoc e :T "axiom"))
                             :priority (fn [e] (assoc e :T "priority"))
                             :catchup  (fn [e] (assoc e :T "catchup"))}
-     :kg-enrich-fn         (fn [entries] {:entries (mapv #(assoc % :kg-enriched true) entries)
-                                          :kg-count (count entries)})
-     :kg-insights-fn       (fn [_d _c _s _pid] {:supersedes-count 0 :depends-on-count 1})
-     :co-access-fn         (fn [_ids _exclude] [])
+     :addon-fn             (fn [data] {:addon-data {:processed true}})
      :permeate-fn          (fn [_dir] {:permeated 2 :agents ["ling-1" "ling-2"]})
      :tree-scan-fn         (fn [_dir] {:scanned true :projects 3})
      :disc-decay-fn        (fn [_pid] {:updated 5 :skipped 0 :errors 0})
@@ -139,14 +136,20 @@
                     resources
                     {:directory "/test/project"}))))))
 
-(deftest test-catchup-session-query-failure
-  (testing "Query exception sets query-failed? and transitions to error"
+(deftest test-catchup-session-query-graceful-degradation
+  (testing "Individual query exceptions degrade gracefully with parallel futures"
     (let [resources (make-test-resources
-                     {:query-axioms-fn (fn [_] (throw (ex-info "Chroma down" {})))})]
-      (is (thrown? clojure.lang.ExceptionInfo
-                   (catchup/run-catchup-session
-                    resources
-                    {:directory "/test/project"}))))))
+                     {:query-axioms-fn (fn [_] (throw (ex-info "Chroma down" {})))})
+          result (catchup/run-catchup-session
+                  resources
+                  {:directory "/test/project"})]
+      ;; Parallel futures catch individual exceptions and return empty defaults.
+      ;; The session completes successfully with empty axioms (graceful degradation).
+      (is (= "hive-mcp" (:project-id result)))
+      (is (empty? (:axioms-meta result)))
+      ;; Other queries still succeed
+      (is (seq (:decisions-meta result)))
+      (is (seq (:sessions-meta result))))))
 
 ;; =============================================================================
 ;; Handler Unit Tests
@@ -201,15 +204,20 @@
       (is (seq (:snippets result)))
       (is (seq (:expiring result))))))
 
-(deftest test-handle-query-memory-failure
-  (testing "handle-query-memory catches exceptions and sets query-failed?"
+(deftest test-handle-query-memory-graceful-degradation
+  (testing "handle-query-memory degrades gracefully when individual queries throw"
     (let [resources {:query-axioms-fn (fn [_] (throw (ex-info "boom" {})))}
           result (catchup/handle-query-memory resources {:project-id "p1"})]
-      (is (true? (:query-failed? result)))
-      (is (string? (:error result))))))
+      ;; Parallel futures catch individual query exceptions via safe-deref.
+      ;; The query phase succeeds with empty axioms (graceful degradation).
+      (is (false? (:query-failed? result)))
+      (is (= [] (:axioms result)))
+      ;; Other categories still populated (empty because no query-fn provided)
+      (is (some? (:sessions result)))
+      (is (some? (:decisions result))))))
 
-(deftest test-handle-gather-context
-  (testing "handle-gather-context transforms entries to metadata"
+(deftest test-handle-transform
+  (testing "handle-transform transforms entries to metadata"
     (let [resources {:git-fn (fn [_] {:branch "dev"})
                      :entry->meta-fns {:axiom (fn [e] (assoc e :meta true))
                                        :priority (fn [e] (assoc e :meta true))
@@ -222,7 +230,7 @@
                 :conventions [{:id "c1"}]
                 :snippets [{:id "sn1"}]
                 :expiring [{:id "e1"}]}
-          result (catchup/handle-gather-context resources data)]
+          result (catchup/handle-transform resources data)]
       (is (= {:branch "dev"} (:git-info result)))
       (is (every? :meta (:axioms-meta result)))
       (is (every? :meta (:priority-meta result)))
@@ -231,36 +239,24 @@
       (is (every? :meta (:decisions-base result)))
       (is (every? :meta (:conventions-base result))))))
 
-(deftest test-handle-enrich-kg
-  (testing "handle-enrich-kg enriches decisions and conventions"
-    (let [resources {:kg-enrich-fn (fn [entries]
-                                     {:entries (mapv #(assoc % :enriched true) entries)
-                                      :kg-count (count entries)})
-                     :kg-insights-fn (fn [_ _ _ _] {:insight-count 1})
-                     :co-access-fn (fn [_ _] [])}
-          data {:decisions-base [{:id "d1"}]
-                :conventions-base [{:id "c1"}]
-                :sessions-meta [{:id "s1"}]
-                :axioms [] :priority-conventions []
-                :decisions [] :conventions [] :sessions []
-                :project-id "p1"}
-          result (catchup/handle-enrich-kg resources data)]
-      (is (every? :enriched (:decisions-meta result)))
-      (is (every? :enriched (:conventions-meta result)))
-      (is (= 1 (get-in result [:kg-insights :insight-count]))))))
+(deftest test-handle-addon-pass
+  (testing "addon-pass merges addon result into data"
+    (let [resources {:addon-fn (fn [data] {:addon-data {:count 1}})}
+          data {:project-id "p1"}
+          result (catchup/handle-addon-pass resources data)]
+      (is (= {:count 1} (:addon-data result)))))
 
-(deftest test-handle-enrich-kg-no-enrichment-fn
-  (testing "handle-enrich-kg passes through when no kg-enrich-fn"
+  (testing "addon-pass is pass-through when no addon-fn"
     (let [resources {}
-          data {:decisions-base [{:id "d1"}]
-                :conventions-base [{:id "c1"}]
-                :sessions-meta []
-                :axioms [] :priority-conventions []
-                :decisions [] :conventions [] :sessions []
-                :project-id "p1"}
-          result (catchup/handle-enrich-kg resources data)]
-      (is (= [{:id "d1"}] (:decisions-meta result)))
-      (is (= [{:id "c1"}] (:conventions-meta result))))))
+          data {:project-id "p1" :decisions-base [{:id "d1"}]}
+          result (catchup/handle-addon-pass resources data)]
+      (is (= data result))))
+
+  (testing "addon-pass degrades gracefully when addon throws"
+    (let [resources {:addon-fn (fn [_] (throw (ex-info "unavailable" {})))}
+          data {:project-id "p1"}
+          result (catchup/handle-addon-pass resources data)]
+      (is (= data result)))))
 
 (deftest test-handle-maintenance
   (testing "handle-maintenance runs all maintenance tasks"

@@ -355,7 +355,7 @@
                     (.bind addr))
         clients (atom {})
         running? (atom true)
-        executor (Executors/newCachedThreadPool)
+        executor (Executors/newFixedThreadPool 16)
         server (->UnixServer path server-ch clients running? executor)]
 
     ;; Accept loop in background thread
@@ -415,7 +415,7 @@
                     (.bind addr))
         clients (atom {})
         running? (atom true)
-        executor (Executors/newCachedThreadPool)
+        executor (Executors/newFixedThreadPool 8)
         server (->TCPServer port server-ch clients running? executor)]
 
     ;; Accept loop in background thread

@@ -2,7 +2,8 @@
   "Malli schemas for MCP tool parameters."
 
   (:require [malli.core :as m]
-            [hive-mcp.schema.memory :as mem]))
+            [hive-mcp.schema.memory :as mem]
+            [hive-mcp.knowledge-graph.schema :as kg-schema]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -152,12 +153,11 @@
 ;; Knowledge Graph Tool Schemas
 ;; =============================================================================
 
-(def KGRelationType
-  "Valid KG edge relation types."
-  [:enum
-   "implements" "supersedes" "refines" "contradicts"
-   "depends-on" "derived-from" "applies-to" "co-accessed"
-   "projects-to"])
+(defn KGRelationType
+  "Valid KG edge relation types.
+   Derives dynamically from schema/relation-types to include registered extensions."
+  []
+  (into [:enum] (map name (kg-schema/relation-types))))
 
 (def KGSourceType
   "How an edge was established."
@@ -172,7 +172,7 @@
   [:map
    [:from NonEmptyString]
    [:to NonEmptyString]
-   [:relation KGRelationType]
+   [:relation (KGRelationType)]
    [:scope {:optional true} OptionalString]
    [:confidence {:optional true} [:maybe Confidence]]
    [:created_by {:optional true} OptionalString]
@@ -183,7 +183,7 @@
   [:map
    [:start_node NonEmptyString]
    [:direction {:optional true} [:maybe KGDirection]]
-   [:relations {:optional true} [:maybe [:or [:vector KGRelationType] KGRelationType]]]
+   [:relations {:optional true} [:maybe [:or [:vector (KGRelationType)] (KGRelationType)]]]
    [:max_depth {:optional true} [:maybe PositiveInt]]
    [:scope {:optional true} OptionalString]])
 
@@ -206,7 +206,7 @@
    [:from_node NonEmptyString]
    [:to_node NonEmptyString]
    [:max_depth {:optional true} [:maybe PositiveInt]]
-   [:relations {:optional true} [:maybe [:vector KGRelationType]]]])
+   [:relations {:optional true} [:maybe [:vector (KGRelationType)]]]])
 
 (def KGSubgraphParams
   "Parameters for KG subgraph extraction."

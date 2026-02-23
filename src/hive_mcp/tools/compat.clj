@@ -466,6 +466,194 @@
   (make-shim "magit_feature_branches" :magit "feature-branches"))
 
 ;; =============================================================================
+;; Deprecation Shims - Emacs/Buffer
+;; =============================================================================
+
+(def eval-elisp-shim
+  "DEPRECATED: Use `emacs eval` instead."
+  (make-shim "eval_elisp" :emacs "eval"))
+
+(def emacs-status-shim
+  "DEPRECATED: Use `emacs status` instead."
+  (make-shim "emacs_status" :emacs "status"))
+
+(def list-buffers-shim
+  "DEPRECATED: Use `emacs buffers` instead."
+  (make-shim "list_buffers" :emacs "buffers"))
+
+(def current-buffer-shim
+  "DEPRECATED: Use `emacs current` instead."
+  (make-shim "current_buffer" :emacs "current"))
+
+(def switch-to-buffer-shim
+  "DEPRECATED: Use `emacs switch` instead."
+  (make-shim "switch_to_buffer" :emacs "switch"
+             :param-rename {:buffer_name :buffer}))
+
+(def find-file-shim
+  "DEPRECATED: Use `emacs find` instead."
+  (make-shim "find_file" :emacs "find"
+             :param-rename {:file_path :file}))
+
+(def save-buffer-shim
+  "DEPRECATED: Use `emacs save` instead."
+  (make-shim "save_buffer" :emacs "save"))
+
+(def goto-line-shim
+  "DEPRECATED: Use `emacs goto-line` instead."
+  (make-shim "goto_line" :emacs "goto-line"))
+
+(def insert-text-shim
+  "DEPRECATED: Use `emacs insert` instead."
+  (make-shim "insert_text" :emacs "insert"))
+
+(def project-root-shim
+  "DEPRECATED: Use `emacs project-root` instead."
+  (make-shim "project_root" :emacs "project-root"))
+
+(def recent-files-shim
+  "DEPRECATED: Use `emacs recent` instead."
+  (make-shim "recent_files" :emacs "recent"))
+
+(def mcp-capabilities-shim
+  "DEPRECATED: Use `emacs capabilities` instead."
+  (make-shim "mcp_capabilities" :emacs "capabilities"))
+
+(def mcp-get-context-shim
+  "DEPRECATED: Use `emacs context` instead."
+  (make-shim "mcp_get_context" :emacs "context"))
+
+(def mcp-notify-shim
+  "DEPRECATED: Use `emacs notify` instead."
+  (make-shim "mcp_notify" :emacs "notify"))
+
+(def mcp-list-workflows-shim
+  "DEPRECATED: Use `emacs workflows` instead."
+  (make-shim "mcp_list_workflows" :emacs "workflows"))
+
+(def mcp-list-special-buffers-shim
+  "DEPRECATED: Use `emacs special-buffers` instead."
+  (make-shim "mcp_list_special_buffers" :emacs "special-buffers"))
+
+(def mcp-buffer-info-shim
+  "DEPRECATED: Use `emacs buffer-info` instead."
+  (make-shim "mcp_buffer_info" :emacs "buffer-info"))
+
+;; =============================================================================
+;; Deprecation Shims - Emacs/Docs
+;; =============================================================================
+
+(def mcp-describe-function-shim
+  "DEPRECATED: Use `emacs docs describe-function` instead."
+  (make-shim "mcp_describe_function" :emacs "docs describe-function"))
+
+(def mcp-describe-variable-shim
+  "DEPRECATED: Use `emacs docs describe-variable` instead."
+  (make-shim "mcp_describe_variable" :emacs "docs describe-variable"))
+
+(def mcp-apropos-shim
+  "DEPRECATED: Use `emacs docs apropos` instead."
+  (make-shim "mcp_apropos" :emacs "docs apropos"))
+
+(def mcp-package-functions-shim
+  "DEPRECATED: Use `emacs docs package-functions` instead."
+  (make-shim "mcp_package_functions" :emacs "docs package-functions"))
+
+(def mcp-find-keybindings-shim
+  "DEPRECATED: Use `emacs docs find-keybindings` instead."
+  (make-shim "mcp_find_keybindings" :emacs "docs find-keybindings"))
+
+(def mcp-package-commentary-shim
+  "DEPRECATED: Use `emacs docs package-commentary` instead."
+  (make-shim "mcp_package_commentary" :emacs "docs package-commentary"))
+
+(def mcp-list-packages-shim
+  "DEPRECATED: Use `emacs docs list-packages` instead."
+  (make-shim "mcp_list_packages" :emacs "docs list-packages"))
+
+;; =============================================================================
+;; Deprecation Shims - CIDER
+;; =============================================================================
+
+(def cider-status-shim
+  "DEPRECATED: Use `cider status` instead."
+  (make-shim "cider_status" :cider "status"))
+
+(def cider-eval-silent-shim
+  "DEPRECATED: Use `cider eval` instead."
+  (make-shim "cider_eval_silent" :cider "eval"
+             :static-params {:mode "silent"}))
+
+(def cider-eval-explicit-shim
+  "DEPRECATED: Use `cider eval` with mode='explicit' instead."
+  (make-shim "cider_eval_explicit" :cider "eval"
+             :static-params {:mode "explicit"}))
+
+(def cider-spawn-session-shim
+  "DEPRECATED: Use `cider spawn` instead."
+  (make-shim "cider_spawn_session" :cider "spawn"))
+
+(def cider-list-sessions-shim
+  "DEPRECATED: Use `cider sessions` instead."
+  (make-shim "cider_list_sessions" :cider "sessions"))
+
+(def cider-eval-session-shim
+  "DEPRECATED: Use `cider eval` with session_name instead."
+  (make-shim "cider_eval_session" :cider "eval"))
+
+(def cider-kill-session-shim
+  "DEPRECATED: Use `cider kill-session` instead."
+  (make-shim "cider_kill_session" :cider "kill-session"))
+
+(def cider-kill-all-sessions-shim
+  "DEPRECATED: Use `cider kill-all` instead."
+  (make-shim "cider_kill_all_sessions" :cider "kill-all"))
+
+(def cider-doc-shim
+  "DEPRECATED: Use `cider doc` instead."
+  (make-shim "cider_doc" :cider "doc"))
+
+(def cider-apropos-shim
+  "DEPRECATED: Use `cider apropos` instead."
+  (make-shim "cider_apropos" :cider "apropos"))
+
+(def cider-info-shim
+  "DEPRECATED: Use `cider info` instead."
+  (make-shim "cider_info" :cider "info"))
+
+(def cider-complete-shim
+  "DEPRECATED: Use `cider complete` instead."
+  (make-shim "cider_complete" :cider "complete"))
+
+;; =============================================================================
+;; Deprecation Shims - Projectile
+;; =============================================================================
+
+(def projectile-info-shim
+  "DEPRECATED: Use `project info` instead."
+  (make-shim "projectile_info" :project "info"))
+
+(def projectile-files-shim
+  "DEPRECATED: Use `project files` instead."
+  (make-shim "projectile_files" :project "files"))
+
+(def projectile-find-file-shim
+  "DEPRECATED: Use `project find` instead."
+  (make-shim "projectile_find_file" :project "find"))
+
+(def projectile-search-shim
+  "DEPRECATED: Use `project search` instead."
+  (make-shim "projectile_search" :project "search"))
+
+(def projectile-recent-shim
+  "DEPRECATED: Use `project recent` instead."
+  (make-shim "projectile_recent" :project "recent"))
+
+(def projectile-list-projects-shim
+  "DEPRECATED: Use `project list` instead."
+  (make-shim "projectile_list_projects" :project "list"))
+
+;; =============================================================================
 ;; Shim Registry - For Registration in tools.clj
 ;; =============================================================================
 
@@ -530,7 +718,57 @@
    "magit_diff"            magit-diff-shim
    "magit_pull"            magit-pull-shim
    "magit_fetch"           magit-fetch-shim
-   "magit_feature_branches" magit-feature-branches-shim})
+   "magit_feature_branches" magit-feature-branches-shim
+
+   ;; Emacs/Buffer shims
+   "eval_elisp"              eval-elisp-shim
+   "emacs_status"            emacs-status-shim
+   "list_buffers"            list-buffers-shim
+   "current_buffer"          current-buffer-shim
+   "switch_to_buffer"        switch-to-buffer-shim
+   "find_file"               find-file-shim
+   "save_buffer"             save-buffer-shim
+   "goto_line"               goto-line-shim
+   "insert_text"             insert-text-shim
+   "project_root"            project-root-shim
+   "recent_files"            recent-files-shim
+   "mcp_capabilities"        mcp-capabilities-shim
+   "mcp_get_context"         mcp-get-context-shim
+   "mcp_notify"              mcp-notify-shim
+   "mcp_list_workflows"      mcp-list-workflows-shim
+   "mcp_list_special_buffers" mcp-list-special-buffers-shim
+   "mcp_buffer_info"         mcp-buffer-info-shim
+
+   ;; Emacs/Docs shims
+   "mcp_describe_function"   mcp-describe-function-shim
+   "mcp_describe_variable"   mcp-describe-variable-shim
+   "mcp_apropos"             mcp-apropos-shim
+   "mcp_package_functions"   mcp-package-functions-shim
+   "mcp_find_keybindings"    mcp-find-keybindings-shim
+   "mcp_package_commentary"  mcp-package-commentary-shim
+   "mcp_list_packages"       mcp-list-packages-shim
+
+   ;; CIDER shims
+   "cider_status"            cider-status-shim
+   "cider_eval_silent"       cider-eval-silent-shim
+   "cider_eval_explicit"     cider-eval-explicit-shim
+   "cider_spawn_session"     cider-spawn-session-shim
+   "cider_list_sessions"     cider-list-sessions-shim
+   "cider_eval_session"      cider-eval-session-shim
+   "cider_kill_session"      cider-kill-session-shim
+   "cider_kill_all_sessions" cider-kill-all-sessions-shim
+   "cider_doc"               cider-doc-shim
+   "cider_apropos"           cider-apropos-shim
+   "cider_info"              cider-info-shim
+   "cider_complete"          cider-complete-shim
+
+   ;; Projectile shims
+   "projectile_info"         projectile-info-shim
+   "projectile_files"        projectile-files-shim
+   "projectile_find_file"    projectile-find-file-shim
+   "projectile_search"       projectile-search-shim
+   "projectile_recent"       projectile-recent-shim
+   "projectile_list_projects" projectile-list-projects-shim})
 
 (defn shim-count
   "Return the count of defined shims."
@@ -582,17 +820,7 @@
      :handler     handler}))
 
 (def tools
-  "MCP tool definitions for all deprecated tools.
-
-   Include this vector in hive-mcp.tools/tools to expose shims via MCP.
-   Each tool logs a deprecation warning when called and delegates to
-   the consolidated handler.
-
-   Count: 50 deprecated tools covering:
-   - swarm_* -> agent (8 tools)
-   - mcp_memory_* -> memory (16 tools)
-   - kg_* -> kg (11 tools)
-   - hivemind_* -> hivemind (5 tools)
-   - magit_* -> magit (10 tools)"
-  (vec (for [[old-name handler] shims]
-         (make-tool-def old-name handler))))
+  "REMOVED: Flat deprecated tools no longer exposed via MCP tools/list.
+   All functionality available through consolidated tools (agent, memory, kg, etc.).
+   Shim handlers still exist in `shims` map for internal dispatch if needed."
+  [])

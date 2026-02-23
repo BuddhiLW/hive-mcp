@@ -12,6 +12,7 @@
    ```"
 
   (:require [hive-mcp.events.core :as ev]
+            [hive-mcp.concurrency.pool :as pool]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -35,8 +36,8 @@
    Note: Uses async dispatch via future to prevent stack overflow on deep chains."
   [event]
   (when (and (vector? event) (keyword? (first event)))
-    ;; Use async dispatch via future to prevent stack overflow
-    (future
+    ;; Use bounded event pool to prevent stack overflow and thread explosion
+    (pool/with-event
       (try
         (ev/dispatch event)
         (catch Exception e
@@ -64,8 +65,8 @@
   (when (and (sequential? events) (seq events))
     (doseq [event events]
       (when (and (vector? event) (keyword? (first event)))
-        ;; Use async dispatch via future to prevent stack overflow
-        (future
+        ;; Use bounded event pool to prevent stack overflow and thread explosion
+        (pool/with-event
           (try
             (ev/dispatch event)
             (catch Exception e

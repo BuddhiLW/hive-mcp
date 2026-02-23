@@ -6,18 +6,21 @@
 
    Design principle: Knowledge-Layer-First / SST (Single Source of Truth).
    Adding a new memory type = adding one entry here. All downstream
-   validation, MCP schemas, catchup, and abstraction levels derive automatically.")
+   validation, MCP schemas, catchup, and abstraction levels derive automatically.
+
+   Extension point: addons can register additional types via
+   register-memory-type! / register-memory-types! before tool handlers run.")
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 ;; =============================================================================
-;; Registry
+;; Registry (core types + extension injection point)
 ;; =============================================================================
 
-(def registry
-  "Memory type registry. array-map preserves insertion order (= catchup priority).
+(def ^:private base-registry
+  "Core memory type registry. array-map preserves insertion order (= catchup priority).
 
    Each type has:
    - :description   Human-readable description
@@ -82,55 +85,88 @@
    :workflow   {:description "Workflow patterns" :abstraction 3 :duration :medium :mcp? false :catchup nil}
    :recipe     {:description "Recipe patterns" :abstraction 3 :duration :medium :mcp? false :catchup nil}))
 
+(defonce ^:private registry-extensions
+  "Addon-contributed memory types. Merged into registry at query time.
+   Register via register-memory-type! / register-memory-types! at addon init."
+  (atom {}))
+
+(defn register-memory-type!
+  "Register an addon-contributed memory type.
+   Must be called before tool handlers run (addon init time).
+   type-kw: keyword (e.g. :cluster-summary)
+   type-def: map with :description, :abstraction, :duration, etc."
+  [type-kw type-def]
+  (swap! registry-extensions assoc type-kw type-def))
+
+(defn register-memory-types!
+  "Register multiple addon-contributed memory types at once.
+   types-map: map of {type-kw type-def}."
+  [types-map]
+  (swap! registry-extensions merge types-map))
+
+(defn registry
+  "Returns the full memory type registry (core + addon extensions)."
+  []
+  (merge base-registry @registry-extensions))
+
 ;; =============================================================================
-;; Derived views (computed once at load time)
+;; Derived views (recomputed dynamically to include addon extensions)
 ;; =============================================================================
 
-(def all-types
+(defn all-types
   "Set of all valid memory type keywords."
-  (set (keys registry)))
+  []
+  (set (keys (registry))))
 
-(def all-type-strings
+(defn all-type-strings
   "Set of all valid memory type strings (for Chroma/MCP)."
-  (set (map name all-types)))
+  []
+  (set (map name (all-types))))
 
-(def mcp-types
+(defn mcp-types
   "Ordered vector of type strings visible in MCP tool enums."
-  (->> registry
+  []
+  (->> (registry)
        (filter (fn [[_k v]] (get v :mcp? true)))
        (map (comp name key))
        vec))
 
-(def mcp-types-with-conversation
+(defn mcp-types-with-conversation
   "MCP types + 'conversation' for query compatibility."
-  (let [idx (.indexOf ^java.util.List mcp-types "plan")]
+  []
+  (let [types (mcp-types)
+        idx (.indexOf ^java.util.List types "plan")]
     (if (pos? idx)
-      (vec (concat (subvec mcp-types 0 idx) ["conversation"] (subvec mcp-types idx)))
-      (conj mcp-types "conversation"))))
+      (vec (concat (subvec types 0 idx) ["conversation"] (subvec types idx)))
+      (conj types "conversation"))))
 
-(def core-type-set
+(defn core-type-set
   "Set of core type keywords (mcp-visible)."
-  (->> registry
+  []
+  (->> (registry)
        (filter (fn [[_k v]] (get v :mcp? true)))
        (map key)
        set))
 
-(def type->abstraction
+(defn type->abstraction
   "Map of type string -> abstraction level."
-  (into {} (map (fn [[k v]] [(name k) (:abstraction v)])) registry))
+  []
+  (into {} (map (fn [[k v]] [(name k) (:abstraction v)])) (registry)))
 
-(def catchup-categories
+(defn catchup-categories
   "Ordered sequence of catchup category configs, sorted by :order.
    Each entry: {:type :keyword, :type-str \"string\", ...catchup-config}."
-  (->> registry
+  []
+  (->> (registry)
        (filter (fn [[_k v]] (:catchup v)))
        (map (fn [[k v]] (assoc (:catchup v) :type k :type-str (name k))))
        (sort-by :order)
        vec))
 
-(def piggyback-types
+(defn piggyback-types
   "Set of type keywords included in catchup piggyback delivery."
-  (->> catchup-categories
+  []
+  (->> (catchup-categories)
        (filter :piggyback?)
        (map :type)
        set))
@@ -142,20 +178,20 @@
 (defn valid-type?
   "Check if type (keyword or string) is valid."
   [t]
-  (or (contains? all-types (if (keyword? t) t (keyword t)))
-      (contains? all-type-strings (if (string? t) t (name t)))))
+  (or (contains? (all-types) (if (keyword? t) t (keyword t)))
+      (contains? (all-type-strings) (if (string? t) t (name t)))))
 
 (defn abstraction-level
   "Get the abstraction level for a type (string or keyword). Default: 2."
   [t]
   (let [s (if (keyword? t) (name t) t)]
-    (get type->abstraction s 2)))
+    (get (type->abstraction) s 2)))
 
 (defn mcp-enum
   "Generate MCP JSON schema enum for tool definitions.
    include-conversation? adds 'conversation' for query tools."
-  ([] mcp-types)
+  ([] (mcp-types))
   ([{:keys [include-conversation?]}]
    (if include-conversation?
-     mcp-types-with-conversation
-     mcp-types)))
+     (mcp-types-with-conversation)
+     (mcp-types))))

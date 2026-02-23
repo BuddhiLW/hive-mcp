@@ -1,0 +1,41 @@
+{:tx-data
+ [{:db/ident       :mem-mutation/id
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/unique      :db.unique/identity
+   :db/doc         "Unique mutation event ID (timestamp-based)"}
+
+  {:db/ident       :mem-mutation/entry-id
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc         "Memory entry ID that was mutated"}
+
+  {:db/ident       :mem-mutation/op
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc         "Mutation operation: :feedback, :kanban-done, :kanban-move, :expire, :decay, :promote, :reground, :migrate, :log-access"}
+
+  {:db/ident       :mem-mutation/timestamp
+   :db/valueType   :db.type/instant
+   :db/cardinality :db.cardinality/one
+   :db/doc         "When the mutation occurred"}
+
+  {:db/ident       :mem-mutation/agent-id
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc         "Agent ID that triggered the mutation (if known)"}
+
+  {:db/ident       :mem-mutation/project-id
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc         "Project scope of the mutation"}
+
+  {:db/ident       :mem-mutation/data
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc         "EDN-encoded mutation payload (before/after values, deltas, etc)"}
+
+  {:db/ident       :mem-mutation/previous-value
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc         "EDN-encoded previous value (for destructive ops like delete/expire)"}]}

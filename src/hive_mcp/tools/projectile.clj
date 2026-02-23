@@ -71,42 +71,5 @@
   (eval-projectile (el/require-and-call-json 'hive-mcp-projectile 'hive-mcp-projectile-api-list-projects)))
 
 (def tools
-  "Projectile tool definitions for the MCP tool registry."
-  [{:name "projectile_info"
-    :description "Get current project info including name, root, type (with extended detection for npm, cargo, go-mod, etc.), and file count. Requires hive-mcp-projectile addon."
-    :inputSchema {:type "object" :properties {}}
-    :handler handle-projectile-info}
-
-   {:name "projectile_files"
-    :description "List files in current project, optionally filtered by glob pattern."
-    :inputSchema {:type "object"
-                  :properties {"pattern" {:type "string"
-                                          :description "Optional glob pattern to filter files (e.g., '*.clj', 'src/*.ts')"}}
-                  :required []}
-    :handler handle-projectile-files}
-
-   {:name "projectile_find_file"
-    :description "Find files matching a filename in current project. Returns relative and absolute paths."
-    :inputSchema {:type "object"
-                  :properties {"filename" {:type "string"
-                                           :description "Filename or partial filename to search for"}}
-                  :required ["filename"]}
-    :handler handle-projectile-find-file}
-
-   {:name "projectile_search"
-    :description "Search current project for a pattern using ripgrep (preferred) or grep. Returns file, line number, and matching content."
-    :inputSchema {:type "object"
-                  :properties {"pattern" {:type "string"
-                                          :description "Search pattern (regex supported)"}}
-                  :required ["pattern"]}
-    :handler handle-projectile-search}
-
-   {:name "projectile_recent"
-    :description "Get recently visited files in current project."
-    :inputSchema {:type "object" :properties {}}
-    :handler handle-projectile-recent}
-
-   {:name "projectile_list_projects"
-    :description "List all known projectile projects with their roots, names, existence status, and detected types."
-    :inputSchema {:type "object" :properties {}}
-    :handler handle-projectile-list-projects}])
+  "REMOVED: Flat projectile tools no longer exposed. Use consolidated `project` tool."
+  [])

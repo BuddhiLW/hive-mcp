@@ -3,6 +3,7 @@
   (:require [hive-mcp.tools.swarm.wave.domain :as domain]
             [hive-mcp.swarm.logic :as logic]
             [hive-mcp.events.core :as ev]
+            [hive-mcp.concurrency.pool :as pool]
             [clojure.core.async :as async :refer [go <! chan close!]]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
@@ -101,10 +102,10 @@
           (recur))))))
 
 (defn spawn-workers!
-  "Spawn worker threads for bounded concurrency using real threads for blocking I/O."
+  "Spawn worker threads for bounded concurrency using shared IO pool."
   [work-ch result-ch execute-fn concurrency item-count]
   (dotimes [_ (min concurrency item-count)]
-    (async/thread
+    (pool/with-io
       (loop []
         (when-let [work-unit (async/<!! work-ch)]
           (let [{:keys [item]} work-unit
@@ -146,21 +147,21 @@
 (defn execute-batch!
   "Execute a single batch of items with bounded concurrency."
   [batch-spec execute-fn]
-  (let [{:keys [items]} batch-spec
-        concurrency 3
+  (let [{:keys [items concurrency]} batch-spec
+        effective-concurrency (or concurrency 3)
         item-count (count items)
         result-ch (chan)]
 
-    (async/thread
+    (pool/with-io
       (let [work-ch (chan)
             inner-result-ch (chan)]
 
-        (async/thread
+        (pool/with-io
           (doseq [item items]
             (async/>!! work-ch (item->work-unit item batch-spec)))
           (close! work-ch))
 
-        (spawn-workers! work-ch inner-result-ch execute-fn concurrency item-count)
+        (spawn-workers! work-ch inner-result-ch execute-fn effective-concurrency item-count)
 
         (let [batch-result (async/<!! (collect-results inner-result-ch item-count))]
           (async/>!! result-ch batch-result))))

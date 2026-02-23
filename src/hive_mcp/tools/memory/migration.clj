@@ -3,6 +3,7 @@
   (:require [hive-mcp.tools.memory.core :refer [with-chroma]]
             [hive-mcp.tools.memory.scope :as scope]
             [hive-mcp.tools.core :refer [mcp-json mcp-error]]
+            [hive-mcp.memory.temporal :as temporal]
             [hive-mcp.knowledge-graph.edges :as kg-edges]
             [hive-mcp.knowledge-graph.scope :as kg-scope]
             [hive-mcp.emacs.client :as ec]
@@ -38,6 +39,15 @@
                          (:tags entry))]
           (chroma/update-entry! (:id entry) {:project-id new-project-id
                                              :tags new-tags})
+          ;; Temporal dual-write: record each migration
+          (temporal/record-mutation-silent!
+           {:entry-id       (:id entry)
+            :op             :migrate
+            :data           {:old-project-id old-project-id
+                             :new-project-id new-project-id
+                             :scopes-updated update-scopes}
+            :previous-value {:project-id old-project-id}
+            :project-id     new-project-id})
           (swap! migrated inc)))
       (let [kg-result (try
                         (kg-edges/migrate-edge-scopes! old-project-id new-project-id)

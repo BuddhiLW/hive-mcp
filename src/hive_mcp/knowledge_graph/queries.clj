@@ -7,7 +7,8 @@
    - impact-analysis: Find all dependents of a node
    - subgraph: Extract subgraph visible from a scope
    - find-contradictions: Locate conflicting knowledge
-   - get-node-context: Full context for node display"
+   - get-node-context: Full context for node display
+   - batch-get-node-contexts: Batch version for N+1 elimination"
 
   (:require [clojure.set :as set]
             [hive-mcp.knowledge-graph.edges :as edges]
@@ -375,6 +376,63 @@
                                            outgoing-by-rel))}
      :confidence confidence-stats
      :scopes (vec scopes)}))
+
+;;; =============================================================================
+;;; Batch Node Context (N+1 elimination)
+;;; =============================================================================
+
+(defn batch-get-node-contexts
+  "Get full context for multiple nodes in 2 queries instead of 2*N.
+   Uses batch edge queries with DataScript/Datalevin collection bindings.
+
+   Arguments:
+     node-ids - Collection of node IDs to get context for
+
+   Returns:
+     Map of {node-id -> context-map} where context-map has the same shape
+     as get-node-context output:
+       {:node-id <id>
+        :incoming {:count n :edges [...] :by-relation {...}}
+        :outgoing {:count n :edges [...] :by-relation {...}}
+        :confidence {:avg n :min n :max n}
+        :scopes [<unique scopes>]}"
+  [node-ids]
+  (if (empty? node-ids)
+    {}
+    (let [ids (vec (distinct node-ids))
+          ;; 2 queries total instead of 2*N
+          edges-from-map (edges/batch-get-edges-from ids)
+          edges-to-map   (edges/batch-get-edges-to ids)]
+      (into {}
+            (map (fn [node-id]
+                   (let [incoming (get edges-to-map node-id [])
+                         outgoing (get edges-from-map node-id [])
+                         all-edges (concat incoming outgoing)
+
+                         incoming-by-rel (group-by :kg-edge/relation incoming)
+                         outgoing-by-rel (group-by :kg-edge/relation outgoing)
+
+                         confidences (keep :kg-edge/confidence all-edges)
+                         confidence-stats (when (seq confidences)
+                                           {:avg (/ (reduce + confidences)
+                                                    (count confidences))
+                                            :min (apply min confidences)
+                                            :max (apply max confidences)})
+
+                         scopes (set (keep :kg-edge/scope all-edges))]
+                     [node-id
+                      {:node-id node-id
+                       :incoming {:count (count incoming)
+                                  :edges incoming
+                                  :by-relation (into {} (map (fn [[k v]] [k (count v)])
+                                                             incoming-by-rel))}
+                       :outgoing {:count (count outgoing)
+                                  :edges outgoing
+                                  :by-relation (into {} (map (fn [[k v]] [k (count v)])
+                                                             outgoing-by-rel))}
+                       :confidence confidence-stats
+                       :scopes (vec scopes)}]))
+                 ids)))))
 
 ;;; =============================================================================
 ;;; Connected Components (Utility)

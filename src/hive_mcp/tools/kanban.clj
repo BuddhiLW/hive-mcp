@@ -13,7 +13,6 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-
 ;; ============================================================
 ;; Kanban Tools (org-kanban integration)
 ;; ============================================================
@@ -107,65 +106,5 @@
 ;; ============================================================
 
 (def tools
-  [{:name "mcp_kanban_status"
-    :description "Get kanban status including tasks by status, progress percentage, backend info, and roadmap. Use at session start."
-    :inputSchema {:type "object" :properties {}}
-    :handler handle-mcp-kanban-status}
-
-   {:name "mcp_kanban_list_tasks"
-    :description "List kanban tasks, optionally filtered by status (todo, inprogress, inreview, done)."
-    :inputSchema {:type "object"
-                  :properties {"status" {:type "string"
-                                         :enum ["todo" "inprogress" "inreview" "done"]
-                                         :description "Filter by status (optional)"}}
-                  :required []}
-    :handler handle-mcp-kanban-list-tasks}
-
-   {:name "mcp_kanban_create_task"
-    :description "Create a new kanban task with title and optional description."
-    :inputSchema {:type "object"
-                  :properties {"title" {:type "string"
-                                        :description "Task title"}
-                               "description" {:type "string"
-                                              :description "Task description (optional)"}}
-                  :required ["title"]}
-    :handler handle-mcp-kanban-create-task}
-
-   {:name "mcp_kanban_update_task"
-    :description "Update a kanban task's status or title."
-    :inputSchema {:type "object"
-                  :properties {"task_id" {:type "string"
-                                          :description "Task ID to update"}
-                               "status" {:type "string"
-                                         :enum ["todo" "inprogress" "inreview" "done"]
-                                         :description "New status (optional)"}
-                               "title" {:type "string"
-                                        :description "New title (optional)"}}
-                  :required ["task_id"]}
-    :handler handle-mcp-kanban-update-task}
-
-   {:name "mcp_kanban_move_task"
-    :description "Move a task to a new status column. Shorthand for update with status change."
-    :inputSchema {:type "object"
-                  :properties {"task_id" {:type "string"
-                                          :description "Task ID to move"}
-                               "new_status" {:type "string"
-                                             :enum ["todo" "inprogress" "inreview" "done"]
-                                             :description "Target status column"}}
-                  :required ["task_id" "new_status"]}
-    :handler handle-mcp-kanban-move-task}
-
-   {:name "mcp_kanban_roadmap"
-    :description "Get roadmap view with milestones, phases, and progress indicators."
-    :inputSchema {:type "object" :properties {}}
-    :handler handle-mcp-kanban-roadmap}
-
-   {:name "mcp_kanban_my_tasks"
-    :description "Get tasks assigned to or modified by the current agent session."
-    :inputSchema {:type "object" :properties {}}
-    :handler handle-mcp-kanban-my-tasks}
-
-   {:name "mcp_kanban_sync"
-    :description "Sync tasks between vibe-kanban cloud and standalone org-file backends."
-    :inputSchema {:type "object" :properties {}}
-    :handler handle-mcp-kanban-sync}])
+  "REMOVED: Flat kanban tools no longer exposed. Use consolidated `kanban` tool."
+  [])

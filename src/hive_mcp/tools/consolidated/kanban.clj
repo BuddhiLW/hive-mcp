@@ -84,7 +84,7 @@
                               "directory" {:type "string"
                                            :description "Working directory for project scope (auto-detected if not provided)"}
                               "include_descendants" {:type "boolean"
-                                                     :description "Include child project tasks in results (HCR Wave 4). Default false."}
+                                                     :description "Include child project tasks in results (HCR Wave 4). Default true — set false to restrict to current project only."}
                               "parallel" {:type "boolean"
                                           :description "Run batch operations in parallel (default: false)"}}
                  :required ["command"]}

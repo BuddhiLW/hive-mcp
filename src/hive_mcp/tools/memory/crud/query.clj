@@ -4,6 +4,8 @@
             [hive-mcp.tools.memory.scope :as scope]
             [hive-mcp.tools.memory.format :as fmt]
             [hive-mcp.tools.core :refer [mcp-json mcp-error coerce-int!]]
+            [hive-mcp.memory.domain :as domain]
+            [hive-dsl.adt :refer [adt-case]]
             [hive-mcp.chroma.core :as chroma]
             [hive-mcp.plan.plans :as plans]
             [hive-mcp.knowledge-graph.edges :as kg-edges]
@@ -66,31 +68,16 @@
              entries))))
 
 (defn- resolve-project-ids-for-db
-  "Compute visible project-ids for DB-level filtering."
-  [scope project-id in-project? include-descendants?]
-  (cond
-    (nil? scope)
-    (let [visible (kg-scope/visible-scopes project-id)
-          filtered (if in-project?
-                     (vec (remove #(= "global" %) visible))
-                     visible)
-          descendants (when include-descendants?
-                        (kg-scope/descendant-scopes project-id))]
-      (vec (distinct (concat filtered descendants))))
-
-    (= scope "all") nil
-    (= scope "global") ["global"]
-
-    :else
-    (let [visible (kg-scope/visible-scopes scope)
-          descendants (when include-descendants?
-                        (kg-scope/descendant-scopes scope))]
-      (vec (distinct (concat visible descendants))))))
+  "Compute visible project-ids for DB-level filtering.
+   Dispatches via ScopeFilter ADT."
+  [sf include-descendants?]
+  (domain/scope->project-ids sf include-descendants?))
 
 (defn- fetch-entries
   "Fetch entries from Chroma or plans collection with over-fetch factor.
    Plans route to OpenRouter-backed plans collection. Everything else → Ollama."
-  [type project-ids-for-db tags limit-val include-descendants?]
+  [type project-ids-for-db tags limit-val include-descendants?
+   & {:keys [exclude-tags]}]
   (let [openrouter? (plans/high-abstraction-type? type)
         over-fetch-factor (if include-descendants? 4 3)]
     (if openrouter?
@@ -101,25 +88,24 @@
       (chroma/query-entries :type type
                             :project-ids project-ids-for-db
                             :tags tags
+                            :exclude-tags exclude-tags
                             :limit (* limit-val over-fetch-factor)))))
 
 (defn- apply-scope-filter
-  "Apply in-memory scope filter as safety net."
-  [entries scope project-id include-descendants?]
-  (cond
-    (nil? scope)
-    (apply-auto-scope-filter entries project-id include-descendants?)
-
-    (= scope "all")
-    entries
-
-    :else
-    (let [scope-filter (if include-descendants?
-                         (kg-scope/full-hierarchy-scope-tags scope)
-                         (scope/derive-hierarchy-scope-filter scope))]
-      (if scope-filter
-        (filter #(scope/matches-hierarchy-scopes? % scope-filter) entries)
-        entries))))
+  "Apply in-memory scope filter as safety net.
+   Dispatches via ScopeFilter ADT."
+  [entries sf include-descendants?]
+  (adt-case domain/ScopeFilter sf
+            :scope/all     entries
+            :scope/global  (let [scope-filter #{"scope:global"}]
+                             (filter #(scope/matches-hierarchy-scopes? % scope-filter) entries))
+            :scope/project (let [scope-filter (if include-descendants?
+                                                (kg-scope/full-hierarchy-scope-tags (:project-id sf))
+                                                (scope/derive-hierarchy-scope-filter sf))]
+                             (if scope-filter
+                               (filter #(scope/matches-hierarchy-scopes? % scope-filter) entries)
+                               entries))
+            :scope/auto    (apply-auto-scope-filter entries (:project-id sf) include-descendants?)))
 
 (defn- apply-post-filters
   "Chain tag, duration, and limit filters on scope-filtered entries."
@@ -139,7 +125,7 @@
 
 (defn handle-query
   "Query project memory by type with scope and verbosity filtering."
-  [{:keys [type tags limit duration scope directory include_descendants verbosity]}]
+  [{:keys [type tags exclude_tags limit duration scope directory include_descendants verbosity]}]
   (let [directory (or directory (ctx/current-directory))
         include-descendants? (boolean include_descendants)
         metadata-only? (= verbosity "metadata")]
@@ -149,10 +135,11 @@
       (let [limit-val (coerce-int! limit :limit 20)]
         (with-chroma
           (let [project-id  (scope/get-current-project-id directory)
-                in-project? (and project-id (not= project-id "global"))
-                project-ids (resolve-project-ids-for-db scope project-id in-project? include-descendants?)
-                entries     (fetch-entries type project-ids tags limit-val include-descendants?)
-                filtered    (apply-scope-filter entries scope project-id include-descendants?)
+                sf          (domain/parse-scope scope project-id)
+                project-ids (resolve-project-ids-for-db sf include-descendants?)
+                entries     (fetch-entries type project-ids tags limit-val include-descendants?
+                                           :exclude-tags exclude_tags)
+                filtered    (apply-scope-filter entries sf include-descendants?)
                 results     (apply-post-filters filtered tags duration limit-val)]
             (format-query-results results project-id metadata-only?))))
       (catch clojure.lang.ExceptionInfo e

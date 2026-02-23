@@ -3,6 +3,7 @@
    Verifies entries against source files and updates grounding timestamps."
 
   (:require [hive-mcp.chroma.core :as chroma]
+            [hive-mcp.memory.temporal :as temporal]
             [hive-dsl.result :as r]
             [clojure.java.io :as io]
             [clojure.string :as str]
@@ -78,7 +79,16 @@
                                   {:grounded-at (java.util.Date.)
                                    :source-hash hash})]
                 (when (and update-data (not= :source-missing status))
-                  (chroma/update-entry! entry-id update-data))
+                  (chroma/update-entry! entry-id update-data)
+                  ;; Temporal dual-write: record reground verification
+                  (temporal/record-mutation-silent!
+                   {:entry-id   entry-id
+                    :op         :reground
+                    :data       {:status status
+                                 :drift? hash-differs?
+                                 :source-file source-file
+                                 :current-hash hash}
+                    :previous-value {:source-hash stored-hash}}))
                 {:status status
                  :drift? hash-differs?
                  :entry-id entry-id

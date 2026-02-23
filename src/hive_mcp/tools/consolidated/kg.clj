@@ -30,8 +30,17 @@
    :batch-edge     handle-batch-edge
    :batch-traverse handle-batch-traverse})
 
+(def ^:private coerce-schema
+  "MCP boundary coercion — string params to declared types."
+  {:max_depth   [:int]
+   :confidence  [:double]
+   :direction   [:enum #{:outgoing :incoming :both}]
+   :force       [:boolean]
+   :parallel    [:boolean]
+   :relations   [:vec]})
+
 (def handle-kg
-  (make-cli-handler handlers))
+  (make-cli-handler handlers coerce-schema))
 
 (def tool-def
   {:name "kg"

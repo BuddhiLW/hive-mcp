@@ -1,11 +1,16 @@
 (ns hive-mcp.hivemind.messaging
-  "Hivemind messaging — shout, ask, respond, and piggyback registration."
+  "Hivemind messaging — shout, ask, respond, and piggyback registration.
+
+   M1 (protocol-first): Shouts publish via IEventBackbone (NATS, Redis, etc.).
+   Fallback fanout uses IDeliveryChannel registry — no hardcoded transports.
+   Local state (atom, DataScript) still updated synchronously for consistency."
 
   (:require [hive-mcp.hivemind.state :as state]
             [hive-mcp.hivemind.event-registry :as event-registry]
             [hive-mcp.channel.core :as channel]
-            [hive-mcp.channel.websocket :as ws]
             [hive-mcp.channel.piggyback :as piggyback]
+            [hive-mcp.protocols.event-backbone :as eb]
+            [hive-mcp.protocols.delivery-channel :as dc]
             [hive-mcp.swarm.protocol :as proto]
             [hive-mcp.swarm.datascript.registry :as registry]
             [hive-mcp.swarm.datascript.queries :as queries]
@@ -38,8 +43,30 @@
   [event-type]
   (event-registry/slave-status event-type))
 
+(defn- publish-shout-to-backbone!
+  "Publish shout via IEventBackbone. Subscribers handle fanout.
+   Uses requiring-resolve for bridge to avoid circular dep."
+  [payload]
+  (try
+    (when-let [publish-fn (requiring-resolve 'hive-mcp.nats.bridge/publish-shout!)]
+      (publish-fn payload))
+    (catch Exception e
+      (log/debug "[Backbone] Shout publish failed (non-fatal):" (.getMessage e)))))
+
+(defn- fanout-shout-direct!
+  "Direct fanout via IDeliveryChannel registry when backbone is unavailable.
+   Protocol-mediated — no hardcoded transport calls."
+  [payload]
+  (dc/fanout! payload))
+
 (defn shout!
-  "Broadcast a message to the hivemind coordinator."
+  "Broadcast a message to the hivemind coordinator.
+
+   M1 Architecture (protocol-first):
+   - Local state (atom + DataScript) updated synchronously
+   - If backbone connected: single publish → backbone subscribers handle fanout
+   - If backbone disconnected: direct fanout via IDeliveryChannel registry
+   - hive-events dispatch for :ling/completed (domain event, always fires)"
   [agent-id event-type data]
   (let [now (System/currentTimeMillis)
         resolved-slave (queries/get-slave-by-name-or-id agent-id)
@@ -57,37 +84,40 @@
                          :data (dissoc data :task :message :directory :project-id)}
                   (:task data) (assoc :task (:task data))
                   (:message data) (assoc :message (:message data)))
-        event {:type (keyword (str "hivemind-" (name event-type)))
-               :agent-id agent-id
-               :timestamp now
-               :project-id project-id
-               :data data}]
+        ;; Backbone payload — flat, self-contained, no internal references
+        backbone-payload {:agent-id agent-id
+                          :event-type event-type
+                          :timestamp now
+                          :project-id project-id
+                          :message (:message data)
+                          :task (:task data)
+                          :data (dissoc data :task :message :directory :project-id)}]
+    ;; 1. Local state — always (atom for piggyback reads)
     (swap! state/agent-registry update agent-id
            (fn [agent]
              (let [messages (or (:messages agent) [])
                    new-messages (vec (take-last 10 (conj messages message)))]
                {:messages new-messages
                 :last-seen now})))
+    ;; 2. DataScript slave status — always
     (when resolved-slave
-      (proto/update-slave! registry/default-registry resolved-slave-id {:slave/status (event-type->slave-status event-type)}))
-    (when (ws/connected?)
-      (ws/emit! (:type event) (dissoc event :type)))
-    (channel/publish! event)
-    (channel/broadcast! event)
-    (try
-      (when-let [emit-fn (requiring-resolve 'hive-mcp.transport.olympus/emit-hivemind-shout!)]
-        (emit-fn {:agent-id agent-id
-                  :event-type (name event-type)
-                  :message (:message data)
-                  :task (:task data)
-                  :data (dissoc data :task :message)}))
-      (catch Exception _ nil))
+      (proto/update-slave! registry/default-registry resolved-slave-id
+                           {:slave/status (event-type->slave-status event-type)}))
+    ;; 3. Backbone publish OR direct fanout (protocol-mediated)
+    (let [backbone (eb/get-backbone)]
+      (if (eb/connected? backbone)
+        (publish-shout-to-backbone! backbone-payload)
+        (fanout-shout-direct! backbone-payload)))
+    ;; 4. Log
     (log/info "Hivemind shout:" agent-id event-type "project:" project-id)
+    ;; 5. Domain event dispatch (hive-events, not fanout)
     (when (= event-type :completed)
-      (events/dispatch {:type :ling/completed
-                        :agent-id agent-id
-                        :project-id project-id
-                        :data data}))
+      (try
+        (events/dispatch [:ling/completed {:agent-id agent-id
+                                           :project-id project-id
+                                           :data data}])
+        (catch Exception e
+          (log/debug "ling/completed dispatch failed (handler may not be registered):" (.getMessage e)))))
     true))
 
 (defn ask!

@@ -35,9 +35,10 @@
    :pattern    - Reusable solution pattern extracted from experience"
   #{:convention :decision :pattern})
 
-(def memory-types
+(defn memory-types
   "Valid memory entry types. Derived from type-registry (SST)."
-  type-registry/all-types)
+  []
+  (type-registry/all-types))
 
 (def duration-types
   "Valid duration/TTL categories for memory entries.
@@ -267,7 +268,7 @@
 (defn valid-memory-type?
   "Check if type is a valid memory type."
   [t]
-  (contains? memory-types t))
+  (contains? (memory-types) t))
 
 (defn valid-duration-type?
   "Check if type is a valid duration type."

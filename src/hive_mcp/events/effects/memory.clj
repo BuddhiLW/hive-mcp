@@ -54,11 +54,22 @@
 ;; Effect: :memory-write (EVENTS-04)
 ;; =============================================================================
 
+(defn- resolve-memory-write-handler
+  "Resolve memory write handler: injected atom > requiring-resolve fallback.
+   Returns fn or nil."
+  []
+  (or @memory-write-handler
+      (try
+        (requiring-resolve 'hive-mcp.tools.memory.crud.write/handle-add)
+        (catch Exception _ nil))))
+
 (defn- handle-memory-write
   "Execute a :memory-write effect - add entry to Chroma memory.
 
    Creates a new memory entry via the memory CRUD system.
    Automatically handles duplicate detection and tag merging.
+
+   Resolution chain: injected handler > requiring-resolve fallback.
 
    Expected data shape:
    {:type      \"note\" | \"snippet\" | \"convention\" | \"decision\"
@@ -68,13 +79,13 @@
     :directory \"/path/to/project\"}   ; optional, for scoping"
   [{:keys [type content] :as data}]
   (when (and type content)
-    (if-let [handler @memory-write-handler]
+    (if-let [handler (resolve-memory-write-handler)]
       (try
         (handler data)
         (log/debug "[EVENT] Memory entry created:" type)
         (catch Exception e
           (log/error "[EVENT] Memory write failed:" (.getMessage e))))
-      (log/warn "[EVENT] Memory write handler not configured - call set-memory-write-handler! during initialization"))))
+      (log/error "[EVENT] Memory write handler not resolvable - both atom and requiring-resolve failed"))))
 
 ;; =============================================================================
 ;; Effect: :wrap-notify
@@ -103,25 +114,35 @@
 ;; Effect: :wrap-crystallize (Session Complete)
 ;; =============================================================================
 
+(defn- resolve-wrap-handler
+  "Resolve wrap crystallize handler: injected atom > requiring-resolve fallback.
+   Returns fn or nil."
+  []
+  (or @wrap-crystallize-handler
+      (try
+        (requiring-resolve 'hive-mcp.tools.crystal/handle-wrap-crystallize)
+        (catch Exception _ nil))))
+
 (defn- handle-wrap-crystallize
   "Execute a :wrap-crystallize effect - run wrap crystallization.
 
    Triggers the wrap crystallize workflow to persist session learnings
    to long-term memory. Part of the session_complete workflow.
 
-   DIP: Uses injected handler (set via set-wrap-crystallize-handler!)
-   to avoid layer inversion (events importing tools).
+   Resolution chain: injected handler > requiring-resolve fallback.
+   This eliminates the silent-nil footgun when set-wrap-crystallize-handler!
+   is not called during init.
 
    Expected data shape:
-   {:agent-id \"ling-123\"}"
-  [{:keys [agent-id]}]
-  (if-let [handler @wrap-crystallize-handler]
+   {:agent-id \"ling-123\" :directory \"/path/to/project\"}"
+  [{:keys [agent-id directory]}]
+  (if-let [handler (resolve-wrap-handler)]
     (try
-      (handler {:agent_id agent-id})
+      (handler {:agent_id agent-id :directory directory})
       (log/info "[EVENT] Wrap crystallize completed for:" agent-id)
       (catch Exception e
         (log/error "[EVENT] Wrap crystallize failed:" (.getMessage e))))
-    (log/warn "[EVENT] Wrap crystallize handler not configured - call set-wrap-crystallize-handler! during initialization")))
+    (log/error "[EVENT] Wrap crystallize handler not resolvable - both atom and requiring-resolve failed")))
 
 ;; =============================================================================
 ;; Registration

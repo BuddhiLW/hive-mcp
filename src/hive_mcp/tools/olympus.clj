@@ -256,37 +256,5 @@
 ;;; =============================================================================
 
 (def tools
-  "Olympus grid control MCP tool definitions."
-  [{:name "olympus_status"
-    :description "Get current grid layout and ling positions. Returns ling count, layout dimensions (rows/cols or tabs/per-tab), position map, active tab, and layout mode."
-    :inputSchema {:type "object" :properties {}}
-    :handler handle-olympus-status}
-
-   {:name "olympus_focus"
-    :description "Focus/maximize a specific ling or restore grid view. Specify ling-id (direct), position (1-4), or restore=true to unfocus."
-    :inputSchema {:type "object"
-                  :properties {:ling-id {:type "string"
-                                         :description "Specific ling ID to focus"}
-                               :position {:type "integer"
-                                          :description "Position number (1-4) to focus"}
-                               :restore {:type "boolean"
-                                         :description "If true, restore grid view (unfocus)"}}}
-    :handler handle-olympus-focus}
-
-   {:name "olympus_arrange"
-    :description "Trigger grid arrangement with specified layout mode. Forces recalculation of ling positions."
-    :inputSchema {:type "object"
-                  :properties {:mode {:type "string"
-                                      :enum ["auto" "manual" "stacked"]
-                                      :description "Layout mode: auto (default), manual, or stacked"}}}
-    :handler handle-olympus-arrange}
-
-   {:name "olympus_tab"
-    :description "Navigate between tabs (for 5+ lings). Use direction (:next/:prev) or jump to specific tab number."
-    :inputSchema {:type "object"
-                  :properties {:direction {:type "string"
-                                           :enum ["next" "prev"]
-                                           :description "Navigate to next or previous tab"}
-                               :tab {:type "integer"
-                                     :description "Specific tab number to jump to (0-indexed)"}}}
-    :handler handle-olympus-tab}])
+  "REMOVED: Flat olympus tools no longer exposed. Use consolidated `olympus` tool."
+  [])

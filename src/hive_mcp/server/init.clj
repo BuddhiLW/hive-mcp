@@ -37,6 +37,26 @@
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 ;; =============================================================================
+;; Embedding Warm-Up
+;; =============================================================================
+
+(defn warmup-embedding!
+  "Fire a background future to warm up the Ollama embedding model.
+
+   First embedding call via ollama/nomic-embed-text takes ~3.5s (cold start
+   model loading). Subsequent calls are ~50ms. This pre-loads the model so
+   the first real catchup or memory search does not pay the cold start penalty.
+
+   Non-blocking: runs in a future so it does not delay server startup."
+  []
+  (future
+    (try
+      (embedding-service/embed-for-collection "hive-mcp-memory" "warmup")
+      (log/info "Ollama embedding model warmed up")
+      (catch Exception e
+        (log/warn "Embedding warmup failed (non-fatal):" (ex-message e))))))
+
+;; =============================================================================
 ;; Hot-Reload State
 ;; =============================================================================
 
@@ -134,6 +154,14 @@
                                          "hive-mcp-plans"
                                          (embedding-config/ollama-config {:host ollama-host :model ollama-model})))
                          (log/warn "Plans collection using Ollama (no OPENROUTER_API_KEY) - entries >1500 chars may be truncated")))
+
+        ;; Ingest collection: OpenRouter (same model used by hive-ingestor OpenRouterEmbedder)
+                     (when (global-config/get-secret :openrouter-api-key)
+                       (result/rescue nil
+                                      (embedding-service/configure-collection!
+                                       "hive-ingest"
+                                       (embedding-config/openrouter-config {:model openrouter-model})))
+                       (log/info "Ingest collection configured with OpenRouter"))
 
         ;; Set global fallback provider (Ollama) for backward compatibility
                      (let [provider (ollama/->provider {:host ollama-host})]
@@ -362,17 +390,30 @@
 ;; =============================================================================
 
 (defn init-nats!
-  "Initialize NATS client + bridge + callback listener for push-based drone notifications.
-   Startup sequence: NATS connect → bridge subscribe → callback listener start.
+  "Initialize NATS client + bridge + backbone + delivery channels for universal event backbone.
+   Startup sequence: NATS connect → set IEventBackbone → register delivery channels → bridge subscribe → callback listener.
    Opt-in via config: services.nats.enabled = true.
-   Non-fatal: system degrades to polling if NATS unavailable."
+   Non-fatal: system degrades to NoopBackbone + polling if NATS unavailable."
   []
+  ;; M1: Register delivery channels unconditionally — needed for both NATS and direct fallback
+  (try
+    (when-let [reg-channels! (requiring-resolve 'hive-mcp.delivery.channels/register-default-channels!)]
+      (reg-channels!))
+    (catch Exception e
+      (log/warn "[init] Failed to register delivery channels (non-fatal):" (ex-message e))))
+  ;; NATS backbone — opt-in via config
   (result/rescue nil
                  (let [nats-config (global-config/get-service-config :nats)]
                    (when (:enabled nats-config)
                      (let [start! (requiring-resolve 'hive-mcp.nats.client/start!)
-                           bridge! (requiring-resolve 'hive-mcp.nats.bridge/start-subscriptions!)]
+                           bridge! (requiring-resolve 'hive-mcp.nats.bridge/start-subscriptions!)
+                           create-bb (requiring-resolve 'hive-mcp.nats.backbone/create-backbone)
+                           set-bb! (requiring-resolve 'hive-mcp.protocols.event-backbone/set-backbone!)]
                        (start! nats-config)
+                       ;; M1: Wire NatsBackbone as active IEventBackbone
+                       (let [bb (create-bb)]
+                         (set-bb! bb)
+                         (log/info "[init] NatsBackbone set as active IEventBackbone"))
                        (bridge!)
                        (when-let [cb-start (requiring-resolve 'hive-mcp.swarm.callback/start-listener!)]
                          (cb-start)))))))
@@ -385,10 +426,13 @@
   "Register default implementations for forge belt :fb/* extension points.
    Must run before load-extensions! so extensions can override."
   []
-  (result/rescue nil
-                 (require 'hive-mcp.workflows.forge-belt-defaults)
-                 (when-let [register! (resolve 'hive-mcp.workflows.forge-belt-defaults/register-forge-belt-defaults!)]
-                   (register!))))
+  (try
+    (require 'hive-mcp.workflows.forge-belt-defaults)
+    (when-let [register! (resolve 'hive-mcp.workflows.forge-belt-defaults/register-forge-belt-defaults!)]
+      (register!))
+    (catch Throwable e
+      (log/warn "register-forge-belt-defaults! failed — forge-belt extension points will return noop:"
+                (.getMessage e)))))
 
 ;; =============================================================================
 ;; Extension Loading

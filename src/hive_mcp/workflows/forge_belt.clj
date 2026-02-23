@@ -23,7 +23,8 @@
   (if-let [f (ext/get-extension ext-key)]
     (apply f args)
     (do
-      (log/debug "Extension not available, returning default for" ext-key)
+      (log/warn "forge-belt extension not registered for" ext-key
+                "— returning noop. Check register-forge-belt-defaults! startup logs.")
       default-val)))
 
 ;; =============================================================================

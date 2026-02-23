@@ -47,14 +47,22 @@
                                            ""))})))))
          vec)))
 
+(defn- compute-disc-report
+  "Compute staleness report for a single disc entity in parallel-friendly form.
+   Pre-hashes the file so pmap can parallelize I/O across discs."
+  [disc]
+  (let [path (:disc/path disc)
+        hash-result (when path (hash/file-content-hash path))
+        report (vol/staleness-report disc hash-result)]
+    (assoc report :path path)))
+
 (defn top-stale-files
-  "Query top-N most stale disc entities sorted by staleness score."
+  "Query top-N most stale disc entities sorted by staleness score.
+   Uses pmap for parallel file hashing — each disc's I/O is independent."
   [& {:keys [n project-id threshold] :or {n 5 threshold 0.5}}]
-  (let [discs (crud/get-all-discs :project-id project-id)]
-    (->> discs
-         (map (fn [disc]
-                (let [report (staleness-report disc)]
-                  (assoc report :path (:disc/path disc)))))
+  (let [discs (crud/get-all-discs :project-id project-id)
+        reports (doall (pmap compute-disc-report discs))]
+    (->> reports
          (filter #(> (:score %) threshold))
          (sort-by :score >)
          (take n)

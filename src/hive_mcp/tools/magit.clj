@@ -156,7 +156,7 @@
   (let [dir (resolve-directory directory)]
     (log/info "magit-status" {:directory dir})
     (handle-elisp :magit/status-failed
-      (el/require-and-call-json 'hive-mcp-magit 'hive-mcp-magit-api-status dir))))
+                  (el/require-and-call-json 'hive-mcp-magit 'hive-mcp-magit-api-status dir))))
 
 (defn handle-magit-branches
   "Get branch information including current, upstream, local and remote branches."
@@ -164,7 +164,7 @@
   (let [dir (resolve-directory directory)]
     (log/info "magit-branches" {:directory dir})
     (handle-elisp :magit/branches-failed
-      (el/require-and-call-json 'hive-mcp-magit 'hive-mcp-magit-api-branches dir))))
+                  (el/require-and-call-json 'hive-mcp-magit 'hive-mcp-magit-api-branches dir))))
 
 (defn handle-magit-log
   "Get recent commit log."
@@ -173,7 +173,7 @@
         n (if-let [c count] c 10)]
     (log/info "magit-log" {:count n :directory dir})
     (handle-elisp :magit/log-failed
-      (el/require-and-call-json 'hive-mcp-magit 'hive-mcp-magit-api-log n dir))))
+                  (el/require-and-call-json 'hive-mcp-magit 'hive-mcp-magit-api-log n dir))))
 
 (defn handle-magit-diff
   "Get diff for staged, unstaged, or all changes."
@@ -186,7 +186,7 @@
                      'staged)]
     (log/info "magit-diff" {:target target :directory dir})
     (handle-elisp :magit/diff-failed
-      (el/require-and-call-text 'hive-mcp-magit 'hive-mcp-magit-api-diff target-sym dir))))
+                  (el/require-and-call-text 'hive-mcp-magit 'hive-mcp-magit-api-diff target-sym dir))))
 
 (defn handle-magit-stage
   "Stage files for commit. Use 'all' to stage all modified files."
@@ -196,8 +196,8 @@
         elisp (el/require-and-call 'hive-mcp-magit 'hive-mcp-magit-api-stage file-arg dir)]
     (log/info "magit-stage" {:files files :directory dir})
     (result->mcp
-      (try-result :magit/stage-failed
-        #(with-default "Staged files" (elisp->result elisp))))))
+     (try-result :magit/stage-failed
+                 #(with-default "Staged files" (elisp->result elisp))))))
 
 (defn handle-magit-commit
   "Create a commit with the given message."
@@ -219,7 +219,7 @@
   (let [dir (resolve-directory directory)]
     (log/info "magit-pull" {:directory dir})
     (handle-elisp :magit/pull-failed
-      (el/require-and-call-text 'hive-mcp-magit 'hive-mcp-magit-api-pull dir))))
+                  (el/require-and-call-text 'hive-mcp-magit 'hive-mcp-magit-api-pull dir))))
 
 (defn handle-magit-fetch
   "Fetch from remote(s)."
@@ -227,7 +227,7 @@
   (let [dir (resolve-directory directory)]
     (log/info "magit-fetch" {:remote remote :directory dir})
     (handle-elisp :magit/fetch-failed
-      (el/require-and-call-text 'hive-mcp-magit 'hive-mcp-magit-api-fetch remote dir))))
+                  (el/require-and-call-text 'hive-mcp-magit 'hive-mcp-magit-api-fetch remote dir))))
 
 (defn handle-magit-feature-branches
   "Get list of feature/fix/feat branches (for /ship and /ship-pr skills)."
@@ -247,97 +247,5 @@
   "IMPORTANT: Pass your current working directory here to ensure git operations target YOUR project, not the MCP server's directory. Get it from your prompt path or run `pwd`.")
 
 (def tools
-  [{:name "magit_status"
-    :description "Get comprehensive git repository status including branch, staged/unstaged/untracked files, ahead/behind counts, stashes, and recent commits. IMPORTANT: Pass your working directory to target your project."
-    :inputSchema {:type "object"
-                  :properties {"directory" {:type "string"
-                                            :description dir-desc}}
-                  :required []}
-    :handler handle-magit-status}
-
-   {:name "magit_branches"
-    :description "Get branch information including current branch, upstream, all local branches, and remote branches. IMPORTANT: Pass your working directory to target your project."
-    :inputSchema {:type "object"
-                  :properties {"directory" {:type "string"
-                                            :description dir-desc}}
-                  :required []}
-    :handler handle-magit-branches}
-
-   {:name "magit_log"
-    :description "Get recent commit log with hash, author, date, and subject. IMPORTANT: Pass your working directory to target your project."
-    :inputSchema {:type "object"
-                  :properties {"count" {:type "integer"
-                                        :description "Number of commits to return (default: 10)"}
-                               "directory" {:type "string"
-                                            :description dir-desc}}
-                  :required []}
-    :handler handle-magit-log}
-
-   {:name "magit_diff"
-    :description "Get diff for staged, unstaged, or all changes. IMPORTANT: Pass your working directory to target your project."
-    :inputSchema {:type "object"
-                  :properties {"target" {:type "string"
-                                         :enum ["staged" "unstaged" "all"]
-                                         :description "What to diff (default: staged)"}
-                               "directory" {:type "string"
-                                            :description dir-desc}}
-                  :required []}
-    :handler handle-magit-diff}
-
-   {:name "magit_stage"
-    :description "Stage files for commit. Use 'all' to stage all modified files, or provide a file path. IMPORTANT: Pass your working directory to target your project."
-    :inputSchema {:type "object"
-                  :properties {"files" {:type "string"
-                                        :description "File path to stage, or 'all' for all modified files"}
-                               "directory" {:type "string"
-                                            :description dir-desc}}
-                  :required ["files"]}
-    :handler handle-magit-stage}
-
-   {:name "magit_commit"
-    :description "Create a git commit with the given message. IMPORTANT: Pass your working directory to target your project."
-    :inputSchema {:type "object"
-                  :properties {"message" {:type "string"
-                                          :description "Commit message"}
-                               "all" {:type "boolean"
-                                      :description "If true, stage all changes before committing"}
-                               "directory" {:type "string"
-                                            :description dir-desc}}
-                  :required ["message"]}
-    :handler handle-magit-commit}
-
-   {:name "magit_push"
-    :description "Push to remote. Optionally set upstream tracking for new branches. IMPORTANT: Pass your working directory to target your project."
-    :inputSchema {:type "object"
-                  :properties {"set_upstream" {:type "boolean"
-                                               :description "Set upstream tracking if not already set"}
-                               "directory" {:type "string"
-                                            :description dir-desc}}
-                  :required []}
-    :handler handle-magit-push}
-
-   {:name "magit_pull"
-    :description "Pull from upstream remote. IMPORTANT: Pass your working directory to target your project."
-    :inputSchema {:type "object"
-                  :properties {"directory" {:type "string"
-                                            :description dir-desc}}
-                  :required []}
-    :handler handle-magit-pull}
-
-   {:name "magit_fetch"
-    :description "Fetch from remote(s). Fetches all remotes if no specific remote is provided. IMPORTANT: Pass your working directory to target your project."
-    :inputSchema {:type "object"
-                  :properties {"remote" {:type "string"
-                                         :description "Specific remote to fetch from (optional)"}
-                               "directory" {:type "string"
-                                            :description dir-desc}}
-                  :required []}
-    :handler handle-magit-fetch}
-
-   {:name "magit_feature_branches"
-    :description "Get list of feature/fix/feat branches for shipping. Used by /ship and /ship-pr skills. IMPORTANT: Pass your working directory to target your project."
-    :inputSchema {:type "object"
-                  :properties {"directory" {:type "string"
-                                            :description dir-desc}}
-                  :required []}
-    :handler handle-magit-feature-branches}])
+  "REMOVED: Flat magit tools no longer exposed. Use consolidated `magit` tool."
+  [])

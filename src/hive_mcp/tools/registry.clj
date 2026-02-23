@@ -1,99 +1,48 @@
 (ns hive-mcp.tools.registry
-  "MCP tool definitions registry — aggregates tool definitions from
-   domain-specific modules under hive-mcp.tools.*
+  "MCP tool definitions registry — aggregates consolidated tool definitions.
 
-   Moved from hive-mcp.tools (now a backward-compat facade).
-
-   Capability-based tool switching:
-   - When Chroma is available: exposes mcp_mem_kanban_* tools (memory-based)
-   - When Chroma is unavailable: exposes org_kanban_native_* tools (fallback)"
-  (:require ;; Domain-specific tool modules
-   [hive-mcp.tools.buffer :as buffer]
-   [hive-mcp.tools.memory-kanban :as mem-kanban]
-   [hive-mcp.tools.cider :as cider]
-   [hive-mcp.tools.projectile :as projectile]
-   [hive-mcp.tools.kanban :as kanban]
-   [hive-mcp.tools.swarm.claim :as claim]
-   [hive-mcp.tools.presets :as presets-tools]
-   [hive-mcp.tools.diff :as diff]
-   [hive-mcp.tools.crystal :as crystal]
-   [hive-mcp.tools.session-complete :as session-complete]
-   [hive-mcp.tools.hive-project :as hive-project]
-   [hive-mcp.tools.olympus :as olympus]
-   [hive-mcp.tools.agora :as agora]
-   [hive-mcp.tools.cost :as cost]
-   [hive-mcp.tools.delegate :as delegate]
-   [hive-mcp.plan.tool :as plan]
-   [hive-mcp.channel.core :as channel]
-   [hive-mcp.agent.core :as agent]
-   [hive-mcp.chroma.core :as chroma]
-   ;; Consolidated CLI tools (new unified interface)
-   [hive-mcp.tools.consolidated.agent :as c-agent]
-   [hive-mcp.tools.consolidated.memory :as c-memory]
-   [hive-mcp.tools.consolidated.kg :as c-kg]
-   [hive-mcp.tools.consolidated.hivemind :as c-hivemind]
-   [hive-mcp.tools.consolidated.magit :as c-magit]
-   [hive-mcp.tools.consolidated.cider :as c-cider]
-   [hive-mcp.tools.consolidated.kanban :as c-kanban]
-   [hive-mcp.tools.consolidated.preset :as c-preset]
-   [hive-mcp.tools.consolidated.olympus :as c-olympus]
-   [hive-mcp.tools.consolidated.agora :as c-agora]
-   [hive-mcp.tools.composite :as composite]
-   [hive-mcp.extensions.registry :as ext]
-   [hive-mcp.tools.consolidated.project :as c-project]
-   [hive-mcp.tools.consolidated.session :as c-session]
-   [hive-mcp.tools.consolidated.emacs :as c-emacs]
-   [hive-mcp.tools.consolidated.wave :as c-wave]
-   [hive-mcp.tools.consolidated.migration :as c-migration]
-   [hive-mcp.tools.consolidated.config :as c-config]
-   [hive-mcp.tools.consolidated.workflow :as c-workflow]
-   [hive-mcp.tools.consolidated.multi :as c-multi]
-   ;; Backward-compatibility shims for deprecated tools
-   [hive-mcp.tools.compat :as compat]
-   [clojure.string :as str]
-   [taoensso.timbre :as log]))
+   All flat/deprecated tools have been removed. Only consolidated tools
+   (agent, memory, kg, etc.) and channel tools are registered."
+  (:require [hive-mcp.channel.core :as channel]
+   ;; Consolidated CLI tools (unified interface)
+            [hive-mcp.tools.consolidated.agent :as c-agent]
+            [hive-mcp.tools.consolidated.memory :as c-memory]
+            [hive-mcp.tools.consolidated.kg :as c-kg]
+            [hive-mcp.tools.consolidated.hivemind :as c-hivemind]
+            [hive-mcp.tools.consolidated.magit :as c-magit]
+            [hive-mcp.tools.consolidated.cider :as c-cider]
+            [hive-mcp.tools.consolidated.kanban :as c-kanban]
+            [hive-mcp.tools.consolidated.preset :as c-preset]
+            [hive-mcp.tools.consolidated.olympus :as c-olympus]
+            [hive-mcp.tools.consolidated.agora :as c-agora]
+            [hive-mcp.tools.composite :as composite]
+            [hive-mcp.extensions.registry :as ext]
+            [hive-mcp.tools.consolidated.project :as c-project]
+            [hive-mcp.tools.consolidated.session :as c-session]
+            [hive-mcp.tools.consolidated.emacs :as c-emacs]
+            [hive-mcp.tools.consolidated.wave :as c-wave]
+            [hive-mcp.tools.consolidated.migration :as c-migration]
+            [hive-mcp.tools.consolidated.config :as c-config]
+            [hive-mcp.tools.consolidated.workflow :as c-workflow]
+            [hive-mcp.tools.consolidated.multi :as c-multi]
+            [clojure.string :as str]
+            [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 ;; =============================================================================
-;; Capability-Based Kanban Tool Switching
-;; =============================================================================
-
-;; org-kanban-native tools REMOVED — org_clj module deleted (dead code W1)
-
-;; =============================================================================
-;; Base Tools (always included)
+;; Base Tools
 ;; =============================================================================
 
 (defn ^:private get-base-tools
-  "Get tools that are always included regardless of capability state.
-   Excludes kanban tools (both mem-kanban and org-kanban) - these are added
-   conditionally in get-filtered-tools based on Chroma availability.
+  "Get all registered tools (consolidated + channel).
 
    CRITICAL: This is a function, not a def, to support hot-reload.
    Each call dereferences the current var values from tool modules,
-   ensuring handlers point to fresh function references after reload.
-
-   Includes deprecated tool shims (compat/tools) for backward compatibility.
-   These log warnings and delegate to consolidated handlers."
+   ensuring handlers point to fresh function references after reload."
   []
-  (vec (concat buffer/tools
-               crystal/tools
-               cider/tools
-               projectile/tools
-               claim/tools
-               presets-tools/tools
-               diff/tools
-               session-complete/tools
-               hive-project/tools
-               olympus/tools
-               agora/tools
-               cost/tools
-               delegate/tools
-               plan/tools
-               channel/channel-tools
-               agent/tools
+  (vec (concat channel/channel-tools
                c-agent/tools
                c-memory/tools
                c-kg/tools
@@ -112,11 +61,7 @@
                c-migration/tools  ; KG/Memory migration operations
                c-config/tools     ; Config management (~/.config/hive-mcp/config.edn)
                c-workflow/tools   ; Forja Belt workflow automation
-               c-multi/tools     ; Meta-facade: single tool for all consolidated ops
-               ;; Backward-compatibility shims (deprecated, sunset: 2026-04-01)
-               ;; These provide old tool names (magit_status, mcp_memory_add, etc.)
-               ;; and delegate to consolidated handlers
-               compat/tools)))
+               c-multi/tools)))  ; Meta-facade: single tool for all consolidated ops
 
 ;; Forward declarations for mutual references
 (declare get-all-tools)
@@ -144,31 +89,12 @@
     "olympus"   ;; Emacs grid control -> coordinator-only
     "emacs"})   ;; direct Emacs operations -> coordinator-only
 
-(def ^:private child-excluded-deprecated-prefixes
-  "Prefixes of deprecated shim names that map to excluded categories.
-
-   Deprecated shims like swarm_spawn -> agent, swarm_kill -> agent,
-   delegate_drone -> delegate are excluded. But hivemind_shout -> hivemind,
-   mcp_memory_add -> memory, magit_status -> magit are safe to keep."
-  ["swarm_"      ;; swarm_spawn/kill/dispatch/etc -> agent (excluded)
-   "delegate_"   ;; delegate_drone/validated_wave -> delegate (excluded)
-   "lings_"])    ;; lings_available -> agent (excluded)
-
 (defn- child-ling-excluded?
   "Check if a tool should be excluded from child ling servers.
 
-   Matches on:
-   1. Exact tool name against child-excluded-tool-names
-   2. Deprecated shims whose names map to excluded categories
-      (swarm_*, delegate_*, lings_*) — NOT all deprecated tools.
-
-   Safe deprecated shims (hivemind_*, mcp_memory_*, magit_*, kg_*)
-   are kept since their consolidated parents are safe for child lings."
-  [{:keys [name deprecated]}]
-  (or (contains? child-excluded-tool-names name)
-      ;; Only exclude deprecated shims that delegate to excluded categories
-      (when deprecated
-        (some #(str/starts-with? name %) child-excluded-deprecated-prefixes))))
+   Matches on exact tool name against child-excluded-tool-names."
+  [{:keys [name]}]
+  (contains? child-excluded-tool-names name))
 
 (defn get-child-ling-tools
   "Get restricted tools for child ling MCP servers.
@@ -198,17 +124,11 @@
    This ensures backward compatibility for existing code that calls them directly.
 
    Parameters:
-   - include-deprecated?: boolean, when true includes deprecated shims
+   - include-deprecated?: boolean, when true includes deprecated shims (no-op, none remain)
 
    Returns: Vector of tool definitions."
   [& {:keys [include-deprecated?] :or {include-deprecated? true}}]
-  (let [chroma-up? (chroma/chroma-available?)
-        base (get-base-tools)
-        all-tools (if chroma-up?
-                    ;; Chroma available: use mem-kanban
-                    (vec (concat base mem-kanban/tools))
-                    ;; Chroma unavailable: use kanban/tools (elisp addon) as fallback
-                    (vec (concat base kanban/tools)))]
+  (let [all-tools (get-base-tools)]
     (if include-deprecated?
       all-tools
       ;; Filter out deprecated tools (those with :deprecated true)
@@ -229,28 +149,13 @@
   (filterv :consolidated (get-all-tools :include-deprecated? false)))
 
 (defn get-filtered-tools
-  "Get tools with capability-based kanban switching, EXCLUDING deprecated tools.
-
-   PHASE 2 STRANGLE: Deprecated tools are excluded from tools/list response.
-   They remain callable via get-all-tools (for backward compatibility).
-
-   When Chroma is available:
-   - Include mcp_mem_kanban_* tools (memory-based kanban)
-   - Include org tools WITHOUT org_kanban_native_* (avoid duplication)
-   - EXCLUDE kanban/tools (elisp org-kanban addon) to prevent LLM confusion
-
-   When Chroma is unavailable:
-   - Include kanban/tools (elisp org-kanban addon) as primary kanban
-   - Include org tools WITH org_kanban_native_* (additional fallback)
-   - Exclude mcp_mem_kanban_* tools
-
+  "Get tools for MCP tools/list response. Only consolidated tools + active domain tools.
 
    HOT-RELOAD: Calls (get-base-tools) to get fresh handler references.
    This ensures hot-reload updates propagate to tool dispatch."
   []
   (let [visible-tools (get-all-tools :include-deprecated? false)]
-    (log/info "Filtered tools for listing:" (count visible-tools)
-              "(deprecated tools hidden from tools/list)")
+    (log/info "Filtered tools for listing:" (count visible-tools))
     visible-tools))
 
 (def tools
@@ -263,30 +168,8 @@
    modules without modifying this aggregation.
 
    NOTE: This static def includes ALL tools for backward compatibility.
-   Use get-filtered-tools at server startup for capability-based filtering.
-
-   Includes deprecated tool shims (compat/tools) for backward compatibility.
-   These log deprecation warnings and delegate to consolidated handlers."
-  (vec (concat buffer/tools
-               crystal/tools
-               mem-kanban/tools
-               cider/tools
-               projectile/tools
-               kanban/tools
-               claim/tools
-               presets-tools/tools
-               diff/tools
-               session-complete/tools
-               hive-project/tools
-               olympus/tools
-               agora/tools
-               cost/tools
-               delegate/tools
-               plan/tools
-               ;; hivemind/tools REMOVED - compat/tools provides shims → consolidated
-               channel/channel-tools
-               agent/tools
-               ;; Consolidated CLI tools (new unified interface)
+   Use get-filtered-tools at server startup for capability-based filtering."
+  (vec (concat channel/channel-tools
                c-agent/tools
                c-memory/tools
                c-kg/tools
@@ -305,11 +188,7 @@
                c-migration/tools  ; KG/Memory migration operations
                c-config/tools     ; Config management (~/.config/hive-mcp/config.edn)
                c-workflow/tools   ; Forja Belt workflow automation
-               c-multi/tools     ; Meta-facade: single tool for all consolidated ops
-               ;; Backward-compatibility shims (deprecated, sunset: 2026-04-01)
-               ;; These provide old tool names (magit_status, mcp_memory_add, etc.)
-               ;; and delegate to consolidated handlers
-               compat/tools)))
+               c-multi/tools)))   ; Meta-facade: single tool for all consolidated ops)
 
 (defn get-tool-by-name
   "Find a tool definition by name."

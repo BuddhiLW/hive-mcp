@@ -176,32 +176,5 @@
                    :threshold-minutes (/ threshold-ms 60000)})})))))
 
 (def tools
-  "Claim management MCP tool definitions."
-  [{:name "claim_list"
-    :description "List all active file claims with owner, timestamp, and staleness warnings. Claims older than 10 minutes are marked as stale. Use this to diagnose blocked drones."
-    :inputSchema {:type "object"
-                  :properties {}
-                  :required []}
-    :handler handle-claim-list}
-
-   {:name "claim_clear"
-    :description "Release a file claim by path. Requires force=true for non-stale claims (safety). Use when a ling/drone is stuck and holding claims."
-    :inputSchema {:type "object"
-                  :properties {"file_path" {:type "string"
-                                            :description "Absolute or relative file path to release"}
-                               "force" {:type "boolean"
-                                        :description "Force release even if claim is not stale (default: false)"}}
-                  :required ["file_path"]}
-    :handler handle-claim-clear}
-
-   {:name "claim_cleanup"
-    :description "Release all stale claims AND ghost claims. Stale claims are those older than threshold. Ghost claims are orphaned claims in logic-db without DataScript entries (the root cause of false 'file already claimed' errors). Use dry_run=true to preview."
-    :inputSchema {:type "object"
-                  :properties {"threshold_minutes" {:type "number"
-                                                    :description "Staleness threshold in minutes (default: 10)"}
-                               "dry_run" {:type "boolean"
-                                          :description "If true, only report claims without releasing (default: false)"}
-                               "include_ghosts" {:type "boolean"
-                                                 :description "If false, skip ghost claim cleanup (default: true - clean both stale and ghost)"}}
-                  :required []}
-    :handler handle-claim-cleanup}])
+  "REMOVED: Flat claim tools no longer exposed. Use consolidated `agent` tool with `claims` command."
+  [])

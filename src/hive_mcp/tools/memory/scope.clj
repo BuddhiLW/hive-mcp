@@ -1,6 +1,8 @@
 (ns hive-mcp.tools.memory.scope
   "Project scope utilities for memory operations with hierarchical resolution."
   (:require [hive-mcp.knowledge-graph.scope :as kg-scope]
+            [hive-mcp.memory.domain :as domain]
+            [hive-dsl.adt :refer [adt-case]]
             [clojure.set]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
@@ -57,32 +59,39 @@
   (kg-scope/scope->tag project-id))
 
 (defn matches-scope?
-  "Check if entry matches the given scope filter with hierarchical support."
+  "Check if entry matches the given scope filter with hierarchical support.
+   Accepts either a ScopeFilter ADT value or a legacy string/set/nil value."
   [entry scope-filter]
   (let [tags (set (or (:tags entry) []))]
-    (cond
-      (or (nil? scope-filter) (= scope-filter "all"))
-      true
+    (if (and (map? scope-filter) (:adt/type scope-filter))
+      ;; ADT path — exhaustive dispatch
+      (adt-case domain/ScopeFilter scope-filter
+        :scope/all     true
+        :scope/global  (contains? tags "scope:global")
+        :scope/project (let [visible-tags (kg-scope/visible-scope-tags (:project-id scope-filter))]
+                         (some tags visible-tags))
+        :scope/auto    (let [visible-tags (kg-scope/visible-scope-tags (:project-id scope-filter))]
+                         (some tags visible-tags)))
+      ;; Legacy path — string/set/nil (for lifecycle.clj, decay.clj callers)
+      (cond
+        (or (nil? scope-filter) (= scope-filter "all"))
+        true
 
-      (= scope-filter "global")
-      (contains? tags "scope:global")
+        (= scope-filter "global")
+        (contains? tags "scope:global")
 
-      (set? scope-filter)
-      (some tags scope-filter)
+        (set? scope-filter)
+        (some tags scope-filter)
 
-      :else
-      (let [visible-tags (if (str/starts-with? (str scope-filter) "scope:")
-                           (kg-scope/visible-scope-tags scope-filter)
-                           (kg-scope/visible-scope-tags scope-filter))]
-        (some tags visible-tags)))))
+        :else
+        (let [visible-tags (kg-scope/visible-scope-tags (str scope-filter))]
+          (some tags visible-tags))))))
 
 (defn derive-scope-filter
-  "Derive scope filter from scope parameter and project-id."
+  "Derive scope filter from scope parameter and project-id.
+   Returns a ScopeFilter ADT value."
   [scope project-id]
-  (cond
-    (= scope "all") nil
-    (some? scope) scope
-    :else (make-scope-tag project-id)))
+  (domain/parse-scope scope project-id))
 
 (defn resolve-scope-chain
   "Walk the parent chain for a project-id, returning ordered vector from self to root."
@@ -119,19 +128,33 @@
        base-tags))))
 
 (defn derive-hierarchy-scope-filter
-  "Derive hierarchical scope filter including ancestors and aliases."
+  "Derive hierarchical scope filter including ancestors and aliases.
+   Accepts either a ScopeFilter ADT value or a legacy string/nil."
   [scope]
-  (cond
-    (= scope "all") nil
-    (nil? scope) nil
-    (= scope "global") #{"scope:global"}
-    :else
-    (let [base-tags (kg-scope/visible-scope-tags scope)
-          chain (kg-scope/visible-scopes scope)
-          alias-tags (collect-alias-scope-tags chain)]
-      (if (seq alias-tags)
-        (clojure.set/union base-tags alias-tags)
-        base-tags))))
+  (if (and (map? scope) (:adt/type scope))
+    ;; ADT path
+    (adt-case domain/ScopeFilter scope
+      :scope/all     nil
+      :scope/global  #{"scope:global"}
+      :scope/project (let [base-tags (kg-scope/visible-scope-tags (:project-id scope))
+                           chain (kg-scope/visible-scopes (:project-id scope))
+                           alias-tags (collect-alias-scope-tags chain)]
+                       (if (seq alias-tags)
+                         (clojure.set/union base-tags alias-tags)
+                         base-tags))
+      :scope/auto    nil)
+    ;; Legacy path
+    (cond
+      (= scope "all") nil
+      (nil? scope) nil
+      (= scope "global") #{"scope:global"}
+      :else
+      (let [base-tags (kg-scope/visible-scope-tags scope)
+            chain (kg-scope/visible-scopes scope)
+            alias-tags (collect-alias-scope-tags chain)]
+        (if (seq alias-tags)
+          (clojure.set/union base-tags alias-tags)
+          base-tags)))))
 
 (defn matches-hierarchy-scopes?
   "Check if entry matches any of the hierarchical scope filters."

@@ -1,0 +1,51 @@
+{:tx-data
+ [{:db/ident       :kg-edge/id
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/unique      :db.unique/identity
+   :db/doc         "Unique edge identifier (UUID string)"}
+
+  {:db/ident       :kg-edge/from
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc         "Source node ID (memory entry ID)"}
+
+  {:db/ident       :kg-edge/to
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc         "Target node ID (memory entry ID)"}
+
+  {:db/ident       :kg-edge/relation
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc         "Relation type keyword from relation-types"}
+
+  {:db/ident       :kg-edge/scope
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc         "Scope where edge was discovered (e.g., project-id)"}
+
+  {:db/ident       :kg-edge/confidence
+   :db/valueType   :db.type/double
+   :db/cardinality :db.cardinality/one
+   :db/doc         "Confidence score 0.0-1.0"}
+
+  {:db/ident       :kg-edge/created-by
+   :db/valueType   :db.type/string
+   :db/cardinality :db.cardinality/one
+   :db/doc         "Agent ID that created this edge"}
+
+  {:db/ident       :kg-edge/created-at
+   :db/valueType   :db.type/instant
+   :db/cardinality :db.cardinality/one
+   :db/doc         "Creation timestamp (inst)"}
+
+  {:db/ident       :kg-edge/last-verified
+   :db/valueType   :db.type/instant
+   :db/cardinality :db.cardinality/one
+   :db/doc         "Timestamp of last verification that this edge is still valid (inst)"}
+
+  {:db/ident       :kg-edge/source-type
+   :db/valueType   :db.type/keyword
+   :db/cardinality :db.cardinality/one
+   :db/doc         "How this edge was established: :manual, :automated, :inferred, :co-access"}]}

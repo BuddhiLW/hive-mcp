@@ -144,53 +144,5 @@
 ;;; ============================================================
 
 (def tools
-  "MCP tool definitions for unified delegate API."
-  [{:name "delegate"
-    :description "Unified API for drone task delegation. Consolidates delegate_drone, dispatch_drone_wave, and dispatch_validated_wave into one polymorphic interface.
-
-SINGLE MODE: Pass :task for single drone execution
-  delegate({task: \"Fix bug\", files: [\"src/foo.clj\"]})
-
-BATCH MODE: Pass :tasks array for parallel execution
-  delegate({tasks: [{file: \"a.clj\", task: \"Add docs\"}, ...]})
-
-VALIDATED BATCH: Pass :tasks + :validate for lint-and-retry loop
-  delegate({tasks: [...], validate: true, max_retries: 3})
-
-REVIEW MODE: Pass :tasks + :review_mode for propose-then-approve workflow
-  delegate({tasks: [...], review_mode: true})"
-    :inputSchema {:type "object"
-                  :properties {"task" {:type "string"
-                                       :description "Single task description (mutually exclusive with tasks)"}
-                               "tasks" {:type "array"
-                                        :items {:type "object"
-                                                :properties {"file" {:type "string"
-                                                                     :description "File path to modify"}
-                                                             "task" {:type "string"
-                                                                     :description "Task description"}}
-                                                :required ["file" "task"]}
-                                        :description "Batch tasks array (mutually exclusive with task)"}
-                               "files" {:type "array"
-                                        :items {:type "string"}
-                                        :description "Files for single mode (ignored in batch mode)"}
-                               "validate" {:type "boolean"
-                                           :description "Run clj-kondo lint after batch execution (default: false for batch, ignored for single)"}
-                               "review_mode" {:type "boolean"
-                                              :description "Propose diffs for human review before applying (default: false)"}
-                               "max_retries" {:type "integer"
-                                              :description "Max validation retry iterations (default: 3)"}
-                               "lint_level" {:type "string"
-                                             :enum ["error" "warning" "info"]
-                                             :description "Lint severity threshold (default: error)"}
-                               "preset" {:type "string"
-                                         :description "Drone preset (default: drone-worker)"}
-                               "trace" {:type "boolean"
-                                        :description "Emit progress events (default: true)"}
-                               "cwd" {:type "string"
-                                      :description "Working directory override for path resolution"}
-                               "parent_id" {:type "string"
-                                            :description "Parent ling's slave-id for swarm status sync (single mode only)"}
-                               "concurrency" {:type "integer"
-                                              :description "Max concurrent drones for batch (default: 3)"}}
-                  :required []}
-    :handler handle-delegate}])
+  "REMOVED: Flat delegate tool no longer exposed. Use consolidated `wave` tool."
+  [])

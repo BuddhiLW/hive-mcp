@@ -24,7 +24,8 @@
    :status        cider-handlers/handle-cider-status
    :spawn         cider-handlers/handle-cider-spawn-session
    :sessions      cider-handlers/handle-cider-list-sessions
-   :kill-session  cider-handlers/handle-cider-kill-session})
+   :kill-session  cider-handlers/handle-cider-kill-session
+   :kill-all      cider-handlers/handle-cider-kill-all-sessions})
 
 (def handlers
   (merge canonical-handlers
@@ -40,10 +41,10 @@
 (def tool-def
   {:name "cider"
    :consolidated true
-   :description "CIDER REPL operations: eval (silent|explicit, optional session routing), doc (docstring), info (full metadata), complete (completions), apropos (search symbols), status (connection), spawn/sessions/kill-session (multi-REPL). Use command='help' to list all."
+   :description "CIDER REPL operations: eval (silent|explicit, optional session routing), doc (docstring), info (full metadata), complete (completions), apropos (search symbols), status (connection), spawn/sessions/kill-session/kill-all (multi-REPL). Use command='help' to list all."
    :inputSchema {:type "object"
                  :properties {"command" {:type "string"
-                                         :enum ["eval" "eval-explicit" "doc" "info" "complete" "apropos" "status" "spawn" "sessions" "eval-session" "kill-session" "help"]
+                                         :enum ["eval" "eval-explicit" "doc" "info" "complete" "apropos" "status" "spawn" "sessions" "eval-session" "kill-session" "kill-all" "help"]
                                          :description "CIDER operation to perform"}
                               "code" {:type "string"
                                       :description "Clojure code to evaluate"}

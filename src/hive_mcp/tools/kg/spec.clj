@@ -40,11 +40,11 @@
 (s/def ::node-id (s/and string? seq))
 
 ;; Relation type keyword: member of schema/relation-types set
-(s/def ::relation-keyword schema/relation-types)
+(s/def ::relation-keyword (schema/relation-types))
 
 ;; Relation as string input from MCP (JSON always sends strings)
 (s/def ::relation-string
-  (s/and string? seq #(contains? schema/relation-types (keyword %))))
+  (s/and string? seq #(contains? (schema/relation-types) (keyword %))))
 
 ;; Relation input: MCP sends strings, internal code may use keywords
 (s/def ::relation-input

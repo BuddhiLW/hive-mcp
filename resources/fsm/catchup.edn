@@ -5,8 +5,9 @@
 ;; and must be supplied via the handlers map at compile time.
 ;;
 ;; The catchup workflow restores session context from Chroma memory,
-;; enriches it with KG relationships, runs maintenance tasks, and
-;; delivers entries via piggyback + context-store for pass-by-reference.
+;; transforms entries to metadata, runs optional addon hooks, maintenance
+;; tasks, and delivers entries via piggyback + context-store for
+;; pass-by-reference.
 ;;
 ;; Usage:
 ;;   (require '[hive.events.fsm :as fsm])
@@ -19,8 +20,8 @@
 ;;   :start           — Check prerequisites (Chroma configured?), init state
 ;;   :scope-resolve   — Resolve project-id, project-name, build scopes
 ;;   :query-memory    — Query all Chroma entries (axioms, decisions, etc.)
-;;   :gather-context  — Gather git info + transform entries to metadata
-;;   :enrich-kg       — KG enrichment of decisions/conventions + insights
+;;   :transform       — Transform raw entries to metadata + fetch git info
+;;   :addon-pass      — Optional addon processing (graceful pass-through)
 ;;   :maintenance     — Auto-permeate wraps, project tree scan, disc decay
 ;;   :deliver         — Piggyback enqueue + context-store dual-write
 ;;   :end             — Terminal state, format and return response
@@ -49,13 +50,13 @@
 ;;    :axioms-meta          vector
 ;;    :priority-meta        vector
 ;;    :sessions-meta        vector
-;;    :decisions-meta       vector    ;; KG-enriched
-;;    :conventions-meta     vector    ;; KG-enriched
+;;    :decisions-meta       vector
+;;    :conventions-meta     vector
 ;;    :snippets-meta        vector
 ;;    :expiring-meta        vector
 ;;
-;;    ;; KG enrichment
-;;    :kg-insights          map
+;;    ;; Addon-provided
+;;    :addon-data           map
 ;;
 ;;    ;; Maintenance results
 ;;    :permeation           map       ;; {:permeated N :agents [...]}
@@ -79,9 +80,7 @@
 ;;   :query-expiring-fn    — (project-id, limit) → entries
 ;;   :git-fn               — (directory) → git-info
 ;;   :entry->meta-fns      — {:axiom fn, :priority fn, :catchup fn}
-;;   :kg-enrich-fn         — (entries) → {:entries [...] :kg-count N}
-;;   :kg-insights-fn       — (decisions, conventions, sessions, project-id) → map
-;;   :co-access-fn         — (entry-ids, exclude-ids) → suggestions
+;;   :addon-fn             — optional, addon-provided
 ;;   :permeate-fn          — (directory) → {:permeated N :agents [...]}
 ;;   :tree-scan-fn         — (directory) → scan-result
 ;;   :disc-decay-fn        — (project-id) → decay-stats
@@ -111,18 +110,18 @@
 
   :hive-mcp.workflows.catchup/query-memory
   {:handler    :query-memory
-   :dispatches [[:hive-mcp.workflows.catchup/gather-context
+   :dispatches [[:hive-mcp.workflows.catchup/transform
                  (fn [data] (not (:query-failed? data)))]
                 [:hive.events.fsm/error
                  (fn [data] (true? (:query-failed? data)))]]}
 
-  :hive-mcp.workflows.catchup/gather-context
-  {:handler    :gather-context
-   :dispatches [[:hive-mcp.workflows.catchup/enrich-kg
+  :hive-mcp.workflows.catchup/transform
+  {:handler    :transform
+   :dispatches [[:hive-mcp.workflows.catchup/addon-pass
                  (fn [_] true)]]}
 
-  :hive-mcp.workflows.catchup/enrich-kg
-  {:handler    :enrich-kg
+  :hive-mcp.workflows.catchup/addon-pass
+  {:handler    :addon-pass
    :dispatches [[:hive-mcp.workflows.catchup/maintenance
                  (fn [_] true)]]}
 

@@ -67,6 +67,40 @@
     (log/debug "[context-store] put" id "tags:" tags "ttl:" ttl-ms)
     id))
 
+(defn context-put-batch!
+  "Store multiple entries in the context store in parallel.
+   Accepts a map of {category-keyword {:data d :tags t :ttl-ms ttl}} entries.
+   Entries with nil/empty :data are skipped.
+   Returns a map of {category-keyword ctx-id} for entries that were stored.
+
+   Example:
+     (context-put-batch! {:axioms    {:data axioms    :tags #{\"catchup\" \"axioms\"} :ttl-ms 600000}
+                          :decisions {:data decisions :tags #{\"catchup\" \"decisions\"} :ttl-ms 600000}})
+     ;; => {:axioms \"ctx-...\", :decisions \"ctx-...\"}"
+  [entries-map]
+  (let [;; Filter out entries with no data
+        live-entries (into {} (filter (fn [[_ v]] (seq (:data v)))) entries-map)
+        ;; Fire all puts in parallel via futures
+        futures-map (into {}
+                          (map (fn [[category {:keys [data tags ttl-ms]}]]
+                                 [category (future (context-put! data
+                                                                 :tags (or tags #{})
+                                                                 :ttl-ms (or ttl-ms default-ttl-ms)))]))
+                          live-entries)
+        ;; Collect results (deref all futures)
+        refs (into {}
+                   (keep (fn [[category fut]]
+                           (try
+                             (let [id (deref fut 5000 nil)]
+                               (when id [category id]))
+                             (catch Exception e
+                               (log/warn "[context-store] batch-put failed for" category ":" (.getMessage e))
+                               nil))))
+                   futures-map)]
+    (when (seq refs)
+      (log/debug "[context-store] batch-put stored" (count refs) "entries:" (keys refs)))
+    refs))
+
 (defn context-get
   "Retrieve entry by ID, returns nil for expired entries."
   [ctx-id]

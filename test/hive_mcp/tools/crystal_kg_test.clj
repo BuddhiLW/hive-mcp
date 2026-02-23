@@ -20,9 +20,11 @@
 (defn- extract-source-ids
   "Extract memory entry IDs from harvested session data.
    Mirror of hive-mcp.tools.crystal/extract-source-ids"
-  [{:keys [progress-notes completed-tasks]}]
-  (->> (concat progress-notes completed-tasks)
-       (keep :id)
+  [{:keys [progress-notes completed-tasks memory-ids-created]}]
+  (->> (concat (keep :id progress-notes)
+               (keep :id completed-tasks)
+               (keep :id memory-ids-created))
+       (filter some?)
        (distinct)
        (vec)))
 
@@ -68,6 +70,20 @@
           result (extract-source-ids harvested)]
       (is (= #{"note-1" "note-2" "task-1"} (set result)))))
 
+  (testing "extracts IDs from memory-ids-created"
+    (let [harvested {:progress-notes []
+                     :completed-tasks []
+                     :memory-ids-created [{:id "mem-1"} {:id "mem-2"}]}
+          result (extract-source-ids harvested)]
+      (is (= #{"mem-1" "mem-2"} (set result)))))
+
+  (testing "extracts IDs from all three sources combined"
+    (let [harvested {:progress-notes [{:id "note-1" :content "foo"}]
+                     :completed-tasks [{:id "task-1" :title "Do thing"}]
+                     :memory-ids-created [{:id "mem-1"}]}
+          result (extract-source-ids harvested)]
+      (is (= #{"note-1" "task-1" "mem-1"} (set result)))))
+
   (testing "handles entries without :id"
     (let [harvested {:progress-notes [{:content "no id"}
                                       {:id "note-1" :content "has id"}]
@@ -75,16 +91,17 @@
           result (extract-source-ids harvested)]
       (is (= ["note-1"] result))))
 
-  (testing "deduplicates IDs"
-    (let [harvested {:progress-notes [{:id "dup" :content "first"}
-                                      {:id "dup" :content "second"}]
-                     :completed-tasks []}
+  (testing "deduplicates IDs across all sources"
+    (let [harvested {:progress-notes [{:id "dup" :content "first"}]
+                     :completed-tasks [{:id "dup" :title "same id"}]
+                     :memory-ids-created [{:id "dup"}]}
           result (extract-source-ids harvested)]
       (is (= ["dup"] result))))
 
   (testing "returns empty vector when no IDs"
     (let [harvested {:progress-notes []
-                     :completed-tasks []}
+                     :completed-tasks []
+                     :memory-ids-created []}
           result (extract-source-ids harvested)]
       (is (= [] result)))))
 

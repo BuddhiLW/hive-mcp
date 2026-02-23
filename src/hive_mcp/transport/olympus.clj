@@ -30,7 +30,8 @@
             [hive-mcp.config.core :as config]
             [hive-mcp.swarm.datascript.queries :as ds-queries]
             [hive-mcp.swarm.datascript.connection :as ds-conn]
-            [hive-mcp.project.tree :as project-tree]))
+            [hive-mcp.project.tree :as project-tree]
+            [hive-mcp.concurrency.pool :as pool]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -721,7 +722,7 @@
     ;;    We subscribe and forward to Olympus.
                  (when-let [subscribe-fn (requiring-resolve 'hive-mcp.channel.core/subscribe!)]
                    (let [sub-ch (subscribe-fn :memory-added)]
-                     (future
+                     (pool/with-io
                        (loop []
                          (when-let [event (async/<!! sub-ch)]
                            (result/rescue nil

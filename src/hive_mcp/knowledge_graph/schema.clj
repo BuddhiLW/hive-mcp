@@ -5,21 +5,46 @@
    enabling graph traversal, impact analysis, and knowledge promotion."
   (:require [hive-mcp.memory.type-registry :as type-registry]))
 
-;; Supported relation types for edges between knowledge nodes
-(def relation-types
-  "Valid relation types for knowledge graph edges.
+;; =============================================================================
+;; Relation Type Registry (OCP — extensions inject their own relation types)
+;; =============================================================================
 
+(def ^:private core-relation-types
+  "Core relation types shipped with hive-mcp.
+   Addons may register additional types via register-relation-type!."
+  #{:implements :supersedes :refines :contradicts
+    :depends-on :derived-from :applies-to})
+
+(defonce ^:private relation-type-extensions
+  "Registry atom for addon-contributed relation types.
+   Merged into relation-types at call time."
+  (atom #{}))
+
+(defn register-relation-type!
+  "Register an additional relation type from an addon.
+   Must be called before any validation that needs the type."
+  [rel]
+  (swap! relation-type-extensions conj rel))
+
+(defn register-relation-types!
+  "Register multiple additional relation types from an addon."
+  [rels]
+  (swap! relation-type-extensions into rels))
+
+(defn relation-types
+  "Valid relation types for knowledge graph edges.
+   Returns core types merged with any addon-registered extensions.
+
+   Core types:
    - :implements   - Realizes a principle/pattern
    - :supersedes   - Replaces previous knowledge
    - :refines      - Improves without replacing
    - :contradicts  - Conflicts with
    - :depends-on   - Requires for correctness
    - :derived-from - Synthesized from sources
-   - :applies-to   - Scope applicability
-   - :co-accessed  - Frequently recalled together (batch recall pattern)"
-  #{:implements :supersedes :refines :contradicts
-    :depends-on :derived-from :applies-to :co-accessed
-    :projects-to})  ; synthetic -> entry projection
+   - :applies-to   - Scope applicability"
+  []
+  (into core-relation-types @relation-type-extensions))
 
 (def kg-schema
   "DataScript schema for Knowledge Graph edges.
@@ -80,7 +105,7 @@
 (defn valid-relation?
   "Check if a relation type is valid."
   [relation]
-  (contains? relation-types relation))
+  (contains? (relation-types) relation))
 
 (defn valid-confidence?
   "Check if confidence score is in valid range [0.0, 1.0]."
@@ -228,56 +253,40 @@
   (merge (disc-certainty-defaults-with-timestamp) disc-entity))
 
 ;; =============================================================================
-;; Synthetic Node Schema (Emergent Clusters)
+;; KG Schema Extension Registry (IAddon injection point)
 ;; =============================================================================
 ;;
-;; Synthetic nodes represent emergent pattern-level discovered through
-;; co-access analysis, temporal proximity, or semantic similarity.
-;; Per convention 20260131014506-72b6afed: Emergent knowledge is, not stored as
-;; raw entries, but as synthesized clusters that project onto entries.
+;; Addons register additional DataScript schema attributes here BEFORE the
+;; KG store is first accessed (ensure-conn! calls full-schema). Addon
+;; initialization happens at startup before tool handlers run, so timing
+;; is safe. DataScript schema is immutable after d/create-conn.
 
-(def synthetic-types
-  "Valid types for synthetic (emergent) knowledge nodes.
+(defonce ^:private kg-schema-extensions
+  "Registry atom for addon-contributed KG schema attributes.
+   Merged into full-schema at connection creation time."
+  (atom {}))
 
-   - :co-access          - Entries frequently recalled together
-   - :temporal-proximity - Entries created/accessed within time windows
-   - :semantic-cluster   - Entries with high embedding similarity
-   - :workflow-step      - Sequential pattern in agent workflows
-   - :decision-cluster   - Related decisions forming a decision tree"
-  #{:co-access :temporal-proximity :semantic-cluster
-    :workflow-step :decision-cluster})
+(defn register-kg-schema!
+  "Register additional DataScript schema attributes from an addon.
+   Must be called before the KG store is first accessed.
+   schema-map: a DataScript schema map, e.g. {:my/attr {:db/doc \"...\"}}"
+  [schema-map]
+  (swap! kg-schema-extensions merge schema-map))
 
-(def synthetic-schema
-  "DataScript schema for synthetic emergent nodes.
-
-   Synthetic nodes are discovered patterns that don't exist as direct
-   memory entries. They aggregate multiple entries via :projects-to
-   edges, enabling pattern-level queries without denormalizing content."
-  {:kg-synthetic/id             {:db/unique :db.unique/identity
-                                 :db/doc "Unique synthetic node ID (UUID string)"}
-   :kg-synthetic/type           {:db/doc "Synthetic type from synthetic-types set"}
-   :kg-synthetic/members        {:db/cardinality :db.cardinality/many
-                                 :db/doc "Set of member entry IDs that form this cluster"}
-   :kg-synthetic/confidence     {:db/doc "Aggregate confidence score 0.0-1.0"}
-   :kg-synthetic/created-at     {:db/doc "Timestamp when pattern was first discovered (inst)"}
-   :kg-synthetic/last-reinforced {:db/doc "Timestamp when pattern was last reinforced by co-access (inst)"}
-   :kg-synthetic/centroid       {:db/doc "Optional embedding vector representing cluster centroid"}
-   :kg-synthetic/label          {:db/doc "Human-readable label for the synthetic node"}
-   :kg-synthetic/scope          {:db/doc "Project scope where this pattern was discovered"}})
-
-(defn valid-synthetic-type?
-  "Check if a synthetic type is valid."
-  [synthetic-type]
-  (contains? synthetic-types synthetic-type))
+(defn get-kg-schema-extensions
+  "Returns the current KG schema extensions registered by addons."
+  []
+  @kg-schema-extensions)
 
 ;; =============================================================================
 ;; Abstraction Level Helpers
 ;; =============================================================================
 
-(def type->abstraction-level
+(defn type->abstraction-level
   "Maps memory entry types to their default abstraction levels.
    Derived from type-registry (SST)."
-  type-registry/type->abstraction)
+  []
+  (type-registry/type->abstraction))
 
 (defn derive-abstraction-level
   "Derive the default abstraction level for a memory entry type.
@@ -286,6 +295,6 @@
   (type-registry/abstraction-level entry-type))
 
 (defn full-schema
-  "Returns the combined KG schema (edges + knowledge abstraction + disc + synthetic)."
+  "Returns the combined KG schema (edges + knowledge abstraction + disc + addon extensions)."
   []
-  (merge kg-schema knowledge-schema disc-schema synthetic-schema))
+  (merge kg-schema knowledge-schema disc-schema @kg-schema-extensions))

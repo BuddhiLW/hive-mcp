@@ -72,6 +72,29 @@
                :selected backend})
     backend))
 
+(defn- detect-writer-config
+  "Detect the writer backend config from :services.kg.writer in config.edn.
+   Returns nil for :self (local) or the writer map for remote backends.
+
+   Example config.edn:
+     {:services {:kg {:backend :datahike
+                      :writer {:backend :datahike-server
+                               :url \"http://localhost:4444\"
+                               :token \"your-token\"}}}}
+
+   Or for kabel:
+     {:services {:kg {:backend :datahike
+                      :writer {:backend :kabel
+                               :peer-id #uuid \"aaaa...\"
+                               :local-peer <peer-atom>}}}}"
+  []
+  (r/rescue nil
+            (let [writer-cfg (config/get-service-value :kg :writer)]
+              (when (and (map? writer-cfg)
+                         (not= :self (:backend writer-cfg)))
+                (log/info "KG writer config detected" {:writer writer-cfg})
+                writer-cfg))))
+
 (defn- ensure-store!
   "Ensure a store is configured. Auto-detects backend from config."
   []
@@ -87,18 +110,30 @@
           (if store
             (proto/set-store! store)
             (do
-              (log/warn "Failed to initialize Datalevin, falling back to DataScript")
+              (log/error "CRITICAL: Failed to initialize Datalevin, falling back to ephemeral DataScript. KG data on disk will NOT be accessible.")
               (proto/set-store! (ds-store/create-store)))))
 
         :datahike
-        (let [store (r/guard Exception nil
+        (let [writer-cfg (detect-writer-config)
+              store (r/guard Exception nil
+                             ;; Pre-load konserve namespaces in correct order before datahike.
+                             ;; konserve.impl.defaults requires konserve.impl.storage-layout
+                             ;; which defines -atomic-move. If storage-layout is partially
+                             ;; loaded (e.g. from a concurrent require), method vars don't
+                             ;; get interned and defaults.cljc fails with
+                             ;; "-atomic-move does not exist". Loading the full chain here
+                             ;; prevents the race.
+                             (require 'konserve.protocols)
+                             (require 'konserve.impl.storage-layout)
+                             (require 'konserve.impl.defaults)
+                             (require 'konserve.cache)
                              (require 'hive-mcp.knowledge-graph.store.datahike)
                              (let [create-fn (resolve 'hive-mcp.knowledge-graph.store.datahike/create-store)]
-                               (create-fn)))]
+                               (create-fn (when writer-cfg {:writer writer-cfg}))))]
           (if store
             (proto/set-store! store)
             (do
-              (log/warn "Failed to initialize Datahike, falling back to DataScript")
+              (log/error "CRITICAL: Failed to initialize Datahike, falling back to ephemeral DataScript. KG data on disk will NOT be accessible.")
               (proto/set-store! (ds-store/create-store)))))
 
         ;; Default: DataScript
@@ -207,10 +242,16 @@
           (proto/set-store! (ds-store/create-store)))))
 
     :datahike
-    (let [;; Require datahike store dynamically to avoid hard dep
+    (let [;; Pre-load konserve namespaces in correct order (see ensure-store! comment)
+          _ (require 'konserve.protocols)
+          _ (require 'konserve.impl.storage-layout)
+          _ (require 'konserve.impl.defaults)
+          _ (require 'konserve.cache)
           _ (require 'hive-mcp.knowledge-graph.store.datahike)
           create-fn (resolve 'hive-mcp.knowledge-graph.store.datahike/create-store)
-          store (create-fn opts)]
+          ;; Pass writer config if present (for datahike-server/kabel backends)
+          store (create-fn (cond-> (or opts {})
+                             (:writer opts) (assoc :writer (:writer opts))))]
       (if store
         (proto/set-store! store)
         (do

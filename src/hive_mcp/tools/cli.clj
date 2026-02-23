@@ -124,28 +124,41 @@
    Supports n-depth command dispatch: \"status list\" walks {:status {:list fn}}.
    Single-word commands remain backward compatible.
 
+   Optional coerce-schema: map of {field-key [type-spec]} for MCP boundary coercion.
+   When provided, string params are coerced to declared types before dispatch.
+   See hive-dsl.coerce/coerce-map for type-spec syntax.
+
    Returns: fn that dispatches to appropriate handler"
-  [handlers]
-  (fn [{:keys [command] :as params}]
-    (let [cmd-str (normalize-command command)
-          path (parse-command cmd-str)]
-      (cond
-        ;; No command or empty → error
-        (nil? path)
-        (mcp-error (str "Unknown command: " command
-                        ". Valid: " (keys handlers)))
+  ([handlers] (make-cli-handler handlers nil))
+  ([handlers coerce-schema]
+   (let [coerce-fn (when coerce-schema
+                     (requiring-resolve 'hive-dsl.coerce/coerce-map))]
+     (fn [{:keys [command] :as params}]
+       (let [cmd-str (normalize-command command)
+             path (parse-command cmd-str)]
+         (cond
+           ;; No command or empty → error
+           (nil? path)
+           (mcp-error (str "Unknown command: " command
+                           ". Valid: " (keys handlers)))
 
-        ;; Help at root level
-        (= [:help] path)
-        {:type "text" :text (format-help handlers)}
+           ;; Help at root level
+           (= [:help] path)
+           {:type "text" :text (format-help handlers)}
 
-        ;; Normal dispatch via n-depth resolve-handler
-        :else
-        (let [result (resolve-handler handlers path)]
-          (if-let [handler (:handler result)]
-            (handler params)
-            (mcp-error (str "Unknown command: " command
-                            ". Valid: " (keys handlers)))))))))
+           ;; Normal dispatch via n-depth resolve-handler
+           :else
+           (let [result (resolve-handler handlers path)]
+             (if-let [handler (:handler result)]
+               ;; Apply boundary coercion when schema is present
+               (if coerce-fn
+                 (let [coerced (coerce-fn coerce-schema params)]
+                   (if (:ok coerced)
+                     (handler (:ok coerced))
+                     (mcp-error (str "Parameter error: " (:message coerced)))))
+                 (handler params))
+               (mcp-error (str "Unknown command: " command
+                               ". Valid: " (keys handlers)))))))))))
 
 ;; =============================================================================
 ;; Batch Handler Factory (generic batch middleware)

@@ -244,7 +244,7 @@
   (cond-> {:git-commit {:message commit-msg
                         :files ["all"]
                         :cwd cwd}
-           :wrap-crystallize {:agent-id agent-id}
+           :wrap-crystallize {:agent-id agent-id :directory cwd}
            :shout {:agent-id agent-id
                    :event-type :completed
                    :message (str "Session complete: " commit-msg)}}
@@ -306,18 +306,18 @@
    5. Optionally triggers plan_to_kanban for explorers"
   [{:keys [commit_msg task_ids agent_id directory]}]
   (result/let-ok [_ (require-commit-msg commit_msg)]
-    (let [agent-id           (resolve-agent-id agent_id)
-          effective-dir      (resolve-effective-dir directory)
-          ling-kanban-task-id (get-ling-kanban-task-id agent-id)
-          merged-task-ids    (merge-kanban-task-ids task_ids ling-kanban-task-id)]
-      (when ling-kanban-task-id
-        (log/info "session-complete: auto-adding ling's kanban-task-id:" ling-kanban-task-id))
-      (register-handler!)
-      (ev/dispatch [:ling/session-complete
-                    (build-event-data commit_msg merged-task-ids agent-id effective-dir)])
-      (let [plan-trigger (maybe-trigger-plan-to-kanban! agent-id effective-dir)]
-        (result/ok (build-success-response
-                     agent-id merged-task-ids ling-kanban-task-id commit_msg plan-trigger))))))
+                 (let [agent-id           (resolve-agent-id agent_id)
+                       effective-dir      (resolve-effective-dir directory)
+                       ling-kanban-task-id (get-ling-kanban-task-id agent-id)
+                       merged-task-ids    (merge-kanban-task-ids task_ids ling-kanban-task-id)]
+                   (when ling-kanban-task-id
+                     (log/info "session-complete: auto-adding ling's kanban-task-id:" ling-kanban-task-id))
+                   (register-handler!)
+                   (ev/dispatch [:ling/session-complete
+                                 (build-event-data commit_msg merged-task-ids agent-id effective-dir)])
+                   (let [plan-trigger (maybe-trigger-plan-to-kanban! agent-id effective-dir)]
+                     (result/ok (build-success-response
+                                 agent-id merged-task-ids ling-kanban-task-id commit_msg plan-trigger))))))
 
 ;; =============================================================================
 ;; Public Handler (thin boundary: try-result + result->mcp)
@@ -349,18 +349,5 @@
 ;; =============================================================================
 
 (def tools
-  "Tool definitions for session completion."
-  [{:name "session_complete"
-    :description "Complete ling session: commit changes, move kanban tasks to done, crystallize wrap. Use this at session end instead of calling git/kanban/wrap separately. IMPORTANT: Pass your CLAUDE_SWARM_SLAVE_ID as agent_id for proper attribution."
-    :inputSchema {:type "object"
-                  :properties {"commit_msg" {:type "string"
-                                             :description "Git commit message summarizing session work"}
-                               "task_ids" {:type "array"
-                                           :items {:type "string"}
-                                           :description "Kanban task IDs to mark as done (optional)"}
-                               "agent_id" {:type "string"
-                                           :description "Ling's slave-id (CLAUDE_SWARM_SLAVE_ID). Required for proper attribution."}
-                               "directory" {:type "string"
-                                            :description "Working directory for git/kanban scoping (pass your cwd)"}}
-                  :required ["commit_msg"]}
-    :handler handle-session-complete}])
+  "REMOVED: Flat session_complete tool no longer exposed. Use consolidated `session` tool with `complete` command."
+  [])

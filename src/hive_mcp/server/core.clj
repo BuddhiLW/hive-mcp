@@ -90,6 +90,7 @@
 
     ;; Phase 4: Services (embedding, memory store, tool delegation)
     (init/init-embedding-provider!)
+    (init/warmup-embedding!)
     (init/wire-memory-store!)
     (routes/register-tools-for-delegation!)
 
@@ -146,8 +147,16 @@
           context (assoc (sdk-server/create-context! spec) :server server)]
       (reset! server-context-atom context)
       (log/info "Server context stored for hot-reload capability")
-      ;; Start the JSON-RPC server with our context
-      (jsonrpc-server/start server context))))
+      ;; Start the JSON-RPC server and block on join promise.
+      ;; When stdin EOF occurs (Emacs parent exits), the ChanServer pipeline
+      ;; detects channel closure and delivers :done to the join promise.
+      ;; We deref to block the main thread, then trigger clean JVM shutdown
+      ;; which fires the registered shutdown hook (Olympus stop, coordinator
+      ;; marking, session-end/auto-wrap hooks).
+      (let [join (jsonrpc-server/start server context)]
+        @join
+        (log/info "MCP server stdin closed - initiating clean shutdown")
+        (System/exit 0)))))
 
 (defn -main
   "Entry point for the MCP server."

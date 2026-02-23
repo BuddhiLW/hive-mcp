@@ -16,6 +16,7 @@
 
   (:require [hive-mcp.events.core :as ev]
             [hive-mcp.knowledge-graph.edges :as kg-edges]
+            [hive-mcp.concurrency.pool :as pool]
             [taoensso.timbre :as log]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -50,7 +51,7 @@
       (let [edge-id (kg-edges/add-edge! data)]
         (log/debug "[EVENT] KG edge added:" edge-id)
         ;; Dispatch edge-created event for logging/channel publish
-        (future
+        (pool/with-event
           (try
             (ev/dispatch [:kg/edge-created (assoc data :edge-id edge-id)])
             (catch Exception e
@@ -89,7 +90,7 @@
         (kg-edges/update-edge-confidence! edge-id confidence)
         (log/debug "[EVENT] KG edge confidence updated:" edge-id "to" confidence)
         ;; Dispatch edge-updated event
-        (future
+        (pool/with-event
           (try
             (ev/dispatch [:kg/edge-updated {:edge-id edge-id
                                             :old-confidence old-confidence
@@ -131,7 +132,7 @@
         (log/debug "[EVENT] KG edge confidence incremented:" edge-id "by" delta "to" new-confidence)
         ;; Dispatch edge-updated event
         (when new-confidence
-          (future
+          (pool/with-event
             (try
               (ev/dispatch [:kg/edge-updated {:edge-id edge-id
                                               :old-confidence old-confidence
@@ -170,7 +171,7 @@
         (kg-edges/remove-edge! edge-id)
         (log/debug "[EVENT] KG edge removed:" edge-id)
         ;; Dispatch edge-removed event
-        (future
+        (pool/with-event
           (try
             (ev/dispatch [:kg/edge-removed {:edge-id edge-id
                                             :from from

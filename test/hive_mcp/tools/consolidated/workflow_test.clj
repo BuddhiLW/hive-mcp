@@ -11,7 +11,7 @@
    CLARITY: T - Telemetry (test) validates behavioral correctness."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [datascript.core :as d]
-            [hive-mcp.tools.consolidated.workflow :as workflow]
+            [hive-mcp.tools.consolidated.workflow.readiness :as readiness]
             [hive-mcp.swarm.datascript.connection :as conn]
             [hive-mcp.swarm.datascript.lings :as ds-lings]
             [hive-mcp.swarm.datascript.schema :as schema]))
@@ -20,7 +20,7 @@
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 ;; Access private functions via var
-(def wait-for-ling-ready @#'workflow/wait-for-ling-ready)
+(def wait-for-ling-ready @#'readiness/wait-for-ling-ready)
 
 ;; =============================================================================
 ;; Test Fixtures
@@ -50,8 +50,8 @@
 
 (deftest test-ds-timeout-when-slave-missing
   (testing "Returns :ds-timeout when slave never appears in DataScript"
-    (with-redefs [workflow/ling-ready-timeout-ms 150
-                  workflow/ling-ready-poll-ms 10]
+    (with-redefs [readiness/ling-ready-timeout-ms 150
+                  readiness/ling-ready-poll-ms 10]
       (let [result (wait-for-ling-ready "nonexistent-ling" :claude)]
         (is (not (:ready? result)) "Should not be ready")
         (is (>= (:attempts result) 2) "Should have polled multiple times")
@@ -61,9 +61,9 @@
 
 (deftest test-ds-delayed-registration
   (testing "Finds slave after delayed DataScript registration + CLI ready"
-    (with-redefs [workflow/ling-ready-timeout-ms 5000
-                  workflow/ling-ready-poll-ms 10
-                  workflow/ling-cli-ready? (constantly true)]
+    (with-redefs [readiness/ling-ready-timeout-ms 5000
+                  readiness/ling-ready-poll-ms 10
+                  readiness/ling-cli-ready? (constantly true)]
       ;; Schedule slave registration after ~30ms
       (future
         (Thread/sleep 30)
@@ -83,7 +83,7 @@
   (testing "Returns ready when DS has slave AND CLI readiness passes"
     (ds-lings/add-slave! "test-ling-001" {:status :idle :depth 1 :cwd "/tmp"})
 
-    (with-redefs [workflow/ling-cli-ready? (constantly true)]
+    (with-redefs [readiness/ling-cli-ready? (constantly true)]
       (let [result (wait-for-ling-ready "test-ling-001" :claude)]
         (is (:ready? result) "Should be ready")
         (is (= 1 (:attempts result)) "Should find on first attempt")
@@ -94,9 +94,9 @@
   (testing "Returns :cli-timeout when DS has slave but CLI never becomes ready"
     (ds-lings/add-slave! "stuck-ling" {:status :idle :depth 1 :cwd "/tmp"})
 
-    (with-redefs [workflow/ling-ready-timeout-ms 150
-                  workflow/ling-ready-poll-ms 10
-                  workflow/ling-cli-ready? (constantly false)]
+    (with-redefs [readiness/ling-ready-timeout-ms 150
+                  readiness/ling-ready-poll-ms 10
+                  readiness/ling-cli-ready? (constantly false)]
       (let [result (wait-for-ling-ready "stuck-ling" :claude)]
         (is (not (:ready? result)) "Should not be ready")
         (is (>= (:attempts result) 2) "Should have polled multiple times")
@@ -108,11 +108,11 @@
     (ds-lings/add-slave! "slow-cli-ling" {:status :idle :depth 1 :cwd "/tmp"})
 
     (let [call-count (atom 0)]
-      (with-redefs [workflow/ling-ready-timeout-ms 5000
-                    workflow/ling-ready-poll-ms 10
-                    workflow/ling-cli-ready? (fn [_agent-id _mode]
+      (with-redefs [readiness/ling-ready-timeout-ms 5000
+                    readiness/ling-ready-poll-ms 10
+                    readiness/ling-cli-ready? (fn [_agent-id _mode]
                                               ;; Ready after 3rd CLI check
-                                               (>= (swap! call-count inc) 3))]
+                                                (>= (swap! call-count inc) 3))]
         (let [result (wait-for-ling-ready "slow-cli-ling" :claude)]
           (is (:ready? result) "Should eventually be ready")
           (is (= 3 (:attempts result)) "Should take 3 attempts")
@@ -144,9 +144,9 @@
     (ds-lings/add-slave! "claude-ling" {:status :idle :depth 1 :cwd "/tmp"})
 
     (let [checked-modes (atom [])]
-      (with-redefs [workflow/ling-cli-ready? (fn [_id mode]
-                                               (swap! checked-modes conj mode)
-                                               true)]
+      (with-redefs [readiness/ling-cli-ready? (fn [_id mode]
+                                                (swap! checked-modes conj mode)
+                                                true)]
         (wait-for-ling-ready "claude-ling" :claude)
         (is (= [:claude] @checked-modes) "Should call ling-cli-ready? with :claude")))))
 
@@ -155,9 +155,9 @@
     (ds-lings/add-slave! "headless-ling" {:status :idle :depth 1 :cwd "/tmp"})
 
     (let [checked-modes (atom [])]
-      (with-redefs [workflow/ling-cli-ready? (fn [_id mode]
-                                               (swap! checked-modes conj mode)
-                                               true)]
+      (with-redefs [readiness/ling-cli-ready? (fn [_id mode]
+                                                (swap! checked-modes conj mode)
+                                                true)]
         (wait-for-ling-ready "headless-ling" :headless)
         (is (= [:headless] @checked-modes) "Should call ling-cli-ready? with :headless")))))
 
@@ -167,9 +167,9 @@
 
 (deftest test-poll-timing
   (testing "Poll intervals are fixed at ling-ready-poll-ms (no backoff)"
-    (with-redefs [workflow/ling-ready-timeout-ms 200
-                  workflow/ling-ready-poll-ms 50
-                  workflow/ling-cli-ready? (constantly false)]
+    (with-redefs [readiness/ling-ready-timeout-ms 200
+                  readiness/ling-ready-poll-ms 50
+                  readiness/ling-cli-ready? (constantly false)]
       ;; Register slave so we hit CLI check (not DS timeout)
       (ds-lings/add-slave! "timing-ling" {:status :idle :depth 1 :cwd "/tmp"})
 

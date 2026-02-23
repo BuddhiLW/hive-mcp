@@ -5,6 +5,7 @@
             [hive-mcp.knowledge-graph.edges :as kg-edges]
             [hive-mcp.knowledge-graph.scope :as kg-scope]
             [hive-mcp.tools.memory.scope :as scope]
+            [hive-mcp.memory.domain :as domain]
             [hive-mcp.tools.core :refer [coerce-int!]]
             [hive-mcp.tools.result-bridge :as rb]
             [hive-mcp.dns.result :as result :refer [rescue]]
@@ -70,19 +71,26 @@
                 :query query
                 :scope project-id})))
 
+(def ^:private default-exclude-tags
+  "Tags excluded from semantic search by default.
+   Carto (L1/L2 codebase-mapping snippets) drowns out high-level knowledge."
+  ["carto"])
+
 (defn- search-chroma*
-  "Search Chroma vector store with scope filtering. Returns Result."
-  [query limit-val type project-id in-project? include_descendants]
+  "Search Chroma vector store with scope and tag filtering. Returns Result."
+  [query limit-val type project-id in-project? include_descendants exclude-tags]
   (let [visible-ids (when in-project?
                       (let [visible (kg-scope/visible-scopes project-id)
                             descendants (when include_descendants
                                           (kg-scope/descendant-scopes project-id))
                             all-ids (distinct (concat visible descendants))]
                         (vec (remove #(= "global" %) all-ids))))
+        effective-excludes (into (vec default-exclude-tags) exclude-tags)
         results (chroma/search-similar query
                                        :limit (* limit-val 2)
                                        :type type
-                                       :project-ids visible-ids)
+                                       :project-ids visible-ids
+                                       :exclude-tags effective-excludes)
         scope-filter (when in-project?
                        (let [base-tags (kg-scope/visible-scope-tags project-id)
                              desc-tags (when include_descendants
@@ -103,22 +111,26 @@
                 :scope project-id})))
 
 (defn- search-semantic*
-  "Pure search logic returning Result. Validates inputs and dispatches to appropriate search backend."
-  [{:keys [query limit type directory include_descendants]}]
+  "Pure search logic returning Result. Validates inputs and dispatches to appropriate search backend.
+   exclude_tags defaults to [\"carto\"] — pass [] to include carto snippets explicitly."
+  [{:keys [query limit type directory include_descendants scope exclude_tags]}]
   (let [directory (or directory (ctx/current-directory))
         openrouter? (plans/high-abstraction-type? type)
         limit-val (coerce-int! limit :limit 10)
         status (chroma/status)]
-    (log/info "mcp-memory-search-semantic:" query "type:" type "directory:" directory)
+    (log/info "mcp-memory-search-semantic:" query "type:" type "directory:" directory
+              "scope:" scope "exclude_tags:" exclude_tags)
     (if-not (:configured? status)
       (result/err :memory/chroma-not-configured
                   {:message (str "Chroma semantic search not configured. "
                                  "Configure Chroma with an embedding provider.")})
       (let [project-id (scope/get-current-project-id directory)
-            in-project? (and project-id (not= project-id "global"))]
+            sf (domain/parse-scope scope project-id)
+            [effective-pid in-project?] (domain/scope->effective sf)]
         (if openrouter?
-          (search-plans* query limit-val type project-id in-project?)
-          (search-chroma* query limit-val type project-id in-project? include_descendants))))))
+          (search-plans* query limit-val type effective-pid in-project?)
+          (search-chroma* query limit-val type effective-pid in-project?
+                          include_descendants (or exclude_tags [])))))))
 
 (defn handle-search-semantic
   "Search project memory using semantic similarity (vector search).

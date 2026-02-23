@@ -84,7 +84,7 @@
 
 (deftest add-edge-all-valid-relations-test
   (testing "add-edge! accepts all valid relations"
-    (doseq [rel schema/relation-types]
+    (doseq [rel (schema/relation-types)]
       (let [from (gen-node-id)
             to (gen-node-id)
             edge-id (edges/add-edge! {:from from :to to :relation rel})]
