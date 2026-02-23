@@ -5,11 +5,9 @@
         org.clojure/core.async {:mvn/version "1.7.701"}
 
         ;; MCP SDK - BuddhiLW fork with async handler fix
-        ;; Fix: p/promise → p/future + discarding-stdout in jsonrpc4clj
-        ;; Using :local/root for graceful stdin EOF fix (nil-on-channel crash)
-        ;; Original git dep: {:git/tag "v0.1.0-hive" :git/sha "4cef9dd"}
+        ;; Includes: graceful stdin EOF fix, dep upgrades, lsp4clj lint fix
         io.github.buddhilw/mcp-clojure-sdk
-        {:git/tag "v0.1.0-hive" :git/sha "f6cbbc5"
+        {:git/tag "v0.1.1" :git/sha "49203a6"
          :exclusions [org.apache.logging.log4j/log4j-slf4j2-impl]}
 
         ;; Python interop for Claude Agent SDK bridge
