@@ -112,10 +112,10 @@
 
         ;; hive-dsl — Result monad, rescue/guard DSL, error taxonomy
         io.github.hive-agi/hive-dsl
-        {:git/tag "v0.3.1" :git/sha "0e28484fa8552a5712a5c3325a8a1f2449c2b6a3"}
+        {:git/tag "v0.3.2" :git/sha "5625daa78f038332cc51105573eae9fd05445e3f"}
 
         ;; hive-emacs — Emacs vessel addon (IEditor, daemon, CIDER/Magit/Projectile)
-        io.github.hive-agi/hive-emacs {:git/tag "v0.1.0" :git/sha "94641c5"}}
+        io.github.hive-agi/hive-emacs {:git/tag "v0.1.1" :git/sha "43be607"}}
 
  :aliases
  {:mcp
