@@ -83,6 +83,27 @@
                                 :where [?e :disc/path _]]))]
     (map first results)))
 
+(defn- pair->tx-datum
+  "Convert a [path updates-map] pair into a transaction datum.
+   Returns nil for invalid pairs (filtered downstream)."
+  [[path updates]]
+  (when (and (string? path) (seq path) (map? updates))
+    (merge {:disc/path path} updates)))
+
+(defn batch-update-discs!
+  "Batch-update multiple disc entities in a single transaction.
+   Takes a sequence of [path updates-map] pairs.
+   Returns {:updated count :tx-data-size count}."
+  [path-updates-pairs]
+  (let [tx-data (into [] (comp (map pair->tx-datum) (filter some?))
+                      path-updates-pairs)]
+    (if (empty? tx-data)
+      {:updated 0 :tx-data-size 0}
+      (do
+        (conn/transact! tx-data)
+        (log/debug "Batch-updated disc entities" {:count (count tx-data)})
+        {:updated (count tx-data) :tx-data-size (count tx-data)}))))
+
 (defn disc-stats
   "Return summary statistics for all disc entities.
    Returns map with :total count."
@@ -91,20 +112,22 @@
     {:total (count all)}))
 
 (defn touch-disc!
-  "Record a file read, creating the disc entity if needed."
+  "Record a file read, creating the disc entity if needed.
+   Uses with-tx-batch to coalesce add+update transact! calls."
   [path & {:keys [project-id]}]
   {:pre [(string? path) (seq path)]}
-  (let [now (java.util.Date.)]
-    (if (disc-exists? path)
-      (let [existing (get-disc path)
-            current-count (or (:disc/read-count existing) 0)]
-        (update-disc! path {:disc/last-read-at now
-                            :disc/read-count (inc current-count)})
-        (get-disc path))
-      (let [{:keys [hash]} (hash/file-content-hash path)]
-        (add-disc! {:path path
-                    :content-hash (or hash "")
-                    :project-id (or project-id "global")})
-        (update-disc! path {:disc/last-read-at now
-                            :disc/read-count 1})
-        (get-disc path)))))
+  (conn/with-tx-batch
+    (let [now (java.util.Date.)]
+      (if (disc-exists? path)
+        (let [existing (get-disc path)
+              current-count (or (:disc/read-count existing) 0)]
+          (update-disc! path {:disc/last-read-at now
+                              :disc/read-count (inc current-count)})
+          (get-disc path))
+        (let [{:keys [hash]} (hash/file-content-hash path)]
+          (add-disc! {:path path
+                      :content-hash (or hash "")
+                      :project-id (or project-id "global")})
+          (update-disc! path {:disc/last-read-at now
+                              :disc/read-count 1})
+          (get-disc path))))))

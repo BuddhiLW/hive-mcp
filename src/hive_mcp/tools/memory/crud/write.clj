@@ -10,6 +10,7 @@
             [hive-mcp.chroma.core :as chroma]
             [hive-mcp.plan.plans :as plans]
             [hive-mcp.plan.gate :as plan-gate]
+            [hive-mcp.knowledge-graph.connection :as kg-conn]
             [hive-mcp.knowledge-graph.edges :as kg-edges]
             [hive-mcp.knowledge-graph.schema :as kg-schema]
             [hive-mcp.agent.context :as ctx]
@@ -28,27 +29,29 @@
       (chroma/update-entry! target-id {:kg-incoming updated-incoming}))))
 
 (defn- create-kg-edges!
-  "Create KG edges for the given relationships and update target entries."
+  "Create KG edges for the given relationships and update target entries.
+   Uses conn/with-tx-batch to coalesce all edge transact! calls."
   [entry-id {:keys [kg_implements kg_supersedes kg_depends_on kg_refines]} project-id agent-id]
-  (let [created-by (when agent-id (str "agent:" agent-id))
-        create-edges (fn [targets relation]
-                       (when (seq targets)
-                         (mapv (fn [target-id]
-                                 (let [edge-id (kg-edges/add-edge!
-                                                {:from entry-id
-                                                 :to target-id
-                                                 :relation relation
-                                                 :scope project-id
-                                                 :confidence 1.0
-                                                 :created-by created-by})]
-                                   (update-target-incoming! target-id edge-id)
-                                   edge-id))
-                               targets)))]
-    (vec (concat
-          (create-edges kg_implements :implements)
-          (create-edges kg_supersedes :supersedes)
-          (create-edges kg_depends_on :depends-on)
-          (create-edges kg_refines :refines)))))
+  (kg-conn/with-tx-batch
+    (let [created-by (when agent-id (str "agent:" agent-id))
+          create-edges (fn [targets relation]
+                         (when (seq targets)
+                           (mapv (fn [target-id]
+                                   (let [edge-id (kg-edges/add-edge!
+                                                  {:from entry-id
+                                                   :to target-id
+                                                   :relation relation
+                                                   :scope project-id
+                                                   :confidence 1.0
+                                                   :created-by created-by})]
+                                     (update-target-incoming! target-id edge-id)
+                                     edge-id))
+                                 targets)))]
+      (vec (concat
+            (create-edges kg_implements :implements)
+            (create-edges kg_supersedes :supersedes)
+            (create-edges kg_depends_on :depends-on)
+            (create-edges kg_refines :refines))))))
 
 (defn- build-entry-tags
   "Build complete tags vector: base, agent, KG markers, and scope."

@@ -154,7 +154,7 @@
 
 (deftest edges-all-relations-test
   (testing (str "all relation types work [" fixtures/*current-backend* "]")
-    (doseq [rel schema/relation-types]
+    (doseq [rel (schema/relation-types)]
       (let [edge-id (edges/add-edge! {:from (gen-node-id)
                                       :to (gen-node-id)
                                       :relation rel})]

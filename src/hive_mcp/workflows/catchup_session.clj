@@ -352,7 +352,9 @@
   "Enqueue piggyback entries and cache in context-store.
    EDN handler key: :deliver
 
-   Uses store-context-categories helper for data-driven context caching."
+   Uses store-context-categories helper for data-driven context caching.
+   Also performs cursor hygiene: adopts previous coordinator's cursor and
+   cleans up orphaned buffers from dead bb-mcp instances."
   [resources data]
   (let [project-id        (:project-id data)
         context-refs      (store-context-categories (:context-store-fn resources)
@@ -360,6 +362,9 @@
         piggyback-entries (into (vec (:axioms data)) (:priority-conventions data))
         caller-id         (or (:_caller_id data) "coordinator")
         piggyback-id      (if project-id (str caller-id "-" project-id) caller-id)]
+    ;; Cursor hygiene: adopt previous cursor + clean up stale state
+    (when-let [cursor-adopt-fn (:cursor-adopt-fn resources)]
+      (try (cursor-adopt-fn piggyback-id project-id) (catch Exception _)))
     (when (and (:piggyback-fn resources) (seq piggyback-entries))
       ((:piggyback-fn resources) piggyback-id project-id piggyback-entries context-refs))
     (assoc data

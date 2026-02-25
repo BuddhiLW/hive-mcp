@@ -11,33 +11,37 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-(defn- decay-single-disc!
-  "Apply time decay to a single disc entity. Returns :updated or :errors."
+(defn- compute-decay
+  "Compute time decay for a single disc (pure — no side effects).
+   Returns {:path ... :updates {...} :status :ok} or {:status :error ...}."
   [disc]
-  (let [v (r/guard Exception nil
-                    (let [path (:disc/path disc)
-                          decayed (vol/apply-time-decay disc)
-                          updates {:disc/certainty-beta (:disc/certainty-beta decayed)
-                                   :disc/last-observation (:disc/last-observation decayed)}]
-                      (crud/update-disc! path updates)
-                      :ok))]
-    (if (= :ok v)
-      :updated
-      (do (when-let [err (::r/error (meta v))]
-            (log/warn "Failed to apply decay to disc"
-                      {:path (:disc/path disc) :error (:message err)}))
-          :errors))))
+  (let [path (:disc/path disc)
+        result (r/guard Exception {:path path :status :error :error "decay-failed"}
+                        (let [decayed (vol/apply-time-decay disc)]
+                          {:path path
+                           :updates {:disc/certainty-beta (:disc/certainty-beta decayed)
+                                     :disc/last-observation (:disc/last-observation decayed)}
+                           :status :ok}))]
+    result))
 
 (defn apply-time-decay-to-all-discs!
   "Apply time-based certainty decay to all disc entities.
-   Uses pmap for data-parallel decay — each disc is independent."
+   IO Sandwich: read all -> compute decay (pure) -> batch-write once."
   [& {:keys [project-id]}]
   (let [discs (crud/get-all-discs :project-id project-id)
-        outcomes (doall (pmap decay-single-disc! discs))
-        freqs (frequencies outcomes)
-        results {:updated (get freqs :updated 0)
+        ;; Phase 1: Pure computation — no DB writes
+        computed (mapv compute-decay discs)
+        {oks :ok errs :error} (group-by :status computed)
+        ;; Phase 2: Single batch write
+        batch-result (when (seq oks)
+                       (crud/batch-update-discs!
+                        (mapv (juxt :path :updates) oks)))
+        results {:updated (or (:updated batch-result) 0)
                  :skipped 0
-                 :errors  (get freqs :errors 0)}]
+                 :errors  (count errs)}]
+    (when (seq errs)
+      (log/warn "Decay computation errors" {:count (count errs)
+                                            :sample (take 3 (map (fn [e] (select-keys e [:path :error])) errs))}))
     (log/info "Time decay applied to discs" results)
     results))
 
@@ -65,6 +69,22 @@
                         {:entry-id entry-id :error (:message result)})
               {:status :error :entry-id entry-id :error (:message result)}))))))
 
+(defn- tally-status!
+  "Increment the counter in results-atom matching the staleness status.
+   Maps :updated -> counter-key (default :propagated), :skipped, :error."
+  [results-atom {:keys [status]} counter-key]
+  (case status
+    :updated (swap! results-atom update counter-key inc)
+    :skipped (swap! results-atom update :skipped inc)
+    :error   (swap! results-atom update :errors inc)))
+
+(defn- propagate-to-dependents!
+  "Apply transitive staleness to a seq of entry-ids at a given depth."
+  [entry-ids base-staleness depth staleness-source results-atom counter-key]
+  (doseq [eid entry-ids]
+    (let [result (apply-transitive-staleness! eid base-staleness depth staleness-source)]
+      (tally-status! results-atom result counter-key))))
+
 (defn- propagate-impact!
   "Propagate staleness through impact analysis for a single entry."
   [entry-id base-staleness staleness-source results]
@@ -75,18 +95,8 @@
       (do (log/warn "Impact analysis failed for entry" {:entry-id entry-id})
           (swap! results update :errors inc))
       (let [{:keys [direct transitive]} impact]
-        (doseq [dep-id direct]
-          (let [result (apply-transitive-staleness! dep-id base-staleness 1 staleness-source)]
-            (case (:status result)
-              :updated (swap! results update :propagated inc)
-              :skipped (swap! results update :skipped inc)
-              :error (swap! results update :errors inc))))
-        (doseq [trans-id transitive]
-          (let [result (apply-transitive-staleness! trans-id base-staleness 2 staleness-source)]
-            (case (:status result)
-              :updated (swap! results update :propagated inc)
-              :skipped (swap! results update :skipped inc)
-              :error (swap! results update :errors inc))))))))
+        (propagate-to-dependents! direct base-staleness 1 staleness-source results :propagated)
+        (propagate-to-dependents! transitive base-staleness 2 staleness-source results :propagated)))))
 
 (defn propagate-staleness!
   "Propagate staleness from a disc to dependent entries via KG edges."

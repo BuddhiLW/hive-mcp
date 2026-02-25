@@ -152,3 +152,48 @@
   "Reset all read cursors. For testing/debugging."
   []
   (reset! agent-read-cursors {}))
+
+(defn evict-stale-cursors!
+  "Evict cursors that haven't been read for longer than max-age-ms.
+   Called during catchup to prevent unbounded cursor atom growth from
+   dead coordinator instances (each bb-mcp restart created a new instance-id).
+
+   Returns count of evicted entries."
+  [max-age-ms]
+  (let [now (System/currentTimeMillis)
+        cutoff (- now max-age-ms)
+        stale-keys (->> @agent-read-cursors
+                        (filter (fn [[_k ts]] (< ts cutoff)))
+                        (map first)
+                        vec)]
+    (when (seq stale-keys)
+      (swap! agent-read-cursors #(apply dissoc % stale-keys))
+      (log/info "piggyback: evicted" (count stale-keys) "stale cursors older than"
+                (quot max-age-ms 60000) "min"))
+    (count stale-keys)))
+
+(defn adopt-cursor!
+  "Adopt another caller's cursor position for a project.
+   Used when a coordinator restarts (new instance-id) to inherit the
+   cursor position from the previous instance, preventing re-delivery.
+
+   Returns the adopted cursor timestamp, or nil if no donor found."
+  [new-caller-id project-id]
+  (let [effective-project (or project-id "global")
+        new-key [new-caller-id effective-project]
+        ;; Find the most recent cursor from any coordinator for this project
+        best-donor (->> @agent-read-cursors
+                        (filter (fn [[[aid proj] _ts]]
+                                  (and (= proj effective-project)
+                                       (not= aid new-caller-id)
+                                       (clojure.string/starts-with? aid "coordinator:"))))
+                        (sort-by val >)
+                        first)]
+    (when-let [[_donor-key donor-ts] best-donor]
+      ;; Only adopt if we don't already have a cursor (or ours is older)
+      (let [current-ts (get @agent-read-cursors new-key 0)]
+        (when (> donor-ts current-ts)
+          (swap! agent-read-cursors assoc new-key donor-ts)
+          (log/info "piggyback: adopted cursor from" (first _donor-key)
+                    "→" new-caller-id "at ts" donor-ts)
+          donor-ts)))))

@@ -101,3 +101,49 @@
   "Reset all buffers. For testing."
   []
   (clojure.core/reset! buffers {}))
+
+(defn adopt-buffer!
+  "Adopt an orphaned buffer from a previous coordinator instance.
+   When a coordinator restarts (new instance-id), the old buffer is orphaned.
+   This function finds a matching buffer for the same project from any
+   coordinator instance and re-keys it to the new caller.
+
+   Returns true if a buffer was adopted, false otherwise."
+  [new-agent-id project-id]
+  (let [new-key [(or new-agent-id "coordinator") (or project-id "global")]
+        ;; Find orphaned coordinator buffer for same project
+        donor (->> @buffers
+                   (filter (fn [[[aid proj] buf]]
+                             (and (= proj (or project-id "global"))
+                                  (not= aid new-agent-id)
+                                  (clojure.string/starts-with? (str aid) "coordinator:")
+                                  (not (:done buf)))))
+                   first)]
+    (when-let [[donor-key donor-buf] donor]
+      (swap! buffers (fn [bufs]
+                       (-> bufs
+                           (dissoc donor-key)
+                           (assoc new-key donor-buf))))
+      (log/info "memory-piggyback: adopted buffer from" donor-key "→" new-key
+                "(" (- (count (:entries donor-buf)) (:cursor donor-buf)) "entries remaining)")
+      true)))
+
+(defn evict-orphaned-buffers!
+  "Evict coordinator buffers that have no matching active caller.
+   Called during catchup to clean up buffers from dead bb-mcp processes.
+
+   Takes a set of active caller-ids (with instance suffix) and evicts
+   coordinator buffers whose agent-id prefix doesn't match any active caller.
+
+   Returns count of evicted buffers."
+  [active-caller-id]
+  (let [orphaned (->> @buffers
+                      (filter (fn [[[aid _proj] _buf]]
+                                (and (clojure.string/starts-with? (str aid) "coordinator:")
+                                     (not (clojure.string/starts-with? (str aid) (str active-caller-id "-"))))))
+                      (map first)
+                      vec)]
+    (when (seq orphaned)
+      (swap! buffers #(apply dissoc % orphaned))
+      (log/info "memory-piggyback: evicted" (count orphaned) "orphaned buffers:" orphaned))
+    (count orphaned)))

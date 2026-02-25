@@ -231,9 +231,38 @@
       (proto/update-slave! reg slave-id {:slave/status status})
       (log/debug "Sync: updated slave status" slave-id "->" status))))
 
+(defn- release-ling-resources!
+  "Clean up all JVM-side resources held by a dead ling.
+   Each cleanup is individually guarded — one failure doesn't stop the rest."
+  [slave-id]
+  ;; hivemind state: ling results + agent messages + swarm prompts
+  (try
+    (when-let [f (requiring-resolve 'hive-mcp.hivemind.state/remove-ling-result!)]
+      (f slave-id))
+    (catch Exception _ nil))
+  (try
+    (when-let [f (requiring-resolve 'hive-mcp.hivemind.state/clear-agent-messages!)]
+      (f slave-id))
+    (catch Exception _ nil))
+  (try
+    (when-let [f (requiring-resolve 'hive-mcp.hivemind.state/remove-swarm-prompt!)]
+      (f slave-id))
+    (catch Exception _ nil))
+  ;; stdout buffers (headless lings)
+  (try
+    (lings/cleanup-stdout-buffer! slave-id)
+    (catch Exception _ nil))
+  ;; callbacks registered by this ling
+  (try
+    (when-let [f (requiring-resolve 'hive-mcp.swarm.callback/cleanup-for-agent!)]
+      (f slave-id))
+    (catch Exception _ nil))
+  (log/debug "Sync: released JVM resources for dead ling" slave-id))
+
 (defn- handle-slave-killed
   "Handle slave killed event. Event: {:slave-id}
    EVENTS-07: Dispatches :ling/completed BEFORE removing from DataScript.
+   Releases JVM-side resources held by the dead ling.
    IEmacsDaemon integration: Unbinds ling from daemon before removal.
    Multi-Daemon (W1): Looks up actual daemon binding instead of assuming default."
   [event]
@@ -244,6 +273,8 @@
                       (daemon-store/default-daemon-id))]
     (when slave-id
       (dispatch-event! [:ling/completed {:slave-id slave-id :reason "terminated"}])
+      ;; Release JVM-side resources for the dead ling
+      (release-ling-resources! slave-id)
       ;; IEmacsDaemon integration: unbind ling from actual daemon before removal
       (daemon-store/unbind-ling! daemon-id slave-id)
       ;; Emit to Olympus Web UI before removal

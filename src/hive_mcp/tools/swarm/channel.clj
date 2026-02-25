@@ -64,14 +64,15 @@
     ))
 
 (defn start-channel-subscriptions!
-  "Start listening for swarm events via channel subscriptions."
+  "Start listening for swarm events via channel subscriptions.
+   Stores [event-type sub-ch] pairs for proper unsubscribe on stop."
   []
   (when (try-require-channel)
     (log/info "Starting channel subscriptions for swarm events...")
 
     ;; Subscribe to task-completed
     (when-let [sub (channel-subscribe! :task-completed)]
-      (swap! channel-subscriptions conj sub)
+      (swap! channel-subscriptions conj [:task-completed sub])
       (go-loop []
         (when-let [event (<! sub)]
           (handle-task-completed event)
@@ -79,7 +80,7 @@
 
     ;; Subscribe to task-failed
     (when-let [sub (channel-subscribe! :task-failed)]
-      (swap! channel-subscriptions conj sub)
+      (swap! channel-subscriptions conj [:task-failed sub])
       (go-loop []
         (when-let [event (<! sub)]
           (handle-task-failed event)
@@ -87,7 +88,7 @@
 
     ;; Subscribe to prompt-shown
     (when-let [sub (channel-subscribe! :prompt-shown)]
-      (swap! channel-subscriptions conj sub)
+      (swap! channel-subscriptions conj [:prompt-shown sub])
       (go-loop []
         (when-let [event (<! sub)]
           (handle-prompt-shown event)
@@ -96,10 +97,13 @@
     (log/info "Channel subscriptions started")))
 
 (defn stop-channel-subscriptions!
-  "Stop all channel subscriptions."
+  "Stop all channel subscriptions. Uses channel/unsubscribe! to properly
+   unsub from pub before closing channels."
   []
-  (doseq [sub @channel-subscriptions]
-    (close! sub))
+  (doseq [[event-type sub-ch] @channel-subscriptions]
+    (rescue nil
+            (when-let [unsub-fn (requiring-resolve 'hive-mcp.channel.core/unsubscribe!)]
+              (unsub-fn event-type sub-ch))))
   (reset! channel-subscriptions [])
   (log/info "Channel subscriptions stopped"))
 

@@ -149,13 +149,15 @@
    Key priority:
    1. Explicit project_id/project-id
    2. Derived from directory parameter via scope/get-current-project-id
-   3. Derived from ctx/current-directory (request context fallback)
-   4. Derived from server's working directory (System/getProperty user.dir)"
+   3. Derived from _caller_cwd (bb-mcp's cwd, injected per-request)
+   4. Derived from ctx/current-directory (request context fallback)
+   5. Derived from server's working directory (System/getProperty user.dir)"
   [args]
   (or (:project_id args)
       (:project-id args)
-      ;; Derive from directory if present, with ctx and user.dir fallbacks
+      ;; Derive from directory if present, with caller-cwd, ctx and user.dir fallbacks
       (when-let [dir (or (:directory args)
+                         (:_caller_cwd args)
                          (ctx/current-directory)
                          (System/getProperty "user.dir"))]
         (ctx/request-memoize
@@ -256,6 +258,7 @@
         (let [agent-id (extract-agent-id args nil)
               project-id (extract-project-id args)
               directory (or (:directory args)
+                            (:_caller_cwd args)
                             (System/getProperty "user.dir"))]
           ;; Record session start on first tool call per agent (idempotent CAS).
           ;; Enables accurate session-timing-metadata in wrap/crystallize.

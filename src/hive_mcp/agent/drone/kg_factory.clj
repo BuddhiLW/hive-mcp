@@ -51,7 +51,8 @@
       [])))
 
 (defn merge-drone-results!
-  "Merge KG edges from a drone's isolated store into a target store."
+  "Merge KG edges from a drone's isolated store into a target store.
+   Batches all edges into a single transact! call for efficiency."
   [drone-store target-store]
   {:pre [(kg/kg-store? drone-store)
          (kg/kg-store? target-store)]}
@@ -60,24 +61,32 @@
     (log/info "Merging drone KG results" {:edge-count edge-count})
     (if (zero? edge-count)
       {:edges-found 0 :edges-merged 0 :errors []}
-      (let [results (reduce
-                     (fn [acc edge]
-                       (try
-                         (kg/transact! target-store [edge])
-                         (update acc :edges-merged inc)
-                         (catch Exception e
-                           (log/warn "Failed to merge edge"
-                                     {:edge-id (:kg-edge/id edge)
-                                      :error (.getMessage e)})
-                           (update acc :errors conj
-                                   {:edge-id (:kg-edge/id edge)
-                                    :error (.getMessage e)}))))
-                     {:edges-found edge-count
-                      :edges-merged 0
-                      :errors []}
-                     edges)]
-        (log/info "Drone KG merge complete" (select-keys results [:edges-found :edges-merged]))
-        results))))
+      ;; Batch all edges into single transact! call
+      (try
+        (kg/transact! target-store edges)
+        (log/info "Drone KG merge complete" {:edges-found edge-count :edges-merged edge-count})
+        {:edges-found edge-count :edges-merged edge-count :errors []}
+        (catch Exception e
+          ;; Batch failed — fall back to per-edge for partial merge
+          (log/warn "Batch merge failed, falling back to per-edge" {:error (.getMessage e)})
+          (let [results (reduce
+                         (fn [acc edge]
+                           (try
+                             (kg/transact! target-store [edge])
+                             (update acc :edges-merged inc)
+                             (catch Exception e2
+                               (log/warn "Failed to merge edge"
+                                         {:edge-id (:kg-edge/id edge)
+                                          :error (.getMessage e2)})
+                               (update acc :errors conj
+                                       {:edge-id (:kg-edge/id edge)
+                                        :error (.getMessage e2)}))))
+                         {:edges-found edge-count
+                          :edges-merged 0
+                          :errors []}
+                         edges)]
+            (log/info "Drone KG merge complete (fallback)" (select-keys results [:edges-found :edges-merged]))
+            results))))))
 
 (defn close-drone-store!
   "Close and deregister a drone's KG store."

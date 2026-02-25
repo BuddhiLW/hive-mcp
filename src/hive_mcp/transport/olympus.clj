@@ -56,6 +56,9 @@
   (java.util.concurrent.LinkedBlockingQueue. 100))
 (defonce ^:private ds-bridge-thread (atom nil))
 
+;; Channel subscription tracking for proper cleanup
+(defonce ^:private channel-subs (atom []))
+
 (def ^:private bridge-throttle-ms
   "Batching window for DS changes before pushing to clients.
    200ms balances responsiveness vs flood prevention."
@@ -599,9 +602,15 @@
                         actual-port))))))
 
 (defn stop!
-  "Stop the Olympus WebSocket server and DS state bridge."
+  "Stop the Olympus WebSocket server, DS state bridge, and channel subscriptions."
   []
   (stop-ds-state-bridge!)
+  ;; Unsubscribe from channel pub/sub to prevent pub leaks
+  (doseq [[event-type sub-ch] @channel-subs]
+    (result/rescue nil
+                   (when-let [unsub-fn (requiring-resolve 'hive-mcp.channel.core/unsubscribe!)]
+                     (unsub-fn event-type sub-ch))))
+  (reset! channel-subs [])
   (when-let [{:keys [server port]} @server-atom]
     (.close server)
     (reset! server-atom nil)
@@ -720,8 +729,10 @@
     ;; 2. Subscribe to memory-added events via channel pub/sub
     ;;    Memory CRUD (handle-add) publishes :memory-added events to channel.
     ;;    We subscribe and forward to Olympus.
+    ;;    Track sub for proper cleanup on stop!
                  (when-let [subscribe-fn (requiring-resolve 'hive-mcp.channel.core/subscribe!)]
                    (let [sub-ch (subscribe-fn :memory-added)]
+                     (swap! channel-subs conj [:memory-added sub-ch])
                      (pool/with-io
                        (loop []
                          (when-let [event (async/<!! sub-ch)]

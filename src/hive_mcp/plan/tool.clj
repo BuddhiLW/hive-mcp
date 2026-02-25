@@ -13,6 +13,7 @@
             [hive-mcp.plan.fsm :as plan-fsm]
             [hive-mcp.chroma.core :as chroma]
             [hive-mcp.plan.plans :as plans]
+            [hive-mcp.knowledge-graph.connection :as kg-conn]
             [hive-mcp.knowledge-graph.edges :as kg-edges]
             [hive-mcp.agent.context :as ctx]
             [clojure.data.json :as json]
@@ -119,19 +120,20 @@
 
    Returns vector of created edge IDs."
   [plan-id task-ids scope agent-id waves step-id-to-task-id]
-  (let [task-id-to-step-id (into {} (map (fn [[k v]] [v k]) step-id-to-task-id))]
-    (vec
-     (for [task-id task-ids
-           :let [step-id (get task-id-to-step-id task-id)
-                 _wave (get waves step-id 0)]]
-       (kg-edges/add-edge!
-        {:from plan-id
-         :to task-id
-         :relation :depends-on
-         :scope scope
-         :confidence 1.0
-         :source-type :automated
-         :created-by (str "plan_to_kanban" (when agent-id (str ":" agent-id)))})))))
+  (kg-conn/with-tx-batch
+    (let [task-id-to-step-id (into {} (map (fn [[k v]] [v k]) step-id-to-task-id))]
+      (vec
+       (for [task-id task-ids
+             :let [step-id (get task-id-to-step-id task-id)
+                   _wave (get waves step-id 0)]]
+         (kg-edges/add-edge!
+          {:from plan-id
+           :to task-id
+           :relation :depends-on
+           :scope scope
+           :confidence 1.0
+           :source-type :automated
+           :created-by (str "plan_to_kanban" (when agent-id (str ":" agent-id)))}))))))
 
 (defn- create-task-dependency-edges!
   "Create KG edges for task-to-task dependencies.
@@ -146,22 +148,23 @@
 
    Returns vector of created edge IDs."
   [step-id-to-task-id steps scope agent-id waves]
-  (vec
-   (for [step steps
-         dep-id (:depends-on step)
-         :when (and dep-id (contains? step-id-to-task-id dep-id))]
-     (let [from-task-id (get step-id-to-task-id (:id step))
-           to-task-id (get step-id-to-task-id dep-id)
-           _from-wave (get waves (:id step) 0)
-           _to-wave (get waves dep-id 0)]
-       (kg-edges/add-edge!
-        {:from from-task-id
-         :to to-task-id
-         :relation :depends-on
-         :scope scope
-         :confidence 1.0
-         :source-type :automated
-         :created-by (str "plan_to_kanban" (when agent-id (str ":" agent-id)))})))))
+  (kg-conn/with-tx-batch
+    (vec
+     (for [step steps
+           dep-id (:depends-on step)
+           :when (and dep-id (contains? step-id-to-task-id dep-id))]
+       (let [from-task-id (get step-id-to-task-id (:id step))
+             to-task-id (get step-id-to-task-id dep-id)
+             _from-wave (get waves (:id step) 0)
+             _to-wave (get waves dep-id 0)]
+         (kg-edges/add-edge!
+          {:from from-task-id
+           :to to-task-id
+           :relation :depends-on
+           :scope scope
+           :confidence 1.0
+           :source-type :automated
+           :created-by (str "plan_to_kanban" (when agent-id (str ":" agent-id)))}))))))
 
 (defn- build-execute-fn
   "Build the execute function for the Plan FSM.

@@ -123,7 +123,7 @@
 
 (deftest edges-all-relations-test
   (testing "all relation types work [datahike]"
-    (doseq [rel schema/relation-types]
+    (doseq [rel (schema/relation-types)]
       (let [edge-id (edges/add-edge! {:from (gen-node-id)
                                       :to (gen-node-id)
                                       :relation rel})]

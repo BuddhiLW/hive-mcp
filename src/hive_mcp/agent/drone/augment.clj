@@ -9,6 +9,8 @@
             [hive-mcp.agent.context-envelope :as context-envelope]
             [hive-mcp.context.budget :as budget]
             [hive-mcp.knowledge-graph.disc :as kg-disc]
+            [hive-mcp.knowledge-graph.connection :as conn]
+            [hive-mcp.concurrency.pool :as pool]
             [hive-mcp.tools.diff :as diff]
             [hive-dsl.result :as r]
             [clojure.data.json :as json]
@@ -51,28 +53,39 @@
         (str "## Project Context\n" sections)))))
 
 (defn format-file-contents
-  "Pre-read file contents so drone has exact content for propose_diff."
+  "Pre-read file contents so drone has exact content for propose_diff.
+   Collects read paths and batch-touches them in a single background IO
+   (with-tx-batch coalesces all transact! calls into one write)."
   [files project-root]
   (when (seq files)
     (let [effective-root (or project-root (diff/get-project-root) "")
+          paths-to-touch (atom [])
           contents (for [f files]
                      (let [validation (sandbox/validate-path-containment f effective-root)]
                        (if (:valid? validation)
                          (try
                            (let [content (slurp (:canonical-path validation))]
-                             (future
-                               (r/rescue nil (kg-disc/touch-disc! (:canonical-path validation))))
+                             (swap! paths-to-touch conj (:canonical-path validation))
                              (str "### " f "\n```\n" content "```\n"))
                            (catch Exception e
                              (str "### " f "\n(File not found or unreadable: " (.getMessage e) ")\n")))
                          (do
                            (log/warn "Path validation failed in format-file-contents"
                                      {:file f :error (:error validation)})
-                           (str "### " f "\n(BLOCKED: " (:error validation) ")\n")))))]
-      (str "## Current File Contents\n"
-           "IMPORTANT: Use this EXACT content as old_content in propose_diff.\n"
-           "Do NOT guess or assume file content - use what is provided below.\n\n"
-           (str/join "\n" contents)))))
+                           (str "### " f "\n(BLOCKED: " (:error validation) ")\n")))))
+          ;; Force lazy seq so paths-to-touch is populated
+          result (str "## Current File Contents\n"
+                      "IMPORTANT: Use this EXACT content as old_content in propose_diff.\n"
+                      "Do NOT guess or assume file content - use what is provided below.\n\n"
+                      (str/join "\n" contents))]
+      ;; Single background batch: all touch-disc! calls coalesced
+      (when (seq @paths-to-touch)
+        (pool/with-io
+          (r/rescue nil
+                    (conn/with-tx-batch
+                      (doseq [path @paths-to-touch]
+                        (kg-disc/touch-disc! path))))))
+      result)))
 
 (defn build-smart-context
   "Build smart context (imports, related functions, lint warnings) for target files."
