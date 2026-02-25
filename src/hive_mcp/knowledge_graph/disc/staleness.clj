@@ -3,6 +3,7 @@
   (:require [hive-mcp.knowledge-graph.disc.hash :as hash]
             [hive-mcp.knowledge-graph.disc.crud :as crud]
             [hive-mcp.knowledge-graph.disc.volatility :as vol]
+            [hive-mcp.concurrency.pool :as pool]
             [hive-dsl.result :as r]
             [taoensso.timbre :as log]))
 
@@ -24,28 +25,30 @@
         hash-result (when path (hash/file-content-hash path))]
     (vol/staleness-report disc hash-result)))
 
+(defn- path->staleness-warning
+  "Build a staleness warning for a path, or nil if fresh enough."
+  [path]
+  (when-let [disc (crud/get-disc path)]
+    (let [{:keys [score days-since-read hash-mismatch?]}
+          (staleness-report disc)]
+      (when (> score 0.3)
+        {:path path
+         :staleness score
+         :message (format "NOTE: file %s is stale (staleness: %.1f%s%s). Re-read carefully."
+                          path
+                          (float score)
+                          (if days-since-read
+                            (format ", last read %dd ago" days-since-read)
+                            ", never read")
+                          (if hash-mismatch?
+                            ", hash mismatch"
+                            ""))}))))
+
 (defn staleness-warnings
   "Generate staleness warnings for stale files from a collection of paths."
   [paths]
   (when (seq paths)
-    (->> paths
-         (keep (fn [path]
-                 (when-let [disc (crud/get-disc path)]
-                   (let [{:keys [score days-since-read hash-mismatch?]}
-                         (staleness-report disc)]
-                     (when (> score 0.3)
-                       {:path path
-                        :staleness score
-                        :message (format "NOTE: file %s is stale (staleness: %.1f%s%s). Re-read carefully."
-                                         path
-                                         (float score)
-                                         (if days-since-read
-                                           (format ", last read %dd ago" days-since-read)
-                                           ", never read")
-                                         (if hash-mismatch?
-                                           ", hash mismatch"
-                                           ""))})))))
-         vec)))
+    (into [] (keep path->staleness-warning) paths)))
 
 (defn- compute-disc-report
   "Compute staleness report for a single disc entity in parallel-friendly form.
@@ -56,14 +59,25 @@
         report (vol/staleness-report disc hash-result)]
     (assoc report :path path)))
 
+(defn- submit-disc-report
+  "Submit a single disc report computation to the IO pool."
+  [disc]
+  (pool/with-io (compute-disc-report disc)))
+
+(defn- above-threshold?
+  "Predicate: is the staleness score above threshold?"
+  [threshold report]
+  (> (:score report) threshold))
+
 (defn top-stale-files
   "Query top-N most stale disc entities sorted by staleness score.
-   Uses pmap for parallel file hashing — each disc's I/O is independent."
+   Uses bounded IO pool for parallel file hashing instead of unbounded pmap."
   [& {:keys [n project-id threshold] :or {n 5 threshold 0.5}}]
   (let [discs (crud/get-all-discs :project-id project-id)
-        reports (doall (pmap compute-disc-report discs))]
+        futures (mapv submit-disc-report discs)
+        reports (mapv deref futures)]
     (->> reports
-         (filter #(> (:score %) threshold))
+         (filter (partial above-threshold? threshold))
          (sort-by :score >)
          (take n)
          vec)))
@@ -101,17 +115,21 @@
                 {:path path :error (:message err)}))
     result))
 
+(defn- fresh-entries->kg-known
+  "Convert a seq of :fresh classified entries into a {path -> entry} map."
+  [fresh-entries]
+  (reduce (fn [m entry]
+            (assoc m (:path entry) (dissoc entry :path :status)))
+          {}
+          fresh-entries))
+
 (defn kg-first-context
   "Classify file paths by KG freshness to determine which need reading."
   [paths & [{:keys [staleness-threshold] :or {staleness-threshold 0.3}}]]
   (let [unique-paths (distinct (filter (every-pred string? seq) paths))
-        classified (mapv #(classify-disc % staleness-threshold) unique-paths)
+        classified (mapv (fn [p] (classify-disc p staleness-threshold)) unique-paths)
         grouped (group-by :status classified)
-        kg-known (->> (:fresh grouped)
-                      (reduce (fn [m entry]
-                                (assoc m (:path entry)
-                                       (dissoc entry :path :status)))
-                              {}))
+        kg-known (fresh-entries->kg-known (:fresh grouped))
         needs-read (mapv :path (:missing grouped))
         stale (mapv :path (:stale grouped))]
     {:kg-known kg-known

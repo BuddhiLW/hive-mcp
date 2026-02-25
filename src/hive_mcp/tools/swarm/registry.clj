@@ -83,7 +83,8 @@
       (hivemind/clear-agent! slave-id))))
 
 (defn- subscribe-to-registry-event!
-  "Subscribe to a registry sync event type with handler."
+  "Subscribe to a registry sync event type with handler.
+   Returns [event-type sub-ch] for proper unsubscribe on stop."
   [event-type handler]
   (let [sub-ch (ch/subscribe! event-type)]
     (go-loop []
@@ -93,7 +94,7 @@
           (catch Exception e
             (log/error "Registry sync handler error for" event-type ":" (.getMessage e))))
         (recur)))
-    sub-ch))
+    [event-type sub-ch]))
 
 (defn start-registry-sync!
   "Start event-driven synchronization of lings-registry."
@@ -115,11 +116,12 @@
         @registry-sync-state))))
 
 (defn stop-registry-sync!
-  "Stop event-driven registry synchronization."
+  "Stop event-driven registry synchronization.
+   Uses ch/unsubscribe! to properly unsub from pub before closing."
   []
   (when (:running @registry-sync-state)
-    (doseq [sub (:subscriptions @registry-sync-state)]
-      (async/close! sub))
+    (doseq [[event-type sub-ch] (:subscriptions @registry-sync-state)]
+      (ch/unsubscribe! event-type sub-ch))
     (reset! registry-sync-state {:running false :subscriptions []})
     (log/info "Registry sync stopped")))
 

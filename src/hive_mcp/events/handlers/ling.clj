@@ -12,7 +12,6 @@
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-
 ;; =============================================================================
 ;; Handler: :ling/started (EVENTS-03)
 ;; =============================================================================
@@ -67,19 +66,20 @@
    - :log      - Log completion message
    - :shout    - Broadcast completion to hivemind coordinator
    - :dispatch - Dispatch :session/end for auto-wrap"
-  [_coeffects [_ {:keys [slave-id result reason]}]]
-  (let [effective-id (or slave-id
-                         (System/getenv "CLAUDE_SWARM_SLAVE_ID")
-                         "unknown-ling")]
-    {:log {:level :info
-           :message (str "Ling completed: " effective-id
-                         (when result (str " result=" result)))}
-     :shout {:agent-id effective-id
-             :event-type :completed
-             :data {:result result
-                    :reason (or reason "task-finished")}}
-     :dispatch [:session/end {:slave-id effective-id
-                              :reason (or reason "ling-completed")}]}))
+  [_coeffects [_ {:keys [slave-id agent-id result reason]}]]
+  (let [effective-id (or slave-id agent-id)]
+    (if effective-id
+      {:log {:level :info
+             :message (str "Ling completed: " effective-id
+                           (when result (str " result=" result)))}
+       :shout {:agent-id effective-id
+               :event-type :completed
+               :data {:result result
+                      :reason (or reason "task-finished")}}
+       :dispatch [:session/end {:slave-id effective-id
+                                :reason (or reason "ling-completed")}]}
+      {:log {:level :warn
+             :message "Ling completed event with no slave-id or agent-id — dropped"}})))
 
 ;; =============================================================================
 ;; Handler: :ling/ready-for-wrap
@@ -100,17 +100,18 @@
    Produces effects:
    - :log      - Log auto-wrap trigger
    - :dispatch - Dispatch :session/wrap to run wrap workflow"
-  [_coeffects [_ {:keys [slave-id reason session-id]}]]
-  (let [effective-id (or slave-id
-                         (System/getenv "CLAUDE_SWARM_SLAVE_ID")
-                         "unknown-ling")]
-    {:log {:level :info
-           :message (str "Auto-wrap triggered for " effective-id
-                         " (reason: " (or reason "task-completed") ")")}
-     :dispatch [:session/wrap {:session-id session-id
-                               :slave-id effective-id
-                               :triggered-by "auto-wrap"
-                               :reason (or reason "task-completed")}]}))
+  [_coeffects [_ {:keys [slave-id agent-id reason session-id]}]]
+  (let [effective-id (or slave-id agent-id)]
+    (if effective-id
+      {:log {:level :info
+             :message (str "Auto-wrap triggered for " effective-id
+                           " (reason: " (or reason "task-completed") ")")}
+       :dispatch [:session/wrap {:session-id session-id
+                                 :slave-id effective-id
+                                 :triggered-by "auto-wrap"
+                                 :reason (or reason "task-completed")}]}
+      {:log {:level :warn
+             :message "Ready-for-wrap event with no slave-id or agent-id — dropped"}})))
 
 ;; =============================================================================
 ;; Registration

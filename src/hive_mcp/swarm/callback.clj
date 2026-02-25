@@ -274,6 +274,18 @@
      (when (seq stale)
        (log/info "Cleaned up stale callbacks" {:count (count stale)})))))
 
+(defn cleanup-for-agent!
+  "Remove all callbacks registered by a specific ling (on ling death)."
+  [ling-id]
+  (let [agent-callbacks (->> @callbacks
+                             (filter (fn [[_ v]] (= ling-id (:ling-id v))))
+                             (map first))]
+    (doseq [task-id agent-callbacks]
+      (unregister! task-id))
+    (when (seq agent-callbacks)
+      (log/info "Cleaned up callbacks for dead ling" {:ling-id ling-id
+                                                      :count (count agent-callbacks)}))))
+
 (defn status
   "Get callback system status."
   []

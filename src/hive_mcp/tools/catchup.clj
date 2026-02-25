@@ -22,6 +22,7 @@
             [hive-mcp.tools.catchup.git :as catchup-git]
             [hive-mcp.tools.catchup.spawn :as catchup-spawn]
             [hive-mcp.channel.memory-piggyback :as memory-piggyback]
+            [hive-mcp.channel.piggyback :as piggyback]
             [hive-mcp.channel.context-store :as context-store]
             [hive-mcp.extensions.registry :as ext]
             [hive-mcp.concurrency.pool :as pool]
@@ -157,6 +158,17 @@
               piggyback-agent-id (if project-id
                                    (str caller-id "-" project-id)
                                    caller-id)
+
+              ;; Cursor hygiene: adopt previous coordinator's cursor position
+              ;; so we don't re-read hivemind messages from timestamp 0 after
+              ;; a bb-mcp restart. Also evict stale cursors (> 30 min) and
+              ;; adopt orphaned memory-piggyback buffers from dead instances.
+              _ (rescue nil
+                        (do
+                          (piggyback/adopt-cursor! piggyback-agent-id project-id)
+                          (piggyback/evict-stale-cursors! 1800000) ;; 30 min
+                          (memory-piggyback/adopt-buffer! piggyback-agent-id project-id)))
+
               piggyback-entries (into (into (vec axioms) principles) priority-conventions)
 
               ;; Dual-write: Cache entry categories in context-store for pass-by-ref mode.

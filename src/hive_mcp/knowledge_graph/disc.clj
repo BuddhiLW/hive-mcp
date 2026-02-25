@@ -85,6 +85,11 @@
   "Record that a file was read by an agent."
   crud/touch-disc!)
 
+(def batch-update-discs!
+  "Batch-update multiple disc entities in a single transaction.
+   Takes seq of [path updates-map] pairs."
+  crud/batch-update-discs!)
+
 ;; =============================================================================
 ;; Re-exports: Staleness Surfacing (disc.staleness)
 ;; =============================================================================

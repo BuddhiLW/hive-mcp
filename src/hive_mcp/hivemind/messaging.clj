@@ -113,7 +113,8 @@
     ;; 5. Domain event dispatch (hive-events, not fanout)
     (when (= event-type :completed)
       (try
-        (events/dispatch [:ling/completed {:agent-id agent-id
+        (events/dispatch [:ling/completed {:slave-id agent-id
+                                           :agent-id agent-id
                                            :project-id project-id
                                            :data data}])
         (catch Exception e

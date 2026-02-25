@@ -15,6 +15,7 @@
             [hive-mcp.knowledge-graph.scope :as scope]
             [hive-mcp.config.core :as config]
             [hive-dsl.result :as r]
+            [hive-dsl.batch :as dsl-batch]
             [clojure.java.io :as io]
             [taoensso.timbre :as log]))
 
@@ -206,6 +207,13 @@
            (when (seq @batch#)
              (proto/transact! (#'ensure-store!) @batch#))
            result#)))))
+
+(def with-tx-batch-fn
+  "Function equivalent of with-tx-batch. Coalesces transact! calls into one write.
+   Built on hive-dsl/transparent-batch-scope."
+  (dsl-batch/transparent-batch-scope
+   #'*tx-batch*
+   (fn [data] (proto/transact! (ensure-store!) data))))
 
 (defn query
   "Query the KG database.

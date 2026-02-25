@@ -75,3 +75,17 @@
   (guards/when-not-coordinator
    "clear-agent-registry! called"
    (reset! agent-registry {})))
+
+;; =============================================================================
+;; Per-agent Cleanup (for ling death)
+;; =============================================================================
+
+(defn remove-ling-result!
+  "Remove a specific ling's result entry (on ling death)."
+  [agent-id]
+  (swap! ling-results dissoc agent-id))
+
+(defn clear-agent-messages!
+  "Remove a specific agent's message history (on ling death)."
+  [agent-id]
+  (swap! agent-registry dissoc agent-id))
