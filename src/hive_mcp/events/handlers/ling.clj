@@ -64,18 +64,16 @@
 
    Produces effects:
    - :log      - Log completion message
-   - :shout    - Broadcast completion to hivemind coordinator
-   - :dispatch - Dispatch :session/end for auto-wrap"
+   - :dispatch - Dispatch :session/end for auto-wrap
+   NOTE: Does NOT re-shout. The caller (sync.clj, session-complete) is
+   responsible for shouting. Re-shouting here would create a feedback loop:
+   shout! → :ling/completed → handle-ling-completed → :shout → shout!"
   [_coeffects [_ {:keys [slave-id agent-id result reason]}]]
   (let [effective-id (or slave-id agent-id)]
     (if effective-id
       {:log {:level :info
              :message (str "Ling completed: " effective-id
                            (when result (str " result=" result)))}
-       :shout {:agent-id effective-id
-               :event-type :completed
-               :data {:result result
-                      :reason (or reason "task-finished")}}
        :dispatch [:session/end {:slave-id effective-id
                                 :reason (or reason "ling-completed")}]}
       {:log {:level :warn
