@@ -15,9 +15,9 @@
             [hive-mcp.swarm.datascript.registry :as registry]
             [hive-mcp.swarm.datascript.queries :as queries]
             [hive-mcp.tools.memory.scope :as mem-scope]
-            [hive-mcp.events.core :as events]
             [clojure.core.async :as async :refer [>!! chan timeout alt!!]]
-            [taoensso.timbre :as log])
+            [taoensso.timbre :as log]
+            [hive-dsl.bounded-atom :refer [bput! bget bounded-swap!]])
   (:import [java.lang Exception]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -26,14 +26,15 @@
 (defn- all-hivemind-messages
   "Return all hivemind messages for piggyback module."
   []
-  (mapcat (fn [[agent-id {:keys [messages]}]]
-            (for [{:keys [event-type message task timestamp project-id]} messages]
-              {:agent-id agent-id
-               :event-type event-type
-               :message (or message task "")
-               :timestamp timestamp
-               :project-id (or project-id "global")}))
-          @state/agent-registry))
+  (mapcat (fn [[_agent-id entry]]
+            (let [{:keys [messages]} (:data entry)]
+              (for [{:keys [event-type message task timestamp project-id]} messages]
+                {:agent-id _agent-id
+                 :event-type event-type
+                 :message (or message task "")
+                 :timestamp timestamp
+                 :project-id (or project-id "global")})))
+          @(:atom state/agent-registry)))
 
 (piggyback/register-message-source! all-hivemind-messages)
 
@@ -66,7 +67,9 @@
    - Local state (atom + DataScript) updated synchronously
    - If backbone connected: single publish → backbone subscribers handle fanout
    - If backbone disconnected: direct fanout via IDeliveryChannel registry
-   - hive-events dispatch for :ling/completed (domain event, always fires)"
+   - Domain events (:ling/completed) are NOT dispatched here — callers
+     that need domain side-effects dispatch them explicitly. This avoids
+     a feedback loop: shout! → :ling/completed handler → :shout effect → shout!"
   [agent-id event-type data]
   (let [now (System/currentTimeMillis)
         resolved-slave (queries/get-slave-by-name-or-id agent-id)
@@ -74,9 +77,12 @@
         explicit-project-id (:project-id data)
         directory (:directory data)
         slave-cwd (:slave/cwd resolved-slave)
+        ;; Resolution: slave-cwd (from DataScript, set at spawn) takes precedence
+        ;; over directory (from tool handler, may be MCP server's cwd).
+        ;; This ensures lings always resolve to their own project scope.
         project-id (or explicit-project-id
-                       (when directory (mem-scope/get-current-project-id directory))
                        (when slave-cwd (mem-scope/get-current-project-id slave-cwd))
+                       (when directory (mem-scope/get-current-project-id directory))
                        "global")
         message (cond-> {:event-type event-type
                          :timestamp now
@@ -92,13 +98,13 @@
                           :message (:message data)
                           :task (:task data)
                           :data (dissoc data :task :message :directory :project-id)}]
-    ;; 1. Local state — always (atom for piggyback reads)
-    (swap! state/agent-registry update agent-id
-           (fn [agent]
-             (let [messages (or (:messages agent) [])
-                   new-messages (vec (take-last 10 (conj messages message)))]
-               {:messages new-messages
-                :last-seen now})))
+    ;; 1. Local state — always (bounded-atom for piggyback reads)
+    (let [current (or (bget state/agent-registry agent-id) {:messages [] :last-seen nil})
+          messages (or (:messages current) [])
+          new-messages (vec (take-last 10 (conj messages message)))]
+      (bput! state/agent-registry agent-id
+             {:messages new-messages
+              :last-seen now}))
     ;; 2. DataScript slave status — always
     (when resolved-slave
       (proto/update-slave! registry/default-registry resolved-slave-id
@@ -110,15 +116,6 @@
         (fanout-shout-direct! backbone-payload)))
     ;; 4. Log
     (log/info "Hivemind shout:" agent-id event-type "project:" project-id)
-    ;; 5. Domain event dispatch (hive-events, not fanout)
-    (when (= event-type :completed)
-      (try
-        (events/dispatch [:ling/completed {:slave-id agent-id
-                                           :agent-id agent-id
-                                           :project-id project-id
-                                           :data data}])
-        (catch Exception e
-          (log/debug "ling/completed dispatch failed (handler may not be registered):" (.getMessage e)))))
     true))
 
 (defn ask!

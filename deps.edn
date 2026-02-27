@@ -115,7 +115,7 @@
         {:git/tag "v0.3.2" :git/sha "5625daa78f038332cc51105573eae9fd05445e3f"}
 
         ;; hive-emacs — Emacs vessel addon (IEditor, daemon, CIDER/Magit/Projectile)
-        io.github.hive-agi/hive-emacs {:git/tag "v0.1.1" :git/sha "43be607"}}
+        io.github.hive-agi/hive-emacs {:git/tag "v0.1.2" :git/sha "9bb6fb0"}}
 
  :aliases
  {:mcp
