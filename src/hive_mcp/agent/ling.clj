@@ -182,7 +182,7 @@
       (when (seq files)
         (.claim-files! this files task-id))
 
-      (let [resolved-opts (cond-> (assoc task-opts :task resolved-task)
+      (let [resolved-opts (cond-> (assoc task-opts :task resolved-task :task-id task-id)
                             ctx (assoc :dispatch-context ctx))]
         (try
           (strategy/strategy-dispatch! strat (ling-ctx this) resolved-opts)
