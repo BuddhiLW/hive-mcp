@@ -10,7 +10,8 @@
    - Coordinator registration in DataScript
    - Memory store wiring (IMemoryStore protocol)
    - Channel bridge + swarm sync + registry sync
-   - decay scheduler (periodic memory/edge/disc decay)"
+   - decay scheduler (periodic memory/edge/disc decay)
+   - housekeeping scheduler (periodic GC sweep + stale resource cleanup)"
   (:require [hive-mcp.chroma.core :as chroma]
             [hive-mcp.channel.websocket :as ws-channel]
             [hive-mcp.dns.result :as result]
@@ -296,7 +297,7 @@
 
 (defn start-swarm-sync!
   "Start swarm sync - bridges channel events to logic database.
-   This enables: task-completed → release claims → process queue."
+   This enables: task-completed -> release claims -> process queue."
   []
   (result/rescue nil
                  (sync/start-sync!)
@@ -355,6 +356,7 @@
                  (log/info "Lings registry sync started - lings_available will track elisp lings")))
 
 ;; =============================================================================
+;; Decay Scheduler
 ;; =============================================================================
 
 (defn start-decay-scheduler!
@@ -386,12 +388,43 @@
                    (stop-fn))))
 
 ;; =============================================================================
+;; Housekeeping Scheduler (gc-fix-5)
+;; =============================================================================
+
+(defn start-housekeeping-scheduler!
+  "Start the periodic housekeeping scheduler (gc-fix-5).
+   Runs bounded atom GC sweep + stale resource cleanup every 5 minutes.
+
+   Configure via config.edn :services :housekeeping:
+     {:enabled true :interval-minutes 5}
+
+   Non-fatal: if scheduler fails to start, system continues without it.
+   GC sweep still runs on session wrap/complete as before."
+  []
+  (result/rescue nil
+                 (require 'hive-mcp.scheduler.housekeeping)
+                 (let [start-fn (resolve 'hive-mcp.scheduler.housekeeping/start!)]
+                   (when start-fn
+                     (let [result (start-fn)]
+                       (if (:started result)
+                         (log/info "Housekeeping scheduler started:" result)
+                         (log/info "Housekeeping scheduler not started:" (:reason result))))))))
+
+(defn stop-housekeeping-scheduler!
+  "Stop the periodic housekeeping scheduler. Called during shutdown."
+  []
+  (result/rescue nil
+                 (require 'hive-mcp.scheduler.housekeeping)
+                 (when-let [stop-fn (resolve 'hive-mcp.scheduler.housekeeping/stop!)]
+                   (stop-fn))))
+
+;; =============================================================================
 ;; NATS Initialization
 ;; =============================================================================
 
 (defn init-nats!
   "Initialize NATS client + bridge + backbone + delivery channels for universal event backbone.
-   Startup sequence: NATS connect → set IEventBackbone → register delivery channels → bridge subscribe → callback listener.
+   Startup sequence: NATS connect -> set IEventBackbone -> register delivery channels -> bridge subscribe -> callback listener.
    Opt-in via config: services.nats.enabled = true.
    Non-fatal: system degrades to NoopBackbone + polling if NATS unavailable."
   []
@@ -431,7 +464,7 @@
     (when-let [register! (resolve 'hive-mcp.workflows.forge-belt-defaults/register-forge-belt-defaults!)]
       (register!))
     (catch Throwable e
-      (log/warn "register-forge-belt-defaults! failed — forge-belt extension points will return noop:"
+      (log/warn "register-forge-belt-defaults! failed -- forge-belt extension points will return noop:"
                 (.getMessage e)))))
 
 ;; =============================================================================

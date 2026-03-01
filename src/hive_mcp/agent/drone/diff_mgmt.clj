@@ -3,7 +3,8 @@
   (:require [hive-mcp.tools.diff :as diff]
             [clojure.data.json :as json]
             [clojure.set]
-            [taoensso.timbre :as log]))
+            [taoensso.timbre :as log]
+            [hive-dsl.bounded-atom :refer [bget bput! bounded-swap! bkeys]]))
 
 (defrecord DiffResults
            [applied failed proposed])
@@ -24,7 +25,7 @@
   (if (empty? new-diff-ids)
     (empty-diff-results)
     (let [results (for [diff-id new-diff-ids]
-                    (let [diff-info (get @diff/pending-diffs diff-id)
+                    (let [diff-info (bget diff/pending-diffs diff-id)
                           response (diff/handle-apply-diff {:diff_id diff-id})
                           parsed (try (json/read-str (:text response) :key-fn keyword)
                                       (catch Exception _ nil))]
@@ -46,7 +47,8 @@
   [new-diff-ids wave-id]
   (when (and (seq new-diff-ids) wave-id)
     (doseq [diff-id new-diff-ids]
-      (swap! diff/pending-diffs update diff-id assoc :wave-id wave-id))
+      (when-let [current (bget diff/pending-diffs diff-id)]
+        (bput! diff/pending-diffs diff-id (assoc current :wave-id wave-id))))
     (log/debug "Tagged diffs with wave-id" {:wave-id wave-id :count (count new-diff-ids)})))
 
 (defn get-new-diff-ids
@@ -57,7 +59,7 @@
 (defn capture-diffs-before
   "Capture the current set of pending diff IDs."
   []
-  (set (keys @diff/pending-diffs)))
+  (set (bkeys diff/pending-diffs)))
 
 (defn handle-diff-results!
   "Handle diff application based on execution mode."

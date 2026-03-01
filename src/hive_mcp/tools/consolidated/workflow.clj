@@ -16,6 +16,7 @@
             [hive-mcp.tools.consolidated.session :as c-session]
             [hive-mcp.tools.consolidated.workflow.forge-ops :as forge-ops]
             [hive-mcp.tools.consolidated.workflow.forge-cycle :as forge-cycle]
+            [hive-mcp.dns.result :as result]
             [hive-mcp.config.core :as config]
             [hive-mcp.server.guards :as guards]
             [taoensso.timbre :as log]))
@@ -127,6 +128,39 @@
                  :message "Forge quenched. Active lings will finish. No new spawns."
                  :state @forge-state}))))
 
+;; ── Multi-Front Coordinator (hive-knowledge extension) ────────────────────
+
+(defn- resolve-multi-front
+  "Lazily resolve hive-knowledge.scheduler.multi-front namespace."
+  [fn-name]
+  (or (requiring-resolve (symbol "hive-knowledge.scheduler.multi-front" fn-name))
+      (throw (ex-info (str "multi-front not available: " fn-name)
+                      {:fn fn-name}))))
+
+(defn handle-multi-front-start
+  "Start multi-front coordination: detect fronts → spawn vterm lings → monitor."
+  [params]
+  (rb/result->mcp
+   (rb/try-result :multi-front/start-failed
+                  #(let [start-fn (resolve-multi-front "start-multi-front!")]
+                     (result/ok (start-fn params))))))
+
+(defn handle-multi-front-status
+  "Get multi-front coordination status with per-front milestone progress."
+  [_params]
+  (rb/result->mcp
+   (rb/try-result :multi-front/status-failed
+                  #(let [status-fn (resolve-multi-front "multi-front-status")]
+                     (result/ok (status-fn))))))
+
+(defn handle-multi-front-stop
+  "Stop multi-front coordination."
+  [_params]
+  (rb/result->mcp
+   (rb/try-result :multi-front/stop-failed
+                  #(let [stop-fn (resolve-multi-front "stop-multi-front!")]
+                     (result/ok (stop-fn))))))
+
 ;; ── Deprecated Aliases ──────────────────────────────────────────────────────
 
 (def handle-forge-strike-fsm
@@ -147,6 +181,10 @@
               :strike-imperative  handle-forge-strike-imperative
               :status             handle-forge-status
               :quench             handle-forge-quench
+              :multi-front        {:start    handle-multi-front-start
+                                   :status   handle-multi-front-status
+                                   :stop     handle-multi-front-stop
+                                   :_handler handle-multi-front-status}
               :_handler           handle-forge-status}})
 
 (def handlers canonical-handlers)
@@ -164,6 +202,9 @@
                                                 "forge strike"
                                                 "forge strike-imperative"
                                                 "forge status" "forge quench"
+                                                "forge multi-front start"
+                                                "forge multi-front status"
+                                                "forge multi-front stop"
                                                 "help"]
                                          :description "Workflow operation to perform"}
                               "commit_msg" {:type "string"

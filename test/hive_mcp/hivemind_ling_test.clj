@@ -9,7 +9,8 @@
    
    Each test is independent with state reset between tests."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
-            [hive-mcp.hivemind.core :as hivemind]))
+            [hive-mcp.hivemind.core :as hivemind]
+            [hive-dsl.bounded-atom :refer [bget bcount bclear!]]))
 
 ;;; Test fixtures
 
@@ -100,10 +101,9 @@
     ;; After marking - should not appear in pending
     (is (= {} (hivemind/get-pending-ling-results)))
 
-    ;; But the entry still exists in the atom (verify via direct access)
-    (let [ling-results-var (resolve 'hive-mcp.hivemind.core/ling-results)
-          all-results @@ling-results-var]
-      (is (true? (:reviewed? (get all-results "agent-1")))))))
+    ;; But the entry still exists in the atom (verify via bget)
+    (let [all-data (bget hivemind/ling-results "agent-1")]
+      (is (true? (:reviewed? all-data))))))
 
 (deftest mark-ling-reviewed!-idempotent-test
   (testing "mark-ling-reviewed! is idempotent"
@@ -112,8 +112,7 @@
     (hivemind/mark-ling-reviewed! "agent-1") ; Second call
 
     ;; Should still be reviewed, no error
-    (let [ling-results-var (resolve 'hive-mcp.hivemind.core/ling-results)
-          entry (get @@ling-results-var "agent-1")]
+    (let [entry (bget hivemind/ling-results "agent-1")]
       (is (true? (:reviewed? entry))))))
 
 (deftest mark-ling-reviewed!-nonexistent-agent-test
@@ -121,10 +120,12 @@
     ;; Should not throw
     (hivemind/mark-ling-reviewed! "nonexistent-agent")
 
-    ;; Creates entry with nil values but reviewed? true
-    (let [ling-results-var (resolve 'hive-mcp.hivemind.core/ling-results)
-          entry (get @@ling-results-var "nonexistent-agent")]
-      (is (true? (:reviewed? entry))))))
+    ;; mark-ling-reviewed! only updates if bget finds existing entry,
+    ;; so nonexistent agent should have nil result
+    (let [entry (bget hivemind/ling-results "nonexistent-agent")]
+      ;; With bounded-atom, mark-ling-reviewed! checks bget first and only
+      ;; updates if entry exists. So entry should be nil for nonexistent agent.
+      (is (nil? entry)))))
 
 ;;; clear-ling-results! tests
 
@@ -139,8 +140,7 @@
 
     ;; Verify empty
     (is (= {} (hivemind/get-pending-ling-results)))
-    (let [ling-results-var (resolve 'hive-mcp.hivemind.core/ling-results)]
-      (is (= {} @@ling-results-var)))))
+    (is (= 0 (bcount hivemind/ling-results)))))
 
 (deftest clear-ling-results!-idempotent-test
   (testing "clear-ling-results! is idempotent"
@@ -151,7 +151,7 @@
 ;;; Integration/workflow tests
 
 (deftest ling-workflow-full-cycle-test
-  (testing "Full ling workflow: record → get-pending → review → clear"
+  (testing "Full ling workflow: record -> get-pending -> review -> clear"
     ;; 1. Record multiple results
     (hivemind/record-ling-result! "ling-tdd" {:status "success" :tests-passed 10})
     (hivemind/record-ling-result! "ling-docs" {:status "success" :docs-updated 3})
@@ -172,8 +172,7 @@
 
     ;; 5. Clear at session end
     (hivemind/clear-ling-results!)
-    (let [ling-results-var (resolve 'hive-mcp.hivemind.core/ling-results)]
-      (is (= {} @@ling-results-var)))))
+    (is (= 0 (bcount hivemind/ling-results)))))
 
 (deftest ling-result-preserves-complex-data-test
   (testing "record-ling-result! preserves complex nested data"

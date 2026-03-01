@@ -8,7 +8,8 @@
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [clojure.data.json :as json]
             [hive-mcp.hivemind.core :as hivemind]
-            [hive-mcp.channel.piggyback :as piggyback]))
+            [hive-mcp.channel.piggyback :as piggyback]
+            [hive-dsl.bounded-atom :refer [bclear!]]))
 
 ;;; Test fixtures
 
@@ -16,9 +17,9 @@
   "Fixture to ensure clean agent-registry state between tests."
   [f]
   ;; Reset agent-registry
-  (reset! @(resolve 'hive-mcp.hivemind.core/agent-registry) {})
+  (bclear! @(resolve 'hive-mcp.hivemind.core/agent-registry))
   (f)
-  (reset! @(resolve 'hive-mcp.hivemind.core/agent-registry) {}))
+  (bclear! @(resolve 'hive-mcp.hivemind.core/agent-registry)))
 
 (use-fixtures :each reset-hivemind-state)
 

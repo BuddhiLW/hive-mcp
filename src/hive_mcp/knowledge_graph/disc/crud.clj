@@ -1,6 +1,7 @@
 (ns hive-mcp.knowledge-graph.disc.crud
   "CRUD operations for disc entities in DataScript."
   (:require [hive-mcp.knowledge-graph.connection :as conn]
+            [hive-mcp.knowledge-graph.protocol :as proto]
             [hive-mcp.knowledge-graph.disc.hash :as hash]
             [hive-mcp.knowledge-graph.disc.volatility :as vol]
             [taoensso.timbre :as log]))
@@ -25,7 +26,8 @@
                   :disc/certainty-beta 2.0
                   :disc/volatility-class volatility
                   :disc/last-observation now}]
-        result (conn/transact! tx-data)]
+        ;; Sync transact — needs tx-report for entity ID extraction
+        result (conn/transact-sync! tx-data)]
     (log/debug "Added/updated disc entity" {:path path :volatility volatility
                                             :initial-certainty (/ initial-alpha (+ initial-alpha 2.0))})
     (-> result :tx-data first :e)))

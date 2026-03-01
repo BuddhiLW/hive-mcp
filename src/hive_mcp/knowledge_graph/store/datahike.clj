@@ -13,6 +13,23 @@
 
 (def ^:private default-db-path "data/kg/datahike")
 
+;; =============================================================================
+;; Addon Norms Registry (OCP — addons register their norm resource paths)
+;; =============================================================================
+
+(defonce ^:private addon-norms-registry
+  (atom []))
+
+(defn register-norms!
+  "Register a classpath resource path for addon Datahike norms.
+   Addons call this during init, before the KG store is first accessed.
+   Norms are applied idempotently via datahike.norm/ensure-norms! on ensure-conn!.
+
+   Example: (register-norms! \"my_addon/norms/kg\")"
+  [resource-path]
+  (swap! addon-norms-registry conj resource-path)
+  (log/info "Registered addon KG norms" {:path resource-path}))
+
 (defn- make-writer-config
   "Build the :writer section of Datahike config.
    Supports :self (default local), :datahike-server (HTTP), and :kabel (WebSocket).
@@ -99,11 +116,16 @@
               (let [conn (d/connect cfg)]
                 (log/info "Applying KG norms" {:path "hive_mcp/norms/kg"})
                 (norm/ensure-norms! conn (io/resource "hive_mcp/norms/kg"))
+                ;; Apply addon-registered norms (OCP: addons own their schema).
+                (doseq [norms-path @addon-norms-registry]
+                  (when-let [resource (io/resource norms-path)]
+                    (log/info "Applying addon KG norms" {:path norms-path})
+                    (rescue nil (norm/ensure-norms! conn resource))))
                 (reset! conn-atom conn))))
     @conn-atom)
 
   (transact! [this tx-data]
-    (d/transact (kg/ensure-conn! this) tx-data))
+    (d/transact! (kg/ensure-conn! this) tx-data))
 
   (query [this q]
     (d/q q (d/db (kg/ensure-conn! this))))

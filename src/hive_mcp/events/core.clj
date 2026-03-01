@@ -8,6 +8,8 @@
    - Metrics interceptor for observability
    - validate-event interceptor for data validation
    - init! for hive-mcp-specific coeffect registration
+   - Deregistration API (unreg-event, unreg-fx, unreg-cofx)
+   - Inspection API (registered-events, registered-effects, registered-coeffects)
 
    Core event machinery (interceptor chain, fx, cofx) lives in
    hive-events (io.github.hive-agi/hive-events). This namespace is
@@ -24,9 +26,11 @@
 
    Kept in hive-mcp (extensions):
    - Event registry & dispatch (Prometheus + malli wrapping)
-   - Metrics interceptor (rolling window telemetry)
+   - Metrics interceptor (bounded rolling window telemetry)
    - Debug interceptor (timbre instead of println)
    - Validation interceptor (malli schema)
+   - Deregistration (unreg-event, unreg-fx, unreg-cofx)
+   - Inspection (registered-events, registered-effects, registered-coeffects, handler-registry-status)
    - init! / reset-all! / with-clean-registry"
 
   (:require [hive.events.interceptor :as interceptor]
@@ -56,6 +60,49 @@
 (defonce ^:private *event-handlers (atom {}))
 
 ;; =============================================================================
+;; Metrics Configuration (E2)
+;; =============================================================================
+
+(def ^:private default-metrics-config
+  "Default configuration for metrics buffer sizes."
+  {:max-timings 1000
+   :max-timings-per-type 200})
+
+(defonce ^:private *metrics-config (atom default-metrics-config))
+
+(defn configure-metrics!
+  "Configure metrics buffer limits.
+
+   Options:
+   - :max-timings          - Max samples in the global :timings buffer (default: 1000)
+   - :max-timings-per-type - Max samples per event type in :timings-by-type (default: 200)
+
+   Example:
+   ```clojure
+   (configure-metrics! {:max-timings 500 :max-timings-per-type 100})
+   ```"
+  [{:keys [max-timings max-timings-per-type]}]
+  (swap! *metrics-config merge
+         (cond-> {}
+           max-timings          (assoc :max-timings max-timings)
+           max-timings-per-type (assoc :max-timings-per-type max-timings-per-type))))
+
+;; =============================================================================
+;; Bounded Buffer Helpers (E2)
+;; =============================================================================
+
+(defn- bounded-conj
+  "Append `val` to vector `v`, dropping the oldest entry when `(count v) >= cap`.
+   Returns [updated-vec dropped?].
+
+   Uses subvec for O(~1) FIFO eviction on Clojure persistent vectors."
+  [v val cap]
+  (let [v (or v [])]
+    (if (>= (count v) cap)
+      [(conj (subvec v 1) val) true]
+      [(conj v val) false])))
+
+;; =============================================================================
 ;; Metrics State - hive-mcp specific
 ;; =============================================================================
 
@@ -67,14 +114,16 @@
     :events-by-type    {kw N} ; Count per event-id keyword
     :effects-executed  N      ; Total effects successfully executed
     :errors           N       ; Total effect execution errors
-    :timings-by-type  {kw []} ; Rolling window of dispatch times per event type (ms)
-    :timings          [...]}  ; Rolling window of all dispatch times (ms)"
+    :timings-by-type  {kw []} ; Bounded rolling window of dispatch times per event type (ms)
+    :timings          [...]   ; Bounded rolling window of all dispatch times (ms)
+    :timings-dropped  N}      ; Total timings dropped due to buffer overflow (never resets)"
   (atom {:events-dispatched 0
          :events-by-type {}
          :effects-executed 0
          :errors 0
          :timings-by-type {}
-         :timings []}))
+         :timings []
+         :timings-dropped 0}))
 
 (defn get-metrics
   "Get current metrics snapshot.
@@ -87,10 +136,14 @@
    - :avg-dispatch-ms    - Average dispatch time across all events (ms)
    - :avg-by-type        - Map of event-id -> average dispatch time (ms)
    - :timings-count      - Number of timing samples
-   - :timings-by-type    - Map of event-id -> [timing samples]"
+   - :timings-by-type    - Map of event-id -> [timing samples]
+   - :timings-buffer-size     - Current size of global timings buffer
+   - :timings-buffer-capacity - Configured max for global timings buffer
+   - :timings-dropped         - Total timings dropped due to buffer overflow"
 
   []
   (let [m @*metrics
+        cfg @*metrics-config
         timings (:timings m)
         timings-by-type (:timings-by-type m)
         avg-ms (if (seq timings)
@@ -106,17 +159,21 @@
     (assoc m
            :avg-dispatch-ms avg-ms
            :avg-by-type avg-by-type
-           :timings-count (count timings))))
+           :timings-count (count timings)
+           :timings-buffer-size (count timings)
+           :timings-buffer-capacity (:max-timings cfg)
+           :timings-dropped (:timings-dropped m 0))))
 
 (defn reset-metrics!
-  "Reset all metrics counters. For testing."
+  "Reset all metrics counters including dropped counter. For testing."
   []
   (reset! *metrics {:events-dispatched 0
                     :events-by-type {}
                     :effects-executed 0
                     :errors 0
                     :timings-by-type {}
-                    :timings []}))
+                    :timings []
+                    :timings-dropped 0}))
 
 ;; =============================================================================
 ;; Re-exports from hive.events — Interceptor Primitives
@@ -410,7 +467,10 @@
    - Dispatch timing in ms (recorded in :after)
    - Per-event-type timings (tracked in :timings-by-type)
 
-   Uses a rolling window of 100 timing samples per event type to compute averages."
+   Timings are bounded by configurable limits (see configure-metrics!):
+   - Global :timings capped at :max-timings (default 1000)
+   - Per-type :timings-by-type capped at :max-timings-per-type (default 200)
+   Oldest entries are dropped first (FIFO)."
 
   (->interceptor
    :id :metrics
@@ -431,12 +491,20 @@
                   elapsed-ms (when start-ns
                                (/ (- (System/nanoTime) start-ns) 1000000.0))]
               (when elapsed-ms
-                (swap! *metrics
-                       (fn [m]
-                         (-> m
-                             (update :timings #(take 100 (conj % elapsed-ms)))
-                             (update-in [:timings-by-type event-id]
-                                        #(take 100 (conj (or % []) elapsed-ms))))))))
+                (let [{:keys [max-timings max-timings-per-type]} @*metrics-config]
+                  (swap! *metrics
+                         (fn [m]
+                           (let [[new-timings global-dropped?]
+                                 (bounded-conj (:timings m) elapsed-ms max-timings)
+                                 [new-type-timings type-dropped?]
+                                 (bounded-conj (get-in m [:timings-by-type event-id])
+                                               elapsed-ms max-timings-per-type)
+                                 total-dropped (+ (if global-dropped? 1 0)
+                                                  (if type-dropped? 1 0))]
+                             (-> m
+                                 (assoc :timings new-timings)
+                                 (assoc-in [:timings-by-type event-id] new-type-timings)
+                                 (update :timings-dropped + total-dropped))))))))
             context)))
 
 (def trim-v
@@ -614,6 +682,80 @@
    Public API to avoid accessing private state."
   [event-id]
   (contains? @*event-handlers event-id))
+
+;; =============================================================================
+;; Deregistration API (E1)
+;; =============================================================================
+
+(defn unreg-event
+  "Remove event handler for event-id.
+   Returns true if the handler was found and removed, false if not found.
+   Thread-safe (uses swap! on atom)."
+  [event-id]
+  (let [removed? (atom false)]
+    (swap! *event-handlers
+           (fn [handlers]
+             (if (contains? handlers event-id)
+               (do (reset! removed? true)
+                   (dissoc handlers event-id))
+               handlers)))
+    @removed?))
+
+(defn unreg-fx
+  "Remove effect handler for fx-id.
+   Returns true if the handler was found and removed, false if not found.
+   Delegates to hive.events.fx/unreg-fx. Thread-safe."
+  [fx-id]
+  (fx/unreg-fx fx-id))
+
+(defn unreg-cofx
+  "Remove coeffect handler for cofx-id.
+   Returns true if the handler was found and removed, false if not found.
+   Delegates to hive.events.cofx/unreg-cofx. Thread-safe."
+  [cofx-id]
+  (cofx/unreg-cofx cofx-id))
+
+;; =============================================================================
+;; Inspection / Diagnostics API (E1)
+;; =============================================================================
+
+(defn registered-events
+  "Return set of registered event IDs."
+  []
+  (set (keys @*event-handlers)))
+
+(defn registered-effects
+  "Return set of registered effect IDs.
+   Delegates to hive.events.fx/registered-fx-ids."
+  []
+  (fx/registered-fx-ids))
+
+(defn registered-coeffects
+  "Return set of registered coeffect IDs.
+   Delegates to hive.events.cofx/registered-cofx-ids."
+  []
+  (cofx/registered-cofx-ids))
+
+(defn handler-registry-status
+  "Return a summary of all registered handlers across event, fx, and cofx registries.
+
+   Returns:
+   {:event-count  N
+    :fx-count     N
+    :cofx-count   N
+    :events       [sorted event-id keywords]
+    :effects      [sorted fx-id keywords]
+    :coeffects    [sorted cofx-id keywords]}"
+  []
+  (let [events (registered-events)
+        effects (registered-effects)
+        coeffects (registered-coeffects)]
+    {:event-count (count events)
+     :fx-count    (count effects)
+     :cofx-count  (count coeffects)
+     :events      (vec (sort events))
+     :effects     (vec (sort effects))
+     :coeffects   (vec (sort coeffects))}))
 
 ;; =============================================================================
 ;; Testing Helpers

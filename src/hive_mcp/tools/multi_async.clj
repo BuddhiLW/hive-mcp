@@ -19,7 +19,9 @@
    Design decision: Phase 3 of Multi DSL plan (20260211212019-b8499942)"
   (:require [hive-mcp.channel.context-store :as ctx]
             [hive-mcp.dns.result :as result]
-            [taoensso.timbre :as log]))
+            [taoensso.timbre :as log]
+            [hive-dsl.bounded-atom :refer [bounded-atom bput! bget bounded-swap!
+                                           bclear! bkeys register-sweepable!]]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -41,10 +43,15 @@
 ;; the future reference + metadata locally. Completed results are stored
 ;; in context-store for cross-agent access and TTL-based auto-eviction.
 
+;; gc-fix-3: batches — LRU eviction, 100 entries, 30min TTL
+;; Batch entries include future refs; stale completed batches waste memory.
 (defonce ^{:doc "Registry of async batches.
   {batch-id -> {:future, :status, :ops, :created-at, :result-ctx-id, :error}}"}
   batches
-  (atom {}))
+  (bounded-atom {:max-entries 100
+                 :ttl-ms 1800000    ;; 30 minutes
+                 :eviction-policy :lru}))
+(register-sweepable! batches :batches)
 
 ;; =============================================================================
 ;; ID Generation
@@ -97,10 +104,12 @@
                       (let [ctx-id (ctx/context-put! batch-result
                                                      :tags #{"async-batch" (str "batch:" batch-id)}
                                                      :ttl-ms ttl-ms)]
-                        (swap! batches update batch-id assoc
-                               :status        "completed"
-                               :result-ctx-id ctx-id
-                               :completed-at  (now-ms))
+                        (when-let [current (bget batches batch-id)]
+                          (bput! batches batch-id
+                                 (assoc current
+                                        :status        "completed"
+                                        :result-ctx-id ctx-id
+                                        :completed-at  (now-ms))))
                         (log/info "[multi-async] Batch completed" batch-id "ctx-id:" ctx-id)
                         ctx-id)))
 
@@ -108,10 +117,12 @@
   "Mark a batch as failed with error details.
    Called from within the batch future on exception."
   [batch-id error-msg]
-  (swap! batches update batch-id assoc
-         :status       "failed"
-         :error        error-msg
-         :completed-at (now-ms))
+  (when-let [current (bget batches batch-id)]
+    (bput! batches batch-id
+           (assoc current
+                  :status       "failed"
+                  :error        error-msg
+                  :completed-at (now-ms))))
   (log/error "[multi-async] Batch failed" batch-id "error:" error-msg))
 
 ;; =============================================================================
@@ -150,10 +161,10 @@
                            ;; Only mark as failed if not already cancelled
                            ;; (future-cancel triggers InterruptedException which
                            ;;  would overwrite "cancelled" status without this guard)
-                           (when (= "running" (:status (get @batches batch-id)))
+                           (when (= "running" (:status (bget batches batch-id)))
                              (fail-batch! batch-id (ex-message e)))
                            nil)))]
-      (swap! batches assoc batch-id (make-batch-entry fut ops-count created-at))
+      (bput! batches batch-id (make-batch-entry fut ops-count created-at))
       (log/info "[multi-async] Batch dispatched" batch-id "ops:" ops-count)
       {:batch-id   batch-id
        :status     "running"
@@ -178,7 +189,7 @@
    {:status \"expired\"   :batch-id ... :message \"...\"}
    {:status \"not-found\" :batch-id ...}"
   [batch-id]
-  (if-let [entry (get @batches batch-id)]
+  (if-let [entry (bget batches batch-id)]
     (case (:status entry)
       "running"
       {:status     "running"
@@ -221,15 +232,16 @@
   "List all tracked async batches with their status.
    Returns a vector of batch summary maps (without :future refs)."
   []
-  (mapv (fn [[batch-id {:keys [status ops created-at completed-at error]}]]
-          (cond-> {:batch-id   batch-id
-                   :status     status
-                   :ops        ops
-                   :created-at created-at}
-            completed-at      (assoc :completed-at completed-at)
-            (= "running" status) (assoc :elapsed-ms (- (now-ms) created-at))
-            error             (assoc :error error)))
-        @batches))
+  (mapv (fn [[batch-id entry]]
+          (let [data (:data entry)]
+            (cond-> {:batch-id   batch-id
+                     :status     (:status data)
+                     :ops        (:ops data)
+                     :created-at (:created-at data)}
+              (:completed-at data)        (assoc :completed-at (:completed-at data))
+              (= "running" (:status data)) (assoc :elapsed-ms (- (now-ms) (:created-at data)))
+              (:error data)               (assoc :error (:error data)))))
+        @(:atom batches)))
 
 ;; =============================================================================
 ;; Public API: Cancel
@@ -243,13 +255,14 @@
    {:cancelled false :batch-id ... :reason \"not-running\"} — terminal state
    {:cancelled false :batch-id ... :reason \"not-found\"}   — invalid id"
   [batch-id]
-  (if-let [entry (get @batches batch-id)]
+  (if-let [entry (bget batches batch-id)]
     (if (= "running" (:status entry))
       (do
         (future-cancel (:future entry))
-        (swap! batches update batch-id assoc
-               :status       "cancelled"
-               :completed-at (now-ms))
+        (bput! batches batch-id
+               (assoc entry
+                      :status       "cancelled"
+                      :completed-at (now-ms)))
         (log/info "[multi-async] Batch cancelled" batch-id)
         {:cancelled true :batch-id batch-id})
       {:cancelled false :batch-id batch-id :reason "not-running"})
@@ -264,23 +277,27 @@
    expired from context-store. Returns count of entries purged from registry."
   []
   (let [terminal #{"completed" "failed" "cancelled"}
+        raw-entries @(:atom batches)
         to-purge (filterv (fn [[_id entry]]
-                            (and (terminal (:status entry))
-                                 (if-let [ctx-id (:result-ctx-id entry)]
-                                   (nil? (ctx/context-get ctx-id))
-                                   true)))
-                          @batches)
+                            (let [data (:data entry)]
+                              (and (terminal (:status data))
+                                   (if-let [ctx-id (:result-ctx-id data)]
+                                     (nil? (ctx/context-get ctx-id))
+                                     true))))
+                          raw-entries)
         ids      (mapv first to-purge)]
     (when (seq ids)
-      (swap! batches #(apply dissoc % ids))
+      (bounded-swap! batches #(apply dissoc % ids))
       (log/info "[multi-async] GC purged" (count ids) "terminal batches"))
     (count ids)))
 
 (defn reset-all!
   "Cancel all in-flight futures and clear batch registry. For testing."
   []
-  (doseq [[_ {:keys [future]}] @batches]
-    (when (and future (not (future-done? future)))
-      (future-cancel future)
-      (try (deref future 100 nil) (catch Exception _))))
-  (reset! batches {}))
+  (doseq [[_ entry] @(:atom batches)]
+    (let [data (:data entry)
+          fut (:future data)]
+      (when (and fut (not (future-done? fut)))
+        (future-cancel fut)
+        (try (deref fut 100 nil) (catch Exception _)))))
+  (bclear! batches))

@@ -10,7 +10,8 @@
             [hive-mcp.agent.context :as ctx]
             [clojure.string :as str]
             [taoensso.timbre :as log]
-            [hive-mcp.telemetry.prometheus :as prom]))
+            [hive-mcp.telemetry.prometheus :as prom]
+            [hive-dsl.bounded-atom :refer [bclear!]]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -171,7 +172,7 @@
                   killed (filter :success results)
                   failed (remove :success results)]
               (when (every? :success results)
-                (reset! hivemind/agent-registry {}))
+                (bclear! hivemind/agent-registry))
               (prom/set-lings-active! (max 0 (- (count slave-ids) (count killed))))
               (core/mcp-success {:killed (count killed)
                                  :failed (count failed)

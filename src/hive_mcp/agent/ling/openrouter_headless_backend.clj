@@ -1,9 +1,8 @@
 (ns hive-mcp.agent.ling.openrouter-headless-backend
   "OpenRouter headless backend implementing IHeadlessBackend.
 
-   Stays in hive-mcp (not provider-specific — serves as multi-model
-   headless ling backend via OpenRouter API). Registers as :openrouter
-   in the headless-registry during server init.
+   Streaming-only backend for multi-model headless lings via the
+   OpenRouter API.
 
    Refactored from openrouter-strategy.clj to implement the addon
    protocol pattern instead of directly implementing ILingStrategy."

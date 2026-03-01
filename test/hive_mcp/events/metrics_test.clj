@@ -1,28 +1,34 @@
 (ns hive-mcp.events.metrics-test
-  "Tests for metrics interceptor - POC-15.
+  "Tests for metrics interceptor - POC-15 + E2 bounded metrics buffer.
 
    Validates:
    - Per-event-type dispatch counting
    - Handler execution time measurement
-   - get-metrics and reset-metrics! functions"
+   - get-metrics and reset-metrics! functions
+   - Bounded timings buffers (FIFO eviction)
+   - Configurable buffer limits
+   - Buffer metadata in get-metrics
+   - Dropped counter tracking"
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [clojure.string :as str]
             [hive-mcp.events.core :as ev]
             [hive-mcp.telemetry.prometheus :as prom]))
 
 ;; =============================================================================
-;; Test fixture: Reset metrics before each test
+;; Test fixture: Reset metrics and config before each test
 ;; =============================================================================
 
 (defn reset-metrics-fixture [f]
   (ev/reset-metrics!)
+  (ev/configure-metrics! {:max-timings 1000 :max-timings-per-type 200})
   (f)
-  (ev/reset-metrics!))
+  (ev/reset-metrics!)
+  (ev/configure-metrics! {:max-timings 1000 :max-timings-per-type 200}))
 
 (use-fixtures :each reset-metrics-fixture)
 
 ;; =============================================================================
-;; POC-15: Metrics interceptor tests
+;; POC-15: Metrics interceptor tests (original, preserved)
 ;; =============================================================================
 
 (deftest metrics-interceptor-exists
@@ -41,7 +47,11 @@
       (is (contains? m :errors) "Should have :errors")
       (is (contains? m :avg-dispatch-ms) "Should have :avg-dispatch-ms")
       (is (contains? m :avg-by-type) "Should have :avg-by-type")
-      (is (contains? m :timings-count) "Should have :timings-count"))))
+      (is (contains? m :timings-count) "Should have :timings-count")
+      ;; E2: buffer metadata
+      (is (contains? m :timings-buffer-size) "Should have :timings-buffer-size")
+      (is (contains? m :timings-buffer-capacity) "Should have :timings-buffer-capacity")
+      (is (contains? m :timings-dropped) "Should have :timings-dropped"))))
 
 (deftest reset-metrics-clears-all-counters
   (testing "reset-metrics! clears all metrics to initial state"
@@ -54,7 +64,10 @@
         (is (= 0 (:effects-executed after)))
         (is (= 0 (:errors after)))
         (is (= 0 (:timings-count after)))
-        (is (= {} (:avg-by-type after)))))))
+        (is (= {} (:avg-by-type after)))
+        ;; E2: dropped counter resets too
+        (is (= 0 (:timings-dropped after))
+            "reset-metrics! should clear dropped counter")))))
 
 (deftest metrics-interceptor-tracks-total-count
   (testing "metrics interceptor increments total event count"
@@ -129,8 +142,10 @@
           ":slow-event should have higher average time than :fast-event"))))
 
 (deftest metrics-interceptor-rolling-window
-  (testing "metrics uses rolling window of 100 samples"
+  (testing "metrics uses bounded rolling window (default 1000 global, 200 per-type)"
     (ev/reset-metrics!)
+    ;; Use small limits for this test
+    (ev/configure-metrics! {:max-timings 100 :max-timings-per-type 100})
     (let [before-fn (:before ev/metrics)
           after-fn (:after ev/metrics)
           ;; Dispatch 150 events
@@ -219,3 +234,254 @@
           "request-duration-seconds histogram present")
       (is (str/includes? metrics "tool=\"event-dispatch-prom-duration-test\"")
           "tool label with event-dispatch prefix recorded"))))
+
+;; =============================================================================
+;; E2: Bounded metrics buffer tests
+;; =============================================================================
+
+(deftest timings-capped-at-configured-max
+  (testing "global :timings vector is capped at :max-timings"
+    (ev/reset-metrics!)
+    (ev/configure-metrics! {:max-timings 50 :max-timings-per-type 200})
+    (let [before-fn (:before ev/metrics)
+          after-fn (:after ev/metrics)]
+      (dotimes [_ 80]
+        (let [ctx {:coeffects {:event [:cap-test {}]}
+                   :effects {}
+                   :queue []
+                   :stack []}]
+          (-> ctx before-fn after-fn)))
+      (let [m (ev/get-metrics)]
+        (is (= 50 (:timings-count m))
+            "Global timings should be capped at 50")
+        (is (= 50 (:timings-buffer-size m))
+            "Buffer size should match timings count")
+        (is (= 50 (:timings-buffer-capacity m))
+            "Buffer capacity should reflect configured max")))))
+
+(deftest per-type-timings-capped-at-configured-max
+  (testing "per-type timings are capped at :max-timings-per-type"
+    (ev/reset-metrics!)
+    (ev/configure-metrics! {:max-timings 5000 :max-timings-per-type 30})
+    (let [before-fn (:before ev/metrics)
+          after-fn (:after ev/metrics)]
+      (dotimes [_ 60]
+        (let [ctx {:coeffects {:event [:type-cap-test {}]}
+                   :effects {}
+                   :queue []
+                   :stack []}]
+          (-> ctx before-fn after-fn)))
+      (let [m (ev/get-metrics)
+            type-timings (get-in m [:timings-by-type :type-cap-test])]
+        (is (= 30 (count type-timings))
+            "Per-type timings should be capped at 30")
+        ;; Global should have all 60 since cap is 5000
+        (is (= 60 (:timings-count m))
+            "Global timings should have all 60 (cap is 5000)")))))
+
+(deftest oldest-timings-dropped-first-fifo
+  (testing "oldest timings are dropped first (FIFO order preserved)"
+    (ev/reset-metrics!)
+    (ev/configure-metrics! {:max-timings 5 :max-timings-per-type 5})
+    (let [;; We need to inject known timing values directly to test FIFO order.
+          ;; Use the metrics atom directly via the var for testing.
+          metrics-atom (var-get #'hive-mcp.events.core/*metrics)]
+      ;; Manually set up timings with known values [1.0 2.0 3.0 4.0 5.0]
+      (swap! metrics-atom assoc
+             :timings [1.0 2.0 3.0 4.0 5.0]
+             :timings-by-type {:test-event [1.0 2.0 3.0 4.0 5.0]})
+      ;; Now dispatch one more event through the interceptor to add a new timing
+      (let [before-fn (:before ev/metrics)
+            after-fn (:after ev/metrics)
+            ctx {:coeffects {:event [:test-event {}]}
+                 :effects {}
+                 :queue []
+                 :stack []}
+            ctx-after (-> ctx before-fn after-fn)
+            m (ev/get-metrics)
+            global-timings (:timings m)
+            type-timings (get-in m [:timings-by-type :test-event])]
+        ;; Oldest (1.0) should be gone, newest should be at the end
+        (is (= 5 (count global-timings))
+            "Global timings should remain at cap 5")
+        (is (= 5 (count type-timings))
+            "Per-type timings should remain at cap 5")
+        ;; First element should no longer be 1.0 (it was dropped)
+        (is (not= 1.0 (first global-timings))
+            "Oldest timing (1.0) should have been evicted from global")
+        (is (= 2.0 (first global-timings))
+            "Second-oldest (2.0) should now be first in global")
+        (is (not= 1.0 (first type-timings))
+            "Oldest timing (1.0) should have been evicted from per-type")
+        (is (= 2.0 (first type-timings))
+            "Second-oldest (2.0) should now be first in per-type")))))
+
+(deftest averages-correct-on-bounded-window
+  (testing "averages are computed correctly on the bounded window"
+    (ev/reset-metrics!)
+    (ev/configure-metrics! {:max-timings 5 :max-timings-per-type 5})
+    (let [metrics-atom (var-get #'hive-mcp.events.core/*metrics)]
+      ;; Set known timing values
+      (swap! metrics-atom assoc
+             :timings [10.0 20.0 30.0 40.0 50.0]
+             :timings-by-type {:avg-event [10.0 20.0 30.0 40.0 50.0]}
+             :events-dispatched 5)
+      (let [m (ev/get-metrics)]
+        (is (= 30.0 (:avg-dispatch-ms m))
+            "Average should be (10+20+30+40+50)/5 = 30.0")
+        (is (= 30.0 (get-in m [:avg-by-type :avg-event]))
+            "Per-type average should be 30.0")))))
+
+(deftest configure-metrics-changes-limits
+  (testing "configure-metrics! changes buffer limits"
+    (ev/reset-metrics!)
+    ;; Set small limits
+    (ev/configure-metrics! {:max-timings 10 :max-timings-per-type 5})
+    (let [before-fn (:before ev/metrics)
+          after-fn (:after ev/metrics)]
+      ;; Fill beyond limits
+      (dotimes [_ 20]
+        (let [ctx {:coeffects {:event [:config-test {}]}
+                   :effects {}
+                   :queue []
+                   :stack []}]
+          (-> ctx before-fn after-fn)))
+      (let [m (ev/get-metrics)]
+        (is (= 10 (:timings-count m))
+            "Global timings should be capped at new limit 10")
+        (is (= 10 (:timings-buffer-capacity m))
+            "Capacity should reflect new limit")
+        (is (= 5 (count (get-in m [:timings-by-type :config-test])))
+            "Per-type timings should be capped at new limit 5")))))
+
+(deftest get-metrics-includes-buffer-metadata
+  (testing "get-metrics includes buffer size, capacity, and dropped count"
+    (ev/reset-metrics!)
+    (ev/configure-metrics! {:max-timings 10 :max-timings-per-type 200})
+    (let [before-fn (:before ev/metrics)
+          after-fn (:after ev/metrics)]
+      ;; Dispatch 15 events to cause 5 drops in global timings
+      (dotimes [_ 15]
+        (let [ctx {:coeffects {:event [:meta-test {}]}
+                   :effects {}
+                   :queue []
+                   :stack []}]
+          (-> ctx before-fn after-fn)))
+      (let [m (ev/get-metrics)]
+        (is (= 10 (:timings-buffer-size m))
+            "Buffer size should be 10 (at capacity)")
+        (is (= 10 (:timings-buffer-capacity m))
+            "Buffer capacity should be 10")
+        (is (pos? (:timings-dropped m))
+            "Dropped count should be positive after overflow")
+        ;; 15 events dispatched, global cap is 10, so 5 global drops.
+        ;; Per-type cap is 200, so 0 type drops.
+        (is (= 5 (:timings-dropped m))
+            "Should have dropped exactly 5 timings from global buffer")))))
+
+(deftest timings-dropped-accumulates
+  (testing "timings-dropped counter accumulates across multiple overflows"
+    (ev/reset-metrics!)
+    (ev/configure-metrics! {:max-timings 5 :max-timings-per-type 3})
+    (let [before-fn (:before ev/metrics)
+          after-fn (:after ev/metrics)]
+      ;; First batch: 10 events
+      (dotimes [_ 10]
+        (let [ctx {:coeffects {:event [:accum-test {}]}
+                   :effects {}
+                   :queue []
+                   :stack []}]
+          (-> ctx before-fn after-fn)))
+      (let [m1 (ev/get-metrics)
+            dropped-1 (:timings-dropped m1)]
+        ;; 10 events, global cap 5 -> 5 global drops
+        ;; 10 events, per-type cap 3 -> 7 per-type drops
+        ;; Total: 12 drops
+        (is (= 12 dropped-1)
+            "Should have 12 drops after first batch (5 global + 7 per-type)")
+
+        ;; Second batch: 5 more events
+        (dotimes [_ 5]
+          (let [ctx {:coeffects {:event [:accum-test {}]}
+                     :effects {}
+                     :queue []
+                     :stack []}]
+            (-> ctx before-fn after-fn)))
+        (let [m2 (ev/get-metrics)
+              dropped-2 (:timings-dropped m2)]
+          ;; 5 more events, both buffers already full
+          ;; 5 global drops + 5 per-type drops = 10 more
+          (is (= (+ dropped-1 10) dropped-2)
+              "Dropped counter should accumulate across batches"))))))
+
+(deftest reset-metrics-clears-dropped-counter
+  (testing "reset-metrics! clears the dropped counter"
+    (ev/reset-metrics!)
+    (ev/configure-metrics! {:max-timings 5 :max-timings-per-type 5})
+    (let [before-fn (:before ev/metrics)
+          after-fn (:after ev/metrics)]
+      ;; Cause some drops
+      (dotimes [_ 20]
+        (let [ctx {:coeffects {:event [:reset-drop-test {}]}
+                   :effects {}
+                   :queue []
+                   :stack []}]
+          (-> ctx before-fn after-fn)))
+      (is (pos? (:timings-dropped (ev/get-metrics)))
+          "Should have drops before reset")
+      ;; Reset
+      (ev/reset-metrics!)
+      (let [m (ev/get-metrics)]
+        (is (= 0 (:timings-dropped m))
+            "Dropped counter should be 0 after reset")
+        (is (= 0 (:timings-count m))
+            "Timings should be empty after reset")
+        (is (= {} (:timings-by-type m))
+            "Per-type timings should be empty after reset")))))
+
+(deftest timings-remain-vectors
+  (testing "bounded timings remain persistent vectors (not lazy seqs)"
+    (ev/reset-metrics!)
+    (ev/configure-metrics! {:max-timings 5 :max-timings-per-type 5})
+    (let [before-fn (:before ev/metrics)
+          after-fn (:after ev/metrics)]
+      ;; Overflow the buffers
+      (dotimes [_ 10]
+        (let [ctx {:coeffects {:event [:vec-test {}]}
+                   :effects {}
+                   :queue []
+                   :stack []}]
+          (-> ctx before-fn after-fn)))
+      (let [m (ev/get-metrics)]
+        (is (vector? (:timings m))
+            "Global timings should be a vector after overflow")
+        (is (vector? (get-in m [:timings-by-type :vec-test]))
+            "Per-type timings should be a vector after overflow")))))
+
+(deftest multiple-event-types-bounded-independently
+  (testing "different event types have independent per-type bounds"
+    (ev/reset-metrics!)
+    (ev/configure-metrics! {:max-timings 5000 :max-timings-per-type 10})
+    (let [before-fn (:before ev/metrics)
+          after-fn (:after ev/metrics)]
+      ;; Dispatch 20 of type-a, 5 of type-b
+      (dotimes [_ 20]
+        (let [ctx {:coeffects {:event [:type-a {}]}
+                   :effects {}
+                   :queue []
+                   :stack []}]
+          (-> ctx before-fn after-fn)))
+      (dotimes [_ 5]
+        (let [ctx {:coeffects {:event [:type-b {}]}
+                   :effects {}
+                   :queue []
+                   :stack []}]
+          (-> ctx before-fn after-fn)))
+      (let [m (ev/get-metrics)]
+        (is (= 10 (count (get-in m [:timings-by-type :type-a])))
+            "type-a should be capped at 10")
+        (is (= 5 (count (get-in m [:timings-by-type :type-b])))
+            "type-b should have all 5 (under cap)")
+        ;; Global should have all 25 since cap is 5000
+        (is (= 25 (:timings-count m))
+            "Global timings should have all 25")))))

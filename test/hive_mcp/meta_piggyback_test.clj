@@ -9,14 +9,15 @@
             [hive-mcp.server.routes :as routes]
             [hive-mcp.tools.core :as tools-core]
             [hive-mcp.channel.piggyback :as piggyback]
-            [hive-mcp.hivemind.core :as hivemind]))
+            [hive-mcp.hivemind.core :as hivemind]
+            [hive-dsl.bounded-atom :refer [bclear!]]))
 
 ;; =============================================================================
 ;; Test Fixtures
 ;; =============================================================================
 
 (defn reset-state-fixture [f]
-  (reset! hivemind/agent-registry {})
+  (bclear! hivemind/agent-registry)
   (piggyback/reset-all-cursors!)
   (f))
 

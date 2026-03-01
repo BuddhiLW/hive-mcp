@@ -8,7 +8,8 @@
             [hive-mcp.agent.context :as ctx]
             [clojure.string :as str]
             [clojure.java.io :as io]
-            [taoensso.timbre :as log]))
+            [taoensso.timbre :as log]
+            [hive-dsl.bounded-atom :refer [bput! bget bounded-swap! bkeys]]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -36,7 +37,7 @@
           (try
             (let [resolved-path (:resolved-path path-result)
                   proposal (compute/create-diff-proposal (assoc params :file_path resolved-path))]
-              (swap! state/pending-diffs assoc (:id proposal) proposal)
+              (bput! state/pending-diffs (:id proposal) proposal)
               (log/info "Diff proposed" {:id (:id proposal)
                                          :file resolved-path
                                          :original-path file_path
@@ -56,7 +57,8 @@
   [{:keys [drone_id]}]
   (log/debug "list_proposed_diffs called" {:drone_id drone_id})
   (try
-    (let [all-diffs (vals @state/pending-diffs)
+    (let [;; Iterate raw bounded-atom entries, extracting :data from each
+          all-diffs (mapv :data (vals @(:atom state/pending-diffs)))
           filtered (if (str/blank? drone_id)
                      all-diffs
                      (filter #(= drone_id (:drone-id %)) all-diffs))
@@ -84,20 +86,20 @@
       (log/warn "apply_diff missing diff_id")
       (mcp-error-json "Missing required field: diff_id"))
 
-    (not (contains? @state/pending-diffs diff_id))
+    (nil? (bget state/pending-diffs diff_id))
     (do
       (log/warn "apply_diff diff not found" {:diff_id diff_id})
       (mcp-error-json (str "Diff not found: " diff_id)))
 
     :else
-    (let [{:keys [file-path old-content new-content]} (get @state/pending-diffs diff_id)
+    (let [{:keys [file-path old-content new-content]} (bget state/pending-diffs diff_id)
           file-exists? (.exists (io/file file-path))
           creating-new-file? (and (str/blank? old-content) (not file-exists?))]
       (cond
         (str/blank? new-content)
         (do
           (log/warn "apply_diff blocked: empty new_content" {:diff_id diff_id :file file-path})
-          (swap! state/pending-diffs dissoc diff_id)
+          (bounded-swap! state/pending-diffs dissoc diff_id)
           (mcp-error-json "Cannot apply diff: new_content is empty or whitespace-only. This typically indicates the LLM returned an empty response."))
 
         creating-new-file?
@@ -106,7 +108,7 @@
             (when (and parent (not (.exists parent)))
               (.mkdirs parent)))
           (spit file-path new-content)
-          (swap! state/pending-diffs dissoc diff_id)
+          (bounded-swap! state/pending-diffs dissoc diff_id)
           (log/info "New file created" {:id diff_id :file file-path})
           (mcp-json {:id diff_id
                      :status "applied"
@@ -139,7 +141,7 @@
               :else
               (do
                 (spit file-path (str/replace-first current-content old-content new-content))
-                (swap! state/pending-diffs dissoc diff_id)
+                (bounded-swap! state/pending-diffs dissoc diff_id)
                 (log/info "Diff applied" {:id diff_id :file file-path})
                 (mcp-json {:id diff_id
                            :status "applied"
@@ -159,14 +161,14 @@
       (log/warn "reject_diff missing diff_id")
       (mcp-error-json "Missing required field: diff_id"))
 
-    (not (contains? @state/pending-diffs diff_id))
+    (nil? (bget state/pending-diffs diff_id))
     (do
       (log/warn "reject_diff diff not found" {:diff_id diff_id})
       (mcp-error-json (str "Diff not found: " diff_id)))
 
     :else
-    (let [{:keys [file-path drone-id]} (get @state/pending-diffs diff_id)]
-      (swap! state/pending-diffs dissoc diff_id)
+    (let [{:keys [file-path drone-id]} (bget state/pending-diffs diff_id)]
+      (bounded-swap! state/pending-diffs dissoc diff_id)
       (log/info "Diff rejected" {:id diff_id :file file-path :reason reason})
       (mcp-json {:id diff_id
                  :status "rejected"
@@ -183,11 +185,11 @@
     (str/blank? diff_id)
     (mcp-error-json "Missing required field: diff_id")
 
-    (not (contains? @state/pending-diffs diff_id))
+    (nil? (bget state/pending-diffs diff_id))
     (mcp-error-json (str "Diff not found: " diff_id))
 
     :else
-    (let [diff (get @state/pending-diffs diff_id)
+    (let [diff (bget state/pending-diffs diff_id)
           formatted-diff (compute/format-hunks-as-unified (:hunks diff) (:file-path diff))]
       (mcp-json (-> diff
                     (update :created-at str)

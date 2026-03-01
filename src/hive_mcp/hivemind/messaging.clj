@@ -11,6 +11,7 @@
             [hive-mcp.channel.piggyback :as piggyback]
             [hive-mcp.protocols.event-backbone :as eb]
             [hive-mcp.protocols.delivery-channel :as dc]
+            [hive-mcp.protocols.vessel :as vessel]
             [hive-mcp.swarm.protocol :as proto]
             [hive-mcp.swarm.datascript.registry :as registry]
             [hive-mcp.swarm.datascript.queries :as queries]
@@ -76,12 +77,13 @@
         resolved-slave-id (or (:slave/id resolved-slave) agent-id)
         explicit-project-id (:project-id data)
         directory (:directory data)
-        slave-cwd (:slave/cwd resolved-slave)
-        ;; Resolution: slave-cwd (from DataScript, set at spawn) takes precedence
-        ;; over directory (from tool handler, may be MCP server's cwd).
-        ;; This ensures lings always resolve to their own project scope.
+        ;; IVessel resolution: query all registered vessels for agent context.
+        ;; Vessel delegates to DataScript (slave/cwd, slave/project-id) — the
+        ;; formal answer to the project-id coupling bug (vessel owns context).
+        vessel-ctx (vessel/resolve-agent-context resolved-slave-id)
+        ;; Priority: explicit > vessel > directory > global
         project-id (or explicit-project-id
-                       (when slave-cwd (mem-scope/get-current-project-id slave-cwd))
+                       (:project-id vessel-ctx)
                        (when directory (mem-scope/get-current-project-id directory))
                        "global")
         message (cond-> {:event-type event-type

@@ -1,6 +1,8 @@
 (ns hive-mcp.channel.memory-piggyback
   "Memory piggyback channel for incremental delivery of axioms and conventions via cursor+budget drain."
-  (:require [taoensso.timbre :as log]))
+  (:require [taoensso.timbre :as log]
+            [hive-dsl.bounded-atom :refer [bounded-atom bput! bget bounded-swap!
+                                           bclear! register-sweepable!]]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -9,9 +11,14 @@
   "Max chars per drain batch."
   32000)
 
+;; gc-fix-3: buffers — LRU eviction, 200 entries, 30min TTL
+;; Piggyback buffers are ephemeral per-agent state. Orphaned buffers waste memory.
 (defonce ^{:doc "Map of [agent-id project-id] -> buffer state."}
   buffers
-  (atom {}))
+  (bounded-atom {:max-entries 200
+                 :ttl-ms 1800000    ;; 30 minutes
+                 :eviction-policy :lru}))
+(register-sweepable! buffers :piggyback-buffers)
 
 (defn- format-entry
   "Convert a catchup entry to compact piggyback format."
@@ -28,10 +35,10 @@
    (enqueue! agent-id project-id entries nil))
   ([agent-id project-id entries context-refs]
    (let [buffer-key [(or agent-id "coordinator") (or project-id "global")]]
-     (if (get @buffers buffer-key)
+     (if (bget buffers buffer-key)
        (log/debug "memory-piggyback: buffer already exists for" buffer-key "- skipping enqueue")
        (let [formatted (mapv format-entry entries)]
-         (swap! buffers assoc buffer-key
+         (bput! buffers buffer-key
                 (cond-> {:entries formatted
                          :cursor 0
                          :done false
@@ -45,7 +52,7 @@
   "Drain next batch of entries within char budget for an agent+project."
   [agent-id project-id]
   (let [buffer-key [(or agent-id "coordinator") (or project-id "global")]
-        buf (get @buffers buffer-key)]
+        buf (bget buffers buffer-key)]
     (when (and buf (not (:done buf)))
       (let [{:keys [entries cursor seq-num]} buf
             total (count entries)
@@ -69,8 +76,8 @@
             delivered new-cursor
             remaining (- total new-cursor)]
         (if is-done
-          (swap! buffers dissoc buffer-key)
-          (swap! buffers assoc buffer-key
+          (bounded-swap! buffers dissoc buffer-key)
+          (bput! buffers buffer-key
                  {:entries entries
                   :cursor new-cursor
                   :done false
@@ -88,19 +95,19 @@
   "Check if an agent+project has undrained memory entries."
   [agent-id project-id]
   (let [buffer-key [(or agent-id "coordinator") (or project-id "global")]
-        buf (get @buffers buffer-key)]
+        buf (bget buffers buffer-key)]
     (and (some? buf) (not (:done buf)))))
 
 (defn clear-buffer!
   "Clear buffer for a specific agent+project. For testing."
   [agent-id project-id]
   (let [buffer-key [(or agent-id "coordinator") (or project-id "global")]]
-    (swap! buffers dissoc buffer-key)))
+    (bounded-swap! buffers dissoc buffer-key)))
 
 (defn reset-all!
   "Reset all buffers. For testing."
   []
-  (clojure.core/reset! buffers {}))
+  (bclear! buffers))
 
 (defn adopt-buffer!
   "Adopt an orphaned buffer from a previous coordinator instance.
@@ -112,21 +119,21 @@
   [new-agent-id project-id]
   (let [new-key [(or new-agent-id "coordinator") (or project-id "global")]
         ;; Find orphaned coordinator buffer for same project
-        donor (->> @buffers
-                   (filter (fn [[[aid proj] buf]]
-                             (and (= proj (or project-id "global"))
-                                  (not= aid new-agent-id)
-                                  (clojure.string/starts-with? (str aid) "coordinator:")
-                                  (not (:done buf)))))
+        donor (->> @(:atom buffers)
+                   (filter (fn [[[aid proj] entry]]
+                             (let [buf (:data entry)]
+                               (and (= proj (or project-id "global"))
+                                    (not= aid new-agent-id)
+                                    (clojure.string/starts-with? (str aid) "coordinator:")
+                                    (not (:done buf))))))
                    first)]
-    (when-let [[donor-key donor-buf] donor]
-      (swap! buffers (fn [bufs]
-                       (-> bufs
-                           (dissoc donor-key)
-                           (assoc new-key donor-buf))))
-      (log/info "memory-piggyback: adopted buffer from" donor-key "→" new-key
-                "(" (- (count (:entries donor-buf)) (:cursor donor-buf)) "entries remaining)")
-      true)))
+    (when-let [[donor-key donor-entry] donor]
+      (let [donor-buf (:data donor-entry)]
+        (bounded-swap! buffers dissoc donor-key)
+        (bput! buffers new-key donor-buf)
+        (log/info "memory-piggyback: adopted buffer from" donor-key "->" new-key
+                  "(" (- (count (:entries donor-buf)) (:cursor donor-buf)) "entries remaining)")
+        true))))
 
 (defn evict-orphaned-buffers!
   "Evict coordinator buffers that have no matching active caller.
@@ -137,13 +144,13 @@
 
    Returns count of evicted buffers."
   [active-caller-id]
-  (let [orphaned (->> @buffers
-                      (filter (fn [[[aid _proj] _buf]]
+  (let [orphaned (->> @(:atom buffers)
+                      (filter (fn [[[aid _proj] _entry]]
                                 (and (clojure.string/starts-with? (str aid) "coordinator:")
                                      (not (clojure.string/starts-with? (str aid) (str active-caller-id "-"))))))
                       (map first)
                       vec)]
     (when (seq orphaned)
-      (swap! buffers #(apply dissoc % orphaned))
+      (bounded-swap! buffers #(apply dissoc % orphaned))
       (log/info "memory-piggyback: evicted" (count orphaned) "orphaned buffers:" orphaned))
     (count orphaned)))

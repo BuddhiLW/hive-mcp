@@ -8,7 +8,7 @@
    Tests the FULL flow from release-claim! through the event system
    to hivemind notification:
 
-   release-claim! → :claim/file-released → query waiting → :claim/notify-waiting → targeted shout
+   release-claim! -> :claim/file-released -> query waiting -> :claim/notify-waiting -> targeted shout
 
    These tests verify the complete integration, not just individual handlers.
 
@@ -26,7 +26,8 @@
             [hive-mcp.swarm.datascript :as ds]
             [hive-mcp.swarm.datascript.connection :as conn]
             [hive-mcp.hivemind.core :as hivemind]
-            [hive-mcp.hivemind.state :as hm-state]))
+            [hive-mcp.hivemind.state :as hm-state]
+            [hive-dsl.bounded-atom :refer [bounded-atom bget bcount bclear!]]))
 
 ;; =============================================================================
 ;; Test Fixtures
@@ -38,7 +39,10 @@
    reset-conn!/clear-agent-registry! are guarded by when-not-coordinator."
   [f]
   (let [test-conn (conn/create-conn)
-        test-registry (atom {})]
+        ;; gc-fix-3: use bounded-atom for test registry to match production API
+        test-registry (bounded-atom {:max-entries 100
+                                     :ttl-ms 7200000
+                                     :eviction-policy :lru})]
     (with-redefs [conn/get-conn (fn [] test-conn)
                   conn/ensure-conn (fn [] test-conn)
                   hm-state/agent-registry test-registry]
@@ -71,7 +75,9 @@
 (defn get-agent-messages
   "Get messages for an agent from hivemind registry."
   [agent-id]
-  (get-in @hivemind/agent-registry [agent-id :messages]))
+  ;; bounded-atom: use bget to access wrapped entry data
+  (let [agent-data (bget hivemind/agent-registry agent-id)]
+    (:messages agent-data)))
 
 (defn find-file-available-message
   "Find a :file-available message for a specific file in agent's messages."
@@ -141,7 +147,8 @@
     (wait-for-async)
 
     ;; Assert: No agents should have file-available messages
-    (is (empty? @hivemind/agent-registry)
+    ;; bounded-atom: use bcount instead of (count @...)
+    (is (= 0 (bcount hivemind/agent-registry))
         "No agents should receive notifications when no one is waiting")))
 
 (deftest no-waiting-lings-completed-tasks-ignored

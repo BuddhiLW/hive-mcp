@@ -15,6 +15,7 @@
    - handlers.kg     - Knowledge Graph (:kg/edge-created, :kg/edge-updated, :kg/edge-removed, :kg/node-promoted)
    - handlers.agora  - Agora events (:agora/turn-dispatched, :agora/timeout, :agora/turn-completed, :agora/dispatch-next, :agora/execute-drone, :agora/debate-started, :agora/stage-transition, :agora/consensus)
    - handlers.saa    - SAA workflow (:saa/started, :saa/phase-complete, :saa/completed, :saa/failed)
+   - handlers.lifecycle - GC lifecycle (:lifecycle/sweep)
 
    ## Usage
    ```clojure
@@ -65,9 +66,10 @@
    - :agora/stage-transition  - Research -> debate stage transition
    - :agora/consensus         - Crystallize debate result to memory
    - :saa/started             - SAA workflow initiated
-   - :saa/phase-complete      - SAA phase transition (Silence→Abstract→Act)
+   - :saa/phase-complete      - SAA phase transition (Silence->Abstract->Act)
    - :saa/completed           - SAA workflow finished successfully
-   - :saa/failed              - SAA workflow error"
+   - :saa/failed              - SAA workflow error
+   - :lifecycle/sweep         - Bounded atom GC sweep (gc-fix-4)"
 
   (:require [hive-mcp.events.handlers.task :as task]
             [hive-mcp.events.handlers.ling :as ling]
@@ -83,7 +85,8 @@
             [hive-mcp.events.handlers.kg :as kg]
             [hive-mcp.events.handlers.agora :as agora]
             [hive-mcp.events.handlers.saa :as saa]
-            [hive-mcp.events.handlers.memory-read :as memory-read]))
+            [hive-mcp.events.handlers.memory-read :as memory-read]
+            [hive-mcp.events.handlers.lifecycle :as lifecycle]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -114,6 +117,7 @@
    - kg/register-handlers!       - Knowledge Graph edges
    - agora/register-handlers!    - Agora events
    - saa/register-handlers!      - SAA workflow lifecycle
+   - lifecycle/register-handlers! - GC lifecycle sweep (gc-fix-4)
 
    Returns true if handlers were registered, false if already registered."
   []
@@ -134,9 +138,10 @@
     (agora/register-handlers!)
     (saa/register-handlers!)
     (memory-read/register-handlers!)
+    (lifecycle/register-handlers!)
 
     (reset! *registered true)
-    (println "[hive-events] Handlers registered: :task/complete :task/shout-complete :git/commit-modified :ling/started :ling/completed :ling/ready-for-wrap :session/end :session/wrap :kanban/sync :kanban/done :crystal/wrap-request :crystal/wrap-notify :wave/start :wave/item-done :wave/complete :validated-wave/start :validated-wave/iteration-start :validated-wave/success :validated-wave/partial :validated-wave/retry :drone/started :drone/completed :drone/failed :claim/file-released :claim/notify-waiting :system/error :hot/reload-start :hot/reload-success :file/changed :kg/edge-created :kg/edge-updated :kg/edge-removed :kg/node-promoted :agora/turn-dispatched :agora/timeout :agora/turn-completed :agora/dispatch-next :agora/execute-drone :agora/debate-started :agora/stage-transition :agora/consensus :saa/started :saa/phase-complete :saa/completed :saa/failed :memory/query :memory/search :memory/get")
+    (println "[hive-events] Handlers registered: :task/complete :task/shout-complete :git/commit-modified :ling/started :ling/completed :ling/ready-for-wrap :session/end :session/wrap :kanban/sync :kanban/done :crystal/wrap-request :crystal/wrap-notify :wave/start :wave/item-done :wave/complete :validated-wave/start :validated-wave/iteration-start :validated-wave/success :validated-wave/partial :validated-wave/retry :drone/started :drone/completed :drone/failed :claim/file-released :claim/notify-waiting :system/error :hot/reload-start :hot/reload-success :file/changed :kg/edge-created :kg/edge-updated :kg/edge-removed :kg/node-promoted :agora/turn-dispatched :agora/timeout :agora/turn-completed :agora/dispatch-next :agora/execute-drone :agora/debate-started :agora/stage-transition :agora/consensus :saa/started :saa/phase-complete :saa/completed :saa/failed :memory/query :memory/search :memory/get :lifecycle/sweep")
     true))
 
 (defn reset-registration!

@@ -148,13 +148,24 @@
 
    Key priority:
    1. Explicit project_id/project-id
-   2. Derived from directory parameter via scope/get-current-project-id
-   3. Derived from _caller_cwd (bb-mcp's cwd, injected per-request)
-   4. Derived from ctx/current-directory (request context fallback)
-   5. Derived from server's working directory (System/getProperty user.dir)"
+   2. IVessel resolution (vessel owns agent-to-context mapping)
+   3. Derived from directory parameter via scope/get-current-project-id
+   4. Derived from _caller_cwd (bb-mcp's cwd, injected per-request)
+   5. Derived from ctx/current-directory (request context fallback)
+   6. Derived from server's working directory (System/getProperty user.dir)"
   [args]
   (or (:project_id args)
       (:project-id args)
+      ;; IVessel resolution: query vessels for agent context (formal project-id source)
+      (when-let [agent-id (or (:agent_id args) (:agent-id args) (:_caller_id args))]
+        (ctx/request-memoize
+         [:vessel-project-id agent-id]
+         (fn []
+           (try
+             (require 'hive-mcp.protocols.vessel)
+             (when-let [resolve-fn (resolve 'hive-mcp.protocols.vessel/resolve-agent-context)]
+               (:project-id (resolve-fn agent-id)))
+             (catch Exception _ nil)))))
       ;; Derive from directory if present, with caller-cwd, ctx and user.dir fallbacks
       (when-let [dir (or (:directory args)
                          (:_caller_cwd args)

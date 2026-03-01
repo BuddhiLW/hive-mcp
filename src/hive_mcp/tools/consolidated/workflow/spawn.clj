@@ -287,22 +287,107 @@
    :active-before (:active-total active-counts)
    :max-slots (or max-slots 10)})
 
+;; ── Orchestrator Mode ──────────────────────────────────────────────────────
+
+(defn- build-orchestrator-prompt
+  "Build the structured prompt for an orchestrator ling.
+   Bundles all tasks with their pre-gathered context refs."
+  [tasks context-result directory]
+  (let [task-lines (mapv (fn [task]
+                           (let [ctx    (get context-result (:id task))
+                                 summary (or (:summary ctx) "")]
+                             (str "### Task: " (or (:title task) (:id task)) "\n"
+                                  "ID: " (:id task) "\n"
+                                  (when-let [desc (:description task)]
+                                    (str "Description: " desc "\n"))
+                                  (when (seq summary)
+                                    (str "Context:\n" summary "\n"))
+                                  (when-let [refs (:ctx-refs ctx)]
+                                    (str "Context refs: " (pr-str refs) "\n"))
+                                  (when-let [kg-ids (:kg-node-ids ctx)]
+                                    (str "KG seeds: " (pr-str (take 5 kg-ids)) "\n")))))
+                         tasks)]
+    (str "You are the kanban orchestrator for this milestone.\n\n"
+         "## Tasks (" (count tasks) " total)\n\n"
+         (clojure.string/join "\n" task-lines)
+         "\n## Instructions\n"
+         "1. For each task above, spawn a Task subagent (max 3 parallel)\n"
+         "2. Each subagent implements the task using hive MCP tools\n"
+         "3. Collect results, then: kanban batch-update to mark done\n"
+         "4. Check kanban status for milestone progress\n"
+         "5. Loop if more tasks remain\n\n"
+         "Working directory: " (or directory "auto") "\n"
+         "NEVER spawn lings or call forge-strike. Use Task subagents ONLY.\n")))
+
+(defn- spawn-orchestrator!
+  "Spawn a single orchestrator ling with all tasks bundled.
+   The orchestrator uses Task subagents for parallelism."
+  [{:keys [tasks directory model context-result]}]
+  (let [effective-dir  (or directory (ctx/current-directory) (System/getProperty "user.dir"))
+        agent-name     (str "forja-orch-" (System/currentTimeMillis))
+        prompt         (build-orchestrator-prompt tasks context-result effective-dir)]
+    (log/info "SPARK[orchestrator]: spawning 1 orchestrator for" (count tasks) "tasks")
+    (let [spawn-result (spawn/handle-spawn
+                        {:type    "ling"
+                         :name    agent-name
+                         :cwd     effective-dir
+                         :presets ["orchestrator" "ling" "mcp-first"]
+                         :model   model})
+          parsed       (parse-spawn-result spawn-result agent-name)
+          agent-id     (:agent-id parsed)
+          ready-mode   (or (:spawn-mode parsed) :claude)
+          ready        (ready/wait-for-ling-ready agent-id ready-mode)]
+      (if (or (:ready? ready) (:slave ready))
+        (let [dispatch-result (dispatch/handle-dispatch
+                               {:agent_id agent-id
+                                :prompt   prompt})]
+          (if (:isError dispatch-result)
+            (do
+              (log/error "SPARK[orchestrator]: dispatch failed" {:agent agent-id})
+              {:spawned [] :failed [{:agent-id agent-id :error "dispatch failed"}]
+               :count 0 :mode :orchestrator})
+            (do
+              (log/info "SPARK[orchestrator]: dispatched" (count tasks) "tasks to" agent-id)
+              ;; Mark all tasks as inprogress
+              (doseq [task tasks]
+                (result/rescue nil
+                               (c-kanban/handle-kanban {:command    "update"
+                                                        :task_id    (:id task)
+                                                        :new_status "inprogress"
+                                                        :directory  effective-dir})))
+              {:spawned [{:agent-id agent-id :task-count (count tasks)
+                          :mode :orchestrator :spawned true}]
+               :failed  []
+               :count   1
+               :mode    :orchestrator})))
+        (do
+          (log/error "SPARK[orchestrator]: ling readiness timeout" {:agent agent-id})
+          {:spawned [] :failed [{:agent-id agent-id :error "readiness timeout"}]
+           :count 0 :mode :orchestrator})))))
+
 ;; ── Spark! Orchestrator ─────────────────────────────────────────────────────
 
 (defn spark!
   "Spawn lings or dispatch drones for ready tasks.
    Routes: :drone (wave all), :claude (default Emacs), :vterm, :headless/:agent-sdk/:openrouter,
-   :mixed (default, classify + split)."
+   :orchestrator (single ling + Task subagents), :mixed (default, classify + split)."
   [{:keys [directory max_slots presets tasks spawn_mode spawn-mode model
-           preset seeds ctx_refs kg_node_ids]}]
+           preset seeds ctx_refs kg_node_ids context-result]}]
   (let [model                (budget-route-model model)
         effective-spawn-mode (keyword (or spawn_mode spawn-mode :mixed))
         drone-params         {:directory directory :tasks tasks :model model
                               :preset (or preset (first presets) "drone-worker")
                               :seeds seeds :ctx_refs ctx_refs :kg_node_ids kg_node_ids
                               :max_slots max_slots}]
-    (if (= :drone effective-spawn-mode)
+    (cond
+      (= :orchestrator effective-spawn-mode)
+      (spawn-orchestrator! {:tasks tasks :directory directory :model model
+                            :context-result context-result})
+
+      (= :drone effective-spawn-mode)
       (drone/dispatch-drone-tasks! drone-params)
+
+      :else
       (let [{:keys [drone-tasks ling-tasks]}
             (if (= :mixed effective-spawn-mode)
               (drone/classify-and-split-tasks tasks)

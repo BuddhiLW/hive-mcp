@@ -14,7 +14,8 @@
             [clojure.java.io :as io]
             [hive-mcp.tools.diff :as diff]
             [hive-mcp.tools.diff.validation :as diff-validation]
-            [hive-mcp.agent.context :as ctx]))
+            [hive-mcp.agent.context :as ctx]
+            [hive-dsl.bounded-atom :refer [bput! bget bcount bclear!]]))
 
 ;; =============================================================================
 ;; Test Helpers
@@ -49,7 +50,7 @@
 (defn clear-pending-diffs!
   "Clear all pending diffs for test isolation."
   []
-  (reset! diff/pending-diffs {}))
+  (bclear! diff/pending-diffs))
 
 (defn mock-validate-path
   "Mock path validation to always succeed for testing."
@@ -121,8 +122,8 @@
         (is (string? (:id parsed)))
         (is (= "pending" (:status parsed)))
         ;; Verify stored in atom
-        (is (= 1 (count @diff/pending-diffs)))
-        (let [stored (get @diff/pending-diffs (:id parsed))]
+        (is (= 1 (bcount diff/pending-diffs)))
+        (let [stored (bget diff/pending-diffs (:id parsed))]
           (is (= "/src/core.clj" (:file-path stored)))
           (is (= "Add docstring" (:description stored)))
           (is (= "drone-worker-1" (:drone-id stored))))))))
@@ -138,7 +139,7 @@
                        :drone_id "drone-1"})
             parsed (parse-response-text response)]
         (is (nil? (:isError response)))
-        (let [stored (get @diff/pending-diffs (:id parsed))]
+        (let [stored (bget diff/pending-diffs (:id parsed))]
           ;; Hunks are stored for tier-2 retrieval
           (is (vector? (:hunks stored)))
           (is (= 1 (count (:hunks stored))))
@@ -177,7 +178,7 @@
       (diff/handle-propose-diff
        {:file_path "/src/c.clj" :old_content "c" :new_content "c2"
         :description "Fix C" :drone_id "drone-1"})
-      (is (= 3 (count @diff/pending-diffs))))))
+      (is (= 3 (bcount diff/pending-diffs))))))
 
 ;; =============================================================================
 ;; Test: CLARITY-Y Empty Content Validation
@@ -196,7 +197,7 @@
             parsed (parse-response-text response)]
         (is (true? (:isError response)))
         (is (re-find #"(?i)empty|whitespace" (:error parsed)))
-        (is (= 0 (count @diff/pending-diffs)) "No diff should be stored"))))
+        (is (= 0 (bcount diff/pending-diffs)) "No diff should be stored"))))
 
   (testing "propose_diff rejects whitespace-only new_content"
     (with-mock-path-validation
@@ -210,13 +211,13 @@
             parsed (parse-response-text response)]
         (is (true? (:isError response)))
         (is (re-find #"(?i)empty|whitespace" (:error parsed)))
-        (is (= 0 (count @diff/pending-diffs)) "No diff should be stored")))))
+        (is (= 0 (bcount diff/pending-diffs)) "No diff should be stored")))))
 
 (deftest test-apply-diff-blocks-empty-new-content-defense-in-depth
   (testing "apply_diff blocks empty new_content even if diff was stored (defense-in-depth)"
     ;; Manually inject a diff with empty content (simulating a bug bypass)
     (let [diff-id "test-empty-diff-12345"]
-      (swap! diff/pending-diffs assoc diff-id
+      (bput! diff/pending-diffs diff-id
              {:id diff-id
               :file-path "/src/test.clj"
               :old-content ""
@@ -231,11 +232,11 @@
         (is (true? (:isError response)))
         (is (re-find #"(?i)empty|whitespace" (:error parsed)))
         ;; Diff should be removed after blocked apply
-        (is (nil? (get @diff/pending-diffs diff-id))))))
+        (is (nil? (bget diff/pending-diffs diff-id))))))
 
   (testing "apply_diff blocks whitespace-only new_content"
     (let [diff-id "test-whitespace-diff-12345"]
-      (swap! diff/pending-diffs assoc diff-id
+      (bput! diff/pending-diffs diff-id
              {:id diff-id
               :file-path "/src/test.clj"
               :old-content "(defn foo [] 1)"
@@ -364,7 +365,7 @@
             (is (= "applied" (:status parsed)))
             (is (= diff-id (:id parsed)))
             ;; Verify removed from pending
-            (is (= 0 (count @diff/pending-diffs)))
+            (is (= 0 (bcount diff/pending-diffs)))
             ;; Verify file was updated
             (is (= "(defn test [] :ok)" @file-content))))))))
 
@@ -392,7 +393,7 @@
             (is (true? (:isError apply-response)))
             (is (re-find #"(?i)not found|modified" (:error parsed)))
             ;; Diff should still be pending (not removed on error)
-            (is (= 1 (count @diff/pending-diffs)))))))))
+            (is (= 1 (bcount diff/pending-diffs)))))))))
 
 (deftest test-apply-diff-missing-diff-id
   (testing "Returns error when diff_id not provided"
@@ -442,7 +443,7 @@
             (is (true? (:isError apply-response)))
             (is (re-find #"(?i)multiple|ambiguous" (:error parsed)))
             ;; Diff should remain pending
-            (is (= 1 (count @diff/pending-diffs)))))))))
+            (is (= 1 (bcount diff/pending-diffs)))))))))
 
 (deftest test-sandbox-path-translation
   (testing "translate-sandbox-path converts /tmp/fs-N/ paths to project paths"
@@ -479,7 +480,7 @@
             (is (nil? (:isError reject-response)))
             (is (= "rejected" (:status parsed)))
             ;; Verify removed from pending
-            (is (= 0 (count @diff/pending-diffs)))
+            (is (= 0 (bcount diff/pending-diffs)))
             ;; Verify file was NOT changed
             (is (= "old" @file-content))))))))
 
