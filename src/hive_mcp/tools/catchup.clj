@@ -27,6 +27,7 @@
             [hive-mcp.extensions.registry :as ext]
             [hive-mcp.concurrency.pool :as pool]
             [hive-mcp.dns.result :refer [rescue]]
+            [hive-dsl.context.identity :as ctx-id]
             [clojure.data.json :as json]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -150,15 +151,11 @@
               ;; incremental delivery via ---MEMORY--- blocks on subsequent calls.
               ;; Axioms first (highest priority), then priority conventions.
               ;;
-              ;; CURSOR ISOLATION: Must use the SAME caller identity formula as
-              ;; wrap-handler-memory-piggyback in routes.clj for buffer key alignment.
-              ;; Uses _caller_id (injected by bb-mcp) for per-caller isolation,
-              ;; falls back to "coordinator" for old bb-mcp versions.
-              ;; See extract-caller-id in routes.clj.
-              caller-id (or (:_caller_id args) "coordinator")
-              piggyback-agent-id (if project-id
-                                   (str caller-id "-" project-id)
-                                   caller-id)
+              ;; CURSOR ISOLATION: Uses ctx-id ADTs for canonical identity construction.
+              ;; Guarantees buffer key alignment with routes.clj piggyback wrappers.
+              caller (ctx-id/parse-caller-id (:_caller_id args))
+              scope (ctx-id/parse-project-scope project-id)
+              piggyback-agent-id (ctx-id/make-piggyback-agent-id caller scope)
 
               ;; Cursor hygiene: adopt previous coordinator's cursor position
               ;; so we don't re-read hivemind messages from timestamp 0 after

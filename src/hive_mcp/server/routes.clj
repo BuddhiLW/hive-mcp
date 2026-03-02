@@ -17,6 +17,7 @@
             [hive-mcp.dsl.response :as compress]
             [hive-mcp.extensions.registry :as ext]
             [hive-mcp.addons.core :as addons]
+            [hive-dsl.context.identity :as ctx-id]
             [taoensso.timbre :as log]
             [clojure.spec.alpha :as s]
             [clojure.walk :as walk]))
@@ -181,6 +182,22 @@
            ((resolve 'hive-mcp.tools.memory.scope/get-current-project-id) dir))))))
 
 ;; =============================================================================
+;; ADT-Based Identity Extraction
+;; =============================================================================
+
+(defn extract-caller-identity
+  "Extract CallerId ADT from MCP args.
+   Wraps extract-caller-id with ADT coercion."
+  [args]
+  (ctx-id/parse-caller-id (:_caller_id args)))
+
+(defn extract-project-scope
+  "Extract ProjectScope ADT from MCP args.
+   Wraps existing extract-project-id with ADT coercion."
+  [args]
+  (ctx-id/parse-project-scope (extract-project-id args)))
+
+;; =============================================================================
 ;; Composable Handler Wrappers (SRP: Each wrapper single responsibility)
 ;; =============================================================================
 
@@ -340,11 +357,10 @@
   [handler]
   (fn [args]
     (let [content (handler args)
-          project-id (extract-project-id args)
-          caller-id (extract-caller-id args)
-          agent-id (if project-id
-                     (str caller-id "-" project-id)
-                     caller-id)
+          caller (extract-caller-identity args)
+          scope (extract-project-scope args)
+          agent-id (ctx-id/make-piggyback-agent-id caller scope)
+          project-id (ctx-id/project-scope-string scope)
           drain-result (drain-memory-piggyback agent-id project-id)]
       (wrap-memory-piggyback-content content drain-result))))
 
@@ -363,11 +379,10 @@
   (fn [args]
     (let [content (handler args)]
       (if-let [drain-fn (ext/get-extension :cu/piggyback-drain)]
-        (let [project-id (extract-project-id args)
-              caller-id (extract-caller-id args)
-              agent-id (if project-id
-                         (str caller-id "-" project-id)
-                         caller-id)
+        (let [caller (extract-caller-identity args)
+              scope (extract-project-scope args)
+              agent-id (ctx-id/make-piggyback-agent-id caller scope)
+              project-id (ctx-id/project-scope-string scope)
               blocks (try (drain-fn agent-id project-id)
                           (catch Exception e
                             (log/debug "catchup-piggyback drain failed:" (.getMessage e))
@@ -401,11 +416,10 @@
   [handler]
   (fn [args]
     (let [content (handler args)
-          project-id (extract-project-id args)
-          caller-id (extract-caller-id args)
-          agent-id (if project-id
-                     (str caller-id "-" project-id)
-                     caller-id)
+          caller (extract-caller-identity args)
+          scope (extract-project-scope args)
+          agent-id (ctx-id/make-piggyback-agent-id caller scope)
+          project-id (ctx-id/project-scope-string scope)
           piggyback (get-piggyback-messages agent-id project-id)]
       (wrap-piggyback content piggyback))))
 
@@ -428,12 +442,10 @@
   (fn [args]
     (if (:async args)
       (let [task-id (str "atask-" (random-uuid))
-            project-id (extract-project-id args)
-            caller-id (extract-caller-id args)
-            ;; Use caller identity for buffer key alignment with drain wrapper.
-            agent-id (if project-id
-                       (str caller-id "-" project-id)
-                       caller-id)]
+            caller (extract-caller-identity args)
+            scope (extract-project-scope args)
+            agent-id (ctx-id/make-piggyback-agent-id caller scope)
+            project-id (ctx-id/project-scope-string scope)]
         ;; Spawn background execution
         (future
           (try
@@ -480,11 +492,10 @@
   [handler]
   (fn [args]
     (let [content (handler args)
-          project-id (extract-project-id args)
-          caller-id (extract-caller-id args)
-          agent-id (if project-id
-                     (str caller-id "-" project-id)
-                     caller-id)
+          caller (extract-caller-identity args)
+          scope (extract-project-scope args)
+          agent-id (ctx-id/make-piggyback-agent-id caller scope)
+          project-id (ctx-id/project-scope-string scope)
           drain-result (async-buf/drain! agent-id project-id)]
       (wrap-delimited-block content "TOOLRESULT"
                             (when drain-result (pr-str drain-result))))))

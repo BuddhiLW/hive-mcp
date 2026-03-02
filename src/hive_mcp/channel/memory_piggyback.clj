@@ -2,7 +2,8 @@
   "Memory piggyback channel for incremental delivery of axioms and conventions via cursor+budget drain."
   (:require [taoensso.timbre :as log]
             [hive-dsl.bounded-atom :refer [bounded-atom bput! bget bounded-swap!
-                                           bclear! register-sweepable!]]))
+                                           bclear! register-sweepable!]]
+            [hive-dsl.context.identity :as ctx-id]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -35,7 +36,9 @@
   ([agent-id project-id entries]
    (enqueue! agent-id project-id entries nil))
   ([agent-id project-id entries context-refs]
-   (let [buffer-key [(or agent-id "coordinator") (or project-id "global")]
+   (let [buffer-key (ctx-id/make-buffer-key
+                     (ctx-id/parse-caller-id agent-id)
+                     (ctx-id/parse-project-scope project-id))
          existing (bget buffers buffer-key)
          formatted (mapv format-entry entries)]
      (when existing
@@ -54,7 +57,9 @@
 (defn drain!
   "Drain next batch of entries within char budget for an agent+project."
   [agent-id project-id]
-  (let [buffer-key [(or agent-id "coordinator") (or project-id "global")]
+  (let [buffer-key (ctx-id/make-buffer-key
+                    (ctx-id/parse-caller-id agent-id)
+                    (ctx-id/parse-project-scope project-id))
         buf (bget buffers buffer-key)]
     (when (and buf (not (:done buf)))
       (let [{:keys [entries cursor seq-num]} buf
@@ -97,14 +102,18 @@
 (defn has-pending?
   "Check if an agent+project has undrained memory entries."
   [agent-id project-id]
-  (let [buffer-key [(or agent-id "coordinator") (or project-id "global")]
+  (let [buffer-key (ctx-id/make-buffer-key
+                    (ctx-id/parse-caller-id agent-id)
+                    (ctx-id/parse-project-scope project-id))
         buf (bget buffers buffer-key)]
     (and (some? buf) (not (:done buf)))))
 
 (defn clear-buffer!
   "Clear buffer for a specific agent+project. For testing."
   [agent-id project-id]
-  (let [buffer-key [(or agent-id "coordinator") (or project-id "global")]]
+  (let [buffer-key (ctx-id/make-buffer-key
+                    (ctx-id/parse-caller-id agent-id)
+                    (ctx-id/parse-project-scope project-id))]
     (bounded-swap! buffers dissoc buffer-key)))
 
 (defn reset-all!
@@ -120,12 +129,15 @@
 
    Returns true if a buffer was adopted, false otherwise."
   [new-agent-id project-id]
-  (let [new-key [(or new-agent-id "coordinator") (or project-id "global")]
+  (let [new-key (ctx-id/make-buffer-key
+                 (ctx-id/parse-caller-id new-agent-id)
+                 (ctx-id/parse-project-scope project-id))
+        proj-str (or project-id "global")
         ;; Find orphaned coordinator buffer for same project
         donor (->> @(:atom buffers)
                    (filter (fn [[[aid proj] entry]]
                              (let [buf (:data entry)]
-                               (and (= proj (or project-id "global"))
+                               (and (= proj proj-str)
                                     (not= aid new-agent-id)
                                     (clojure.string/starts-with? (str aid) "coordinator:")
                                     (not (:done buf))))))
