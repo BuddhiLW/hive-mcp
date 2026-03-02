@@ -30,23 +30,26 @@
     (seq (:tags entry)) (assoc :tags (vec (:tags entry)))))
 
 (defn enqueue!
-  "Enqueue entries into the memory piggyback buffer. Idempotent."
+  "Enqueue entries into the memory piggyback buffer.
+   Replaces any existing buffer for the same key (fresh catchup supersedes stale)."
   ([agent-id project-id entries]
    (enqueue! agent-id project-id entries nil))
   ([agent-id project-id entries context-refs]
-   (let [buffer-key [(or agent-id "coordinator") (or project-id "global")]]
-     (if (bget buffers buffer-key)
-       (log/debug "memory-piggyback: buffer already exists for" buffer-key "- skipping enqueue")
-       (let [formatted (mapv format-entry entries)]
-         (bput! buffers buffer-key
-                (cond-> {:entries formatted
-                         :cursor 0
-                         :done false
-                         :seq-num 0}
-                  (some? context-refs)
-                  (assoc :context-refs context-refs)))
-         (log/info "memory-piggyback: enqueued" (count formatted) "entries for" buffer-key
-                   (when context-refs (str " with " (count context-refs) " context-refs"))))))))
+   (let [buffer-key [(or agent-id "coordinator") (or project-id "global")]
+         existing (bget buffers buffer-key)
+         formatted (mapv format-entry entries)]
+     (when existing
+       (log/info "memory-piggyback: replacing existing buffer for" buffer-key
+                 "(had" (- (count (:entries existing)) (:cursor existing 0)) "undrained entries)"))
+     (bput! buffers buffer-key
+            (cond-> {:entries formatted
+                     :cursor 0
+                     :done false
+                     :seq-num 0}
+              (some? context-refs)
+              (assoc :context-refs context-refs)))
+     (log/info "memory-piggyback: enqueued" (count formatted) "entries for" buffer-key
+               (when context-refs (str " with " (count context-refs) " context-refs"))))))
 
 (defn drain!
   "Drain next batch of entries within char budget for an agent+project."

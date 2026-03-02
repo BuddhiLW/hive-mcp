@@ -142,9 +142,9 @@
    Returns nil only if no project context available anywhere.
 
    Uses request-level memoization for the expensive scope lookup
-   (require + resolve + .hive-project.edn read). This is called 4x per
-   request (context + 3 piggyback wrappers) with identical args — the
-   cache eliminates 3 redundant scope lookups.
+   (require + resolve + .hive-project.edn read). This is called 5x per
+   request (context + 4 piggyback wrappers) with identical args — the
+   cache eliminates 4 redundant scope lookups.
 
    Key priority:
    1. Explicit project_id/project-id
@@ -156,16 +156,19 @@
   [args]
   (or (:project_id args)
       (:project-id args)
-      ;; IVessel resolution: query vessels for agent context (formal project-id source)
+      ;; IVessel resolution: query vessels for agent context (formal project-id source).
+      ;; Skip bare "coordinator" — it's a generic fallback, not a real agent ID.
+      ;; Vessels return the server's own project for it, poisoning piggyback keys.
       (when-let [agent-id (or (:agent_id args) (:agent-id args) (:_caller_id args))]
-        (ctx/request-memoize
-         [:vessel-project-id agent-id]
-         (fn []
-           (try
-             (require 'hive-mcp.protocols.vessel)
-             (when-let [resolve-fn (resolve 'hive-mcp.protocols.vessel/resolve-agent-context)]
-               (:project-id (resolve-fn agent-id)))
-             (catch Exception _ nil)))))
+        (when-not (= agent-id "coordinator")
+          (ctx/request-memoize
+           [:vessel-project-id agent-id]
+           (fn []
+             (try
+               (require 'hive-mcp.protocols.vessel)
+               (when-let [resolve-fn (resolve 'hive-mcp.protocols.vessel/resolve-agent-context)]
+                 (:project-id (resolve-fn agent-id)))
+               (catch Exception _ nil))))))
       ;; Derive from directory if present, with caller-cwd, ctx and user.dir fallbacks
       (when-let [dir (or (:directory args)
                          (:_caller_cwd args)
@@ -236,8 +239,8 @@
    string keys, but handlers expect keyword keys for destructuring).
 
    Binds *request-cache* BEFORE extracting project-id so the first
-   extract-project-id call is cached for the 3 subsequent calls in
-   the piggyback wrappers (memory, hivemind, async).
+   extract-project-id call is cached for the 4 subsequent calls in
+   the piggyback wrappers (memory, catchup, hivemind, async).
 
    Extracts agent-id, project-id, directory from args and binds
    them via hive-mcp.agent.context/with-request-context.
@@ -264,7 +267,7 @@
     ;; Keywordize args to handle both MCP (string keys) and direct calls (keyword keys)
     (let [args (walk/keywordize-keys args)]
       ;; Bind request cache FIRST so extract-project-id's result is cached
-      ;; for the 3 subsequent piggyback wrappers (saves 3x require+resolve+scope-lookup)
+      ;; for the 4 subsequent piggyback wrappers (saves 4x require+resolve+scope-lookup)
       (binding [ctx/*request-cache* (atom {})]
         (let [agent-id (extract-agent-id args nil)
               project-id (extract-project-id args)
@@ -344,6 +347,41 @@
                      caller-id)
           drain-result (drain-memory-piggyback agent-id project-id)]
       (wrap-memory-piggyback-content content drain-result))))
+
+(defn wrap-handler-catchup-piggyback
+  "Wrap handler to drain hive-knowledge catchup blocks as separate delimiter tags.
+   SRP: Single responsibility - catchup enrichment piggyback delivery only.
+
+   Drains categorized catchup blocks (synthesis, kg-insights, context) queued
+   by the enrichment addon during catchup. Each non-nil category becomes a
+   separate delimited block (---SYNTHESIS---, ---KG-INSIGHTS---, ---CONTEXT---).
+
+   Zero-cost when no blocks pending or extension not registered.
+
+   CURSOR ISOLATION: Uses _caller_id for per-caller alignment with catchup enqueue."
+  [handler]
+  (fn [args]
+    (let [content (handler args)]
+      (if-let [drain-fn (ext/get-extension :cu/piggyback-drain)]
+        (let [project-id (extract-project-id args)
+              caller-id (extract-caller-id args)
+              agent-id (if project-id
+                         (str caller-id "-" project-id)
+                         caller-id)
+              blocks (try (drain-fn agent-id project-id)
+                          (catch Exception e
+                            (log/debug "catchup-piggyback drain failed:" (.getMessage e))
+                            nil))]
+          (if (seq blocks)
+            (reduce-kv
+             (fn [c tag body]
+               (wrap-delimited-block c
+                                     (clojure.string/upper-case (name tag))
+                                     (if (string? body) body (pr-str body))))
+             content
+             blocks)
+            content))
+        content))))
 
 (defn wrap-handler-piggyback
   "Wrap handler to attach hivemind piggyback messages.
@@ -501,22 +539,23 @@
    - wrap-handler-compress: compact:true → compress JSON text (strip verbose fields)
    - wrap-handler-async-piggyback: drains async results (completed futures)
    - wrap-handler-memory-piggyback: drains memory entries (axioms, conventions)
+   - wrap-handler-catchup-piggyback: drains catchup enrichment blocks (synthesis, kg-insights, context)
    - wrap-handler-piggyback: embeds hivemind messages with agent-id extraction
    - wrap-handler-context: binds request context for tool execution
    - wrap-handler-response: builds {:content ...} response
 
    Composition via -> threading enables clear data flow:
-   handler -> retry -> async-intercept -> normalize -> compress -> async-piggyback -> memory-piggyback -> hivemind-piggyback -> context -> response
+   handler -> retry -> async-intercept -> normalize -> compress -> async-piggyback -> memory-piggyback -> catchup-piggyback -> hivemind-piggyback -> context -> response
 
    The async interceptor sits AFTER retry (so it can retry on hot-reload errors)
    but BEFORE normalize (so the ack [{:type text}] passes through the piggyback chain).
 
-   Memory/async/hivemind piggybacks all run in parallel, each appending
+   Memory/async/catchup/hivemind piggybacks all run in parallel, each appending
    their own delimited blocks to content independently.
 
    REQUEST-LEVEL MEMOIZATION: context wrapper binds *request-cache* (atom {})
    before any work. extract-project-id uses ctx/request-memoize to cache its
-   expensive scope lookup — called 4x per request (context + 3 piggyback
+   expensive scope lookup — called 5x per request (context + 4 piggyback
    wrappers) but computed only once. Handlers can also use request-memoize
    for their own per-request caching needs.
 
@@ -537,6 +576,7 @@
                           wrap-handler-compress           ; compact: true → compress JSON text
                           wrap-handler-async-piggyback    ; async results channel
                           wrap-handler-memory-piggyback   ; memory channel (needs ctx bound)
+                          wrap-handler-catchup-piggyback  ; catchup enrichment channel
                           wrap-handler-piggyback          ; hivemind channel (needs ctx bound)
                           wrap-handler-context            ; binds ctx for all piggybacks
                           wrap-handler-response)}

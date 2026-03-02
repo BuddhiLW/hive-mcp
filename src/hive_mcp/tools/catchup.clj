@@ -132,6 +132,7 @@
                           (pool/with-io
                             (enrich-fn {:directory directory
                                         :project-id project-id
+                                        :caller-id (or (:_caller_id args) "coordinator")
                                         :decisions decisions-base
                                         :conventions conventions-base
                                         :sessions sessions-meta
