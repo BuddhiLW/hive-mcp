@@ -16,7 +16,8 @@
             [clojure.data.json :as json]
             [hive-mcp.hivemind.core :as hivemind]
             [hive-mcp.swarm.datascript :as ds]
-            [hive-mcp.tools.swarm.registry :as swarm-registry]))
+            [hive-mcp.tools.swarm.registry :as swarm-registry]
+            [hive-dsl.bounded-atom :refer [bclear!]]))
 
 ;;; Test fixtures
 
@@ -27,11 +28,11 @@
   ;; ADR-002: Reset DataScript (primary registry)
   (ds/reset-conn!)
   ;; Reset hivemind agent-registry
-  (reset! @(resolve 'hive-mcp.hivemind.core/agent-registry) {})
+  (bclear! @(resolve 'hive-mcp.hivemind.core/agent-registry))
   ;; Note: lings-registry removed in ADR-002 migration - DataScript is primary
   (f)
   (ds/reset-conn!)
-  (reset! @(resolve 'hive-mcp.hivemind.core/agent-registry) {}))
+  (bclear! @(resolve 'hive-mcp.hivemind.core/agent-registry)))
 
 (use-fixtures :each reset-all-registries)
 

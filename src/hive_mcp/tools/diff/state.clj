@@ -2,7 +2,9 @@
   "Diff state management: atoms, error helpers, TDD status."
   (:require [hive-mcp.server.guards :as guards]
             [clojure.data.json :as json]
-            [taoensso.timbre :as log]))
+            [taoensso.timbre :as log]
+            [hive-dsl.bounded-atom :refer [bounded-atom bput! bget bounded-swap!
+                                           bclear! register-sweepable!]]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -14,7 +16,13 @@
    :text (json/write-str {:error error-message})
    :isError true})
 
-(defonce pending-diffs (atom {}))
+;; gc-fix-3: pending-diffs — LRU eviction, 200 entries, 30min TTL
+;; Diffs are short-lived proposals; stale ones waste memory.
+(defonce pending-diffs
+  (bounded-atom {:max-entries 200
+                 :ttl-ms 1800000    ;; 30 minutes
+                 :eviction-policy :lru}))
+(register-sweepable! pending-diffs :pending-diffs)
 
 (def default-auto-approve-rules
   "Default rules for auto-approving diff proposals."
@@ -33,16 +41,17 @@
   []
   (guards/when-not-coordinator
    "clear-pending-diffs! called"
-   (reset! pending-diffs {})))
+   (bclear! pending-diffs)))
 
 (defn update-diff-tdd-status!
   "Update a diff's TDD status after drone runs tests/lint."
   [diff-id tdd-status]
-  (when (contains? @pending-diffs diff-id)
-    (swap! pending-diffs update diff-id
-           (fn [diff]
-             (update diff :tdd-status
-                     (fn [existing]
-                       (merge existing tdd-status)))))
+  (when (bget pending-diffs diff-id)
+    (let [current (bget pending-diffs diff-id)]
+      (when current
+        (bput! pending-diffs diff-id
+               (update current :tdd-status
+                       (fn [existing]
+                         (merge existing tdd-status))))))
     (log/info "Updated diff TDD status" {:diff-id diff-id :tdd-status tdd-status})
-    (get @pending-diffs diff-id)))
+    (bget pending-diffs diff-id)))

@@ -1,9 +1,9 @@
 (ns hive-mcp.emacs.client
   "Delegation shim — routes to hive-emacs.client.
 
-   Full emacsclient implementation (50 forms, circuit breaker, daemon death
-   detection) extracted to hive-emacs project. This shim preserves backward
-   compatibility for 28 direct callers in hive-mcp core.
+   Full emacsclient implementation (50 forms, 3-state circuit breaker,
+   daemon death detection) extracted to hive-emacs project. This shim
+   preserves backward compatibility for 28 direct callers in hive-mcp core.
 
    Dynamic vars kept for backward compat; real vars live in hive-emacs.client."
   (:require [taoensso.timbre :as log]))
@@ -51,7 +51,8 @@
   "Execute elisp code with a timeout.
    Delegates to hive-emacs.client/eval-elisp-with-timeout.
    Returns a map with :success, :result or :error keys.
-   On timeout, returns {:success false :error \"...\" :timed-out true}"
+   On timeout, returns {:success false :error \"...\" :timed-out true}
+   On circuit-open, returns {:success false :error \"...\" :circuit-open true}"
   ([code] (eval-elisp-with-timeout code *default-timeout-ms*))
   ([code timeout-ms]
    (if-let [f (resolve-emacs-fn 'hive-emacs.client/eval-elisp-with-timeout)]
@@ -67,14 +68,16 @@
 
 (defn eval-elisp!
   "Execute elisp and return result string, or throw on non-timeout error.
-   On timeout, returns {:error :timeout :msg \"...\"}."
+   On timeout, returns {:error :timeout :msg \"...\"}.
+   On circuit-open, returns {:error :circuit-open :msg \"...\"}."
   [code]
-  (let [{:keys [success result error timed-out]} (eval-elisp code)]
+  (let [{:keys [success result error timed-out circuit-open]} (eval-elisp code)]
     (cond
-      success   result
-      timed-out {:error :timeout :msg error}
-      :else     (throw (ex-info "Elisp evaluation failed"
-                                {:error error :code code})))))
+      success      result
+      timed-out    {:error :timeout :msg error}
+      circuit-open {:error :circuit-open :msg error}
+      :else        (throw (ex-info "Elisp evaluation failed"
+                                   {:error error :code code})))))
 
 (defn emacs-running?
   "Check if Emacs server is running. Returns false on timeout."

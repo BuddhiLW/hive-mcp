@@ -9,14 +9,15 @@
             [clojure.string :as str]
             [hive-mcp.server.routes :as routes]
             [hive-mcp.hivemind.core :as hivemind]
-            [hive-mcp.channel.piggyback :as piggyback]))
+            [hive-mcp.channel.piggyback :as piggyback]
+            [hive-dsl.bounded-atom :refer [bclear!]]))
 
 ;; =============================================================================
 ;; Test Fixtures
 ;; =============================================================================
 
 (defn reset-state-fixture [f]
-  (reset! hivemind/agent-registry {})
+  (bclear! hivemind/agent-registry)
   (piggyback/reset-all-cursors!)
   (f))
 

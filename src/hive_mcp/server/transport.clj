@@ -10,6 +10,7 @@
    - Olympus WebSocket server (Olympus Web UI)
    - Legacy TCP channel (deprecated, backward compat)"
   (:require [nrepl.server :as nrepl-server]
+            [hive-mcp.nrepl.classloader-gc :as classloader-gc]
             [hive-mcp.config.core :as config]
             [hive-mcp.dns.result :as result]
             [hive-mcp.transport.websocket :as ws]
@@ -44,14 +45,19 @@
                                              :env "HIVE_MCP_NREPL_PORT"
                                              :parse parse-long
                                              :default 7910)
-        middleware (try
-                     (require 'cider.nrepl)
-                     (let [mw-var (resolve 'cider.nrepl/cider-middleware)]
-                       (when mw-var @mw-var))
-                     (catch Exception _ nil))
-        handler (if (seq middleware)
-                  (apply nrepl-server/default-handler middleware)
-                  (nrepl-server/default-handler))
+        ;; GC-fix-6: Collect CIDER middleware, then prepend classloader-gc middleware.
+        ;; wrap-shared-classloader pins session-less evals (bb-mcp pattern) to a
+        ;; shared session, preventing DynamicClassLoader proliferation. It must be
+        ;; outermost (first in the middleware vector) so it intercepts before
+        ;; nREPL's session middleware creates a new session per eval.
+        cider-mw (try
+                    (require 'cider.nrepl)
+                    (let [mw-var (resolve 'cider.nrepl/cider-middleware)]
+                      (when mw-var @mw-var))
+                    (catch Exception _ nil))
+        all-middleware (into [#'classloader-gc/wrap-shared-classloader]
+                             (or cider-mw []))
+        handler (apply nrepl-server/default-handler all-middleware)
         server-opts {:port nrepl-port :bind "127.0.0.1" :handler handler}
         max-retries 5
         retry-delay-ms 2000]
@@ -60,7 +66,7 @@
                      (let [server (nrepl-server/start-server server-opts)]
                        (reset! nrepl-server-atom server)
                        (log/info "Embedded nREPL started on port" nrepl-port
-                                 (if middleware "(with CIDER middleware)" "(basic)")
+                                 (if (seq cider-mw) "(with CIDER + classloader-gc middleware)" "(with classloader-gc middleware)")
                                  (when (> attempt 1) (str "(attempt " attempt ")")))
                        server)
                      (catch java.net.BindException e

@@ -16,6 +16,7 @@
             [hive-mcp.config.core :as config]
             [hive-dsl.result :as r]
             [hive-dsl.batch :as dsl-batch]
+            [clojure.core.async :as async]
             [clojure.java.io :as io]
             [taoensso.timbre :as log]))
 
@@ -151,6 +152,134 @@
   nil)
 
 ;; =============================================================================
+;; Write-Coalescing Queue (Drain-and-Flush)
+;; =============================================================================
+;;
+;; Leverages Queue concurrency primitive (Grokking Simplicity Ch 15):
+;; Individual transact! calls are coalesced into batched writes.
+;;
+;; Design: core.async channel + go-loop consumer.
+;; - Producers put individual tx-data vectors onto the channel.
+;; - Consumer drains all available items within a 25ms window,
+;;   then flushes them as a single d/transact! call.
+;; - d/transact! (async) provides a second layer of auto-batching
+;;   at the Datahike level (per whilo's advice: memory 20260205231755).
+;;
+;; This eliminates the "Transacting 1 objects" pattern that causes
+;; high CPU on sequential single-entity writes.
+
+(def ^:private coalesce-window-ms
+  "Time window to drain additional items before flushing batch.
+   Balances latency vs batch size. 25ms gives good coalescing
+   without noticeable delay on interactive operations."
+  25)
+
+(def ^:private coalesce-max-batch
+  "Maximum batch size before forcing a flush, even within the window."
+  200)
+
+(defonce ^:private writer-state
+  (atom {:running? false :tx-chan nil :ctrl-chan nil}))
+
+(defonce ^:private writer-metrics
+  (atom {:batches-flushed 0 :items-written 0 :items-dropped 0 :largest-batch 0}))
+
+(defn- flush-batch!
+  "Flush accumulated tx-data as a single transaction."
+  [batch]
+  (when (seq batch)
+    (let [n (count batch)]
+      (try
+        (proto/transact! (ensure-store!) batch)
+        (swap! writer-metrics (fn [m]
+                                (-> m
+                                    (update :batches-flushed inc)
+                                    (update :items-written + n)
+                                    (update :largest-batch max n))))
+        (catch Exception e
+          (log/error "Coalesced batch transact failed, falling back to individual writes"
+                     {:batch-size n :error (.getMessage e)})
+          ;; Fallback: retry items individually so we don't lose data
+          (doseq [item batch]
+            (try
+              (proto/transact! (ensure-store!) [item])
+              (swap! writer-metrics update :items-written inc)
+              (catch Exception e2
+                (log/error "Individual fallback transact also failed"
+                           {:item item :error (.getMessage e2)})
+                (swap! writer-metrics update :items-dropped inc)))))))))
+
+(defn- start-writer-loop!
+  "Start the background write-coalescing consumer loop.
+   Creates fresh tx-chan + ctrl-chan each time (fixes channel death on stop).
+   Returns map with :tx-chan :ctrl-chan :go-chan."
+  []
+  (let [tx-chan   (async/chan 4096)
+        ctrl-chan (async/chan)
+        go-chan   (async/go-loop []
+                    (let [[val port] (async/alts! [ctrl-chan tx-chan])]
+                      (cond
+                       ;; ctrl-chan closed or signaled — graceful shutdown
+                        (= port ctrl-chan)
+                        (log/debug "Writer loop received shutdown signal")
+
+                       ;; tx-chan closed — also done
+                        (nil? val)
+                        (log/debug "Writer loop tx-chan closed")
+
+                        :else
+                        (let [first-item val
+                              batch (loop [batch (into [] (dsl-batch/normalize-tx-datum first-item))
+                                           remaining coalesce-window-ms]
+                                      (if (or (<= remaining 0)
+                                              (>= (count batch) coalesce-max-batch))
+                                        batch
+                                        (let [t0 (System/currentTimeMillis)
+                                              [item port] (async/alts! [ctrl-chan
+                                                                        tx-chan
+                                                                        (async/timeout remaining)])]
+                                          (cond
+                                            (= port ctrl-chan) batch
+                                            (nil? item)        batch
+                                            :else
+                                            (recur (into batch (dsl-batch/normalize-tx-datum item))
+                                                   (- remaining (- (System/currentTimeMillis) t0)))))))]
+                          (flush-batch! batch)
+                          (recur)))))]
+    {:tx-chan tx-chan :ctrl-chan ctrl-chan :go-chan go-chan}))
+
+(defn- ensure-writer!
+  "Ensure the write-coalescing loop is running.
+   Uses locking + double-check to prevent concurrent starts."
+  []
+  (when-not (:running? @writer-state)
+    (locking writer-state
+      (when-not (:running? @writer-state)
+        (let [{:keys [tx-chan ctrl-chan go-chan]} (start-writer-loop!)]
+          (reset! writer-state {:running? true
+                                :tx-chan   tx-chan
+                                :ctrl-chan ctrl-chan
+                                :go-chan   go-chan})
+          (log/debug "Started KG write-coalescing queue"))))))
+
+(defn stop-writer!
+  "Stop the write-coalescing loop. Idempotent — safe to call multiple times."
+  []
+  (locking writer-state
+    (let [{:keys [running? ctrl-chan tx-chan]} @writer-state]
+      (when running?
+        (when ctrl-chan (async/close! ctrl-chan))
+        (when tx-chan (async/close! tx-chan))
+        (reset! writer-state {:running? false :tx-chan nil :ctrl-chan nil})
+        (log/debug "Stopped KG write-coalescing queue")))))
+
+(defn writer-stats
+  "Return writer metrics + running state for observability."
+  []
+  (merge @writer-metrics
+         {:running? (:running? @writer-state)}))
+
+;; =============================================================================
 ;; Backward-Compatible API
 ;; =============================================================================
 
@@ -178,12 +307,36 @@
 
 (defn transact!
   "Transact data to the KG database.
-   When *tx-batch* is bound (via with-tx-batch), accumulates tx-data
-   for a single batched write. Otherwise delegates immediately to the store."
+   Priority:
+     1. *tx-batch* bound (via with-tx-batch) → accumulate for explicit batch flush
+     2. Otherwise → route through write-coalescing queue for automatic batching
+
+   The coalescing queue drains items within a 25ms window and flushes
+   as a single transaction. Combined with d/transact! (async) at the
+   store level, this eliminates the 'Transacting 1 objects' pattern."
   [tx-data]
   (if *tx-batch*
-    (swap! *tx-batch* into (if (map? tx-data) [tx-data] tx-data))
-    (proto/transact! (ensure-store!) tx-data)))
+    (swap! *tx-batch* into (dsl-batch/normalize-tx-datum tx-data))
+    (do
+      (ensure-writer!)
+      (let [tx-chan (:tx-chan @writer-state)]
+        (when-not (and tx-chan (async/put! tx-chan tx-data))
+          ;; Channel full or closed — fallback to sync write
+          (log/warn "Write-coalescing queue put! failed, falling back to sync transact"
+                    {:tx-data-count (if (sequential? tx-data) (count tx-data) 1)})
+          (swap! writer-metrics update :items-dropped
+                 + (if (sequential? tx-data) (count tx-data) 1))
+          (r/rescue nil
+                    (proto/transact! (ensure-store!)
+                                     (dsl-batch/normalize-tx-datum tx-data))))))))
+
+(defn transact-sync!
+  "Synchronous transact — bypasses the coalescing queue.
+   Use ONLY when the caller needs the tx-report return value
+   (e.g., extracting entity IDs from :tx-data).
+   Most callers should use transact! (async coalesced) instead."
+  [tx-data]
+  (proto/transact! (ensure-store!) tx-data))
 
 (defmacro with-tx-batch
   "Collect all transact! calls within body into a single transaction.

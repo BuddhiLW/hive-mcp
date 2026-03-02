@@ -29,6 +29,24 @@
         (log/warn "evict-agent-context! failed for" agent-id ":" (.getMessage e))
         {:evicted 0 :error (.getMessage e)}))))
 
+(defn- trigger-gc-sweep!
+  "Trigger bounded atom GC sweep before crystallization (gc-fix-5).
+   Evicts stale/over-capacity entries to free memory before session wrap.
+   Non-fatal: if sweep fails, session lifecycle continues."
+  []
+  (try
+    (when-let [trigger-fn (requiring-resolve 'hive-mcp.events.handlers.lifecycle/trigger-sweep!)]
+      (let [result (trigger-fn)]
+        (when (and (map? result) (pos? (get result :total-evicted 0)))
+          (log/info "[gc-fix-5] Pre-crystallization GC sweep evicted"
+                    (:total-evicted result) "entries from"
+                    (:atom-count result) "atoms in"
+                    (:duration-ms result) "ms"))
+        result))
+    (catch Exception e
+      (log/warn "[gc-fix-5] GC sweep failed (non-fatal):" (.getMessage e))
+      {:total-evicted 0 :error (.getMessage e)})))
+
 ;; ── Pure Result-returning functions ───────────────────────────────────────────
 
 (defn- keywordize-refs
@@ -125,10 +143,14 @@
 
 (defn handle-wrap
   "Wrap session -- crystallize learnings without commit.
+   Runs GC sweep before crystallization to free memory (gc-fix-5).
    Delegates to crystal/handle-wrap-crystallize which already returns MCP response."
   [{:keys [agent_id directory]}]
   (let [t0 (System/currentTimeMillis)]
     (log/info "session-wrap: START" {:agent agent_id :directory directory})
+    ;; gc-fix-5: Run bounded atom GC sweep before crystallization
+    (let [gc-result (trigger-gc-sweep!)]
+      (log/debug "session-wrap: GC sweep result" gc-result))
     (let [r (rb/try-result :session/wrap-failed
                            #(let [mcp-resp (crystal/handle-wrap-crystallize {:directory directory
                                                                              :agent_id agent_id})
@@ -186,8 +208,12 @@
   (rb/result->mcp (rb/try-result :session/context-reconstruct-failed #(context-reconstruct* params))))
 
 (defn handle-complete
-  "Complete a ling session with context eviction."
+  "Complete a ling session with GC sweep and context eviction.
+   Runs GC sweep before crystallization to free memory (gc-fix-5)."
   [{:keys [agent_id] :as params}]
+  ;; gc-fix-5: Run bounded atom GC sweep before crystallization
+  (let [gc-result (trigger-gc-sweep!)]
+    (log/debug "session-complete: GC sweep result" gc-result))
   (let [result (session-handlers/handle-session-complete params)
         effective-agent (or agent_id
                             (ctx/current-agent-id)

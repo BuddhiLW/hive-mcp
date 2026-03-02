@@ -7,7 +7,9 @@
             [hive-mcp.events.core :as ev]
             [clojure.data.json :as json]
             [clojure.string :as str]
-            [taoensso.timbre :as log]))
+            [taoensso.timbre :as log]
+            [hive-dsl.bounded-atom :refer [bounded-atom bput! bget bounded-swap!
+                                           bclear! register-sweepable!]]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -199,13 +201,19 @@
                                                      :fix-task-count (count fix-tasks)}]))
               (recur fix-tasks (inc iteration) updated-history))))))))
 
-(defonce ^:private validated-wave-sessions (atom {}))
+;; gc-fix-3: validated-wave-sessions — LRU eviction, 50 entries, 1hr TTL
+;; Wave sessions are ephemeral; old completed sessions waste memory.
+(defonce ^:private validated-wave-sessions
+  (bounded-atom {:max-entries 50
+                 :ttl-ms 3600000    ;; 1 hour
+                 :eviction-policy :lru}))
+(register-sweepable! validated-wave-sessions :validated-wave-sessions)
 
 (defn execute-validated-wave-async!
   "Execute a validated wave asynchronously, returning a session-id for polling."
   [tasks opts]
   (let [session-id (str "vw-" (java.util.UUID/randomUUID))]
-    (swap! validated-wave-sessions assoc session-id
+    (bput! validated-wave-sessions session-id
            {:session-id session-id
             :status :running
             :task-count (count tasks)
@@ -213,13 +221,13 @@
     (future
       (try
         (let [result (execute-validated-wave! tasks opts)]
-          (swap! validated-wave-sessions assoc session-id
+          (bput! validated-wave-sessions session-id
                  (merge result
                         {:session-id session-id
                          :completed-at (System/currentTimeMillis)})))
         (catch Exception e
           (log/error e "Async validated wave failed" {:session-id session-id})
-          (swap! validated-wave-sessions assoc session-id
+          (bput! validated-wave-sessions session-id
                  {:session-id session-id
                   :status :failed
                   :error (.getMessage e)
@@ -231,7 +239,7 @@
   "Execute a review wave asynchronously, returning a session-id for polling."
   [tasks opts]
   (let [session-id (str "rw-" (java.util.UUID/randomUUID))]
-    (swap! validated-wave-sessions assoc session-id
+    (bput! validated-wave-sessions session-id
            {:session-id session-id
             :status :running
             :mode :review
@@ -240,13 +248,13 @@
     (future
       (try
         (let [result (execute-review-wave! tasks opts)]
-          (swap! validated-wave-sessions assoc session-id
+          (bput! validated-wave-sessions session-id
                  (merge result
                         {:session-id session-id
                          :completed-at (System/currentTimeMillis)})))
         (catch Exception e
           (log/error e "Async review wave failed" {:session-id session-id})
-          (swap! validated-wave-sessions assoc session-id
+          (bput! validated-wave-sessions session-id
                  {:session-id session-id
                   :status :failed
                   :error (.getMessage e)
@@ -257,13 +265,14 @@
 (defn get-validated-wave-session
   "Get session state for an async validated wave execution."
   [session-id]
-  (get @validated-wave-sessions session-id))
+  (bget validated-wave-sessions session-id))
 
 (defn list-validated-wave-sessions
   "List all validated wave sessions."
   []
-  (->> (vals @validated-wave-sessions)
-       (mapv #(select-keys % [:session-id :status :task-count :started-at :completed-at]))
+  (->> (vals @(:atom validated-wave-sessions))
+       (mapv (fn [entry]
+               (select-keys (:data entry) [:session-id :status :task-count :started-at :completed-at])))
        (sort-by :started-at)))
 
 (defn execute-review-wave!

@@ -11,16 +11,17 @@
    This is the architectural guarantee that prompts are visible to coordinator."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [hive-mcp.hivemind.core :as hivemind]
-            [hive-mcp.swarm.sync :as sync]))
+            [hive-mcp.swarm.sync :as sync]
+            [hive-dsl.bounded-atom :refer [bclear!]]))
 
 ;;; Test fixtures
 
 (defn reset-prompts-fixture
   "Reset pending-swarm-prompts between tests."
   [f]
-  (reset! @(resolve 'hive-mcp.hivemind.core/pending-swarm-prompts) {})
+  (bclear! @(resolve 'hive-mcp.hivemind.core/pending-swarm-prompts))
   (f)
-  (reset! @(resolve 'hive-mcp.hivemind.core/pending-swarm-prompts) {}))
+  (bclear! @(resolve 'hive-mcp.hivemind.core/pending-swarm-prompts)))
 
 (use-fixtures :each reset-prompts-fixture)
 

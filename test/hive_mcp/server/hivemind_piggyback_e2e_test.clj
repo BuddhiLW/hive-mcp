@@ -1,9 +1,9 @@
 (ns hive-mcp.server.hivemind-piggyback-e2e-test
-  "End-to-end tests for hivemind shout → piggyback delivery pipeline.
+  "End-to-end tests for hivemind shout -> piggyback delivery pipeline.
 
-   Verifies the full path: shout! stores in agent-registry →
-   all-hivemind-messages reads from it → piggyback/get-messages
-   returns them → wrap-handler-piggyback appends ---HIVEMIND--- blocks.
+   Verifies the full path: shout! stores in agent-registry ->
+   all-hivemind-messages reads from it -> piggyback/get-messages
+   returns them -> wrap-handler-piggyback appends ---HIVEMIND--- blocks.
 
    These tests complement piggyback_middleware_test.clj (which uses
    mock message sources) by testing the real hivemind integration.
@@ -14,7 +14,8 @@
             [hive-mcp.server.routes :as routes]
             [hive-mcp.hivemind.core :as hivemind]
             [hive-mcp.channel.piggyback :as pb]
-            [hive-mcp.agent.context :as ctx]))
+            [hive-mcp.agent.context :as ctx]
+            [hive-dsl.bounded-atom :refer [bput! bget bclear!]]))
 
 ;; =============================================================================
 ;; Constants
@@ -32,13 +33,13 @@
   (let [original-source @pb/message-source-fn]
     ;; Reset state
     (pb/reset-all-cursors!)
-    (reset! hivemind/agent-registry {})
+    (bclear! hivemind/agent-registry)
     ;; Re-register the real message source (tests may have overwritten it)
     (pb/register-message-source! original-source)
     (f)
     ;; Cleanup
     (pb/reset-all-cursors!)
-    (reset! hivemind/agent-registry {})
+    (bclear! hivemind/agent-registry)
     ;; Restore original source
     (pb/register-message-source! original-source)))
 
@@ -69,13 +70,14 @@
         msg {:event-type event-type
              :message message
              :timestamp now
-             :project-id (or project-id "global")}]
-    (swap! hivemind/agent-registry update agent-id
-           (fn [agent]
-             (let [messages (or (:messages agent) [])
-                   new-messages (vec (take-last 10 (conj messages msg)))]
-               {:messages new-messages
-                :last-seen now})))))
+             :project-id (or project-id "global")}
+        current (or (bget hivemind/agent-registry agent-id)
+                    {:messages [] :last-seen nil})
+        messages (or (:messages current) [])
+        new-messages (vec (take-last 10 (conj messages msg)))]
+    (bput! hivemind/agent-registry agent-id
+           {:messages new-messages
+            :last-seen now})))
 
 (defn- call-with-context
   "Call a wrapped handler with proper request context binding.
@@ -86,7 +88,7 @@
     (wrapped (assoc args :directory test-dir))))
 
 ;; =============================================================================
-;; End-to-End Tests: Shout → Piggyback Delivery
+;; End-to-End Tests: Shout -> Piggyback Delivery
 ;; =============================================================================
 
 (deftest e2e-ling-shout-delivered-to-coordinator-via-piggyback-test
@@ -94,7 +96,7 @@
     ;; Step 1: Ling shouts (store directly in registry, bypassing DataScript)
     (shout-directly! "swarm-test-ling-1" :progress "Found the bug!" test-project)
 
-    ;; Step 2: Coordinator calls any tool → piggyback should include the shout
+    ;; Step 2: Coordinator calls any tool -> piggyback should include the shout
     (let [wrapped (routes/wrap-handler-piggyback dummy-handler)
           result (call-with-context wrapped {})]
       (is (some? (extract-hivemind-block result))
@@ -214,8 +216,9 @@
       (Thread/sleep 2)) ; Ensure unique timestamps
 
     ;; Agent-registry should have only last 10
-    (let [stored-count (count (get-in @hivemind/agent-registry
-                                       ["ling-rapid" :messages]))]
+    ;; bounded-atom: bget returns unwrapped :data
+    (let [agent-data (bget hivemind/agent-registry "ling-rapid")
+          stored-count (count (:messages agent-data))]
       (is (= 10 stored-count)
           "Ring buffer should keep only last 10 messages"))
 

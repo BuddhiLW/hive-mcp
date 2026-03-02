@@ -9,6 +9,7 @@
    2. load-extensions! can overwrite with custom implementations
       ext/register! is idempotent — last write wins."
   (:require [hive-mcp.extensions.registry :as ext]
+            [hive-mcp.config.core :as config]
             [hive.events.fsm :as fsm]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -54,6 +55,17 @@
         failed  (seq (get-in data [:spark-result :failed]))]
     (and (zero? spawned) (some? failed))))
 
+(defn- context-gather-enabled?*
+  "fb/q7: Check if context-gather phase is enabled via config.
+   Config key: [:forge :context-gather] — default false."
+  [_data]
+  (boolean (config/get-service-value :forge :context-gather :default false)))
+
+(defn- context-gather-disabled?*
+  "fb/q8: Inverse of q7 — skip context-gather when disabled."
+  [data]
+  (not (context-gather-enabled?* data)))
+
 ;; =============================================================================
 ;; Handlers (h1-h7) — Call resources ops, stay decoupled from workflow.clj
 ;; =============================================================================
@@ -95,6 +107,31 @@
            :phase ::spark
            :survey-result result)))
 
+(defn- handle-context-gather*
+  "fb/h3.5: Gather context for surveyed tasks via batch-context-for-tasks.
+   Config-gated — only runs when [:forge :context-gather] is true.
+   Stores result in :context-result for spark to use."
+  [resources data]
+  (let [tasks     (get-in data [:survey-result :tasks] [])
+        task-ids  (mapv :id tasks)
+        directory (:directory resources)
+        result    (try
+                    (when-let [batch-fn (requiring-resolve
+                                         'hive-knowledge.kanban.context-for-task/batch-context-for-tasks)]
+                      (let [scope-fn  (:scope-fn resources)
+                            scope     (when (and scope-fn directory) (scope-fn directory))]
+                        (batch-fn {:tasks      tasks
+                                   :scope      scope
+                                   :file-hints []})))
+                    (catch Exception e
+                      (log/warn "context-gather failed, proceeding without context:" (.getMessage e))
+                      nil))]
+    (log/info "CONTEXT-GATHER:" (count task-ids) "tasks →"
+              (if result (str (count result) " contexts") "skipped"))
+    (assoc data
+           :phase ::spark
+           :context-result result)))
+
 (defn- handle-spark*
   "fb/h4: Spawn lings or dispatch drones via agent-ops.
    When spawn-mode is :drone, delegates to :drone-dispatch-fn.
@@ -105,7 +142,8 @@
         {:keys [update-fn]} kanban-ops
         {:keys [max-slots presets spawn-mode model
                 preset seeds ctx-refs kg-node-ids]} config
-        tasks (get-in data [:survey-result :tasks] [])
+        tasks          (get-in data [:survey-result :tasks] [])
+        context-result (:context-result data)
         result (if (and (= :drone spawn-mode) drone-dispatch-fn)
                  (drone-dispatch-fn
                   (cond-> {:directory directory
@@ -124,12 +162,13 @@
                            :dispatch-fn    dispatch-fn
                            :wait-ready-fn  wait-ready-fn
                            :update-fn      update-fn}
-                    spawn-mode   (assoc :spawn-mode spawn-mode)
-                    model        (assoc :model model)
-                    preset       (assoc :preset preset)
-                    seeds        (assoc :seeds seeds)
-                    ctx-refs     (assoc :ctx_refs ctx-refs)
-                    kg-node-ids  (assoc :kg_node_ids kg-node-ids))))]
+                    spawn-mode     (assoc :spawn-mode spawn-mode)
+                    model          (assoc :model model)
+                    preset         (assoc :preset preset)
+                    seeds          (assoc :seeds seeds)
+                    ctx-refs       (assoc :ctx_refs ctx-refs)
+                    kg-node-ids    (assoc :kg_node_ids kg-node-ids)
+                    context-result (assoc :context-result context-result))))]
     (-> data
         (assoc :phase ::cycle-complete
                :spark-result result
@@ -179,18 +218,18 @@
 
 ;; =============================================================================
 ;; FSM Spec — State graph:
-;;   ::start → ::smite → ::survey →─┬─ ::end   (no tasks — kanban exhausted)
-;;                                   └─ ::spark →─┬─ ::end   (single-shot)
-;;                                                 ├─ ::halt  (quenched)
-;;                                                 ├─ ::end   (all sparked failed)
-;;                                                 ├─ ::start (continuous, loop)
-;;                                                 └─ ::end   (fallback)
+;;   ::start → ::smite → ::survey →─┬─ ::end (no tasks)
+;;                                   └─ ::context-gather (if enabled) →─ ::spark
+;;                                   └─ ::spark (if context-gather disabled)
+;;                                        →─┬─ ::end   (single-shot)
+;;                                           ├─ ::halt  (quenched)
+;;                                           ├─ ::end   (all sparked failed)
+;;                                           ├─ ::start (continuous, loop)
+;;                                           └─ ::end   (fallback)
 ;;
-;; Mixed results: when some lings succeed and some fail:
-;;   - single-shot: goes to ::end, outcome = :partial, success = true
-;;   - continuous:  loops via ::start (next survey picks up remaining tasks)
-;;   - all-failed:  goes to ::end even in continuous mode (no point looping)
-;;   - no-tasks:    exits from ::survey when kanban has 0 todo tasks
+;; Optional ::context-gather state (config-gated via [:forge :context-gather]):
+;;   Gathers zero-LLM-token context for surveyed tasks before spawning.
+;;   When disabled, survey dispatches directly to ::spark (original behavior).
 ;; =============================================================================
 
 (def ^:private forge-belt-spec
@@ -202,8 +241,12 @@
                  :dispatches [[::survey (constantly true)]]}
 
     ::survey    {:handler    handle-survey*
-                 :dispatches [[::fsm/end no-tasks?*]
-                              [::spark   (constantly true)]]}
+                 :dispatches [[::fsm/end         no-tasks?*]
+                              [::context-gather  context-gather-enabled?*]
+                              [::spark           (constantly true)]]}
+
+    ::context-gather {:handler    handle-context-gather*
+                      :dispatches [[::spark (constantly true)]]}
 
     ::spark     {:handler    handle-spark*
                  :dispatches [[::fsm/end   single-shot?*]
@@ -263,21 +306,24 @@
    Called at startup before load-extensions! so extensions can override."
   []
   (ext/register-many!
-   {;; Predicates (q1-q6)
+   {;; Predicates (q1-q8)
     :fb/q1 quenched?*
     :fb/q2 has-tasks?*
     :fb/q3 no-tasks?*
     :fb/q4 continuous?*
     :fb/q5 single-shot?*
     :fb/q6 spark-all-failed?*
-    ;; Handlers (h1-h7)
-    :fb/h1 handle-start*
-    :fb/h2 handle-smite*
-    :fb/h3 handle-survey*
-    :fb/h4 handle-spark*
-    :fb/h5 handle-end*
-    :fb/h6 handle-halt*
-    :fb/h7 handle-error*
+    :fb/q7 context-gather-enabled?*
+    :fb/q8 context-gather-disabled?*
+    ;; Handlers (h1-h7 + h3.5)
+    :fb/h1   handle-start*
+    :fb/h2   handle-smite*
+    :fb/h3   handle-survey*
+    :fb/h3.5 handle-context-gather*
+    :fb/h4   handle-spark*
+    :fb/h5   handle-end*
+    :fb/h6   handle-halt*
+    :fb/h7   handle-error*
     ;; Subscriptions (s1-s2)
     :fb/s1 on-smite-count-change*
     :fb/s2 on-spark-count-change*
@@ -287,4 +333,4 @@
     :fb/strike  run-single-strike*
     :fb/cont    run-continuous-belt*})
 
-  (log/info "Registered forge belt defaults (19 :fb/* extension points)"))
+  (log/info "Registered forge belt defaults (22 :fb/* extension points)"))

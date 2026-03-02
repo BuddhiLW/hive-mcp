@@ -5,7 +5,8 @@
             [hive-mcp.tools.diff.auto-approve :as auto-approve]
             [hive-mcp.tools.diff.handlers :as handlers]
             [clojure.data.json :as json]
-            [taoensso.timbre :as log]))
+            [taoensso.timbre :as log]
+            [hive-dsl.bounded-atom :refer [bget bkeys]]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -14,7 +15,7 @@
   "Get all pending diffs from multiple drones for batch review."
   ([] (batch-review-diffs nil))
   ([drone-ids]
-   (let [all-diffs (vals @state/pending-diffs)
+   (let [all-diffs (mapv :data (vals @(:atom state/pending-diffs)))
          filtered (if (seq drone-ids)
                     (filter #(contains? (set drone-ids) (:drone-id %)) all-diffs)
                     all-diffs)]
@@ -39,7 +40,7 @@
    (let [diffs (batch-review-diffs drone-ids)
          categorized (for [d diffs
                            :let [check (auto-approve/auto-approve-diff?
-                                        (get @state/pending-diffs (:id d))
+                                        (bget state/pending-diffs (:id d))
                                         rules)]]
                        (assoc d :auto-check check))
          auto-approvable (filter #(get-in % [:auto-check :approved]) categorized)

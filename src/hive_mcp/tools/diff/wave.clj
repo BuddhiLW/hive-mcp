@@ -6,7 +6,8 @@
             [hive-mcp.tools.diff.handlers :as handlers]
             [clojure.data.json :as json]
             [clojure.string :as str]
-            [taoensso.timbre :as log]))
+            [taoensso.timbre :as log]
+            [hive-dsl.bounded-atom :refer [bkeys]]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -14,7 +15,7 @@
 (defn get-wave-diffs
   "Get all pending diffs for a specific wave-id."
   [wave-id]
-  (->> (vals @state/pending-diffs)
+  (->> (mapv :data (vals @(:atom state/pending-diffs)))
        (filter #(= wave-id (:wave-id %)))
        (vec)))
 

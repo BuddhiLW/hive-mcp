@@ -431,9 +431,10 @@
 ;; =============================================================================
 
 (defn- surface-rescue-error
-  "If rescue attached ::result/error metadata, surface :error into map for backward compat."
+  "If rescue/guard attached error metadata, surface :error into map for backward compat.
+   rescue and guard (hive-dsl.result) attach {:hive-dsl.result/error {:message ...}}."
   [m]
-  (if-let [err (::result/error (meta m))]
+  (if-let [err (:hive-dsl.result/error (meta m))]
     (assoc m :error (:message err))
     m))
 
@@ -443,19 +444,14 @@
 (def ^:private noop-d {:decayed 0 :expired 0 :total-scanned 0})
 (def ^:private noop-e {:files-captured 0})
 
-;; =============================================================================
-;; Lifecycle Operations — delegates to extensions
-;; =============================================================================
-
-(def ^:private ^:const op-timeout 5000)
+(def ^:private ^:const op-timeout 15000)
 
 (defn- timed-deref [fut default]
-  (try
-    (let [r (deref fut op-timeout ::timeout)]
-      (if (= r ::timeout)
-        (do (future-cancel fut) (assoc default :error "timed-out"))
-        r))
-    (catch Exception e (assoc default :error (.getMessage e)))))
+  (let [r (result/guard Exception default
+                        (deref fut op-timeout ::timeout))]
+    (if (= r ::timeout)
+      (do (future-cancel fut) (assoc default :error "timed-out"))
+      (surface-rescue-error r))))
 
 (defn- run-lifecycle-ops!
   "Run post-crystallization lifecycle operations in parallel with timeout guard.
@@ -538,8 +534,9 @@
             base-tags (into (or (:tags summary) []) ["auto-kg" "session-wrap" "temporal"])
             tags (scope/inject-project-scope base-tags project-id)
             expires (dur/calculate-expires "short")
-            ;; Start lifecycle ops NOW — they run concurrently with embedding
-            lifecycle-fut (pool/with-io (run-lifecycle-ops! project-id directory :harvested harvested))
+            ;; Start lifecycle ops on solo executor (avoids IO pool nesting —
+            ;; run-lifecycle-ops! internally submits 5 ops to IO pool via pool/with-io)
+            lifecycle-fut (pool/with-solo (run-lifecycle-ops! project-id directory :harvested harvested))
             t0 (System/currentTimeMillis)
             store-r (result/try-effect* :crystal/store-failed
                                         (chroma/index-memory-entry!

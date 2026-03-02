@@ -27,6 +27,7 @@
             [hive-mcp.extensions.registry :as ext]
             [hive-mcp.concurrency.pool :as pool]
             [hive-mcp.dns.result :refer [rescue]]
+            [hive-dsl.context.identity :as ctx-id]
             [clojure.data.json :as json]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -73,7 +74,8 @@
   "Native Clojure catchup implementation that queries Chroma directly.
    Returns structured catchup data with proper project scoping.
 
-   Phase 2: Enriches decisions/conventions with KG relationships."
+   If an enrichment addon is registered via :cu/a, it runs
+   fire-and-forget. Results arrive via piggyback on subsequent calls."
   [args]
   (let [directory (:directory args)]
     (log/info "native-catchup: querying Chroma with project scope" {:directory directory})
@@ -125,39 +127,27 @@
               snippets-meta (mapv #(fmt/entry->catchup-meta % 60) snippets)
               expiring-meta (mapv #(fmt/entry->catchup-meta % 80) expiring)
 
-              ;; Addon extension (optional)
-              enrich-fn (ext/get-extension :cu/a)
-              enriched (when enrich-fn
-                         (safe-deref
-                          (pool/with-io
-                            (enrich-fn {:directory directory
-                                        :project-id project-id
-                                        :decisions decisions-base
-                                        :conventions conventions-base
-                                        :sessions sessions-meta
-                                        :axioms axioms
-                                        :principles principles
-                                        :priority-conventions priority-conventions}))
-                          query-timeout-ms nil))
-              decisions-enriched   (or (:decisions enriched) decisions-base)
-              conventions-enriched (or (:conventions enriched) conventions-base)
-              kg-insights          (or (:kg-insights enriched) {})
-              permeation-result    (:permeation enriched)
-              project-tree-scan    (or (:project-tree enriched) {:scanned false})
+              ;; Addon extension: fire-and-forget (async, returns nil immediately).
+              _ (when-let [enrich-fn (ext/get-extension :cu/a)]
+                  (enrich-fn {:directory directory
+                              :project-id project-id
+                              :caller-id (:_caller_id args)
+                              :decisions decisions-base
+                              :conventions conventions-base
+                              :sessions sessions-meta
+                              :axioms axioms
+                              :principles principles
+                              :priority-conventions priority-conventions}))
 
               ;; Memory piggyback: enqueue axioms + priority conventions for
               ;; incremental delivery via ---MEMORY--- blocks on subsequent calls.
               ;; Axioms first (highest priority), then priority conventions.
               ;;
-              ;; CURSOR ISOLATION: Must use the SAME caller identity formula as
-              ;; wrap-handler-memory-piggyback in routes.clj for buffer key alignment.
-              ;; Uses _caller_id (injected by bb-mcp) for per-caller isolation,
-              ;; falls back to "coordinator" for old bb-mcp versions.
-              ;; See extract-caller-id in routes.clj.
-              caller-id (or (:_caller_id args) "coordinator")
-              piggyback-agent-id (if project-id
-                                   (str caller-id "-" project-id)
-                                   caller-id)
+              ;; CURSOR ISOLATION: Uses ctx-id ADTs for canonical identity construction.
+              ;; Guarantees buffer key alignment with routes.clj piggyback wrappers.
+              caller (ctx-id/parse-caller-id (:_caller_id args))
+              scope (ctx-id/parse-project-scope project-id)
+              piggyback-agent-id (ctx-id/make-piggyback-agent-id caller scope)
 
               ;; Cursor hygiene: adopt previous coordinator's cursor position
               ;; so we don't re-read hivemind messages from timestamp 0 after
@@ -212,13 +202,12 @@
 
           (fmt/build-catchup-response
            {:project-name project-name :project-id project-id
-            :scopes scopes :git-info git-info :permeation permeation-result
+            :scopes scopes :git-info git-info
             :axioms-meta axioms-meta :principles-meta principles-meta
             :priority-meta priority-meta
-            :sessions-meta sessions-meta :decisions-meta decisions-enriched
-            :conventions-meta conventions-enriched :snippets-meta snippets-meta
-            :expiring-meta expiring-meta :kg-insights kg-insights
-            :project-tree-scan project-tree-scan
+            :sessions-meta sessions-meta :decisions-meta decisions-base
+            :conventions-meta conventions-base :snippets-meta snippets-meta
+            :expiring-meta expiring-meta
             :context-refs context-refs}))
         (catch Exception e
           (fmt/catchup-error e))))))

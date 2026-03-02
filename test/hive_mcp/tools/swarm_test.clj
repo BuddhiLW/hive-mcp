@@ -11,7 +11,8 @@
             [hive-mcp.tools.swarm.core :as swarm-core]
             [hive-mcp.swarm.datascript :as ds]
             [hive-mcp.emacs.client :as ec]
-            [hive-mcp.hivemind.core :as hivemind]))
+            [hive-mcp.hivemind.core :as hivemind]
+            [hive-dsl.bounded-atom :refer [bput! bget bclear!]]))
 
 ;; =============================================================================
 ;; Test Fixtures
@@ -24,11 +25,11 @@
   ;; Reset DataScript (primary - ADR-002)
   (ds/reset-conn!)
   ;; Reset hivemind agent-registry (message history)
-  (reset! hivemind/agent-registry {})
+  (bclear! hivemind/agent-registry)
   (f)
   ;; Cleanup after test
   (ds/reset-conn!)
-  (reset! hivemind/agent-registry {}))
+  (bclear! hivemind/agent-registry))
 
 (use-fixtures :each reset-registry-fixture)
 
@@ -136,8 +137,9 @@
 (deftest swarm-status-merge-with-hivemind-preserves-all-test
   (testing "Merging hivemind status preserves all slaves"
     ;; Setup: Add hivemind status for some agents
-    (swap! hivemind/agent-registry assoc
-           "slave-1" {:status :progress :task "Working on tests"}
+    (bput! hivemind/agent-registry
+           "slave-1" {:status :progress :task "Working on tests"})
+    (bput! hivemind/agent-registry
            "slave-3" {:status :completed :task "Done with review"})
 
     (let [status-json (json/write-str
@@ -215,11 +217,15 @@
 (deftest get-slave-working-status-test
   (testing "Maps hivemind event types to working status"
     ;; Setup various agent states
-    (swap! hivemind/agent-registry assoc
-           "agent-started" {:status :started}
-           "agent-progress" {:status :progress}
-           "agent-completed" {:status :completed}
-           "agent-error" {:status :error}
+    (bput! hivemind/agent-registry
+           "agent-started" {:status :started})
+    (bput! hivemind/agent-registry
+           "agent-progress" {:status :progress})
+    (bput! hivemind/agent-registry
+           "agent-completed" {:status :completed})
+    (bput! hivemind/agent-registry
+           "agent-error" {:status :error})
+    (bput! hivemind/agent-registry
            "agent-blocked" {:status :blocked})
 
     (is (= "working" (swarm/get-slave-working-status "agent-started")))

@@ -81,6 +81,7 @@
   (:require [hive.events.fsm :as fsm]
             [hive-mcp.dns.result :as result]
             [hive-mcp.concurrency.pool :as pool]
+            [hive-dsl.context.identity :as ctx-id]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -360,8 +361,9 @@
         context-refs      (store-context-categories (:context-store-fn resources)
                                                     data project-id 600000)
         piggyback-entries (into (vec (:axioms data)) (:priority-conventions data))
-        caller-id         (or (:_caller_id data) "coordinator")
-        piggyback-id      (if project-id (str caller-id "-" project-id) caller-id)]
+        piggyback-id      (ctx-id/make-piggyback-agent-id
+                           (ctx-id/parse-caller-id (:_caller_id data))
+                           (ctx-id/parse-project-scope project-id))]
     ;; Cursor hygiene: adopt previous cursor + clean up stale state
     (when-let [cursor-adopt-fn (:cursor-adopt-fn resources)]
       (try (cursor-adopt-fn piggyback-id project-id) (catch Exception _)))

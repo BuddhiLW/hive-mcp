@@ -101,6 +101,8 @@
     ;; Must run AFTER embedding/memory (extensions may use Chroma).
     ;; Must run BEFORE workflow engine (handlers may use extensions).
     ;; hive-claude auto-discovered here via META-INF manifest (registers :claude terminal)
+    ;; NOTE: Addons self-register capabilities during initialize! lifecycle.
+    ;; E.g. hive-emacs registers EmacsVessel in IVessel registry here.
     (init/load-extensions!)
 
     ;; Phase 5: Channels + Sync
@@ -134,8 +136,13 @@
 
     ;; Phase 6.5: Decay Scheduler (periodic memory/edge/disc decay)
     ;; Must run after config loaded (Phase 5.5) and embedding provider (Phase 4).
-    ;; Daemon thread — dies with JVM, no explicit shutdown needed.
+    ;; Daemon thread -- dies with JVM, no explicit shutdown needed.
     (init/start-decay-scheduler!)
+
+    ;; Phase 6.6: Housekeeping Scheduler (gc-fix-5: periodic GC sweep + cleanup)
+    ;; Runs bounded atom GC sweep + stale resource cleanup every 5 minutes.
+    ;; Daemon thread -- dies with JVM. Also stoppable via init/stop-housekeeping-scheduler!
+    (init/start-housekeeping-scheduler!)
 
     ;; Phase 7: Start MCP server (must be last - blocks on stdio)
     ;; NOTE: routes/build-server-spec must be called AFTER init-embedding-provider!

@@ -11,7 +11,8 @@
             [hive-mcp.tools.memory.scope :as mem-scope]
             [clojure.data.json :as json]
             [clojure.set :as set]
-            [taoensso.timbre :as log]))
+            [taoensso.timbre :as log]
+            [hive-dsl.bounded-atom :refer [bkeys]]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -55,11 +56,15 @@ The env var fallback reads from MCP server process, NOT your ling process!"
                      _ (when (and (not agent_id) (not ctx-agent))
                          (log/warn "[hivemind_shout] No agent_id in args or context, using fallback:" (or env-agent "unknown-agent")))
 
-                     fallback-used? (and (not agent_id) (not ctx-agent))
-                     effective-dir (or directory
-                                       (ctx/current-directory))]
+                     fallback-used? (and (not agent_id) (not ctx-agent))]
+                 ;; NOTE: Only pass directory if caller explicitly provided it.
+                 ;; Do NOT fall back to ctx/current-directory — that resolves to the
+                 ;; MCP server's cwd, not the ling's cwd. shout! has its own slave-cwd
+                 ;; lookup from DataScript which correctly uses the ling's registered cwd.
                  (messaging/shout! effective-id (keyword event_type)
-                                   (merge {:task task :message message :directory effective-dir} data))
+                                   (merge {:task task :message message}
+                                          (when directory {:directory directory})
+                                          data))
                  {:type "text" :text (json/write-str (cond-> {:success true
                                                               :agent_id effective-id}
                                                        fallback-used?
@@ -173,13 +178,15 @@ The specific agent lookup is still allowed even if agent is from another project
                      ds-agents (if project-id
                                  (clojure.core/set (map :slave/id (proto/get-slaves-by-project registry/default-registry project-id)))
                                  (clojure.core/set (map :slave/id (proto/get-all-slaves registry/default-registry))))
+                     ;; Iterate raw bounded-atom entries for project filtering
                      msg-agents (if project-id
-                                  (->> @state/agent-registry
-                                       (filter (fn [[_id {:keys [messages]}]]
-                                                 (some #(= project-id (:project-id %)) messages)))
+                                  (->> @(:atom state/agent-registry)
+                                       (filter (fn [[_id entry]]
+                                                 (some #(= project-id (:project-id %))
+                                                       (:messages (:data entry)))))
                                        (map first)
                                        set)
-                                  (clojure.core/set (keys @state/agent-registry)))
+                                  (clojure.core/set (bkeys state/agent-registry)))
                      available-agents (vec (set/union ds-agents msg-agents))]
                  {:type "text"
                   :text (json/write-str

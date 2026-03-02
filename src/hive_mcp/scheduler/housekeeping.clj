@@ -10,7 +10,8 @@
    - Completed multi-async batches
    - Event journal old entries
    - Completed SAA states
-   - Drone KG stores for dead drones"
+   - Drone KG stores for dead drones
+   - Bounded atom GC sweep (TTL + capacity eviction)"
   (:require [hive-mcp.dns.result :as result]
             [hive-mcp.config.core :as config]
             [taoensso.timbre :as log])
@@ -78,14 +79,48 @@
          'hive-mcp.agent.saa.orchestrator/clear-completed-states!
          #(%) {:cleaned 0})
 
+        ;; 5. Bounded atom GC sweep
+        ;; Evicts TTL-expired and over-capacity entries from all registered
+        ;; bounded atoms. Prevents GC death spiral from unbounded atom growth.
+        gc-sweep-result
+        (resolve-and-call
+         'hive-mcp.gc.bounded-atom/sweep-all!
+         #(%) {:total-evicted 0 :atom-count 0 :duration-ms 0})
+
+        ;; 6. JVM GC hint — nudge G1GC to collect old gen.
+        ;; G1GC with MaxGCPauseMillis=200 avoids full GC cycles, so old gen
+        ;; fills with long-lived garbage. Periodic hint prevents 97%+ old gen.
+        gc-hint-result
+        (try
+          (let [runtime (Runtime/getRuntime)
+                before-mb (/ (- (.totalMemory runtime) (.freeMemory runtime)) 1048576.0)]
+            (.gc runtime)
+            (let [after-mb (/ (- (.totalMemory runtime) (.freeMemory runtime)) 1048576.0)
+                  freed-mb (- before-mb after-mb)]
+              {:freed-mb (Math/round freed-mb) :before-mb (Math/round before-mb)}))
+          (catch Exception _ {:freed-mb 0}))
+
         elapsed-ms (- (System/currentTimeMillis) start-ms)
         result {:callbacks callback-result
                 :async-batches async-result
                 :event-journal journal-result
                 :saa-states saa-result
+                :gc-sweep gc-sweep-result
+                :gc-hint gc-hint-result
                 :sweep-number sweep-num
                 :duration-ms elapsed-ms
                 :timestamp (java.time.Instant/now)}]
+
+    ;; Log GC sweep stats at info level when entries were evicted
+    (when (pos? (get gc-sweep-result :total-evicted 0))
+      (log/info "Housekeeping: GC sweep evicted"
+                (:total-evicted gc-sweep-result) "entries from"
+                (:atom-count gc-sweep-result) "atoms"))
+
+    ;; Log GC hint results when significant memory was freed
+    (when (> (get gc-hint-result :freed-mb 0) 50)
+      (log/info "Housekeeping: GC hint freed" (:freed-mb gc-hint-result) "MB"
+                "(before:" (:before-mb gc-hint-result) "MB)"))
 
     ;; Update state
     (swap! scheduler-state assoc

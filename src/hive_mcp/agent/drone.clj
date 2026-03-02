@@ -20,6 +20,7 @@
             [hive-mcp.telemetry.prometheus :as prom]
             [clojure.set]
             [hive-dsl.result :as r]
+            [hive-dsl.bounded-atom :refer [bkeys]]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -191,7 +192,7 @@
             selected-model (or model (:model model-selection))
             step-budget (or max-steps (decompose/get-step-budget task effective-files))
             augmented-task (augment/augment-task task effective-files {:project-root cwd})
-            diffs-before (set (keys @diff/pending-diffs))
+            diffs-before (set (bkeys diff/pending-diffs))
             effective-root (or cwd (diff/get-project-root))
             drone-sandbox (sandbox/create-sandbox (or effective-files []) effective-root)
 
@@ -211,7 +212,7 @@
                                             :allowed-dirs (:allowed-dirs drone-sandbox)
                                             :blocked-patterns (map str (:blocked-patterns drone-sandbox))
                                             :blocked-tools (:blocked-tools drone-sandbox)}})
-            diffs-after (set (keys @diff/pending-diffs))
+            diffs-after (set (bkeys diff/pending-diffs))
             new-diff-ids (clojure.set/difference diffs-after diffs-before)
             duration-ms (- (System/currentTimeMillis) start-time)
 

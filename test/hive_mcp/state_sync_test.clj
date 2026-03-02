@@ -10,7 +10,8 @@
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [hive-mcp.hivemind.core :as hivemind]
             [hive-mcp.swarm.datascript :as ds]
-            [hive-mcp.tools.swarm :as swarm]))
+            [hive-mcp.tools.swarm :as swarm]
+            [hive-dsl.bounded-atom :refer [bget bclear!]]))
 
 ;; =============================================================================
 ;; Test Fixtures - Reset state between tests
@@ -19,11 +20,11 @@
 (defn reset-state-fixture [f]
   ;; ADR-002: Reset DataScript as primary registry
   (ds/reset-conn!)
-  (reset! hivemind/agent-registry {})
+  (bclear! hivemind/agent-registry)
   ;; Note: lings-registry moved to DataScript, no separate atom
   (f)
   (ds/reset-conn!)
-  (reset! hivemind/agent-registry {}))
+  (bclear! hivemind/agent-registry))
 
 (use-fixtures :each reset-state-fixture)
 
@@ -40,7 +41,7 @@
     (hivemind/shout! "slave-abc-123" :started {:task "Test task" :message "Starting"})
 
     ;; Then: The hivemind agent registry should contain this agent
-    (is (contains? @hivemind/agent-registry "slave-abc-123")
+    (is (some? (bget hivemind/agent-registry "slave-abc-123"))
         "Agent should be registered in hivemind after shout")))
 
 ;; =============================================================================

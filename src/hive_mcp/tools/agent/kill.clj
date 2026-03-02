@@ -5,11 +5,29 @@
             [hive-mcp.agent.ling :as ling]
             [hive-mcp.agent.drone :as drone]
             [hive-mcp.swarm.datascript.queries :as queries]
+            [hive-mcp.swarm.datascript.lings :as ds-lings]
             [hive-mcp.tools.memory.scope :as scope]
             [taoensso.timbre :as log]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
+
+(defn- kill-via-emacs!
+  "Kill a vterm/swarm ling by delegating to Emacs.
+   Fallback when headless strategy can't reach the Emacs buffer."
+  [agent-id]
+  (try
+    (when-let [eval-fn (requiring-resolve 'hive-mcp.emacs.client/eval-elisp)]
+      (let [elisp (format "(when (fboundp 'hive-mcp-swarm-slaves-kill) (hive-mcp-swarm-slaves-kill \"%s\"))"
+                          agent-id)
+            result (eval-fn elisp)]
+        (log/info "Emacs kill result" {:agent-id agent-id :result result})
+        (when (:success result)
+          (try (ds-lings/remove-slave! agent-id) (catch Exception _))
+          {:killed? true :id agent-id :via :emacs})))
+    (catch Exception e
+      (log/warn "Emacs kill fallback failed" {:agent-id agent-id :error (ex-message e)})
+      nil)))
 
 (defn- kill-one!
   "Kill a single agent, returning {:killed id :result ...} or {:error ... :id id}."
@@ -36,13 +54,21 @@
                         :drone (drone/->drone agent-id {:cwd (:slave/cwd agent-data)
                                                         :parent-id (:slave/parent agent-data)
                                                         :project-id (:slave/project-id agent-data)}))
-                result (proto/kill! agent)]
+                result (proto/kill! agent)
+                ;; Fallback: if headless kill failed, try Emacs for vterm lings
+                result (if (and (not (:killed? result))
+                                (= agent-type :ling))
+                         (or (kill-via-emacs! agent-id) result)
+                         result)]
             (log/info "Kill agent result" {:agent_id agent-id
                                            :result result
                                            :caller-project caller-project-id
                                            :target-project target-project-id})
             {:killed agent-id :result result})))
-      {:error (str "Agent not found: " agent-id) :id agent-id})
+      ;; Not in DataScript — try Emacs-side kill (swarm vterm lings)
+      (if-let [emacs-result (kill-via-emacs! agent-id)]
+        {:killed agent-id :result emacs-result}
+        {:error (str "Agent not found: " agent-id) :id agent-id}))
     (catch Exception e
       (log/error "Failed to kill agent" {:agent_id agent-id :error (ex-message e)})
       {:error (str "Failed to kill agent: " (ex-message e)) :id agent-id})))

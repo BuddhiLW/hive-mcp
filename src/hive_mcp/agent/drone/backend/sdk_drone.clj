@@ -32,7 +32,9 @@
                     {:backend :sdk-drone}))))
 
 (defn- drain-output-channel
-  "Drain all messages from a core.async channel into a vector with timeout."
+  "Drain all messages from a core.async channel into a vector with timeout.
+   On timeout, closes the channel to unblock the drain thread — prevents
+   leaking the future thread and ManyToManyChannel."
   [ch timeout-ms]
   (let [collected (atom [])
         drain-future (future
@@ -44,7 +46,10 @@
                                  (recur))))))
         result (deref drain-future timeout-ms ::timeout)]
     (if (= ::timeout result)
-      {:messages @collected :timed-out? true}
+      (do
+        (async/close! ch)           ;; Unblock drain-future's <!! → returns nil
+        (future-cancel drain-future) ;; Try to interrupt if still blocked
+        {:messages @collected :timed-out? true})
       result)))
 
 (defn- extract-result-text

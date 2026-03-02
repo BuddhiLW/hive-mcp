@@ -3,7 +3,8 @@
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [hive-mcp.tools.swarm :as swarm]
             [hive-mcp.tools.swarm.channel :as swarm-channel]
-            [hive-mcp.channel.core :as ch]))
+            [hive-mcp.channel.core :as ch]
+            [hive-dsl.bounded-atom :refer [bput!]]))
 
 ;; =============================================================================
 ;; Test Fixtures
@@ -35,7 +36,7 @@
 (deftest event-journal-clear-test
   (testing "Event journal can be cleared"
     ;; Manually add an entry via the private atom in swarm.channel
-    (swap! @#'swarm-channel/event-journal assoc "test-task" {:status "completed"})
+    (bput! @#'swarm-channel/event-journal "test-task" {:status "completed"})
     (is (some? (swarm/check-event-journal "test-task")))
     (swarm/clear-event-journal!)
     (is (nil? (swarm/check-event-journal "test-task")))))
@@ -54,12 +55,12 @@
     (swarm/start-channel-subscriptions!)
     (Thread/sleep 100)
 
-    ;; Verify subscriptions are active via private atom in swarm.channel
-    (is (seq @@#'swarm-channel/channel-subscriptions))
+    ;; Verify subscriptions are active via bounded-atom in swarm.channel
+    (is (seq @(:atom @#'swarm-channel/channel-subscriptions)))
 
     ;; Stop subscriptions
     (swarm/stop-channel-subscriptions!)
-    (is (empty? @@#'swarm-channel/channel-subscriptions))))
+    (is (empty? @(:atom @#'swarm-channel/channel-subscriptions)))))
 
 ;; =============================================================================
 ;; Push Event Integration Tests
@@ -119,7 +120,7 @@
 (deftest collect-finds-journal-entry-immediately-test
   (testing "handle-swarm-collect finds journal entry without polling"
     ;; Pre-populate the journal (simulating event arrival)
-    (swap! @#'swarm-channel/event-journal assoc "instant-task"
+    (bput! @#'swarm-channel/event-journal "instant-task"
            {:status "completed"
             :result "instant result"
             :slave-id "fast-slave"

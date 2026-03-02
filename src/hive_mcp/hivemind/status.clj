@@ -8,7 +8,8 @@
             [hive-mcp.swarm.datascript.registry :as registry]
             [hive-mcp.swarm.logic :as logic]
             [hive-mcp.tools.memory.scope :as mem-scope]
-            [taoensso.timbre :as log]))
+            [taoensso.timbre :as log]
+            [hive-dsl.bounded-atom :refer [bput! bget bounded-swap! bkeys]]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -21,7 +22,11 @@
    (let [ds-slaves (if project-id
                      (proto/get-slaves-by-project registry/default-registry project-id)
                      (proto/get-all-slaves registry/default-registry))
-         msg-history @state/agent-registry]
+         ;; Unwrap bounded-atom entries to get raw agent-id -> data map
+         msg-history (reduce-kv (fn [acc k entry]
+                                  (assoc acc k (:data entry)))
+                                {}
+                                @(:atom state/agent-registry))]
      (reduce
       (fn [acc slave]
         (let [slave-id (:slave/id slave)
@@ -52,13 +57,14 @@
                            :question question
                            :options options})
                         @state/pending-asks)
-    :pending-swarm-prompts (mapv (fn [[slave-id {:keys [prompt timestamp session-id received-at]}]]
-                                   {:slave-id slave-id
-                                    :prompt prompt
-                                    :timestamp timestamp
-                                    :session-id session-id
-                                    :received-at received-at})
-                                 @state/pending-swarm-prompts)
+    :pending-swarm-prompts (mapv (fn [[slave-id entry]]
+                                   (let [{:keys [prompt timestamp session-id received-at]} (:data entry)]
+                                     {:slave-id slave-id
+                                      :prompt prompt
+                                      :timestamp timestamp
+                                      :session-id session-id
+                                      :received-at received-at}))
+                                 @(:atom state/pending-swarm-prompts))
     :channel-connected (channel/server-connected?)
     :ws-connected (ws/connected?)
     :ws-clients (ws/client-count)}))
@@ -66,7 +72,7 @@
 (defn get-agent-messages
   "Get recent messages from a specific agent."
   [agent-id]
-  (let [msg-history-entry (get @state/agent-registry agent-id)
+  (let [msg-history-entry (bget state/agent-registry agent-id)
         ds-slave (proto/get-slave registry/default-registry agent-id)]
     (cond
       msg-history-entry (:messages msg-history-entry)
@@ -78,7 +84,7 @@
 
   [agent-id metadata]
   (let [now (System/currentTimeMillis)]
-    (swap! state/agent-registry assoc agent-id
+    (bput! state/agent-registry agent-id
            {:messages []
             :last-seen now})
     (when-not (proto/get-slave registry/default-registry agent-id)
@@ -97,7 +103,7 @@
 (defn clear-agent!
   "Remove an agent from the registry and release all claims."
   [agent-id]
-  (swap! state/agent-registry dissoc agent-id)
+  (bounded-swap! state/agent-registry dissoc agent-id)
   (logic/release-claims-for-slave! agent-id)
   (proto/remove-slave! registry/default-registry agent-id)
   (log/info "Agent cleared from hivemind:" agent-id))

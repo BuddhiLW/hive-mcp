@@ -170,6 +170,15 @@
   [& body]
   `(submit-event! (fn [] ~@body)))
 
+(defmacro with-solo
+  "Submit body to Clojure's solo executor (unbounded cached thread pool).
+   Returns a Future (clojure.core/future).
+   Use for coordinator tasks that internally spawn IO/compute pool work —
+   avoids nested-pool contention where a bounded-pool thread blocks
+   while spawning more work on the same pool."
+  [& body]
+  `(future ~@body))
+
 ;; =============================================================================
 ;; Monitoring
 ;; =============================================================================

@@ -103,10 +103,28 @@
                      (compare pa pb))))
                tasks))))
 
+(defn- apply-milestone-boundary-filter
+  "Post-filter: exclude tasks from milestones whose prerequisites are incomplete.
+   Config-gated via [:forge :milestone-boundary]. Graceful degradation."
+  [prioritized]
+  (if (config/get-service-value :forge :milestone-boundary :default false)
+    (result/rescue prioritized
+                   (when-let [filter-fn (requiring-resolve
+                                         'hive-knowledge.kanban.milestone/milestone-boundary-filter)]
+                     (let [{:keys [tasks excluded-count reason]} (filter-fn (:tasks prioritized))]
+                       (when (pos? (or excluded-count 0))
+                         (log/info "SURVEY: milestone-boundary excluded" excluded-count "tasks:" reason))
+                       (-> prioritized
+                           (assoc :tasks tasks)
+                           (assoc :count (count tasks))
+                           (update :blocked-count + (or excluded-count 0))))))
+    prioritized))
+
 (defn survey
   "Query kanban for todo tasks, ranked by KG dependencies (vulcan always-on).
    task_ids acts as an ID whitelist, task_filter as a title-prefix filter.
-   Extra keys in opts are passed through to vulcan/prioritize-tasks (OCP)."
+   Extra keys in opts are passed through to vulcan/prioritize-tasks (OCP).
+   When [:forge :milestone-boundary] is true, excludes tasks from blocked milestones."
   [{:keys [directory task_ids task_filter] :as opts}]
   (let [r (result/rescue
            {:tasks [] :count 0}
@@ -117,13 +135,15 @@
                                (filterv #(contains? (set task_ids) (:id %)))
                                (some? task_filter)
                                (filterv #(str/starts-with? (or (:title %) "") task_filter)))
-                 prioritized (vulcan/prioritize-tasks tasks #{} (dissoc opts :directory :task_ids :task_filter))]
-             (log/info "SURVEY: ready" (:count prioritized)
-                       "blocked" (:blocked-count prioritized)
+                 prioritized (vulcan/prioritize-tasks tasks #{} (dissoc opts :directory :task_ids :task_filter))
+                 ;; Post-filter: milestone boundary enforcement (OCP)
+                 filtered    (apply-milestone-boundary-filter prioritized)]
+             (log/info "SURVEY: ready" (:count filtered)
+                       "blocked" (:blocked-count filtered)
                        "of" (count all-tasks) "total"
                        (when (seq task_ids) (str "(id-whitelist: " (count task_ids) ")"))
                        (when task_filter (str "(filter: " (pr-str task_filter) ")")))
-             prioritized))]
+             filtered))]
     (cond-> r
       (::result/error (meta r))
       (assoc :error (get-in (meta r) [::result/error :message])))))

@@ -108,7 +108,11 @@
            axioms-meta principles-meta priority-meta sessions-meta decisions-meta
            conventions-meta snippets-meta expiring-meta kg-insights
            project-tree-scan disc-decay context-refs]}]
-  (let [total-enqueued (+ (count axioms-meta) (count principles-meta) (count priority-meta))]
+  (let [total-enqueued (+ (count axioms-meta) (count principles-meta) (count priority-meta)
+                          (count sessions-meta) (count decisions-meta) (count conventions-meta)
+                          (count snippets-meta) (count expiring-meta)
+                          (if (:situational-synthesis kg-insights) 1 0)
+                          (if (seq (dissoc kg-insights :situational-synthesis)) 1 0))]
     [(make-block "header"
                  {:_block "header"
                   :success true
@@ -126,7 +130,7 @@
                            :expiring (count expiring-meta)}
                   :memory-piggyback
                   (cond-> {:enqueued total-enqueued
-                           :note "Axioms and conventions will arrive via ---MEMORY--- blocks on subsequent tool calls. No manual fetch needed."}
+                           :note "Axioms, principles, and priority conventions drain via ---MEMORY--- blocks. Enrichment results arrive via piggyback on subsequent calls."}
                     (seq context-refs)
                     (assoc :context-refs context-refs
                            :ref-note "Context refs point to ephemeral context-store entries (10min TTL). Future :ref mode can send only refs instead of full content."))})

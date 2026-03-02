@@ -50,7 +50,7 @@
 ;; Side-Effecting Decay
 ;; =============================================================================
 
-(defn- apply-decay!
+(defn apply-decay!
   "Apply staleness decay to a single entry. Returns decay result or nil."
   [entry opts]
   (when (crystal/decay-candidate? entry opts)

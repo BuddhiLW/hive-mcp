@@ -1,6 +1,7 @@
 (ns hive-mcp.channel.async-result
   "Async tool result buffer for piggyback delivery with cursor+budget drain."
-  (:require [taoensso.timbre :as log])
+  (:require [taoensso.timbre :as log]
+            [hive-dsl.context.identity :as ctx-id])
   (:import [java.time Instant]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -73,7 +74,9 @@
 (defn enqueue-result!
   "Enqueue a completed async result into the buffer with content-hash dedup."
   [agent-id project-id result-map]
-  (let [buffer-key [(or agent-id "coordinator") (or project-id "global")]
+  (let [buffer-key (ctx-id/make-buffer-key
+                    (ctx-id/parse-caller-id agent-id)
+                    (ctx-id/parse-project-scope project-id))
         entry (assoc result-map
                      :timestamp (now-epoch-seconds)
                      :content-hash (content-hash result-map))]
@@ -94,7 +97,9 @@
 (defn drain!
   "Drain next batch of async results within char budget for an agent+project."
   [agent-id project-id]
-  (let [buffer-key [(or agent-id "coordinator") (or project-id "global")]
+  (let [buffer-key (ctx-id/make-buffer-key
+                    (ctx-id/parse-caller-id agent-id)
+                    (ctx-id/parse-project-scope project-id))
         buf (get @buffers buffer-key)]
     (when (and buf (< (:cursor buf) (count (:entries buf))))
       (let [{:keys [entries cursor]} buf
@@ -138,7 +143,9 @@
 (defn has-pending?
   "Check if an agent+project has undrained async results."
   [agent-id project-id]
-  (let [buffer-key [(or agent-id "coordinator") (or project-id "global")]
+  (let [buffer-key (ctx-id/make-buffer-key
+                    (ctx-id/parse-caller-id agent-id)
+                    (ctx-id/parse-project-scope project-id))
         buf (get @buffers buffer-key)]
     (and (some? buf)
          (< (:cursor buf) (count (:entries buf))))))
@@ -155,7 +162,9 @@
 (defn clear-buffer!
   "Clear buffer for a specific agent+project. For testing."
   [agent-id project-id]
-  (let [buffer-key [(or agent-id "coordinator") (or project-id "global")]]
+  (let [buffer-key (ctx-id/make-buffer-key
+                    (ctx-id/parse-caller-id agent-id)
+                    (ctx-id/parse-project-scope project-id))]
     (swap! buffers dissoc buffer-key)))
 
 (defn reset-all!

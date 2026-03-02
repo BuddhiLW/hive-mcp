@@ -11,7 +11,9 @@
             [hive-mcp.tools.core :refer [mcp-json mcp-error]]
             [hive-mcp.telemetry.prometheus :as prom]
             [clojure.core.async :as async :refer [go-loop timeout]]
-            [taoensso.timbre :as log]))
+            [taoensso.timbre :as log]
+            [hive-dsl.bounded-atom :refer [bounded-atom bput! bget bounded-swap!
+                                           bclear! register-sweepable!]]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -62,9 +64,21 @@
   "Maximum retry attempts before escalation to ling."
   3)
 
-(defonce drone-heartbeats (atom {}))
+;; Drone heartbeats — LRU eviction, 200 entries, 5min TTL.
+;; Heartbeats are time-sensitive ephemeral data; stale entries waste memory.
+(defonce drone-heartbeats
+  (bounded-atom {:max-entries 200
+                 :ttl-ms 300000     ;; 5 minutes
+                 :eviction-policy :lru}))
+(register-sweepable! drone-heartbeats :drone-heartbeats)
 
-(defonce retry-queue (atom []))
+;; Retry queue — keyed by task string, FIFO eviction.
+;; TTL 30min prevents stale retries accumulating.
+(defonce retry-queue
+  (bounded-atom {:max-entries 100
+                 :ttl-ms 1800000      ;; 30 minutes
+                 :eviction-policy :fifo}))
+(register-sweepable! retry-queue :retry-queue)
 
 (defonce monitor-running? (atom false))
 
@@ -75,18 +89,17 @@
   [drone-id & [{:keys [wave-id task files status refresh-claims?]
                 :or {refresh-claims? true}}]]
   (let [now (System/currentTimeMillis)
-        had-files? (boolean (seq (get-in @drone-heartbeats [drone-id :files])))]
-    (swap! drone-heartbeats update drone-id
-           (fn [current]
-             (merge (or current {})
-                    {:last-beat now
-                     :status (or status :active)}
-                    (when wave-id {:wave-id wave-id})
-                    (when task {:task task})
-                    (when files {:files files}))))
+        had-files? (boolean (seq (:files (bget drone-heartbeats drone-id))))]
+    (bput! drone-heartbeats drone-id
+           (merge (or (bget drone-heartbeats drone-id) {})
+                  {:last-beat now
+                   :status (or status :active)}
+                  (when wave-id {:wave-id wave-id})
+                  (when task {:task task})
+                  (when files {:files files})))
     (when (and refresh-claims? (or files had-files?))
       (result/rescue nil
-                     (when-let [claim-files (or files (get-in @drone-heartbeats [drone-id :files]))]
+                     (when-let [claim-files (or files (:files (bget drone-heartbeats drone-id)))]
                        (doseq [f claim-files]
                          (lings/refresh-claim! f)))))
     (log/debug "Heartbeat recorded:" drone-id)))
@@ -94,18 +107,22 @@
 (defn clear-heartbeat!
   "Remove heartbeat tracking for a drone."
   [drone-id]
-  (swap! drone-heartbeats dissoc drone-id)
+  (bounded-swap! drone-heartbeats dissoc drone-id)
   (log/debug "Heartbeat cleared:" drone-id))
 
 (defn get-heartbeat
   "Get heartbeat info for a specific drone."
   [drone-id]
-  (get @drone-heartbeats drone-id))
+  (bget drone-heartbeats drone-id))
 
 (defn get-all-heartbeats
-  "Get all active drone heartbeats."
+  "Get all active drone heartbeats.
+   Returns a map of drone-id -> heartbeat-data (unwrapped from bounded-atom entries)."
   []
-  @drone-heartbeats)
+  (reduce-kv (fn [acc k entry]
+               (assoc acc k (:data entry)))
+             {}
+             @(:atom drone-heartbeats)))
 
 (defn refresh-drone-claims!
   "Refresh claim timestamps for a drone's files."
@@ -116,11 +133,10 @@
         (result/rescue nil (lings/refresh-claim! f))))))
 
 (defn queue-for-retry!
-  "Queue a failed task for retry with attempt tracking."
+  "Queue a failed task for retry with attempt tracking.
+   Uses task string as key in bounded map atom."
   [{:keys [drone-id task files wave-id]}]
-  (let [existing (->> @retry-queue
-                      (filter #(= (:task %) task))
-                      first)
+  (let [existing (bget retry-queue task)
         attempt (if existing
                   (inc (:attempt existing))
                   1)]
@@ -129,40 +145,47 @@
         (log/error "Max retries reached for task, escalating to ling"
                    {:drone-id drone-id :task task :attempts attempt})
         (prom/inc-events-total! :drone/retry-escalated :error)
-        (swap! retry-queue #(vec (remove (fn [t] (= (:task t) task)) %)))
+        (bounded-swap! retry-queue dissoc task)
         {:escalated true :attempts attempt})
       (do
-        (swap! retry-queue
-               (fn [q]
-                 (let [filtered (vec (remove #(= (:task %) task) q))]
-                   (conj filtered
-                         {:drone-id drone-id
-                          :task task
-                          :files files
-                          :wave-id wave-id
-                          :attempt attempt
-                          :queued-at (System/currentTimeMillis)}))))
+        (bput! retry-queue task
+               {:drone-id drone-id
+                :task task
+                :files files
+                :wave-id wave-id
+                :attempt attempt
+                :queued-at (System/currentTimeMillis)})
         (log/info "Queued task for retry" {:drone-id drone-id :attempt attempt :task (subs task 0 (min 50 (count task)))})
         (prom/inc-events-total! :drone/retry-queued :info)
         {:queued true :attempts attempt}))))
 
 (defn get-retry-queue
-  "Get current retry queue."
+  "Get current retry queue as a vector, sorted by queued-at (FIFO order)."
   []
-  @retry-queue)
+  (->> @(:atom retry-queue)
+       vals
+       (map :data)
+       (sort-by :queued-at)
+       vec))
 
 (defn pop-retry-task!
-  "Pop the next task from the retry queue (FIFO)."
+  "Pop the oldest task from the retry queue (FIFO by queued-at)."
   []
-  (let [task (first @retry-queue)]
-    (when task
-      (swap! retry-queue #(vec (rest %)))
-      task)))
+  (let [entries @(:atom retry-queue)
+        oldest (when (seq entries)
+                 (->> entries
+                      (sort-by (fn [[_ entry]] (get-in entry [:data :queued-at])))
+                      first))]
+    (when oldest
+      (let [[task-key entry] oldest
+            task-data (:data entry)]
+        (bounded-swap! retry-queue dissoc task-key)
+        task-data))))
 
 (defn clear-retry-queue!
   "Clear the retry queue."
   []
-  (reset! retry-queue [])
+  (bclear! retry-queue)
   (log/info "Retry queue cleared"))
 
 (defn- classify-drone-health
@@ -188,7 +211,7 @@
   "Check health of all tracked drones, returns map with :active :alert :stuck."
   []
   (let [now (System/currentTimeMillis)
-        heartbeats @drone-heartbeats
+        heartbeats (get-all-heartbeats)
         classified (reduce-kv
                     (fn [acc drone-id {:keys [last-beat wave-id task]}]
                       (let [health (classify-drone-health last-beat now)]
@@ -271,7 +294,9 @@
 
     (doseq [{:keys [drone-id elapsed-ms]} alert]
       (log/warn "Drone alert - no progress for" (/ elapsed-ms 1000) "seconds:" drone-id)
-      (swap! drone-heartbeats assoc-in [drone-id :status] :alert))
+      ;; Update status within bounded-atom — read-modify-write via bput!
+      (when-let [current (bget drone-heartbeats drone-id)]
+        (bput! drone-heartbeats drone-id (assoc current :status :alert))))
 
     (doseq [{:keys [drone-id wave-id elapsed-ms]} stuck]
       (log/error "Drone stuck - auto-recovering after" (/ elapsed-ms 1000) "seconds:" drone-id)
@@ -313,11 +338,11 @@
                          (if wave-id
                            (filterv #(= wave-id (:wave-id %)) drones)
                            drones))
-        queue @retry-queue
+        queue (get-retry-queue)
         filtered-queue (if wave-id
                          (filterv #(= wave-id (:wave-id %)) queue)
                          queue)]
-    {:total-drones (count @drone-heartbeats)
+    {:total-drones (count @(:atom drone-heartbeats))
      :active (filter-by-wave active)
      :alert (filter-by-wave alert)
      :stuck (filter-by-wave stuck)
@@ -411,7 +436,7 @@
                 {:message "action must be 'start' or 'stop'"})))
 
 (defn- retry-queue-status* [_]
-  (let [queue @retry-queue]
+  (let [queue (get-retry-queue)]
     (result/ok {:queue-length (count queue)
                 :tasks (mapv #(-> %
                                   (select-keys [:drone-id :attempt :wave-id :queued-at])
