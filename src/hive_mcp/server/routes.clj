@@ -365,13 +365,8 @@
       (wrap-memory-piggyback-content content drain-result))))
 
 (defn wrap-handler-catchup-piggyback
-  "Wrap handler to drain hive-knowledge catchup blocks as separate delimiter tags.
-   SRP: Single responsibility - catchup enrichment piggyback delivery only.
-
-   Drains categorized catchup blocks (synthesis, kg-insights, context) queued
-   by the enrichment addon during catchup. Each non-nil category becomes a
-   separate delimited block (---SYNTHESIS---, ---KG-INSIGHTS---, ---CONTEXT---).
-
+  "Drain addon piggyback blocks as separate delimiter tags.
+   Results arrive via piggyback on subsequent calls.
    Zero-cost when no blocks pending or extension not registered.
 
    CURSOR ISOLATION: Uses _caller_id for per-caller alignment with catchup enqueue."

@@ -130,7 +130,7 @@
                            :expiring (count expiring-meta)}
                   :memory-piggyback
                   (cond-> {:enqueued total-enqueued
-                           :note "All catchup content (axioms, principles, conventions, decisions, sessions, snippets, synthesis, kg-insights) will arrive via ---MEMORY--- blocks on subsequent tool calls. No manual fetch needed."}
+                           :note "Axioms, principles, and priority conventions drain via ---MEMORY--- blocks. Enrichment results arrive via piggyback on subsequent calls."}
                     (seq context-refs)
                     (assoc :context-refs context-refs
                            :ref-note "Context refs point to ephemeral context-store entries (10min TTL). Future :ref mode can send only refs instead of full content."))})
