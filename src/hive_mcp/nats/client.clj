@@ -52,14 +52,21 @@
    Options:
      :url                - NATS server URL (default: nats://localhost:4222)
      :connection-timeout - Connection timeout in ms (default: 5000)
-     :max-reconnects     - Max reconnect attempts (default: 5)
+     :max-reconnects     - Max reconnect attempts (default: -1, retry forever)
      :reconnect-wait     - Wait between reconnects in ms (default: 1000)
+
+   -1 is jnats' \"reconnect forever\". The old default of 5 meant one
+   nats-server restart, or any blip longer than ~5s, closed this connection
+   PERMANENTLY: nothing re-runs start!, and every NATS-backed feature (wave
+   latch, backbone fan-out, progress transport) then degraded silently for the
+   life of the process. Measured live 2026-09-05 with the server up and this
+   connection CLOSED.
 
    Sets connectionName to 'hive-mcp' for NATS server monitoring and debugging."
   [{:keys [url connection-timeout max-reconnects reconnect-wait]
     :or {url "nats://localhost:4222"
          connection-timeout 5000
-         max-reconnects 5
+         max-reconnects -1
          reconnect-wait 1000}}]
   (try
     (let [opts (-> (Options$Builder.)

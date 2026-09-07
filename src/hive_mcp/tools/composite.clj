@@ -165,32 +165,61 @@
                    :required ["command"]}
      :handler handler}))
 
-(defn build-merged-tool
-  "Build a consolidated tool definition from core handlers + addon contributions.
-   core-tool-def: existing tool definition map with :handler, :inputSchema, etc.
-   Returns updated tool-def with addon commands merged into command enum and handler.
+(defn- union-property
+  "Fold an addon's schema property onto the core's under the same name.
+   Equal specs collapse to one; different specs become an anyOf carrying both,
+   descriptions joined — so `tasks` can be the drone wave's [{file task}] AND
+   the ling-wave's [string] without either side losing its shape. A plain
+   merge here would let the addon silently retype a core parameter."
+  [core addon]
+  (cond
+    (nil? core)      addon
+    (nil? addon)     core
+    (= core addon)   core
+    :else
+    (let [variants (fn [p] (if (and (map? p) (:anyOf p)) (:anyOf p) [p]))
+          alts     (vec (distinct (concat (variants core) (variants addon))))
+          descs    (->> [core addon] (map :description) (remove str/blank?) distinct)]
+      (cond-> {:anyOf alts}
+        (seq descs) (assoc :description (str/join " | " descs))))))
 
-   The tool-def's :handler is replaced with a merged handler that dispatches to
-   both core and addon commands. The :inputSchema command enum is extended with
-   addon command names."
+(defn build-merged-tool
+  "Fold the current addon contributions to TOOL-NAME into a consolidated
+   tool-def's advertised inputSchema: every contributed command's :params
+   joins the properties, and the `command` enum — when the core declares one —
+   grows the contributed command names. Returns the tool-def unchanged when
+   nothing has been contributed.
+
+   Routing already folded contributions in (effective-handlers); this is the
+   SCHEMA half. The MCP layer forwards only the params a tool declares, so a
+   contributed verb whose params are absent here is reachable but cannot
+   receive its own arguments. Applied from server.routes/make-tool on every
+   (re)build of the tool table, so a late contribution reaches the schema the
+   moment the reactive surface refreshes it.
+
+   The enum is extended only when the core has one: a root whose `command` is
+   free text (the swarm root routes by subdomain prefix) must not acquire an
+   enum made of addon names alone, which would refuse every core command."
   [core-tool-def]
-  (let [tool-name (:name core-tool-def)
-        addon-cmds (ext/get-contributed-commands tool-name)
+  (let [tool-name       (:name core-tool-def)
+        addon-cmds      (ext/get-contributed-commands tool-name)
         addon-cmd-names (vec (sort (keys (or addon-cmds {}))))
-        addon-params (apply merge-with merge (map :params (vals (or addon-cmds {}))))
-        ;; Extract core handlers from the tool's canonical-handlers if available
-        ;; Otherwise the core handler is already embedded in the tool-def
-        core-enum (get-in core-tool-def [:inputSchema :properties "command" :enum] [])]
+        addon-params    (apply merge-with union-property
+                               (keep :params (vals (or addon-cmds {}))))
+        core-enum       (get-in core-tool-def [:inputSchema :properties "command" :enum])]
     (if (empty? addon-cmds)
       core-tool-def
-      (-> core-tool-def
-          ;; Extend command enum with addon commands
-          (assoc-in [:inputSchema :properties "command" :enum]
-                    (vec (sort (distinct (concat core-enum addon-cmd-names)))))
-          ;; Merge addon params into schema
-          (update-in [:inputSchema :properties] merge addon-params)
-          ;; Mark as composite
-          (assoc :composite true)))))
+      (cond-> core-tool-def
+        (seq core-enum)
+        (assoc-in [:inputSchema :properties "command" :enum]
+                  (vec (sort (distinct (concat core-enum addon-cmd-names)))))
+
+        (seq addon-params)
+        (update-in [:inputSchema :properties]
+                   #(merge-with union-property % addon-params))
+
+        true
+        (assoc :composite true)))))
 
 ;; =============================================================================
 ;; Handler Map for Registry Introspection

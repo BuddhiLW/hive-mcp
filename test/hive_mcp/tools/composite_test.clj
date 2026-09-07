@@ -4,7 +4,8 @@
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.set :as set]
             [hive-mcp.tools.composite :as composite]
-            [hive-mcp.tools.consolidated.swarm :as swarm]))
+            [hive-mcp.tools.consolidated.swarm :as swarm]
+            [hive-mcp.extensions.registry :as ext]))
 
 (def tool-def-map
   {:inputSchema {:properties {"from-map" {:type "string"}}}})
@@ -46,3 +47,50 @@
           (is (seq sub-props)))
         (testing (str "every param of " sym " survives the swarm fold")
           (is (empty? (set/difference sub-props root-props))))))))
+
+;; =============================================================================
+;; build-merged-tool — a contribution's :params reach the advertised schema.
+;;
+;; Measured live 2026-09-05: `swarm ling-wave dispatch` routed, but the swarm
+;; tool's schema had no `providers` slot, the MCP layer dropped the argument,
+;; and dispatch answered :wave/no-providers to every spelling of the call.
+;; =============================================================================
+
+(def ^:private merged-core
+  {:name "merged-test-root" :consolidated true
+   :inputSchema {:type "object"
+                 :properties {"command" {:type "string"}
+                              "tasks"   {:type "array" :items {:type "object"}
+                                         :description "drone tasks"}}}})
+
+(defn- with-contribution [params f]
+  (ext/contribute-commands! "merged-test-root" :merged-test-addon
+                            {"ling-wave" {:handler (fn [_] nil) :params params}})
+  (try (f)
+       (finally (ext/retract-commands! "merged-test-root" :merged-test-addon))))
+
+(deftest build-merged-tool-folds-contributed-params-test
+  (with-contribution {"providers" {:type "array" :description "members"}
+                      "tasks"     {:type "array" :items {:type "string"}
+                                   :description "ling tasks"}}
+    (fn []
+      (let [props (get-in (composite/build-merged-tool merged-core)
+                          [:inputSchema :properties])]
+        (testing "a param the core never declared is now advertised"
+          (is (= {:type "array" :description "members"} (get props "providers"))))
+        (testing "a colliding param unions both shapes instead of retyping the core's"
+          (is (= 2 (count (get-in props ["tasks" :anyOf]))))
+          (is (= "drone tasks | ling tasks" (get-in props ["tasks" :description]))))
+        (testing "a free-text `command` does not acquire an enum of addon names"
+          (is (nil? (get-in props ["command" :enum]))))))))
+
+(deftest build-merged-tool-extends-an-existing-command-enum-test
+  (with-contribution {}
+    (fn []
+      (let [core (assoc-in merged-core [:inputSchema :properties "command" :enum] ["a" "b"])
+            t    (composite/build-merged-tool core)]
+        (is (= ["a" "b" "ling-wave"] (get-in t [:inputSchema :properties "command" :enum])))
+        (is (:composite t))))))
+
+(deftest build-merged-tool-is-identity-without-contributions-test
+  (is (= merged-core (composite/build-merged-tool merged-core))))
