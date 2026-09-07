@@ -103,3 +103,19 @@ dev/experiments/**/*.private.edn
 dev/experiments/**/*.local.edn
 .lsp/.cache/
 kondo-sweep.tsv
+
+# clj-kondo's --copy-configs drops a SECOND, redundant copy of every imported
+# dependency config directly under .clj-kondo/<group>/, duplicating the curated
+# set tracked under .clj-kondo/imports/. Ignore the top-level duplicates (they
+# are regenerable and were never committed); the tracked dirs are re-included.
+/.clj-kondo/*/
+!/.clj-kondo/imports/
+!/.clj-kondo/hooks/
+!/.clj-kondo/hive_di/
+!/.clj-kondo/hive_dsl/
+
+# Browser / e2e run artifacts (screenshots, traces): generated, not source.
+dev/artifacts/
+
+# Claude Code transient worktree state (parallel to the ignored /.worktrees/).
+.claude/worktrees/
