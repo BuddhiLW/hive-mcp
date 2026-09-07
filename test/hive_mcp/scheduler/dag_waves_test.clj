@@ -26,7 +26,8 @@
             [clojure.data.json :as json]
             [clojure.core.async :as async]
             [hive-mcp.test.stub.memory-store :as stub]
-            [hive-spi.memory.registry :as sreg]))
+            [hive-spi.memory.registry :as sreg]
+            [hive-mcp.vectordb.kanban-facade :as kanban-facade]))
 
 ;; =============================================================================
 ;; Test Fixtures
@@ -1111,3 +1112,34 @@
         ;; After all complete, nothing ready
         (let [ready (dag/find-ready-tasks test-directory #{"task-a" "task-b" "task-c" "task-d"} {} #{})]
           (is (= 0 (count ready))))))))
+
+;; =============================================================================
+;; Regression: wave-readiness reads the KANBAN store, not the default/vector slot
+;; =============================================================================
+
+(deftest kanban-slot-card-blocks-until-completed
+  ;; Guards the wrong-facade bug (DAG-WAVE-READINESS-WRONG-FACADE): a card that
+  ;; lives ONLY in the :kanban store slot must count as NOT done until its id is
+  ;; in the completed set. The buggy read went through vectordb.facade (the
+  ;; :default / vector slot), returned nil for a kanban-slot card, and so
+  ;; kanban-task-done? reported EVERY dependency done -> dependency ordering
+  ;; silently collapsed. The fix reads through vectordb.kanban-facade.
+  (let [kanban-id    "kanban-slot-only-task"
+        kanban-card  {:id kanban-id :content {:title "lives in :kanban slot" :status "todo"}}
+        prior-kanban (get (sreg/registered-stores) :kanban)]
+    (try
+      ;; Card resolvable ONLY through the :kanban slot; force :kanban routing.
+      (sreg/register-store!
+       :kanban (stub/->stub nil {:get-entry-fn (fn [id] (when (= id kanban-id) kanban-card))}))
+      (with-redefs [kanban-facade/mode (constantly :kanban)]
+        (testing "kanban-slot card is not done, and is resolved via the :kanban slot"
+          (is (some? (#'dag/get-kanban-task kanban-id))
+              "get-kanban-task must resolve the card through the :kanban slot")
+          (is (false? (#'dag/kanban-task-done? kanban-id #{}))
+              "wrong-facade regression: a live kanban card must read as NOT done"))
+        (testing "the same card counts as done once its id is in the completed set"
+          (is (true? (#'dag/kanban-task-done? kanban-id #{kanban-id})))))
+      (finally
+        (if prior-kanban
+          (sreg/register-store! :kanban prior-kanban)
+          (sreg/unregister-store! :kanban))))))
