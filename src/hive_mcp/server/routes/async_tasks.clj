@@ -131,6 +131,21 @@
         res))
     f))
 
+(defn- complete-state!
+  "Record that a task's body returned, without overwriting why it stopped.
+
+   Atomic on purpose. A read-modify-write through bget/bput! loses a
+   concurrent cancel: the body's `finally` can read :task/running, a cancel
+   can then write :task/cancelled, and the `finally` overwrites it with
+   :task/done, erasing the only record that someone stopped it. bounded-swap!
+   sees the raw entry map, so the decision and the write are one step."
+  [task-id]
+  (bounded-swap! tasks
+                 (fn [m]
+                   (if (get m task-id)
+                     (update-in m [task-id :data :state] st/completion-state)
+                     m))))
+
 (defn submit!
   "Run `f` under `task-id`, registering a cancellable handle. Returns the handle."
   [{:keys [task-id tool caller-id timeout-ms f]}]
@@ -147,9 +162,7 @@
                        (try
                          (body)
                          (finally
-                           (when-let [e (bget tasks task-id)]
-                             (bput! tasks task-id
-                                    (assoc e :state (st/completion-state (:state e)))))))))]
+                           (complete-state! task-id)))))]
     (when-let [e (bget tasks task-id)]
       (bput! tasks task-id (assoc e :handle-obj handle)))
     handle))

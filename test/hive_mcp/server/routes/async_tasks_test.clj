@@ -25,6 +25,20 @@
   [^CountDownLatch latch ms]
   (.await latch ms TimeUnit/MILLISECONDS))
 
+(defn- await-state
+  "Wait up to `ms` for `task-id` to report `state`. Returns true if it did.
+
+   A latch says the task's BODY reached a point; the registry write that
+   records why it stopped happens afterwards. Anything asserting on state
+   must wait for the state itself, not for a proxy that merely precedes it."
+  [task-id state ms]
+  (let [deadline (+ (System/currentTimeMillis) ms)]
+    (loop []
+      (cond
+        (= state (:state (at/get-task task-id)))   true
+        (> (System/currentTimeMillis) deadline)    false
+        :else (do (Thread/sleep 10) (recur))))))
+
 ;; =============================================================================
 ;; It runs at all
 ;; =============================================================================
@@ -114,7 +128,12 @@
     (is (await-latch started 5000))
     (is (await-latch interrupted 5000)
         "a task with a deadline must end WITHOUT anyone calling cancel!")
-    (is (= :task/timed-out (:state (at/get-task "t-bounded")))
+    ;; The interrupt reaching the body and the STATE being recorded are two
+    ;; different events: `bounded-body` writes :task/timed-out only after
+    ;; safe-future-call returns, which is strictly after the latch opens.
+    ;; Asserting straight off the latch is a race that passes on a fast
+    ;; machine and fails on a loaded CI runner, which is exactly what it did.
+    (is (await-state "t-bounded" :task/timed-out 5000)
         "and it must say the bound is why it stopped, not report a plain cancel")))
 
 (deftest a-task-inside-its-bound-is-untouched
