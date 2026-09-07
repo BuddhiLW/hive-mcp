@@ -172,17 +172,13 @@
       (let [b (openrouter/openai-compat-backend {:provider :acme :api-key "sk-test"})]
         (is (= "https://acme.test/v1/chat/completions" (:api-url b)))
         (is (= "acme-1" (proto/model-name b)))
-        (is (= "acme" (:provider-name b)))))))
-
-(deftest axon-is-a-registered-provider-test
-  (testing "axon.bz is a static provider with Bearer-auth chat completions"
-    (let [e (get openrouter/provider-registry :axon)]
-      (is (= "https://axon.bz/v1/chat/completions" (:api-url e)))
-      (is (= :axon-api-key (:secret-key e)))
-      (is (nil? (openrouter/validate-provider :axon)))
-      (is (= {:provider :axon :model "glm-5.3-flash"}
-             (openrouter/resolve-provider-model {:model "axon:glm-5.3-flash"
-                                                 :agent-type :ling}))))))
+        (is (= "acme" (:provider-name b))))
+      (is (nil? (openrouter/validate-provider :acme)))
+      (is (= {:provider :acme :model "acme-2"}
+             (openrouter/resolve-provider-model {:model "acme:acme-2" :agent-type :ling}))
+          "the <provider>:<model> prefix resolves for a config-only provider too")))
+  (testing "nothing in the static registry names a provider that only config should"
+    (is (not (contains? openrouter/provider-registry :axon)))))
 
 (deftest openai-compat-backend-ollama-no-key-test
   (testing "ollama-compat works without API key"

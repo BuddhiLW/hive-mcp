@@ -28,8 +28,9 @@
    route through the anthropic HTTP client rather than the OpenAI-compat
    path. All others hit OpenAI-compat /v1/chat/completions endpoints.
 
-   `:axon` is axon.bz: Anthropic- and OpenAI-compatible relay, Bearer auth,
-   one flat per-token rate across every model it fronts."
+   This is a SEED, not the definition: config `:llm-providers` extends and
+   overrides it through `effective-provider-registry`, so a new provider is
+   a config entry, never an edit here."
   {:anthropic     {:dispatch      :anthropic-oauth
                    :secret-key    :anthropic-api-key
                    :default-model "claude-sonnet-4-6"}
@@ -39,9 +40,6 @@
    :venice        {:api-url       "https://api.venice.ai/api/v1/chat/completions"
                    :secret-key    :venice-api-key
                    :default-model "venice-uncensored"}
-   :axon          {:api-url       "https://axon.bz/v1/chat/completions"
-                   :secret-key    :axon-api-key
-                   :default-model "deepseek-v4-flash-0731"}
    :groq         {:api-url       "https://api.groq.com/openai/v1/chat/completions"
                    :secret-key    :groq-api-key
                    :default-model "llama-3.3-70b-versatile"}
