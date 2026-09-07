@@ -193,8 +193,25 @@
         meta-merge/meta-merge {:mvn/version "1.0.0"}
 }
 
+ ;; The private registry, consulted only for coordinates no public registry
+ ;; holds (the :addons alias). Credentials: ~/.m2/settings.xml, server id
+ ;; hive-gitea. The default classpath and every CI alias resolve without it.
+ :mvn/repos {"hive-gitea" {:url "https://gitea.hive-mcp.com/api/packages/hive-agi/maven"}}
+
  :aliases
- {:mcp
+ {;; :addons: the proprietary addon tier as PUBLISHED coordinates: hive.carto
+  ;; (with hive-shape transitively), hive.knowledge and hive.shape.go, each
+  ;; carrying its META-INF/hive-addons manifest, so the mounter finds them on
+  ;; a cold classpath with no local.deps.edn. Opt-in, because they resolve
+  ;; from the private registry above. A local.deps.edn :local/root override
+  ;; still wins over these when both are present.
+  ;;
+  ;;   clojure -M:addons:mcp ...
+  :addons {:extra-deps {io.github.hive-agi/hive-knowledge {:mvn/version "0.5.534"}
+                        io.github.hive-agi/hive-carto     {:mvn/version "0.2.513"}
+                        io.github.hive-agi/hive-shape-go  {:mvn/version "0.3.51"}}}
+
+  :mcp
   {:exec-fn hive-mcp.server.core/start!
    :exec-args {}
    :extra-deps {nrepl/nrepl {:mvn/version "1.7.0"}
