@@ -116,3 +116,17 @@
 (deftest digest-of-empty-is-empty-test
   (is (= [] (aud/digest [])))
   (is (= [] (aud/digest nil))))
+
+(deftest digest-never-collapses-a-deliberate-row-test
+  (testing "measured 2026-09-07: a wave member's own `hivemind shout` (progress,
+            \"probe hello\") sat between two runtime `bb-ling turn N` progress
+            rows and the digest kept only the LAST one — the reader saw the
+            telemetry and never what the member said"
+    (let [rows [(progress "a" "bb-ling turn 1")
+                {:a "a" :e "progress" :m "probe hello" :deliberate? true}
+                (progress "a" "bb-ling turn 2")]
+          out  (aud/digest rows)]
+      (is (= ["probe hello" "bb-ling turn 2"] (mapv :m out))
+          "the deliberate row survives, the telemetry still rolls up")
+      (is (= 2 (:n (second out))) "the rollup counts only the telemetry rows")
+      (is (nil? (:n (first out))) "a pinned row is not a rollup"))))

@@ -337,3 +337,34 @@
           (let [msgs (pb/get-messages "coordinator-fallback" :project-id "proj-fallback")]
             (is (= 1 (count msgs))
                 "composite fallback must dedup keyword vs string event-type")))))))
+
+;; =============================================================================
+;; Global shouts advance ONE cursor per reader, whatever project the read names
+;; =============================================================================
+
+(deftest global-shouts-advance-one-cursor-across-projects-test
+  (testing "measured 2026-09-07: a git call against another repo resolved a new
+            project-id, its [reader project] cursor started at 0, and every
+            global shout of the session was replayed to the coordinator, once
+            per repo touched (kanban 20260519145332-0c5878a5's symptom)"
+    (let [messages (atom [{:agent-id "wave-m0" :event-type :completed :message "PONG"
+                           :timestamp 1000 :project-id "global"}
+                          {:agent-id "ling-a" :event-type :progress :message "in A"
+                           :timestamp 1001 :project-id "proj-A"}])]
+      (pb/register-message-source! (fn [] @messages))
+      (let [r1 (pb/get-messages "coordinator" :project-id "proj-A")]
+        (is (= 2 (count r1)) "first read under proj-A: the global shout and A's own"))
+      (is (nil? (pb/get-messages "coordinator" :project-id "proj-B"))
+          "a first read under ANOTHER project does not replay the global shout")
+      (swap! messages conj {:agent-id "wave-m1" :event-type :completed :message "PONG again"
+                            :timestamp 1002 :project-id "global"})
+      (is (= ["PONG again"] (mapv :m (pb/get-messages "coordinator" :project-id "proj-B")))
+          "a NEW global shout still reaches the proj-B read, once")
+      (is (nil? (pb/get-messages "coordinator" :project-id "proj-A"))
+          "and is not replayed to the proj-A read either")
+      (testing "project-scoped shouts keep their own cursor per project"
+        (swap! messages conj {:agent-id "ling-b" :event-type :progress :message "in B"
+                              :timestamp 1003 :project-id "proj-B"})
+        (is (= ["in B"] (mapv :m (pb/get-messages "coordinator" :project-id "proj-B"))))
+        (is (nil? (pb/get-messages "coordinator" :project-id "proj-A"))
+            "B's shout is not A's")))))

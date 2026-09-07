@@ -68,8 +68,13 @@ The env var fallback reads from MCP server process, NOT your ling process!"
                  ;; Do NOT fall back to ctx/current-directory — that resolves to the
                  ;; MCP server's cwd, not the ling's cwd. shout! has its own slave-cwd
                  ;; lookup from DataScript which correctly uses the ling's registered cwd.
+                 ;; :deliberate? — this is the one path where the AGENT chose to
+                 ;; speak, as opposed to runtime telemetry shouted on its behalf.
+                 ;; The piggyback digest folds :progress bursts to one row per
+                 ;; agent and never folds a deliberate one (measured 2026-09-07:
+                 ;; a wave member's own shout vanished into its turn telemetry).
                  (messaging/shout! effective-id (keyword event_type)
-                                   (merge {:task task :message message}
+                                   (merge {:task task :message message :deliberate? true}
                                           (when directory {:directory directory})
                                           (when project_id {:project-id project_id})
                                           data))
