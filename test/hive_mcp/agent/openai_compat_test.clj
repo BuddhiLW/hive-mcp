@@ -181,7 +181,8 @@
       (is (= :axon-api-key (:secret-key e)))
       (is (nil? (openrouter/validate-provider :axon)))
       (is (= {:provider :axon :model "glm-5.3-flash"}
-             (openrouter/resolve-provider-model {:model "axon:glm-5.3-flash"}))))))
+             (openrouter/resolve-provider-model {:model "axon:glm-5.3-flash"
+                                                 :agent-type :ling}))))))
 
 (deftest openai-compat-backend-ollama-no-key-test
   (testing "ollama-compat works without API key"
