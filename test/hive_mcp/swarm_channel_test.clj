@@ -1,5 +1,9 @@
 (ns hive-mcp.swarm-channel-test
-  "Tests for swarm push-based event integration with channel."
+  "Push-based swarm event integration: an event emitted on the channel bus
+   lands in the event journal through the live core.async subscriptions.
+
+   Runs against the in-process bus only — no socket server — and waits on a
+   deadline instead of fixed sleeps, so it holds regardless of suite order."
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [hive-mcp.tools.swarm :as swarm]
             [hive-mcp.tools.swarm.channel :as swarm-channel]
@@ -7,134 +11,122 @@
             [hive-dsl.bounded-atom :refer [bput!]]))
 
 ;; =============================================================================
-;; Test Fixtures
+;; Fixtures + helpers
 ;; =============================================================================
 
 (defn with-clean-state
-  "Ensure clean state before and after each test."
+  "Fresh journal and no live subscriptions before and after each test."
   [f]
-  (swarm/clear-event-journal!)
   (swarm/stop-channel-subscriptions!)
-  (ch/stop-server!)
-  (Thread/sleep 100)
-  (f)
-  (swarm/stop-channel-subscriptions!)
-  (ch/stop-server!)
   (swarm/clear-event-journal!)
-  (Thread/sleep 100))
+  (try (f)
+       (finally
+         (swarm/stop-channel-subscriptions!)
+         (swarm/clear-event-journal!))))
 
 (use-fixtures :each with-clean-state)
 
+(def ^:private await-ms 2000)
+
+(defn- await-journal
+  "Poll the journal for task-id until an entry lands or the deadline passes.
+   Returns the entry, or nil on timeout."
+  [task-id]
+  (let [deadline (+ (System/currentTimeMillis) await-ms)]
+    (loop []
+      (or (swarm/check-event-journal task-id)
+          (when (< (System/currentTimeMillis) deadline)
+            (Thread/sleep 10)
+            (recur))))))
+
+(defn- fresh-task-id
+  "A task id no other test namespace can collide with in the shared journal."
+  []
+  (str "swarm-channel-test-" (random-uuid)))
+
 ;; =============================================================================
-;; Event Journal Tests
+;; Event journal
 ;; =============================================================================
 
 (deftest event-journal-empty-test
   (testing "Event journal starts empty"
-    (is (nil? (swarm/check-event-journal "task-123")))))
+    (is (nil? (swarm/check-event-journal (fresh-task-id))))))
 
 (deftest event-journal-clear-test
   (testing "Event journal can be cleared"
-    ;; Manually add an entry via the private atom in swarm.channel
-    (bput! @#'swarm-channel/event-journal "test-task" {:status "completed"})
-    (is (some? (swarm/check-event-journal "test-task")))
-    (swarm/clear-event-journal!)
-    (is (nil? (swarm/check-event-journal "test-task")))))
+    (let [task-id (fresh-task-id)]
+      ;; Manually add an entry via the private atom in swarm.channel
+      (bput! @#'swarm-channel/event-journal task-id {:status "completed"})
+      (is (some? (swarm/check-event-journal task-id)))
+      (swarm/clear-event-journal!)
+      (is (nil? (swarm/check-event-journal task-id))))))
 
 ;; =============================================================================
-;; Channel Subscription Tests
+;; Subscriptions
 ;; =============================================================================
 
 (deftest channel-subscriptions-start-stop-test
   (testing "Channel subscriptions can start and stop"
-    ;; Start channel server first
-    (ch/start-server! {:type :unix :path "/tmp/hive-mcp-swarm-test.sock"})
-    (Thread/sleep 100)
-
-    ;; Start subscriptions
     (swarm/start-channel-subscriptions!)
-    (Thread/sleep 100)
-
-    ;; Verify subscriptions are active via bounded-atom in swarm.channel
+    ;; Subscriptions are registered synchronously in the bounded-atom
     (is (seq @(:atom @#'swarm-channel/channel-subscriptions)))
 
-    ;; Stop subscriptions
     (swarm/stop-channel-subscriptions!)
     (is (empty? @(:atom @#'swarm-channel/channel-subscriptions)))))
 
 ;; =============================================================================
-;; Push Event Integration Tests
+;; Events → journal (through the real pub/sub)
 ;; =============================================================================
 
 (deftest task-completed-event-updates-journal-test
   (testing "task-completed event updates event journal"
-    ;; Start channel infrastructure
-    (ch/start-server! {:type :unix :path "/tmp/hive-mcp-swarm-test2.sock"})
-    (Thread/sleep 100)
-    (swarm/start-channel-subscriptions!)
-    (Thread/sleep 100)
+    (let [task-id (fresh-task-id)]
+      (swarm/start-channel-subscriptions!)
 
-    ;; Emit a task-completed event via the channel
-    (ch/emit-event! :task-completed
-                    {:task-id "test-task-001"
-                     :slave-id "test-slave"
-                     :result "success!"})
+      ;; Emit a task-completed event on the in-process bus
+      (ch/emit-event! :task-completed
+                      {:task-id task-id
+                       :slave-id "test-slave"
+                       :result "success!"})
 
-    ;; Wait for event to be processed
-    (Thread/sleep 200)
-
-    ;; Check the journal was updated
-    (let [entry (swarm/check-event-journal "test-task-001")]
-      (is (some? entry))
-      (is (= "completed" (:status entry)))
-      (is (= "success!" (:result entry)))
-      (is (= "test-slave" (:slave-id entry))))))
+      (let [entry (await-journal task-id)]
+        (is (some? entry) "event never reached the journal")
+        (is (= "completed" (:status entry)))
+        (is (= "success!" (:result entry)))
+        (is (= "test-slave" (:slave-id entry)))))))
 
 (deftest task-failed-event-updates-journal-test
   (testing "task-failed event updates event journal"
-    ;; Start channel infrastructure
-    (ch/start-server! {:type :unix :path "/tmp/hive-mcp-swarm-test3.sock"})
-    (Thread/sleep 100)
-    (swarm/start-channel-subscriptions!)
-    (Thread/sleep 100)
+    (let [task-id (fresh-task-id)]
+      (swarm/start-channel-subscriptions!)
 
-    ;; Emit a task-failed event
-    (ch/emit-event! :task-failed
-                    {:task-id "test-task-002"
-                     :slave-id "test-slave"
-                     :error "Something went wrong"})
+      ;; Emit a task-failed event on the in-process bus
+      (ch/emit-event! :task-failed
+                      {:task-id task-id
+                       :slave-id "test-slave"
+                       :error "Something went wrong"})
 
-    ;; Wait for event to be processed
-    (Thread/sleep 200)
-
-    ;; Check the journal was updated
-    (let [entry (swarm/check-event-journal "test-task-002")]
-      (is (some? entry))
-      (is (= "failed" (:status entry)))
-      (is (= "Something went wrong" (:error entry))))))
+      (let [entry (await-journal task-id)]
+        (is (some? entry) "event never reached the journal")
+        (is (= "failed" (:status entry)))
+        (is (= "Something went wrong" (:error entry)))))))
 
 ;; =============================================================================
-;; Collect Push-First Fallback Tests
+;; Collect path
 ;; =============================================================================
 
 (deftest collect-finds-journal-entry-immediately-test
   (testing "handle-swarm-collect finds journal entry without polling"
-    ;; Pre-populate the journal (simulating event arrival)
-    (bput! @#'swarm-channel/event-journal "instant-task"
-           {:status "completed"
-            :result "instant result"
-            :slave-id "fast-slave"
-            :timestamp (System/currentTimeMillis)})
+    (let [task-id (fresh-task-id)]
+      ;; Pre-populate the journal (simulating event arrival)
+      (bput! @#'swarm-channel/event-journal task-id
+             {:status "completed"
+              :result "instant result"
+              :slave-id "fast-slave"
+              :timestamp (System/currentTimeMillis)})
 
-    ;; Note: We can't fully test handle-swarm-collect without emacs running,
-    ;; but we can verify the journal lookup path works
-    (let [entry (swarm/check-event-journal "instant-task")]
-      (is (= "completed" (:status entry)))
-      (is (= "instant result" (:result entry))))))
-
-(comment
-  ;; Run tests
-  (clojure.test/run-tests 'hive-mcp.swarm-channel-test)
-
-  ;; Run single test
-  (clojure.test/test-vars [#'task-completed-event-updates-journal-test]))
+      ;; Note: We can't fully test handle-swarm-collect without emacs running,
+      ;; but we can verify the journal lookup path works
+      (let [entry (swarm/check-event-journal task-id)]
+        (is (= "completed" (:status entry)))
+        (is (= "instant result" (:result entry)))))))

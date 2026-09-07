@@ -171,12 +171,16 @@
         ;; caller with no DataScript row can still address its reader.
         parent-id (or (:parent-id data) (:slave/parent resolved-slave))
         broadcast? (boolean (:broadcast? data))
+        ;; A shout the agent CHOSE to make (the hivemind tool path), as opposed
+        ;; to runtime telemetry emitted on its behalf. Carried on the message
+        ;; so the piggyback digest never collapses it away.
+        deliberate? (boolean (:deliberate? data))
         ;; Cap message/task at canonical ingestion. One bad shout can otherwise
         ;; pollute the per-agent 10-message ring AND every backbone subscriber.
         capped-message (cap-message (:message data))
         capped-task (cap-message (:task data))
         payload-data (dissoc data :task :message :directory :project-id
-                             :parent-id :broadcast?)
+                             :parent-id :broadcast? :deliberate?)
         message (cond-> {:event-type event-type
                          :timestamp now
                          :project-id project-id
@@ -185,7 +189,8 @@
                   capped-task (assoc :task capped-task)
                   capped-message (assoc :message capped-message)
                   parent-id (assoc :parent-id parent-id)
-                  broadcast? (assoc :broadcast? true))
+                  broadcast? (assoc :broadcast? true)
+                  deliberate? (assoc :deliberate? true))
         ;; Backbone payload — flat, self-contained, no internal references
         ;; shout-id enables cross-path dedup (atom + backbone deliver same shout)
         backbone-payload (cond-> {:agent-id agent-id
@@ -197,7 +202,8 @@
                                   :task capped-task
                                   :data payload-data}
                            parent-id (assoc :parent-id parent-id)
-                           broadcast? (assoc :broadcast? true))]
+                           broadcast? (assoc :broadcast? true)
+                           deliberate? (assoc :deliberate? true))]
     ;; 1. Local state — always (bounded-atom for piggyback reads)
     (let [current (or (bget state/agent-registry agent-id) {:messages [] :last-seen nil})
           messages (or (:messages current) [])

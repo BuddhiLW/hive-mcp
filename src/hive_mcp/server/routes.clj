@@ -13,7 +13,8 @@
             [hive-mcp.extensions.registry :as ext]
             [hive-mcp.addons.core :as addons]
             [taoensso.timbre :as log]
-            [clojure.spec.alpha :as s]))
+            [clojure.spec.alpha :as s]
+            [hive-mcp.tools.composite :as composite]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -88,10 +89,21 @@
   "Convert a tool definition with :handler to SDK format.
    Wraps handler with the standard middleware chain.
 
+   A consolidated tool first folds the params its addon contributions declare
+   into its inputSchema (composite/build-merged-tool): contributions already
+   ROUTE through effective-handlers, but the MCP layer forwards only declared
+   params, so without this fold a contributed verb could not receive its own
+   arguments (`swarm ling-wave dispatch` answered :wave/no-providers to every
+   spelling). Done here, on every (re)build of the tool table, so a late
+   contribution reaches the advertised schema as soon as the reactive surface
+   refreshes it.
+
    A tool declaring :default-async-commands automatically advertises the
    `async` property; a tool that declares its own `async` keeps it."
-  [{:keys [name description inputSchema handler deprecated default-async-commands]}]
-  (let [schema-ext (ext/get-schema-extensions name)
+  [{:keys [consolidated] :as tool-def}]
+  (let [{:keys [name description inputSchema handler deprecated default-async-commands]}
+        (if consolidated (composite/build-merged-tool tool-def) tool-def)
+        schema-ext (ext/get-schema-extensions name)
         merged-schema (cond-> inputSchema
                         schema-ext
                         (update :properties merge schema-ext)

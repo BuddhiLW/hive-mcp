@@ -35,8 +35,57 @@ bump, not a quiet minor, because a consumer's storage would change under it.
 
 ## [Unreleased]
 
+## [1.1.2]
+
+A patch release. The tool surface, the manifest format and the ports are
+where 1.1.1 left them. Every entry is a fix or a repository-layout change a
+consumer does not see; the one behaviour change is a default on `swarm spawn`.
+
+### Fixed
+
+- `kanban list` silently truncated. The store window was hard-coded (100 for
+  a bare list, 500 once a status or a post-filter narrowed it) and the
+  caller's `limit` only cut the page, so `status=todo` answered 500 of 722
+  cards and no `limit` recovered the rest. Catchup's bucket counts had the
+  same shape at 200, so the header reported the window as the count. The
+  list pipeline is now a pure planner (`kanban.list.plan`) over malli value
+  objects (`kanban.list.schema`) and an `IBoardSource` port
+  (`kanban.list.source`); the store window is the whole scoped board, one
+  constant that list, stats and catchup share, and the handler namespace no
+  longer freezes the query functions in `def` aliases.
+- The dag-wave scheduler ignored `:depends-on`. `get-kanban-task` resolved
+  cards through the vector slot, which answers nil for a kanban-slot card, so
+  every dependency counted as done and every remaining todo dispatched in
+  wave 1. It reads through the kanban facade now, and a card present only in
+  the kanban slot counts as NOT done until its id is in the completed set.
+- An addon that contributed a verb to a consolidated tool root got routing
+  but no schema slot for its own arguments, and the MCP layer forwards only
+  declared params, so `swarm ling-wave dispatch` could never carry
+  `providers`. `build-merged-tool` is now applied to every consolidated
+  tool-def on each rebuild of the tool table. A core `command` enum is
+  extended only when the core declares one, and a colliding property unions
+  into `anyOf` instead of the addon retyping the core's.
+- The NATS client reconnected at most 5 times, so one nats-server restart
+  closed the host connection for the life of the process and every
+  NATS-backed feature degraded silently. `:max-reconnects` defaults to -1.
+- A ling's deliberate `swarm hivemind shout` vanished into the progress
+  digest, which keeps the last `:progress` row per agent. The hivemind path
+  marks its data `:deliberate?`, the marker rides the local and backbone
+  paths, and the digest never folds such a row.
+- The first hivemind read under a new project-id replayed the whole global
+  shout history from timestamp 0. Global shouts are judged against, and
+  advance, one `[reader "global"]` cursor whatever project the read names;
+  project shouts keep their per-project cursor.
+
 ### Changed
 
+- A ling that spawns without passing `parent` records itself as the spawn's
+  parent, so a grandchild's shouts stop at the ling instead of reaching the
+  coordinator. A coordinator-lane caller keeps the spawn root-level, and an
+  explicit `parent` still wins.
+- The swarm root resolves its subdomain schemas through the shared
+  `lazy-resolve-schema-props`, which now accepts a `tools` vector, instead of
+  its own copies of the merge.
 - The repository root is down to what a checkout needs. The presets moved from
   `presets/` to `resources/presets/`, so they ship in the jar and the image; the
   file fallback (`presets.dir`, `HIVE_MCP_PRESETS_DIR`) defaults to that path.
@@ -303,7 +352,8 @@ pressure to move and the var cannot be removed without breaking the host.
 
 - The Docker image runs the server from source; there is no uber task.
 
-[Unreleased]: https://github.com/hive-agi/hive-mcp/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/hive-agi/hive-mcp/compare/v1.1.2...HEAD
+[1.1.2]: https://github.com/hive-agi/hive-mcp/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/hive-agi/hive-mcp/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/hive-agi/hive-mcp/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/hive-agi/hive-mcp/compare/v0.22.0...v1.0.0

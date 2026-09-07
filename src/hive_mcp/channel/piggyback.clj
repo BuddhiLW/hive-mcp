@@ -105,11 +105,12 @@
   "Buffer an event received from the NATS backbone for piggyback delivery.
    Normalizes to the same shape as message-source-fn output.
    Events with nil agent-id (e.g. coordinator tool-executed) are silently dropped.
-   Preserves :shout-id for cross-path dedup when present, and :parent-id /
+   Preserves :shout-id for cross-path dedup when present, :parent-id /
    :broadcast? so hive-mcp.channel.audience can route the remote path exactly
-   as it routes the local one."
+   as it routes the local one, and :deliberate? so the digest spares the remote
+   path exactly as it spares the local one."
   [{:keys [agent-id event-type message task timestamp project-id shout-id
-           parent-id broadcast?]}]
+           parent-id broadcast? deliberate?]}]
   (when agent-id
     (let [normalized (cond-> {:agent-id    agent-id
                               :event-type  event-type
@@ -119,7 +120,8 @@
                               :project-id  (or project-id "global")}
                        shout-id (assoc :shout-id shout-id)
                        parent-id (assoc :parent-id parent-id)
-                       broadcast? (assoc :broadcast? true))]
+                       broadcast? (assoc :broadcast? true)
+                       deliberate? (assoc :deliberate? true))]
       (swap! backbone-buffer
              (fn [buf]
                (let [updated (conj buf normalized)]
@@ -214,6 +216,15 @@
 
    Four stages, in order: cursor -> project -> audience -> digest.
 
+   CURSOR is per [reader project], with one exception that is the whole
+   point: a \"global\" shout is read against the reader's [reader \"global\"]
+   cursor WHATEVER project the read asked for. Every project-scoped read
+   accepts global shouts, so with a cursor per project each first read under
+   a new project-id (a git call against another repo, a kanban call for a
+   sibling) replayed the entire global history from timestamp 0 — the
+   repeating-shouts symptom of kanban 20260519145332-0c5878a5, measured again
+   2026-09-07 when two commits in two repos each redelivered 54 wave shouts.
+
    AUDIENCE is what keeps one ling's turns out of every other ling's context:
    a shout reaches the agent that spawned its author and nobody else (see
    hive-mcp.channel.audience). Set config [:hivemind :piggyback-routing] to
@@ -221,7 +232,11 @@
 
    DIGEST collapses a burst of per-turn :progress rows from one agent into a
    single row carrying the count, so the reader learns the state without
-   reading the transcript. Disable via [:hivemind :progress-digest] false.
+   reading the transcript. A row the agent shouted DELIBERATELY (through the
+   hivemind tool, carried as :deliberate?) is never collapsed: measured
+   2026-09-07, a wave member's own `hivemind shout` was folded into the
+   runtime's `bb-ling turn 2` telemetry row and the reader never saw what the
+   member said. Disable digesting entirely via [:hivemind :progress-digest] false.
 
    Options:
      :project-id              - Primary project scope for filtering
@@ -234,39 +249,51 @@
   (let [all-msgs (merged-messages)]
     (when (seq all-msgs)
       (let [effective-project (or project-id "global")
-            cursor-key [agent-id effective-project]
-            last-cursor (get @agent-read-cursors cursor-key 0)
-            ;; Build the set of accepted project-ids
-            accepted-pids (cond-> #{"global"}
+            project-key    [agent-id effective-project]
+            global-key     [agent-id "global"]
+            cursors        @agent-read-cursors
+            project-cursor (get cursors project-key 0)
+            global-cursor  (get cursors global-key 0)
+            ;; Project-scoped shouts this read accepts; global ones are
+            ;; accepted by every read and judged against the global cursor.
+            accepted-pids (cond-> #{}
                             project-id (conj project-id)
                             (seq additional-project-ids) (into additional-project-ids))
-            new-msgs (->> all-msgs
-                          (filter (fn [msg]
-                                    (and (> (:timestamp msg) last-cursor)
-                                         (contains? accepted-pids (:project-id msg)))))
-                          (sort-by :timestamp)
-                          vec)
-            ;; Cursor advances over everything the project filter accepted, NOT
+            global?  (fn [msg] (= "global" (:project-id msg)))
+            fresh?   (fn [{:keys [timestamp] :as msg}]
+                       (if (global? msg)
+                         (> timestamp global-cursor)
+                         (and (contains? accepted-pids (:project-id msg))
+                              (> timestamp project-cursor))))
+            new-msgs (->> all-msgs (filter fresh?) (sort-by :timestamp) vec)
+            ;; Cursors advance over everything the project filter accepted, NOT
             ;; only over what this reader is addressed by — otherwise a shout
             ;; dropped by the audience filter would be re-examined forever.
-            max-ts (when (seq new-msgs)
-                     (apply max (map :timestamp new-msgs)))
+            max-ts   (fn [msgs] (when (seq msgs) (apply max (map :timestamp msgs))))
+            max-global  (max-ts (filter global? new-msgs))
+            max-project (max-ts (remove global? new-msgs))
             addressed (if (spawner-routing?)
                         (audience/filter-messages agent-id new-msgs)
                         new-msgs)
-            formatted-msgs (mapv (fn [{:keys [agent-id event-type message task]}]
+            ;; :deliberate? rides along only as far as the digest, which is the
+            ;; one stage that reads it; the row a reader sees never carries it.
+            formatted-msgs (mapv (fn [{:keys [agent-id event-type message task deliberate?]}]
                                    (cond-> {:a agent-id
                                             :e (if (keyword? event-type)
                                                  (name event-type)
                                                  event-type)
                                             :m message}
-                                     task (assoc :t task)))
+                                     task (assoc :t task)
+                                     deliberate? (assoc :deliberate? true)))
                                  addressed)
-            digested (if (progress-digest?)
-                       (audience/digest formatted-msgs)
-                       formatted-msgs)]
-        (when max-ts
-          (swap! agent-read-cursors assoc cursor-key max-ts))
+            digested (mapv #(dissoc % :deliberate?)
+                           (if (progress-digest?)
+                             (audience/digest formatted-msgs)
+                             formatted-msgs))]
+        (when max-global
+          (swap! agent-read-cursors assoc global-key max-global))
+        (when max-project
+          (swap! agent-read-cursors assoc project-key max-project))
         (when (seq digested)
           digested)))))
 

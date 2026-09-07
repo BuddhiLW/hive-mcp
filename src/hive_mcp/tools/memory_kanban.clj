@@ -454,8 +454,14 @@
 
 (def ^:private effective-dir hive-mcp.tools.memory-kanban.query/effective-dir)
 
-(def ^:private stats* hive-mcp.tools.memory-kanban.query/stats*)
+(defn- stats*
+  "Call-through to the query ns (resolved per call, so a reload takes effect)."
+  [params]
+  (query/stats* params))
 
 (def ^:private filter-kanban-by-tags hive-mcp.tools.memory-kanban.query/filter-kanban-by-tags)
 
-(def ^:private list-slim* hive-mcp.tools.memory-kanban.query/list-slim*)
+(defn- list-slim*
+  "Call-through to the query ns (resolved per call, so a reload takes effect)."
+  [params]
+  (query/list-slim* params))

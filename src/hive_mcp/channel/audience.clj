@@ -83,8 +83,13 @@
   #{"progress"})
 
 (defn- digestible?
+  "A row the digest may fold into its agent's rollup: a digestible event the
+   agent did NOT shout deliberately. A :deliberate? row is what the agent
+   chose to say; folding it into the runtime's per-turn telemetry is how a
+   reader loses the one message that mattered."
   [row]
-  (contains? digestible-events (some-> (:e row) name)))
+  (and (contains? digestible-events (some-> (:e row) name))
+       (not (:deliberate? row))))
 
 (defn digest
   "Collapse per-agent bursts of digestible rows into one row each.

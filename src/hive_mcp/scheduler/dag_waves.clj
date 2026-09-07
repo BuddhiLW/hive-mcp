@@ -3,7 +3,7 @@
   (:require [hive-mcp.dns.result :as result]
             [hive-mcp.knowledge-graph.edges :as kg-edges]
             [hive-mcp.tools.memory-kanban :as mem-kanban]
-            [hive-mcp.vectordb.facade :as facade]
+            [hive-mcp.vectordb.kanban-facade :as kanban-facade]
             [hive-mcp.agent.ling :as ling]
             [hive-mcp.hivemind.core :as hivemind]
             [hive-mcp.channel.core :as channel]
@@ -65,9 +65,9 @@
                        (if (sequential? parsed) parsed []))))))
 
 (defn- get-kanban-task
-  "Get a kanban task by ID from Chroma."
+  "Get a kanban task by ID from the kanban store."
   [task-id]
-  (result/rescue nil (facade/get-entry-by-id task-id)))
+  (result/rescue nil (kanban-facade/get-entry-by-id task-id)))
 
 (defn- kanban-task-done?
   "Check if a kanban task has been completed."

@@ -1,0 +1,1021 @@
+{:case-0
+ {:out [],
+  :in
+  ({:required-tags ["7g00zHqBubv"],
+    :window 2,
+    :post-filters
+    {:query "",
+     :priority nil,
+     :created_after "2t3dsmGxp",
+     :updated_after nil,
+     :or-tags nil},
+    :page
+    {:offset nil,
+     :limit nil,
+     :fields ["id" "title" "status" "priority" "priority"]}}
+   [{:id "57F74Y8bPn8R8r5",
+     :tags
+     ["P0Q40Rc"
+      "YWT3x7SOWr1c9r64D"
+      "hXukb01gkc1T9v63N68"
+      "685X38O5Ktyhw2s"
+      "uwrqk068C8Xoc1"
+      "MY803"],
+     :content
+     {:task-type "kanban",
+      :title "X8B206e5u",
+      :status "done",
+      :priority "medium",
+      :description "Wt",
+      :created "ins73CZV79cjUwUw6K"}}
+    {:id "Ru",
+     :tags
+     ["om172JRz6oLBLiEXXyL4"
+      "9n5555n5v6M"
+      "S7YMJ1"
+      "5iYl"
+      "vvBL4J5970DPtOG7fWR86"],
+     :content
+     {:task-type "kanban",
+      :title "64q9dWl7P",
+      :status nil,
+      :priority nil,
+      :created nil}}
+    {:id "7zf401",
+     :tags
+     ["p7q6WR84i859z2pmLV2HOT7a"
+      "0893T4R61mEsysEmZi9b"
+      "WJw25bJIxK9"
+      "83vJGm6kN55GCg1l0O"],
+     :content
+     {:task-type "kanban",
+      :title "Sw01o",
+      :status "doing",
+      :priority nil,
+      :description nil}}
+    {:id "uZ22Fg1AvLEq",
+     :tags
+     ["y2a9l" "3807TjqYEEB" "BISVvT5mx0b" "TInRYSfREz" "U0Z271nf6Ry1"],
+     :content
+     {:task-type "kanban", :title nil, :status nil, :priority nil}}
+    {:id "N9NTy4o",
+     :tags ["O83"],
+     :content
+     {:task-type "kanban",
+      :title nil,
+      :status "done",
+      :priority "high",
+      :description "X5",
+      :created "lMzBvP2ofS72W"}}
+    {:id "4W722QDDENbW",
+     :tags ["k853eXn60" "MlstKmnx5G"],
+     :content
+     {:task-type "kanban",
+      :title nil,
+      :status nil,
+      :priority "medium"}}
+    {:id "C2pZyrF4FM",
+     :tags ["JAb9tiB68sgqIrp5ZTwG"],
+     :content
+     {:task-type "kanban",
+      :title nil,
+      :status nil,
+      :priority "low",
+      :created nil}}
+    {:id "27YR36Em5T",
+     :tags ["3mz0EQ" "oR754f" "yqpdb" "uDF067i4Z"],
+     :content
+     {:task-type "kanban",
+      :title "P9w3Kv2",
+      :status nil,
+      :priority nil,
+      :description nil}}
+    {:id "yczj40Vs019azr856dVaS04E",
+     :tags ["NJt86AL9OmA" "0732fs5fk5Y9Wo44"],
+     :content
+     {:task-type "kanban",
+      :title "",
+      :status nil,
+      :priority nil,
+      :description "R1In1Nfdp",
+      :created "i9i24hWkO81HiOC68AJ7"}}
+    {:id "E3Eibt5XFx1T3",
+     :tags
+     ["68O"
+      "Hmc5feTMZ0dY9yQsrcH"
+      "i0Y31Q152455I4Oqpl"
+      "4764G"
+      "bFR9dfIeECE9Cg5fc"],
+     :content
+     {:task-type "kanban",
+      :title nil,
+      :status nil,
+      :priority nil,
+      :created "914Jv"}}
+    {:id "T384y",
+     :tags ["mZJP" "utfE" "LIkdQ920TX76kpVq3z" "P1JgoJ58aT4ODwO"],
+     :content
+     {:task-type "kanban",
+      :title "1NvHym1GTWDE",
+      :status nil,
+      :priority "medium",
+      :created nil}}
+    {:id "Rb84",
+     :tags ["nleb2r6UxV3wKled" "4xwZm" "GZ80D01nv09"],
+     :content
+     {:task-type "kanban",
+      :title "iqM",
+      :status "inprogress",
+      :priority "high",
+      :description nil}}
+    {:id "Up",
+     :tags ["yz" "1orp3" "8I3ZP3XMB77onj5DJ" "Qzn3cl5u5jR856wo96M"],
+     :content
+     {:task-type "kanban",
+      :title "a2A0xteuH",
+      :status "inreview",
+      :priority "low",
+      :created "j7oIYJBKoLJLTWrLn"}}
+    {:id "7W833X52IAi9",
+     :tags ["Ri6K2R2NXUM3pyE"],
+     :content
+     {:task-type "kanban",
+      :title "K8L9y3",
+      :status nil,
+      :priority nil,
+      :description "iyeTUQs9257",
+      :created nil}}
+    {:id "4108NTpvYX87Q10krdsiW",
+     :tags
+     ["iEdP2sf1Y8"
+      "jDUH3Uw"
+      "cW0WAnZOs3"
+      "bYUJ84ezv6VXXkkztT73"
+      "4HV8Gb61480MDZu40h9"
+      "Dl"],
+     :content
+     {:task-type "kanban",
+      :title "hK77bGsJsLh",
+      :status "inreview",
+      :priority "high",
+      :description nil,
+      :created "4yB38lj2YJz87I9B6wy3"}}
+    {:id "0wxCS8g10T",
+     :tags ["sZBVtaY01rA8Ptz4" "j29638HKx732" "3539M"],
+     :content
+     {:task-type "kanban", :title nil, :status "done", :priority nil}}
+    {:id "8m4QilA3c815O7JPzX2J",
+     :tags ["tztuaoFpHyhO4y4Y"],
+     :content
+     {:task-type "kanban",
+      :title nil,
+      :status "inreview",
+      :priority nil}}
+    {:id "CKR34N50LuHpIIZuQ2mPPF6",
+     :tags
+     ["68Z01BhrC813S" "7BN1IoYXTR21V3yO29" "2w6g83QeaCk4Vfml8b5l33"],
+     :content
+     {:task-type "kanban",
+      :title nil,
+      :status "inreview",
+      :priority "low",
+      :description "Wrsje644Q7wm"}}
+    {:id "Mu55nLQp",
+     :tags ["3jwW4a28I37wrQf82906wIz"],
+     :content
+     {:task-type "kanban",
+      :title "TeQj93V",
+      :status nil,
+      :priority nil}}
+    {:id "pT3y4190oCHg4unda1s5x52",
+     :tags
+     ["dN4byHq16R8VhMikTMDbSD" "35Hw83" "yJmZi0q2f5jjIF48rp6g15cM"],
+     :content
+     {:task-type "kanban",
+      :title "w9Ch",
+      :status "done",
+      :priority "high",
+      :description nil}}
+    {:id "NIR46m",
+     :tags
+     ["2s9SE"
+      "jgX3O247C5"
+      "ZBZHz4twtFS8DDSs0e21L9"
+      "3m966j3mn2RB2eqbPR752V"
+      "Nk3KBwl8aPpyF4k2iKX7"],
+     :content
+     {:task-type "kanban",
+      :title nil,
+      :status nil,
+      :priority nil,
+      :description nil,
+      :created nil}}]
+   false)},
+ :case-1
+ {:out [],
+  :in
+  ({:required-tags ["g4lksNRgVo"],
+    :window 1,
+    :post-filters
+    {:query nil,
+     :priority "low",
+     :created_after "f89u",
+     :updated_after nil,
+     :or-tags
+     ["pPSBlJxvR3TA7rOOhC8g8V"
+      "EB8v3p5Bo5NA91YY"
+      "VuCwF554oQxl7B587oz"]},
+    :page {:offset 1, :limit 1, :fields nil}}
+   [{:id "at6uy0814QtSIHVVFINbUk",
+     :tags ["9V86" "53Wam85c4Hdu2A1Yc5k4IS2a"],
+     :content
+     {:task-type "kanban",
+      :title "",
+      :status "inprogress",
+      :priority nil}}
+    {:id "94A",
+     :tags [],
+     :content
+     {:task-type "kanban",
+      :title nil,
+      :status "inreview",
+      :priority nil,
+      :created nil}}
+    {:id "na0O3",
+     :tags
+     ["47x0YS6qjv"
+      "4j238J5x004W0j9d67J88"
+      "AAZZP54BegO958h"
+      "kv9Ij29w2r4wt3W6R0"],
+     :content
+     {:task-type "kanban",
+      :title "3c",
+      :status "inreview",
+      :priority nil,
+      :description "41D22IGN2M"}}
+    {:id "YvfgC3cW",
+     :tags
+     ["66stZpOkvU7H4H7Y8"
+      "yqpCi4n5b"
+      "x4OHSBTCOngS9"
+      "wv69LO3EUMzuT0s8"
+      "jWr0A9BoMlDWoZpIz3A9pg2"
+      "2"],
+     :content
+     {:task-type "kanban",
+      :title nil,
+      :status "inreview",
+      :priority "low"}}
+    {:id "MO3",
+     :tags
+     ["sCI6ABD4yU1ntlEuHjkvI7e"
+      "eZ33EYxt36T997q2KsEl"
+      "2yE9C3i3sfuREG"
+      "zgI"
+      "r6kqmxdR5c6z1"
+      "oH5yA43HR106kIoIbFWFyy35"],
+     :content
+     {:task-type "kanban",
+      :title nil,
+      :status nil,
+      :priority "low",
+      :created "7zzT02Q"}}
+    {:id "1CxG0QHuH7vcs",
+     :tags ["7E4295DP" "Yv" "0Fv96461601nBljgZ93wGnN6"],
+     :content
+     {:task-type "kanban",
+      :title "1160GfN43",
+      :status "todo",
+      :priority "medium",
+      :description "P1hbSd9Y0",
+      :created "qDG2nql97rTHnvEXneL4p"}}
+    {:id "q",
+     :tags
+     ["irJ0Z7YQaHD"
+      "aFNjcPk6C3183xck49bB"
+      "nAK6G610RPQYqZeP"
+      "B0dV677XRAdXh0ghtY0"
+      "tg3HSjy8u475J"],
+     :content
+     {:task-type "kanban",
+      :title nil,
+      :status "done",
+      :priority "high"}}
+    {:id "6B276nleEQRF13c0Kq51v1o",
+     :tags
+     ["bTj6wtW1SF"
+      "09dmap23718"
+      "vs885nla3m3Qbya70543tcW"
+      "rDC4QtTr7MT8h41oF"],
+     :content
+     {:task-type "kanban",
+      :title "g4jt0ecgLd",
+      :status "done",
+      :priority nil,
+      :description nil,
+      :created "9OH1WnYRcm1QJ"}}
+    {:id "eT6D6mD48gQaVv",
+     :tags
+     ["x1isEmx2W889HWos5rXM3fP"
+      "xAU"
+      "u2a3mKeNEz"
+      "S49w36"
+      "1fb61rbuJSoVKQ0ic"
+      "rRV"],
+     :content
+     {:task-type "kanban",
+      :title "fPQDY07ek",
+      :status "review",
+      :priority nil,
+      :created "12TstWUF53ujD1QQK3RV4094"}}
+    {:id "of53R",
+     :tags ["A6rQ0sK097mMb1g" "y9k13" "596D5G9Z9D7xWEB2dSlM2Q5"],
+     :content
+     {:task-type "kanban", :title nil, :status nil, :priority "high"}}
+    {:id "XT895ycTqA66i10249",
+     :tags
+     ["Obb"
+      "960fB50MmS77xVL1hB"
+      "58I34F5329E1d1BHHcgI"
+      "B7FZ9ds3RX3kZ95abMq7x"
+      "hyKKRId6vHev7HEJ0u3IVn8"
+      "JWt952LB0JSB1"],
+     :content
+     {:task-type "kanban",
+      :title nil,
+      :status "inreview",
+      :priority "low",
+      :description nil}}
+    {:id "4nj55Ras9TnZ30hdqq",
+     :tags ["8fNw9RQA5"],
+     :content
+     {:task-type "kanban",
+      :title nil,
+      :status nil,
+      :priority "low",
+      :description "91Oj50v5m17"}}
+    {:id "3jvRYtrahRrO",
+     :tags ["4nW0" "lK010OonL8F"],
+     :content
+     {:task-type "kanban",
+      :title "8zM2U77u72Y",
+      :status nil,
+      :priority nil,
+      :description nil}}
+    {:id "HfY4pmS5WHed0tGk57",
+     :tags ["O" "9qOi22HuycPIHBt" "91"],
+     :content
+     {:task-type "kanban",
+      :title "kn39wkb7",
+      :status "inprogress",
+      :priority nil}}]
+   true)},
+ :case-2
+ {:out [],
+  :in
+  ({:required-tags
+    ["Nni7qalEC35yZn3TtT" "2jE5KL7XI6h7BbP3Ui3E9v41" "hwK"],
+    :window 1,
+    :post-filters
+    {:query "m",
+     :priority "high",
+     :created_after nil,
+     :updated_after "xxh0TvY23B7461pD6R9",
+     :or-tags ["79Chfp" "55DXN2H4mNr"]},
+    :page {:offset 1, :limit 0, :fields nil}}
+   [{:id "MdoPqj1SKjUhu5779EUaTb",
+     :tags
+     ["P9xG23jJYf1RDkkz"
+      "F4s55z18213tun9kZprf"
+      "079EJ2M4V3f1R9jf09T7Kv"
+      "XkPn"
+      "4qrsd0ce9225cJ5"],
+     :content
+     {:task-type "kanban",
+      :title "igIRcS1w71Y",
+      :status nil,
+      :priority nil}}
+    {:id "mh381skz6m0K72LvRiVH4Xb",
+     :tags ["7lUv6YDJ0LP"],
+     :content
+     {:task-type "kanban",
+      :title "sVzq28Th",
+      :status nil,
+      :priority "high"}}
+    {:id "Ij6j202E",
+     :tags [],
+     :content
+     {:task-type "kanban",
+      :title nil,
+      :status "todo",
+      :priority "high",
+      :created nil}}
+    {:id "7dZN02l4JZa3WPYK06W1",
+     :tags ["9Se33sw3"],
+     :content
+     {:task-type "kanban",
+      :title "WYZYV2B",
+      :status nil,
+      :priority "low",
+      :description nil}}
+    {:id "hM5c5JcSS",
+     :tags
+     ["p757865"
+      "h0G8vqI7wE1m2N"
+      "05e4BrjTsUlF60S9h8jwpg3"
+      "32uYRL6s4lP20A10Gq"
+      "YQ5n5H0J0Zxf27a113D2AN"
+      "u"],
+     :content
+     {:task-type "kanban",
+      :title "Jj59W1589",
+      :status nil,
+      :priority "low",
+      :description nil,
+      :created nil}}
+    {:id "Glr6je08bJxuWbp",
+     :tags ["IHAn8j7w676q" "7O72" "4wzrg"],
+     :content
+     {:task-type "kanban",
+      :title "g",
+      :status nil,
+      :priority "low",
+      :description nil,
+      :created nil}}
+    {:id "9353n9OgQs8qxZRzzBKb",
+     :tags ["cR" "Y9ynq1bRhlrImWRMUIGeYJ7" "HKryBGcYvxo0"],
+     :content
+     {:task-type "kanban",
+      :title nil,
+      :status nil,
+      :priority nil,
+      :created "YY3l6re4ZUY"}}
+    {:id "n",
+     :tags
+     ["KDAfoPT02381sG" "rbRIKZFcb75OOlMdx6ot4BNB" "5IjtNTrcq21o"],
+     :content
+     {:task-type "kanban",
+      :title "Sv",
+      :status nil,
+      :priority "high",
+      :created "Bs65lsKM2Ilifs70Y8drnPPQ"}}
+    {:id "w5a9Sb7kg2ebydhk9yq4Ka39",
+     :tags
+     ["4f3iYG"
+      "nUc3RE5BM1oZqH25sfCraB0"
+      "le7KeLMwMTtBV9G"
+      "dtL19Pdi6ew75g9M"
+      "xU16323"],
+     :content
+     {:task-type "kanban",
+      :title nil,
+      :status "doing",
+      :priority nil,
+      :created nil}}
+    {:id "G013cKz3IZVZnP1xlH",
+     :tags [],
+     :content
+     {:task-type "kanban",
+      :title "gIj0T9022",
+      :status "doing",
+      :priority "medium",
+      :created nil}}
+    {:id "u7G226G",
+     :tags
+     ["1oyFB6e4uEx8w6Pm"
+      "4F2xUDe996H138tJWMR"
+      "jqPww96YOl6Q8VFtl4gq0w"
+      "9m2fKKyshA9S4aAztYe"],
+     :content
+     {:task-type "kanban",
+      :title "a43Ij4tGP5NH",
+      :status nil,
+      :priority "low",
+      :description "37936B"}}
+    {:id "b54X7izlOIqt8b5YT",
+     :tags
+     ["cs"
+      "U1leGXQTRo0Rm8C1d2c0"
+      "tABwx6VkLK70KQ30"
+      "6"
+      "ou"
+      "7l3i5eo4Y87xykaR3q"],
+     :content
+     {:task-type "kanban", :title nil, :status "doing", :priority nil}}
+    {:id "660DGE2fq03vJa1hR779F",
+     :tags
+     ["f730DMq9bEv5"
+      "1xn42T5Hbetz5l2"
+      "2HK40C2EsOt5A5j0XhN27T2Q"
+      "ZCZGbe"
+      "R2nRyN8O0sPSPePjZfFP"],
+     :content
+     {:task-type "kanban",
+      :title "q0KPIu",
+      :status "inreview",
+      :priority "medium",
+      :description nil,
+      :created "A7Nz"}}
+    {:id "56",
+     :tags ["OwyWz7JhjsNfHAW0wzzz4" "0aNf79vDZDO" "K60CB7"],
+     :content
+     {:task-type "kanban",
+      :title nil,
+      :status nil,
+      :priority "high",
+      :created "5D1I8"}}
+    {:id "2vUbyH6mX43uU583Nih81fr",
+     :tags ["qEaXY197"],
+     :content
+     {:task-type "kanban",
+      :title "5H0",
+      :status nil,
+      :priority nil,
+      :description nil,
+      :created "xOkmn"}}]
+   false)},
+ :case-3
+ {:out [],
+  :in
+  ({:required-tags ["gLTCP3oQ2U2qIClHV9i"],
+    :window 1,
+    :post-filters
+    {:query nil,
+     :priority "high",
+     :created_after "Kzv4",
+     :updated_after nil,
+     :or-tags ["VJiYyvKUH26"]},
+    :page {:offset 2, :limit nil, :fields nil}}
+   [{:id "p7OUo4c6",
+     :tags [],
+     :content
+     {:task-type "kanban",
+      :title nil,
+      :status "todo",
+      :priority nil,
+      :created nil}}]
+   true)},
+ :case-4
+ {:out [],
+  :in
+  ({:required-tags
+    ["7" "R0t29vP2O0zsZq7N0n" "aDSSCD1piwX9dr85f1e766" "Q286Al2"],
+    :window 2,
+    :post-filters
+    {:query "Js",
+     :priority "medium",
+     :created_after "12f33L0tsJw6RHuUpT70s",
+     :updated_after nil,
+     :or-tags []},
+    :page {:offset 3, :limit nil, :fields nil}}
+   [{:id "85ts7oS5aQ2",
+     :tags ["8263czIS7Pt4Jqy09g6V" "15Z7"],
+     :content
+     {:task-type "kanban",
+      :title "DI6luFj34RnO",
+      :status "todo",
+      :priority nil,
+      :description nil,
+      :created nil}}
+    {:id "N1TDdQc91R18s6G",
+     :tags ["Z0VQA3" "q2F9I0Ch" "WXPj7ybxYsh06r7tr" "Lx6"],
+     :content
+     {:task-type "kanban",
+      :title "1EcfBxF",
+      :status nil,
+      :priority nil,
+      :created nil}}
+    {:id "PsyC4WkoByqeTNJJEL4",
+     :tags
+     ["CutiQd1Y7Lp"
+      "4Q2ykcnHSjW2SU3X"
+      "g61r6bpd3UU6Lg14vAk"
+      "00e880"
+      "3id0qC9qGFPA6zwaVy"
+      "9RJQ2tQyB6EnDf3"],
+     :content
+     {:task-type "kanban",
+      :title nil,
+      :status "todo",
+      :priority "low",
+      :description nil,
+      :created nil}}
+    {:id "M5mW0WQr",
+     :tags ["BV1b0h7cY" "WArILGE" "T5FS73c97U9C3fM2"],
+     :content
+     {:task-type "kanban",
+      :title "wPT4",
+      :status nil,
+      :priority nil,
+      :created nil}}
+    {:id "hKVEZTDhG3S1G3Jstt",
+     :tags ["d" "j2WCHhdAKGQ"],
+     :content
+     {:task-type "kanban",
+      :title nil,
+      :status nil,
+      :priority nil,
+      :created "ph9T2H0YCjUfcwS207bEi7i"}}
+    {:id "p2lDF0gNne8sQdr92B7Ziz",
+     :tags ["43kCuXMR" "nNS6TFGtuC74DIP"],
+     :content
+     {:task-type "kanban",
+      :title "wc9GO",
+      :status nil,
+      :priority nil,
+      :created "8jQf2Ab"}}
+    {:id "k5AVw",
+     :tags
+     ["3WMF6C2GW456jd2TQi8qNw" "vZ5" "1ap6HNEs4NzV" "Bx5qSTD9imbQ4j"],
+     :content
+     {:task-type "kanban",
+      :title nil,
+      :status nil,
+      :priority "medium",
+      :description "0OaDM3LT3H",
+      :created "PLZ1"}}
+    {:id "fuxjH0tt72MKn49Geuk5gz",
+     :tags ["7o35" "zB9nAv"],
+     :content
+     {:task-type "kanban", :title nil, :status nil, :priority nil}}
+    {:id "xYa3Da9Kp7WmWP8m2",
+     :tags
+     ["P"
+      "HhpgIiXJTC89dKSP1"
+      "g4s8b298MvTyjUUgdp9X"
+      "Mg4x4"
+      "cCxPODybA"],
+     :content
+     {:task-type "kanban", :title nil, :status nil, :priority "high"}}
+    {:id "Mn20",
+     :tags ["6U418b4k" "gZ05" "W0p0pDJx8O3td617VR7wKba" "K1s3MiO3529"],
+     :content
+     {:task-type "kanban",
+      :title nil,
+      :status "inreview",
+      :priority nil,
+      :description nil,
+      :created "nsUD1m313m1yZ1ueh6vMcf"}}
+    {:id "2IScKVmvn3S",
+     :tags ["thmnQK6k0w2"],
+     :content
+     {:task-type "kanban",
+      :title nil,
+      :status "review",
+      :priority "medium"}}
+    {:id "1tpCtD",
+     :tags ["EkhGAZaE1Lvfw2aG" "cDw4G8" "W5rpwD9S5Gz6"],
+     :content
+     {:task-type "kanban",
+      :title "5",
+      :status nil,
+      :priority "medium",
+      :description nil}}
+    {:id "MJWTvs7m07H75E5WARM9R",
+     :tags ["Cbdz90lgC"],
+     :content
+     {:task-type "kanban",
+      :title "C0xK4XqfO",
+      :status "inreview",
+      :priority "low"}}
+    {:id "eT0yNkxO8215Z8p0NZ",
+     :tags
+     ["T5csph"
+      "1bff1BsKi6x7T"
+      "G6362b1wo1zql67mRj9Ayl"
+      "8Yd25d"
+      "j7Bx0mCn4IrH"],
+     :content
+     {:task-type "kanban",
+      :title nil,
+      :status "done",
+      :priority "low",
+      :description "UGpUT36Pc660"}}
+    {:id "x27206vow",
+     :tags ["lD6sxvkq3R33iY8uu18" "i5I7eQRQzn4Wyfv15W2P0DKT"],
+     :content
+     {:task-type "kanban",
+      :title "6",
+      :status "inprogress",
+      :priority "medium",
+      :description "O5w1Y"}}
+    {:id "BC26e01ubh32wU2Fw",
+     :tags ["4AiUeM0OU5T4Z6s" "z42VB413ab6W"],
+     :content
+     {:task-type "kanban",
+      :title "93GYnO",
+      :status nil,
+      :priority "medium"}}
+    {:id "dEiITLq8Du",
+     :tags ["3VS8nSBa390s98m1gx" "1o6GCJJE"],
+     :content
+     {:task-type "kanban",
+      :title "ln4",
+      :status "review",
+      :priority "high",
+      :created nil}}
+    {:id "576OmPRa6LgN671EF13jF94e",
+     :tags [],
+     :content
+     {:task-type "kanban",
+      :title "S6f4u4sj1",
+      :status nil,
+      :priority "low",
+      :description "507q"}}
+    {:id "OKBpoJ14fyVXZq",
+     :tags
+     ["HT00k4r55X5d4o1w5B4Ps"
+      "Ep6ku165X7r5n864O"
+      "TDy5efS29g7zRgCY4IG3"
+      "K4JSyQS4FVSPQ40do0Mp7m"
+      "Hq5IVs9PZeIsrtEL1BORXl5G"
+      "2g3M"],
+     :content
+     {:task-type "kanban",
+      :title nil,
+      :status "doing",
+      :priority "high",
+      :description nil}}
+    {:id "j041HcCbjNLPM7",
+     :tags [],
+     :content
+     {:task-type "kanban",
+      :title nil,
+      :status "inreview",
+      :priority nil,
+      :description nil,
+      :created nil}}
+    {:id "9lV",
+     :tags ["e29WJsK7u" "wYwRI1NyQ1D9RGyAH1" "a"],
+     :content
+     {:task-type "kanban",
+      :title nil,
+      :status "review",
+      :priority "high",
+      :description "59s4ZL",
+      :created nil}}
+    {:id "m046l8c6ro0r5faT7Bgkfvd",
+     :tags
+     ["B610331rn6D8w5nA13" "RTR1l6hEj4R" "271JSgsv5Kj505O0sDZ7I"],
+     :content
+     {:task-type "kanban",
+      :title "",
+      :status "done",
+      :priority nil,
+      :created nil}}
+    {:id "Pc8eNIjjYQG9fGsCdiOfJD",
+     :tags ["N63q2ItIM6UUJu022l" "LqmR12bA5IsC44T2zOZ5"],
+     :content
+     {:task-type "kanban",
+      :title "7IhWhl024",
+      :status "inreview",
+      :priority "low",
+      :description nil}}
+    {:id "xb65C6D2s45c",
+     :tags ["b0cH64w9" "4PKHXrNYOa"],
+     :content
+     {:task-type "kanban",
+      :title "c2to994XWrKw",
+      :status nil,
+      :priority nil,
+      :description "rzJd98Cj",
+      :created nil}}]
+   false)},
+ :case-5
+ {:out [],
+  :in
+  ({:required-tags ["rb6IyQ63QuSOK"],
+    :window 1,
+    :post-filters
+    {:query nil,
+     :priority nil,
+     :created_after "C9L7v6i2bQHZ1d27",
+     :updated_after nil,
+     :or-tags ["UZUE1qt3B5Y108d6d28cex" "WRA7Hy94T" "kT56cha2RJX"]},
+    :page {:offset nil, :limit nil, :fields nil}}
+   [{:id "xISbsZ5Y0LYOgH3ZhZKYKx",
+     :tags ["W0irIx1K8" "2H3DH"],
+     :content
+     {:task-type "kanban",
+      :title nil,
+      :status "inreview",
+      :priority "medium"}}
+    {:id "tG12w",
+     :tags ["URdOnM831k4" "3uVSpq37ZF"],
+     :content
+     {:task-type "kanban",
+      :title nil,
+      :status "inprogress",
+      :priority "high",
+      :description "Qqe0TbPx5"}}
+    {:id "qC808KGlU3smv35",
+     :tags ["Z1U3D03j04w"],
+     :content
+     {:task-type "kanban", :title "", :status nil, :priority "high"}}
+    {:id "IT",
+     :tags ["Tf"],
+     :content
+     {:task-type "kanban",
+      :title nil,
+      :status "inprogress",
+      :priority "low",
+      :description nil,
+      :created nil}}
+    {:id "42bMmT3x07yX9DX126r",
+     :tags ["s27TYUXW14VrI" "9C42uq1P"],
+     :content
+     {:task-type "kanban", :title nil, :status "todo", :priority nil}}
+    {:id "VrgAHa0kM9nHHXl97wmM",
+     :tags
+     ["Hm9yqi91hoDI3O" "FvQUNayOvSENGVQ" "41YJVo44KYZl67cZq71H66"],
+     :content
+     {:task-type "kanban",
+      :title "8R7ci78",
+      :status nil,
+      :priority nil,
+      :description "63",
+      :created nil}}
+    {:id "j9qqGFXh93bZ4S02e7",
+     :tags ["7b6mTrPcda0SejHzdwj7VQ4" "858Jnmc4lB2GJav31Qp"],
+     :content
+     {:task-type "kanban",
+      :title "uc7w0vH6R",
+      :status nil,
+      :priority "low",
+      :description nil}}
+    {:id "45r0j8Be56d8onh",
+     :tags
+     ["s2Wq30ugp0P2tCqlH835H4"
+      "B84lwrRB1H9v192rz7hC"
+      "ub"
+      "nhOAw6Ey2XVf81ahm"
+      "33Kbo756hb72q6z0J2X5"
+      "Y5qeR4v702T9"],
+     :content
+     {:task-type "kanban",
+      :title "x8CZh",
+      :status nil,
+      :priority "low"}}
+    {:id "UuuJtnP5c4Rxs1gKXGmGhc",
+     :tags
+     ["JWCka57M6xgW6dO7TSMkIF"
+      "8t0s69bMn7DPFz3TfGb2p71U"
+      "y0B5qN"
+      "z55aaYD9Kgj6VzkwxZ6"],
+     :content
+     {:task-type "kanban",
+      :title nil,
+      :status nil,
+      :priority nil,
+      :description nil,
+      :created "Y1Fr5H6ZIlGM11"}}
+    {:id "98a8xIZQC5pj63p8cOKcuY14",
+     :tags
+     ["1"
+      "E2ukH52tA"
+      "95Xa3Q7X1wl0gAAc9JIOONfQ"
+      "X8BpQMVdR96OKKIwn0pK"
+      "bQ6fGO129jEwsalN1V4Wk1k"
+      "i2vmuH0"],
+     :content
+     {:task-type "kanban",
+      :title nil,
+      :status "inprogress",
+      :priority "medium",
+      :description nil,
+      :created "S5I"}}
+    {:id "oNQxEcTd0xr048EOgqksIgp",
+     :tags
+     ["6Tvj7"
+      "3AaEu3S"
+      "K263C0864Z2IYJE3Tk"
+      "TIkHd2O24XCX6l8Q"
+      "z0h5AVMrSeKhS1g222VIqPS"
+      "smb3418s1lFh"],
+     :content
+     {:task-type "kanban",
+      :title "sD",
+      :status "doing",
+      :priority "medium"}}
+    {:id "sVsP9A2yMV98F504fv3",
+     :tags
+     ["bQf03b035TTLQLonH"
+      "zXu4sKsne61O25tPMZLpG"
+      "kGe95EggLCP0"
+      "r72tUlbxcxdYLkr"],
+     :content
+     {:task-type "kanban",
+      :title "mjb7",
+      :status "review",
+      :priority nil}}
+    {:id "CcWc772z1R3fWYzynr1",
+     :tags ["Qfi7q4uzURzOnD998"],
+     :content
+     {:task-type "kanban",
+      :title nil,
+      :status "doing",
+      :priority "high",
+      :description nil}}
+    {:id "u8oFY41OTeIVm8gin",
+     :tags ["4B2QJ78e" "8q0DhiV14Jgl0i7"],
+     :content
+     {:task-type "kanban",
+      :title nil,
+      :status "inreview",
+      :priority nil}}
+    {:id "M8kC68s9uwIXHAyK924nC1n",
+     :tags
+     ["W0U07vHQcuw7nxrJO"
+      "67u2p"
+      "ur7jxMzl7yB7UC7972"
+      "FK1578d8G8o"
+      "IWDbe"],
+     :content
+     {:task-type "kanban",
+      :title "5wtQ",
+      :status nil,
+      :priority "low",
+      :created "73"}}]
+   false)},
+ :case-6
+ {:out [],
+  :in
+  ({:required-tags ["j2v1zeSf6S0TWm927w"],
+    :window 9,
+    :post-filters
+    {:query nil,
+     :priority "low",
+     :created_after nil,
+     :updated_after "Rt3myBH6qA6Yy4lpe",
+     :or-tags []},
+    :page {:offset 4, :limit nil, :fields nil}}
+   [{:id "32RoLbGc33EKRA5EcJLW44",
+     :tags ["eCnNihFrUT68gn645i1F"],
+     :content
+     {:task-type "kanban", :title nil, :status nil, :priority nil}}
+    {:id "74sm69f6e3P",
+     :tags [],
+     :content
+     {:task-type "kanban",
+      :title nil,
+      :status "review",
+      :priority nil,
+      :created nil}}
+    {:id "8n8k",
+     :tags ["O753Mx3c40I38S" "CAR" "7znmcQPTHrOHvv819X3W"],
+     :content
+     {:task-type "kanban",
+      :title nil,
+      :status nil,
+      :priority "high",
+      :description ""}}
+    {:id "n5s4LzLRN9qZYb0g4MGHXfq",
+     :tags
+     ["sQoVOj3YO8x7"
+      "big3vBPtek3Uq7Fl"
+      "Pm84169xss"
+      "IrEeT8Nq4815Lk6Fs7TA7"],
+     :content
+     {:task-type "kanban",
+      :title "HstEgs",
+      :status "inreview",
+      :priority "medium"}}
+    {:id "2qZHa9WI917",
+     :tags [],
+     :content
+     {:task-type "kanban",
+      :title nil,
+      :status nil,
+      :priority nil,
+      :created "6j"}}]
+   false)},
+ :case-7
+ {:out [],
+  :in
+  ({:required-tags
+    ["tVGKrRjR8ek8x8rQB4n3"
+     "GoaA94g"
+     "4lIebK4A9pm8m6gEb"
+     "tM9ZfSFgbl5uB4s67Svugz1h"
+     "znULQ"],
+    :window 2,
+    :post-filters
+    {:query "N",
+     :priority nil,
+     :created_after nil,
+     :updated_after nil,
+     :or-tags nil},
+    :page {:offset nil, :limit nil, :fields ["id" "id" "id"]}}
+   [{:id "SRH42W6O01U8pAa5o2o75",
+     :tags
+     ["639zLTxAr1N7"
+      "2Bq3CN54u1fTo7V5"
+      "OHeU5pg70wwnSVQOPhz"
+      "rWuP9T9wV0f0w"],
+     :content
+     {:task-type "kanban",
+      :title nil,
+      :status nil,
+      :priority nil,
+      :created nil}}]
+   false)}}
