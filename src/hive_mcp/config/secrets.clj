@@ -83,19 +83,37 @@
         {:value pv :source :pass}
         {:value nil :source :missing}))))
 
+(defn env-var-for
+  "ENV_VAR name for a secret keyword, by the rule `hive-mcp.config.resolve/get-secret`
+   applies at read time: `:axon-api-key` -> \"AXON_API_KEY\"."
+  [secret-key]
+  (-> (name secret-key) (str/replace "-" "_") str/upper-case))
+
 (defn resolve-all-secrets
-  "Resolve all registered secrets against the current config's :secrets map.
+  "Resolve every secret against the current config's :secrets map.
+
+   The set is OPEN: `secret-registry` entries carry a known env var and pass
+   path, and any further key the config declares is resolved too, with its
+   env var derived from the keyword and no pass path of its own (a `pass:`
+   config value is still honoured downstream by resolve.clj). A key the
+   config declares must never be dropped here, or `get-secret` answers nil
+   for a secret that is sitting in the file.
+
    Returns {:secrets {kw value ...} :sources {kw :env|:pass|:config|:missing ...}}."
   [config-secrets]
-  (reduce-kv
-   (fn [acc secret-key [env-var pass-path]]
-     (let [config-val (get config-secrets secret-key)
-           {:keys [value source]} (resolve-secret config-val env-var pass-path)]
-       (-> acc
-           (assoc-in [:secrets secret-key] value)
-           (assoc-in [:sources secret-key] source))))
-   {:secrets {} :sources {}}
-   secret-registry))
+  (let [declared (into {}
+                       (for [k (keys config-secrets)
+                             :when (and (keyword? k) (not (contains? secret-registry k)))]
+                         [k [(env-var-for k) nil]]))]
+    (reduce-kv
+     (fn [acc secret-key [env-var pass-path]]
+       (let [config-val (get config-secrets secret-key)
+             {:keys [value source]} (resolve-secret config-val env-var pass-path)]
+         (-> acc
+             (assoc-in [:secrets secret-key] value)
+             (assoc-in [:sources secret-key] source))))
+     {:secrets {} :sources {}}
+     (merge secret-registry declared))))
 
 ;; =============================================================================
 ;; Startup Logging

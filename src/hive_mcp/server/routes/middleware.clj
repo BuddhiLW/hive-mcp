@@ -13,6 +13,7 @@
             [hive-mcp.agent.context :as ctx]
             [hive-mcp.crystal.core :as crystal]
             [hive-mcp.channel.async-result :as async-buf]
+            [hive-mcp.server.routes.async-tasks :as async-tasks]
             [hive-mcp.dsl.response :as compress]
             [hive-mcp.extensions.registry :as ext]
             [hive-dsl.context.identity :as ctx-id]
@@ -157,26 +158,55 @@
                  should-default? (assoc :async true))))))
 
 (defn wrap-handler-async
-  "Intercept async:true calls — return ack, spawn future for real execution."
+  "Intercept async:true calls: return an ack, run the work on the async pool.
+
+   The work goes to `async-tasks/submit!`, NOT to a bare `future`, so the
+   handle is retained. A bare future's handle was discarded, which left a
+   long-running call impossible to list, bound or stop by any API: the only
+   remedy was killing the JVM, and on a shared coordinator that ends every
+   other agent's work too.
+
+   `:async-timeout-ms` bounds one call. It is consumed here alongside
+   `:async` and never reaches the handler, for the same reason `:async` does
+   not: it addresses THIS wrapper, not the tool.
+
+   NOTE for addon authors: a top-level `:async` is consumed here and is gone
+   before any handler runs, so a tool must not name a parameter `async` and
+   expect to receive it. Spell such a flag `background` (see
+   `hive-ingestor.addon.registry/dispatcher-shadowed-params`)."
   [handler tool-name]
   (fn [args]
     (if (:async args)
-      (let [task-id (str "atask-" (random-uuid))
-            caller-id (or (:_caller_id args) "coordinator")]
-        (future
-          (try
-            (let [clean-args (dissoc args :async)
-                  result (handler clean-args)]
-              (async-buf/enqueue-result! caller-id
-                                         {:task-id task-id :tool tool-name
-                                          :status :completed :result result}))
-            (catch Exception e
-              (log/error e "async-result: background execution failed for task" task-id)
-              (async-buf/enqueue-result! caller-id
-                                         {:task-id task-id :tool tool-name
-                                          :status :error :error (.getMessage e)}))))
+      (let [task-id    (str "atask-" (random-uuid))
+            caller-id  (or (:_caller_id args) "coordinator")
+            timeout-ms (:async-timeout-ms args)]
+        (async-tasks/submit!
+         {:task-id    task-id
+          :tool       tool-name
+          :caller-id  caller-id
+          :timeout-ms timeout-ms
+          :f          (fn []
+                        (try
+                          (let [clean-args (dissoc args :async :async-timeout-ms)
+                                result (handler clean-args)]
+                            (async-buf/enqueue-result! caller-id
+                                                       {:task-id task-id :tool tool-name
+                                                        :status :completed :result result}))
+                          (catch InterruptedException _
+                            ;; Cancelled on purpose. Say so rather than
+                            ;; reporting it as a failure of the work.
+                            (log/info "async-result: task cancelled" {:task-id task-id})
+                            (async-buf/enqueue-result! caller-id
+                                                       {:task-id task-id :tool tool-name
+                                                        :status :cancelled}))
+                          (catch Exception e
+                            (log/error e "async-result: background execution failed for task" task-id)
+                            (async-buf/enqueue-result! caller-id
+                                                       {:task-id task-id :tool tool-name
+                                                        :status :error :error (.getMessage e)}))))})
         [{:type "text"
-          :text (pr-str {:queued true :task-id task-id :tool tool-name})}])
+          :text (pr-str (cond-> {:queued true :task-id task-id :tool tool-name}
+                          timeout-ms (assoc :timeout-ms timeout-ms)))}])
       (handler args))))
 
 (defn- guard-refusal
