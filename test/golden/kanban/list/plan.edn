@@ -1,0 +1,132 @@
+{:case-0
+ {:out
+  {:required-tags ["kanban"],
+   :window 20000,
+   :post-filters
+   {:query nil,
+    :priority nil,
+    :created_after nil,
+    :updated_after "CV",
+    :or-tags nil},
+   :page {:offset nil, :limit nil, :fields nil}},
+  :in
+  {:tags [], :created_after nil, :updated_after "CV", :fields nil}},
+ :case-1
+ {:out
+  {:required-tags
+   ["kanban"
+    "35d1t"
+    "4dD0"
+    "owX2MFk173Bc3jPC8bwx512l"
+    "6Z7J0fg4c67Nui43eg2v7zP"],
+   :window 20000,
+   :post-filters
+   {:query nil,
+    :priority nil,
+    :created_after nil,
+    :updated_after "jdyca486PW2yW",
+    :or-tags nil},
+   :page {:offset nil, :limit nil, :fields nil}},
+  :in
+  {:status nil,
+   :tags
+   ["35d1t"
+    "4dD0"
+    "owX2MFk173Bc3jPC8bwx512l"
+    "6Z7J0fg4c67Nui43eg2v7zP"],
+   :tag_match nil,
+   :query nil,
+   :priority nil,
+   :updated_after "jdyca486PW2yW",
+   :fields nil}},
+ :case-2
+ {:out
+  {:required-tags ["kanban"],
+   :window 20000,
+   :post-filters
+   {:query "aO7Eh31t8",
+    :priority nil,
+    :created_after nil,
+    :updated_after nil,
+    :or-tags nil},
+   :page {:offset 2, :limit nil, :fields nil}},
+  :in
+  {:tags nil, :query "aO7Eh31t8", :limit nil, :offset 2, :fields nil}},
+ :case-3
+ {:out
+  {:required-tags ["kanban"],
+   :window 20000,
+   :post-filters
+   {:query nil,
+    :priority nil,
+    :created_after "UbDdG0y5G58X2Qc2nw5",
+    :updated_after "3OPp283Kt",
+    :or-tags nil},
+   :page {:offset nil, :limit nil, :fields nil}},
+  :in
+  {:created_after "UbDdG0y5G58X2Qc2nw5", :updated_after "3OPp283Kt"}},
+ :case-4
+ {:out
+  {:required-tags ["kanban" "done"],
+   :window 20000,
+   :post-filters
+   {:query nil,
+    :priority nil,
+    :created_after nil,
+    :updated_after nil,
+    :or-tags nil},
+   :page {:offset nil, :limit nil, :fields nil}},
+  :in
+  {:status "done",
+   :tags nil,
+   :query nil,
+   :updated_after nil,
+   :limit nil,
+   :offset nil,
+   :fields nil}},
+ :case-5
+ {:out
+  {:required-tags ["kanban"],
+   :window 20000,
+   :post-filters
+   {:query "25fpvgc",
+    :priority nil,
+    :created_after "m",
+    :updated_after nil,
+    :or-tags nil},
+   :page {:offset nil, :limit 2, :fields ["status" "project" "id"]}},
+  :in
+  {:tags nil,
+   :query "25fpvgc",
+   :priority nil,
+   :created_after "m",
+   :updated_after nil,
+   :limit 2,
+   :fields ["status" "project" "id"]}},
+ :case-6
+ {:out
+  {:required-tags ["kanban"],
+   :window 20000,
+   :post-filters
+   {:query nil,
+    :priority nil,
+    :created_after "WdyFV4rY7TGjU0BlJ",
+    :updated_after nil,
+    :or-tags nil},
+   :page {:offset nil, :limit nil, :fields nil}},
+  :in
+  {:tag_match "all",
+   :priority nil,
+   :created_after "WdyFV4rY7TGjU0BlJ"}},
+ :case-7
+ {:out
+  {:required-tags ["kanban"],
+   :window 20000,
+   :post-filters
+   {:query "y",
+    :priority nil,
+    :created_after "9P",
+    :updated_after nil,
+    :or-tags nil},
+   :page {:offset 2, :limit nil, :fields nil}},
+  :in {:tag_match nil, :query "y", :created_after "9P", :offset 2}}}

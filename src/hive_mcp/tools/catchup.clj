@@ -42,7 +42,8 @@
             [hive-mcp.tools.catchup.relevance :as relevance]
             [hive-mcp.vectordb.kanban-facade :as kanban-facade]
             [hive-mcp.tools.catchup.outcome :as outcome]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [hive-mcp.tools.kanban.list.plan :as list-plan]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -106,6 +107,9 @@
    read milvus while live writes had moved to qdrant, producing stale
    bucket counts that did not reconcile with `kanban list`.
 
+   Bucket counts read the whole scoped board (`list-plan/whole-board`);
+   a smaller window reports the window, not the count.
+
    Railway-ROP: each facade query is wrapped in `try-effect*` so a
    single bad query short-circuits via `ok->` rather than throwing
    through the whole computation. The full empty result is the
@@ -120,7 +124,7 @@
                                     (count (kanban-facade/query-entries
                                             :type "note"
                                             :tags (conj base-tags tag)
-                                            :limit 200
+                                            :limit list-plan/whole-board
                                             :output-fields ["id"])))]
                          (ok (assoc-in acc [:counts bucket] n))))
         attach-recent (fn [acc]
