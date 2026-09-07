@@ -17,7 +17,8 @@
             [hive-mcp.server.guards :as guards]
             [hive-mcp.config.core :as config]
             [taoensso.timbre :as log]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [hive-mcp.channel.audience :as audience]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -95,15 +96,31 @@
 ;;; Spawn Handler
 ;;; =============================================================================
 
+(defn effective-parent
+  "The parent a spawn is attributed to. An explicit non-blank `parent` wins.
+   Otherwise the calling agent (`:_caller_id`, stamped on every MCP request by
+   the transport) is the parent — except a coordinator-lane caller, whose
+   spawns stay root-level (nil), the lane the audience layer already routes to
+   coordinator readers."
+  [{:keys [parent _caller_id]}]
+  (let [explicit (when-not (str/blank? (str parent)) parent)
+        caller   (when-not (str/blank? (str _caller_id)) (str _caller_id))]
+    (or explicit
+        (when (and caller (not (audience/coordinator-reader? caller)))
+          caller))))
+
 (defn handle-spawn
   "Spawn a new agent (ling or drone).
 
    Defense-in-depth: denies spawn when called from a child ling process
    (HIVE_MCP_ROLE=child-ling). This prevents recursive agent spawning.
 
+   The spawn's parent is `effective-parent`: the `parent` param when given,
+   else the calling agent — so grandchild routing needs no priming.
+
    The full request map rides on opts under :spawn/request for the
    :spawn/opts-overlay extension seam, and is stripped before planning."
-  [{:keys [type name cwd presets model provider task files parent project_id kanban_task_id spawn_mode agents max_budget_usd kg_compress sliding_window_size verbose llm_retries] :as params}]
+  [{:keys [type name cwd presets model provider task files project_id kanban_task_id spawn_mode agents max_budget_usd kg_compress sliding_window_size verbose llm_retries] :as params}]
   ;; Layer 3: Defense-in-depth spawn guard
   (if-let [_ (when (guards/child-ling?) :denied)]
     (do
@@ -129,7 +146,8 @@
         (mcp-error (str "type must be one of: " (pr-str (agent-type-registry/mcp-enum))))
         (try
           ;; Resolve provider+model via registry chain
-          (let [resolved (llm-registry/resolve-provider-model
+          (let [parent (effective-parent params)
+                resolved (llm-registry/resolve-provider-model
                            {:provider provider :model model :agent-type agent-type})
                 effective-model (:model resolved)
                 effective-provider (:provider resolved)
@@ -182,6 +200,7 @@
                                                         max_budget_usd (assoc :max-budget-usd max_budget_usd)))]
                 (log/info "Spawned ling" {:requested-id agent-id
                                           :slave-id slave-id
+                                          :parent parent
                                           :spawn-mode (:spawn-mode ling-agent)
                                           :provider effective-provider
                                           :model effective-model
@@ -190,6 +209,7 @@
                 (mcp-json {:success true
                            :agent-id slave-id
                            :type :ling
+                           :parent parent
                            :spawn-mode (:spawn-mode ling-agent)
                            :provider effective-provider
                            :model effective-model
@@ -211,12 +231,14 @@
                                                                 :files files
                                                                 :delegate-fn delegate-fn})))]
                   (log/info "Spawned drone" {:id agent-id :cwd cwd
+                                              :parent parent
                                               :provider effective-provider
                                               :model effective-model
                                               :auto-dispatched? (some? task-id)})
                   (cond-> {:success true
                            :agent-id agent-id
                            :type :drone
+                           :parent parent
                            :provider effective-provider
                            :model effective-model
                            :cwd cwd
