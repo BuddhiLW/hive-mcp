@@ -39,13 +39,12 @@
         ;; Time handling
         clj-time/clj-time {:mvn/version "0.15.2"}
 
-        ;; Datascript for in-memory graph storage (GraphStore backend)
+        ;; Datascript for in-memory graph storage (GraphStore backend).
+        ;; Its own transitive persistent-sorted-set/persistent-sorted-set supplies
+        ;; the me.tonsky.* classes; datahike's org.replikativ fork (a different
+        ;; group id, >= 0.5.140) is deployer-supplied via local.deps.edn and
+        ;; coexists without a hand-vendored compat jar.
         datascript/datascript {:mvn/version "1.8.1"}
-        ;; me.tonsky namespace for datascript/datahike: provided by local 0.3.118 jar.
-        ;; org.replikativ namespace for Datahike: provided by addon (0.4.119).
-        ;; Different group IDs → both on classpath, non-overlapping namespaces.
-        persistent-sorted-set/persistent-sorted-set-compat
-        {:local/root "lib/persistent-sorted-set-0.3.118.jar"}
 
         ;; Datalevin / Datahike / Yggdrasil / Kabel are NOT core deps: the KG
         ;; store loads them through published siblings (hive-datalevin /
@@ -56,12 +55,6 @@
         ;; sci pinned to latest ecosystem-wide. Requires overarch consumed as
         ;; source (hive-overarch), not its AOT uberjar which bundles older sci.
         org.babashka/sci {:mvn/version "0.15.58"}
-
-        ;; Proximum — pure-JVM HNSW vector index backing the vector-store slots.
-        ;; SIMD via Java Vector API (needs --add-modules jdk.incubator.vector).
-        ;; Late-bound via requiring-resolve so a missing jar surfaces as
-        ;; :slot/factory-failed, not a JVM crash.
-        org.replikativ/proximum {:mvn/version "0.1.35"}
 
         ;; Logging - SLF4J with Logback backend
         ;; clojure.tools.logging provides the Clojure facade
@@ -146,6 +139,14 @@
         ;; hive-mcp.tools.migrate.optional/backend-var at call time, and a
         ;; deployment supplies whichever backends it wants via local.deps.edn
         ;; (bin/hive-mcp merges it with -Sdeps) or a launch alias.
+        ;;
+        ;; SAME RULE for the vector/memory backends: the HNSW engine
+        ;; (org.replikativ/proximum) and the IMemoryStore/IVecStore IAddon
+        ;; (io.github.hive-agi/hive-proximum) are NOT declared here. The KG slot
+        ;; factory late-binds them by symbol (hive-proximum.vec.store/create-store;
+        ;; a missing jar surfaces as :slot/factory-failed, not a crash), so a
+        ;; deployment supplies them through local.deps.edn / config, and the
+        ;; cold-CI path runs the datascript KG backend with no vector slot at all.
 
         ;; hive-help — required directly by hive-mcp.embeddings.routing. It used
         ;; to arrive transitively through hive-milvus; once the backend left
@@ -172,11 +173,6 @@
         ;; Clojars and Central), so the default tree cannot resolve from a public
         ;; runner. :use-top makes this pin win everywhere.
         io.github.hive-agi/hive-schemas {:mvn/version "0.1.29"}
-
-        ;; hive-proximum — temporal/bitemporal memory backend (IMemoryStore via IAddon).
-        ;; Auto-discovered via its hive-addons manifest. Stub store until the
-        ;; backend impl lands.
-        io.github.hive-agi/hive-proximum {:mvn/version "0.1.18"}
 
         ;; hive-ttracking — telemetry/timing (timed-query, track*, bench*).
         ;; Consumed by catchup.clj and siblings (bundle/hydration/hierarchy).
