@@ -139,11 +139,12 @@
   "Factory function for creating LLM backends.
 
    Named types: :ollama :cider :openrouter :openai-compat :auto.
-   Any other keyword that names a provider in
-   openrouter/provider-registry (e.g. :venice :groq :together :fireworks
-   :openai :ollama-compat) is routed through openai-compat-backend with
-   that :provider, so config keys like :models.synthesis-backend can
-   select a provider directly without a bespoke case."
+   Any other keyword that names a provider in the effective provider
+   registry (static openrouter/provider-registry merged with config
+   :llm-providers — e.g. :venice :axon :groq :together :fireworks :openai
+   :ollama-compat) is routed through openai-compat-backend with that
+   :provider, so config keys like :models.synthesis-backend can select a
+   provider directly without a bespoke case."
   ([type] (make-backend type {}))
   ([type opts]
    (case type
@@ -154,10 +155,11 @@
      :openrouter (openrouter/openrouter-backend opts)
      :openai-compat (openrouter/openai-compat-backend opts)
      :auto (openrouter/auto-backend opts)
-     (if (contains? openrouter/provider-registry type)
-       (openrouter/openai-compat-backend (assoc opts :provider type))
-       (throw (ex-info "Unknown backend type"
-                       {:type type
-                        :available (into [:ollama :cider :openrouter
-                                          :openai-compat :auto]
-                                         (keys openrouter/provider-registry))}))))))
+     (let [registry (openrouter/effective-provider-registry)]
+       (if (contains? registry type)
+         (openrouter/openai-compat-backend (assoc opts :provider type))
+         (throw (ex-info "Unknown backend type"
+                         {:type type
+                          :available (into [:ollama :cider :openrouter
+                                            :openai-compat :auto]
+                                           (keys registry))})))))))

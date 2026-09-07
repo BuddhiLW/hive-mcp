@@ -26,7 +26,10 @@
    (OAuth when available, else API key) via hive-agent.llm.anthropic.
    The `:dispatch :anthropic-oauth` marker tells the spawn plumbing to
    route through the anthropic HTTP client rather than the OpenAI-compat
-   path. All others hit OpenAI-compat /v1/chat/completions endpoints."
+   path. All others hit OpenAI-compat /v1/chat/completions endpoints.
+
+   `:axon` is axon.bz: Anthropic- and OpenAI-compatible relay, Bearer auth,
+   one flat per-token rate across every model it fronts."
   {:anthropic     {:dispatch      :anthropic-oauth
                    :secret-key    :anthropic-api-key
                    :default-model "claude-sonnet-4-6"}
@@ -36,7 +39,10 @@
    :venice        {:api-url       "https://api.venice.ai/api/v1/chat/completions"
                    :secret-key    :venice-api-key
                    :default-model "venice-uncensored"}
-   :groq          {:api-url       "https://api.groq.com/openai/v1/chat/completions"
+   :axon          {:api-url       "https://axon.bz/v1/chat/completions"
+                   :secret-key    :axon-api-key
+                   :default-model "deepseek-v4-flash-0731"}
+   :groq         {:api-url       "https://api.groq.com/openai/v1/chat/completions"
                    :secret-key    :groq-api-key
                    :default-model "llama-3.3-70b-versatile"}
    :together      {:api-url       "https://api.together.xyz/v1/chat/completions"
@@ -477,7 +483,10 @@
 (defn openai-compat-backend
   "Create an OpenAI-compatible LLM backend.
    Options:
-     :provider   - keyword from provider-registry (e.g. :openrouter, :venice, :groq)
+     :provider   - keyword from the EFFECTIVE provider registry: the static
+                   entries merged with config :llm-providers, so a provider
+                   that exists only in config (or a config override of a
+                   static entry's :default-model) is honoured here too
      :api-url    - explicit URL (overrides provider registry)
      :api-key    - explicit API key (overrides secret resolution)
      :model      - model string
@@ -487,7 +496,7 @@
    registry entry, e.g. :anthropic) and no :api-url override is supplied —
    such a provider has no chat-completions endpoint."
   [{:keys [provider api-url api-key model secret-key]}]
-  (let [reg-entry      (get provider-registry provider)
+  (let [reg-entry      (get (effective-provider-registry) provider)
         dispatch       (:dispatch reg-entry)
         effective-url  (or api-url (:api-url reg-entry))
         effective-sk   (or secret-key (:secret-key reg-entry))

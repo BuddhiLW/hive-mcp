@@ -155,6 +155,34 @@
              {:provider :groq :api-key "sk-test"})]
       (is (= "llama-3.3-70b-versatile" (proto/model-name b))))))
 
+(deftest openai-compat-backend-reads-the-effective-registry-test
+  (testing "a config override of a static entry's :default-model is honoured"
+    (with-redefs [config/get-config-value
+                  (fn [k] (when (= k "llm-providers")
+                            {:venice {:default-model "e2ee-deepseek-v4-flash"}}))]
+      (is (= "e2ee-deepseek-v4-flash"
+             (proto/model-name (openrouter/openai-compat-backend
+                                {:provider :venice :api-key "sk-test"}))))))
+  (testing "a provider that exists only in config is constructible"
+    (with-redefs [config/get-config-value
+                  (fn [k] (when (= k "llm-providers")
+                            {:acme {:api-url "https://acme.test/v1/chat/completions"
+                                    :secret-key :acme-api-key
+                                    :default-model "acme-1"}}))]
+      (let [b (openrouter/openai-compat-backend {:provider :acme :api-key "sk-test"})]
+        (is (= "https://acme.test/v1/chat/completions" (:api-url b)))
+        (is (= "acme-1" (proto/model-name b)))
+        (is (= "acme" (:provider-name b)))))))
+
+(deftest axon-is-a-registered-provider-test
+  (testing "axon.bz is a static provider with Bearer-auth chat completions"
+    (let [e (get openrouter/provider-registry :axon)]
+      (is (= "https://axon.bz/v1/chat/completions" (:api-url e)))
+      (is (= :axon-api-key (:secret-key e)))
+      (is (nil? (openrouter/validate-provider :axon)))
+      (is (= {:provider :axon :model "glm-5.3-flash"}
+             (openrouter/resolve-provider-model {:model "axon:glm-5.3-flash"}))))))
+
 (deftest openai-compat-backend-ollama-no-key-test
   (testing "ollama-compat works without API key"
     (let [b (openrouter/openai-compat-backend
