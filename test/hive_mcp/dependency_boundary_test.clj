@@ -13,6 +13,25 @@
 (def ^:private forbidden-addon-ns-prefixes
   #{"hive-emacs"})
 
+(def ^:private forbidden-backend-artifacts
+  "Concrete storage / query / vector backends. hive-mcp core is backend-neutral:
+   each arrives at runtime through the deployer's gitignored local.deps.edn (or a
+   launch alias) and is reached only by slot-factory late-bind, never as a
+   committed dependency shipped to consumers. Axiom 20260725153948-0f523feb;
+   Phase-B decision 20260713171220-639b8fbb; 20260907083253-0b6a2bca."
+  #{"io.github.hive-agi/hive-proximum"
+    "org.replikativ/proximum"
+    "io.github.hive-agi/hive-milvus"
+    "io.github.hive-agi/hive-qdrant"
+    "clj-qdrant/clj-qdrant"
+    "io.github.hive-agi/milvus-clj"
+    "io.github.hive-agi/hive-datahike"
+    "io.github.hive-agi/hive-datalevin"
+    "datalevin/datalevin"
+    "io.replikativ/datahike"
+    "io.github.replikativ/datahike"
+    "io.github.hive-agi/yggdrasil"})
+
 (defn- clojure-sources
   []
   (->> (file-seq (io/file "src"))
@@ -41,6 +60,27 @@
   (some #(or (= ns-name %) (str/starts-with? ns-name (str % ".")))
         forbidden-addon-ns-prefixes))
 
+(defn- all-dep-maps
+  "Every {coord coord-map} dependency map in a parsed deps.edn: the top-level
+   :deps plus every alias's :deps / :extra-deps / :replace-deps / :override-deps.
+   The EDN reader normalises the #:local{:root ...} namespaced-map form to
+   {:local/root ...}, so a :local/root anywhere is caught by key lookup."
+  [deps]
+  (->> (cons (:deps deps)
+             (for [[_ alias-map] (:aliases deps)
+                   k [:deps :extra-deps :replace-deps :override-deps]
+                   :let [m (get alias-map k)]]
+               m))
+       (filter map?)))
+
+(defn- local-root-coords
+  "Coordinate symbols across DEPS whose coordinate map carries :local/root."
+  [deps]
+  (for [dep-map (all-dep-maps deps)
+        [coord coord-map] dep-map
+        :when (and (map? coord-map) (contains? coord-map :local/root))]
+    coord))
+
 (deftest production-code-never-requires-an-addon-namespace
   (doseq [file (clojure-sources)
           :let [form (ns-form file)]
@@ -56,3 +96,23 @@
       (doseq [prefix forbidden-addon-ns-prefixes]
         (is (not-any? #(str/includes? % prefix) artifact-names)
             (str prefix " must not be a hive-mcp dependency"))))))
+
+(deftest committed-deps-edn-has-no-local-root
+  (testing ":local/root belongs in the gitignored local.deps.edn (personal
+            builds), never in the committed deps.edn that ships to consumers"
+    (let [deps (edn/read-string (slurp "deps.edn"))
+          offenders (vec (local-root-coords deps))]
+      (is (empty? offenders)
+          (str "committed deps.edn must carry no :local/root; found "
+               (count offenders) ": " offenders
+               ". Move sibling/local overrides to local.deps.edn.")))))
+
+(deftest committed-deps-edn-has-no-concrete-backend
+  (testing "concrete storage/query/vector backends arrive via local.deps.edn +
+            slot-factory late-bind, never as a committed dependency"
+    (let [deps (edn/read-string (slurp "deps.edn"))
+          declared (->> (all-dep-maps deps) (mapcat keys) (map str) set)
+          offenders (vec (filter declared forbidden-backend-artifacts))]
+      (is (empty? offenders)
+          (str "committed deps.edn must declare no concrete backend; found: "
+               offenders ". These belong in local.deps.edn.")))))

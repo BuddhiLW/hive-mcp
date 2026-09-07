@@ -47,7 +47,6 @@ USER hive
 
 # ---- Layer 1: dependency cache (changes rarely) ----
 COPY --chown=hive:hive deps.edn VERSION version.edn starter.deps.edn ./
-COPY --chown=hive:hive lib/ lib/
 ENV HIVE_DEPS_OVERLAY=${DEPS_OVERLAY}
 RUN if [ -n "$HIVE_DEPS_OVERLAY" ]; then \
       clojure -Sdeps "$(cat "$HIVE_DEPS_OVERLAY")" -P -M:mcp; \
