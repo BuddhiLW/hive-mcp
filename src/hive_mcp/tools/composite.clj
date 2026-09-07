@@ -49,8 +49,9 @@
 
 (defn lazy-resolve-schema-props
   "Lazily resolve a consolidated tool's advertised inputSchema :properties by
-   fully-qualified symbol of its `tool-def` (a map) or `tool-defs` (a 0-arity
-   fn returning a vector of them), triggering ns load on first access (DIP).
+   fully-qualified symbol of its `tool-def` (a map), its `tools` (a vector of
+   tool-defs whose first entry is the root), or its `tool-defs` (a 0-arity fn
+   returning that vector), triggering ns load on first access (DIP).
 
    Returns the properties map on success, `{}` on miss.
 
@@ -60,7 +61,9 @@
    subdomain handler runs on its default instead."
   [sym]
   (or (try (let [v  (some-> (requiring-resolve sym) deref)
-                 td (if (fn? v) (first (v)) v)]
+                 td (cond (fn? v)         (first (v))
+                          (sequential? v) (first v)
+                          :else           v)]
              (get-in td [:inputSchema :properties]))
            (catch Throwable _ nil))
       {}))

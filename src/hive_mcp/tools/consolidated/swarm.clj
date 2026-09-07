@@ -41,28 +41,19 @@
 ;; =============================================================================
 
 ;; Collect all params from sub-tools for schema union
-(defn- merge-schemas [& tool-defs]
-  (apply merge-with merge
-         (map #(get-in % [:inputSchema :properties]) tool-defs)))
-
-(defn- resolve-first-tool
-  "Lazy-resolve a sub-tool's `tools` var and return its first entry.
-   Returns nil when the namespace cannot be loaded yet — keeps tool-def
-   compile-time-resolvable without static :require coupling (mirrors the
-   DIP pattern used for canonical-handlers above). Bad subdomain just
-   contributes no schema props rather than failing the whole def."
-  [sym]
-  (when-let [v (try (requiring-resolve sym) (catch Exception _ nil))]
-    (first @v)))
-
 (def tool-def
-  (let [all-props (merge-schemas
-                   (resolve-first-tool 'hive-mcp.tools.consolidated.agent/tools)
-                   (resolve-first-tool 'hive-mcp.tools.consolidated.wave/tools)
-                   (resolve-first-tool 'hive-mcp.tools.consolidated.hivemind/tools)
-                   (resolve-first-tool 'hive-mcp.tools.consolidated.agora/tools)
-                   (resolve-first-tool 'hive-mcp.tools.consolidated.olympus/tools)
-                   (resolve-first-tool 'hive-mcp.tools.consolidated.preset/tools))]
+  ;; Every subdomain's advertised params fold into the root through the one
+  ;; shared resolver (composite/lazy-resolve-schema-props) — the same seam the
+  ;; memory root uses — so a param a subdomain declares survives the MCP
+  ;; boundary instead of being dropped and silently defaulted.
+  (let [all-props (apply merge-with merge
+                         (map composite/lazy-resolve-schema-props
+                              '[hive-mcp.tools.consolidated.agent/tools
+                                hive-mcp.tools.consolidated.wave/tools
+                                hive-mcp.tools.consolidated.hivemind/tools
+                                hive-mcp.tools.consolidated.agora/tools
+                                hive-mcp.tools.consolidated.olympus/tools
+                                hive-mcp.tools.consolidated.preset/tools]))]
     {:name "swarm"
      :consolidated true
      :description "Unified agent operations: spawn (create ling/drone), status (query agents), kill (terminate), kill-batch (terminate multiple agents in one call), batch-spawn (spawn multiple agents at once via operations array), dispatch (send task), interrupt (interrupt current query of agent-sdk ling), claims (file ownership), list (deprecated alias for status), collect (get task result), broadcast (prompt all), cleanup (remove orphan agents after Emacs restart). Type: 'ling' (Claude Code instance) or 'drone' (OpenRouter leaf worker). Nested: dag (start/stop/status DAGWave scheduler). Use command='help' to list all."
