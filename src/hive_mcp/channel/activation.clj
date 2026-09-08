@@ -24,21 +24,56 @@
 
 (def extension-key
   "Registry key an activation provider registers under. The provider is
-   `(fn [activation-ctx] -> {:pins #{id} :tokens #{token} :floor-cap n})`."
+   `(fn [activation-ctx] -> {:pins #{id} :tokens #{token} :floor-cap n
+                             :frontier [{:id :title :T :via}]})`."
   :memory/activation)
 
+(def max-frontier
+  "Proposals one response may carry. The frontier is a sidebar; a long one
+   stops being read and starts costing what it was built to save."
+  4)
+
+(defn- name-str
+  "Keyword, symbol or string to a plain string; nil for anything else."
+  [x]
+  (cond
+    (string? x) (not-empty x)
+    (or (keyword? x) (symbol? x)) (name x)
+    :else nil))
+
+(defn- sane-proposal
+  "Coerce one frontier proposal to the wire shape, or nil.
+
+   A proposal invites the agent to spend a fetch, so a row with no string id or
+   no title is DROPPED rather than rendered: an id with nothing to judge it by
+   spends context to say nothing. `:T` and `:via` are stringified because the
+   block is read by an agent, not by a provider that cares about keywords."
+  [p]
+  (when (map? p)
+    (let [id (name-str (:id p))
+          title (name-str (:title p))]
+      (when (and id title)
+        (cond-> {:id id :title title}
+          (name-str (:T p)) (assoc :T (name-str (:T p)))
+          (name-str (:via p)) (assoc :via (name-str (:via p))))))))
+
 (defn- sane
-  "Coerce a provider answer to the subset of keys the ranker accepts, dropping
-   anything malformed. Returns nil when nothing usable survives."
+  "Coerce a provider answer to the subset of keys the ranker and the frontier
+   block accept, dropping anything malformed. Returns nil when nothing usable
+   survives."
   [answer]
   (when (map? answer)
     (let [pins (:pins answer)
           tokens (:tokens answer)
-          cap (:floor-cap answer)]
+          cap (:floor-cap answer)
+          frontier (when (sequential? (:frontier answer))
+                     (into [] (comp (keep sane-proposal) (take max-frontier))
+                           (:frontier answer)))]
       (cond-> nil
         (coll? pins) (assoc :pins (into #{} (filter string?) pins))
         (coll? tokens) (assoc :tokens (into #{} (filter string?) tokens))
-        (and (integer? cap) (pos? cap)) (assoc :floor-cap cap)))))
+        (and (integer? cap) (pos? cap)) (assoc :floor-cap cap)
+        (seq frontier) (assoc :frontier frontier)))))
 
 (defn provider
   "The registered activation provider, or nil."
@@ -57,12 +92,13 @@
   (let [base {:tokens (or cues #{})}]
     (if-let [f (provider)]
       (try
-        (if-let [{:keys [pins tokens floor-cap]}
+        (if-let [{:keys [pins tokens floor-cap frontier]}
                  (sane (f {:tool-name tool-name :cues (or cues #{}) :caller-id caller-id}))]
           (cond-> base
             (seq tokens) (update :tokens set/union tokens)
             (seq pins) (assoc :pins pins)
-            floor-cap (assoc :floor-cap floor-cap))
+            floor-cap (assoc :floor-cap floor-cap)
+            (seq frontier) (assoc :frontier frontier))
           base)
         (catch Throwable t
           (log/debug t "activation: provider failed; drain falls back to cues")
