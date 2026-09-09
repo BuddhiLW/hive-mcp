@@ -3,7 +3,9 @@
             [hive-mcp.addons.runtime-ports :as runtime-ports]))
 
 (def expected-port-keys
-  #{:memory/store
+  #{:tools/invoke
+    :workflow/engine
+    :memory/store
     :embedding/embed-batch
     :embedding/provider
     :embedding/configured?

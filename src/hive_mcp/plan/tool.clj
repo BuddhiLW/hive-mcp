@@ -116,15 +116,20 @@
    (audit kanban 20260429203429 + 20260429203455 — wave-aware kanban).
 
    Returns {:ok task-id} or {:error message}"
-  [{:keys [title description priority]} directory & {:keys [wave]}]
+  [{:keys [id title description priority tags files execution]} directory & {:keys [wave]}]
   (try
     (let [priority-str (if (keyword? priority) (name priority) (str priority))
-          wave-tag     (when (some? wave) (str "wave:" wave))
+          task-context (cond-> {:plan-step-id id}
+                         (seq files) (assoc :files files)
+                         execution (assoc :execution execution))
+          task-tags    (vec (distinct (cond-> (vec tags)
+                                        (some? wave) (conj (str "wave:" wave)))))
           base-params  (cond-> {:title title
                                 :priority priority-str
-                                :directory directory}
+                                :directory directory
+                                :context task-context}
                          description (assoc :description description)
-                         wave-tag    (assoc :tags [wave-tag]))
+                         (seq task-tags) (assoc :tags task-tags))
           result       (mem-kanban/handle-mem-kanban-create base-params)]
       (if (:isError result)
         {:error (:text result)}

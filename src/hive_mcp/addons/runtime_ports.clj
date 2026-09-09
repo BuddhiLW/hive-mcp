@@ -16,10 +16,25 @@
   [sym & args]
   (apply (resolve! sym) args))
 
+(defn invoke-registered-tool!
+  "Invoke a registered callable tool from a fresh catalog, including hidden tools."
+  [catalog tool-name arguments]
+  (let [spec (some #(when (= tool-name (:name %)) %) (catalog))]
+    (when-not (and spec (ifn? (:handler spec)))
+      (throw (ex-info "Host tool unavailable." {:error :addon/tool-unavailable})))
+    ((:handler spec) arguments)))
+
 (defn runtime-ports
   "Return a fresh map of host-neutral function ports for addon injection."
   []
-  {:memory/store
+  {:workflow/engine
+   (fn [] (call 'hive-workflows.mcp/engine))
+
+   :tools/invoke
+   (partial invoke-registered-tool!
+            #(call 'hive-mcp.tools.registry/get-advertised-tools))
+
+   :memory/store
    (fn [slot]
      (get (call 'hive-mcp.protocols.memory/registered-stores) slot))
 

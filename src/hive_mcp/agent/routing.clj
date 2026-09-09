@@ -55,8 +55,8 @@
                {} config-routes)
     hardcoded-routes))
 
-(def model-routes
-  "Task type to primary/secondary model mapping atom."
+(defonce ^{:doc "Runtime model routes. Preserved across namespace reloads; update through set-route!."}
+  model-routes
   (atom (load-model-routes)))
 
 (defn get-route
@@ -271,8 +271,9 @@
   "Model used for actual tool execution (Tier 2)."
   "openai/gpt-oss-120b:free")
 
-(def ^:private tool-proxy-config
-  "Configuration for the tool proxy architecture."
+(defonce ^{:private true
+           :doc "Runtime tool proxy configuration. Preserved across namespace reloads; update through set-tool-proxy-config!."}
+  tool-proxy-config
   (atom {:enabled true
          :model tool-proxy-model
          :intent-pattern #"\[TOOL:([a-zA-Z_][a-zA-Z0-9_]*)((?:\s+[a-zA-Z_][a-zA-Z0-9_]*=(?:\"[^\"]*\"|[^\s\]]+))*)\]"

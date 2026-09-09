@@ -208,8 +208,12 @@
               ;; The :catchup/status-providers extension lets registered
               ;; addons attach status fields to the response without the
               ;; core knowing about them — DIP.
+              bundle-profile (when-let [profile-fn (ext/get-extension :catchup/bundle-profile)]
+                               (profile-fn (or (:_caller_id args) "coordinator") project-id))
               f-bundle (pool/with-io ((tt/timed-query "catchup/bundle-total"
-                                                      #(catchup-scope/query-catchup-bundle project-id))))
+                                                      #(if (seq (:caps bundle-profile))
+                                                         (catchup-scope/query-catchup-bundle project-id bundle-profile)
+                                                         (catchup-scope/query-catchup-bundle project-id)))))
               f-git    (pool/with-io ((tt/timed-query "catchup/git-total"
                                                       #(catchup-git/gather-git-info directory))))
               status-providers (or (ext/get-extension :catchup/status-providers) {})

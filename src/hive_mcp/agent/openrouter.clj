@@ -10,236 +10,75 @@
             [clojure.data.json :as json]
             [clojure.string :as str]
             [taoensso.timbre :as log]
-            [malli.core :as m]))
+            [hive-mcp.agent.provider :as provider]
+            [hive-mcp.agent.provider.model :as model]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 ;;; ---------------------------------------------------------------------------
-;;; Provider Registry
+;;; Provider surface (facade over hive-mcp.agent.provider.*)
+;;;
+;;; The provider CONCEPT is stratified next door: `provider.model` (values and
+;;; seeds), `provider.policy` (pure decisions), `provider.collect` (config
+;;; reads), `provider` (the pipeline). This namespace is the BOUNDARY: it
+;;; speaks HTTP. What follows is a thin facade so existing callers keep one
+;;; import, and so the vars they resolve still live here.
 ;;; ---------------------------------------------------------------------------
 
 (def provider-registry
-  "Known LLM providers.
+  "SEED registry of known providers. The DEFINITION is
+   `effective-provider-registry`: config :llm-providers extends, overrides and
+   removes entries. See `hive-mcp.agent.provider.model/seed-registry`."
+  model/seed-registry)
 
-   `:anthropic` is special — it uses Anthropic's native Messages API
-   (OAuth when available, else API key) via hive-agent.llm.anthropic.
-   The `:dispatch :anthropic-oauth` marker tells the spawn plumbing to
-   route through the anthropic HTTP client rather than the OpenAI-compat
-   path. All others hit OpenAI-compat /v1/chat/completions endpoints.
-
-   This is a SEED, not the definition: config `:llm-providers` extends and
-   overrides it through `effective-provider-registry`, so a new provider is
-   a config entry, never an edit here."
-  {:anthropic     {:dispatch      :anthropic-oauth
-                   :secret-key    :anthropic-api-key
-                   :default-model "claude-sonnet-4-6"}
-   :openrouter    {:api-url       "https://openrouter.ai/api/v1/chat/completions"
-                   :secret-key    :openrouter-api-key
-                   :default-model "anthropic/claude-3-haiku"}
-   :venice        {:api-url       "https://api.venice.ai/api/v1/chat/completions"
-                   :secret-key    :venice-api-key
-                   :default-model "venice-uncensored"}
-   :groq         {:api-url       "https://api.groq.com/openai/v1/chat/completions"
-                   :secret-key    :groq-api-key
-                   :default-model "llama-3.3-70b-versatile"}
-   :together      {:api-url       "https://api.together.xyz/v1/chat/completions"
-                   :secret-key    :together-api-key
-                   :default-model "meta-llama/Llama-3.3-70B-Instruct-Turbo"}
-   :fireworks     {:api-url       "https://api.fireworks.ai/inference/v1/chat/completions"
-                   :secret-key    :fireworks-api-key
-                   :default-model "accounts/fireworks/models/llama-v3p3-70b-instruct"}
-   :openai        {:api-url       "https://api.openai.com/v1/chat/completions"
-                   :secret-key    :openai-api-key
-                   :default-model "gpt-4o-mini"}
-   :ollama-compat {:api-url       "http://localhost:11434/v1/chat/completions"
-                   :secret-key    nil
-                   :default-model "devstral-small:24b"}})
+(def provider-priority
+  "SEED discovery order, not the order that runs. See
+   `effective-provider-priority` and `hive-mcp.agent.provider.model/seed-priority`."
+  model/seed-priority)
 
 (def ChatCompletionsUrl
   "Malli schema for an OpenAI-compatible chat-completions endpoint URL."
-  [:and
-   [:string {:gen/fmap (fn [s]
-                         (let [host (str/replace (str s) #"[^a-zA-Z0-9]" "")]
-                           (str "https://api." (if (str/blank? host) "example" host)
-                                ".test/v1/chat/completions")))}]
-   [:fn {:error/message "must be a URL ending in /chat/completions"}
-    (fn [s] (and (string? s) (str/ends-with? s "/chat/completions")))]])
+  model/ChatCompletionsUrl)
 
 (def ProviderEntry
-  "Malli schema for one `provider-registry` entry, dispatched on `:dispatch`.
-
-   :anthropic-oauth branch — native Anthropic Messages API. Carries NO
-     :api-url: it is not an OpenAI-compat chat-completions endpoint, and
-     `openai-compat-backend` refuses it.
-   default branch (no :dispatch) — OpenAI-compat provider: :api-url is
-     REQUIRED and must end in \"/chat/completions\"; :secret-key may be nil
-     (nil = no auth needed, e.g. :ollama-compat).
-
-   Both branches are open maps: config overrides may add keys such as
-   :available-models."
-  [:multi {:dispatch :dispatch}
-   [:anthropic-oauth
-    [:map
-     [:dispatch [:= :anthropic-oauth]]
-     [:secret-key :keyword]
-     [:default-model :string]
-     [:available-models {:optional true} [:sequential :string]]]]
-   [::m/default
-    [:map
-     [:api-url ChatCompletionsUrl]
-     [:secret-key [:maybe :keyword]]
-     [:default-model :string]
-     [:available-models {:optional true} [:sequential :string]]]]])
+  "Malli schema for one provider registry entry."
+  model/ProviderEntry)
 
 (def ProviderRegistry
-  "Malli schema for the provider registry: provider keyword -> ProviderEntry."
-  [:map-of :keyword ProviderEntry])
+  "Malli schema for the provider registry: provider keyword to entry."
+  model/ProviderRegistry)
 
 (defn valid-provider-entry?
   "True when `entry` conforms to `ProviderEntry`."
   [entry]
-  (m/validate ProviderEntry entry))
-
-(def provider-priority
-  "Provider preference order for auto-discovery.
-
-   Every keyword here MUST resolve to a `provider-registry` entry:
-   `available-providers` reads that entry's :secret-key, and a missing entry
-   reads as nil = no auth needed, silently promoting a phantom provider."
-  [:openrouter :venice :groq :together :fireworks :openai :ollama-compat])
-
-(declare best-available-provider)
+  (model/valid-provider-entry? entry))
 
 (defn effective-provider-registry
-  "Return provider-registry merged with config :llm-providers overrides.
-   Config values win; static registry is the fallback."
+  "The seed registry overlaid with config :llm-providers (add, override, remove)."
   []
-  (let [config-providers (global-config/get-config-value "llm-providers")]
-    (if (map? config-providers)
-      (reduce-kv (fn [acc k v]
-                   (if (map? v)
-                     (update acc k merge v)
-                     acc))
-                 provider-registry
-                 config-providers)
-      provider-registry)))
+  (provider/effective-registry))
+
+(defn effective-provider-priority
+  "The discovery order that actually runs, over the effective registry."
+  []
+  (provider/effective-priority))
 
 (defn validate-provider
-  "Validate provider keyword. Returns nil on success, error map on failure."
-  [provider]
-  (let [reg (effective-provider-registry)]
-    (when-not (contains? reg provider)
-      {:error :unknown-provider
-       :requested provider
-       :available (vec (keys reg))
-       :fix "Use one of the available providers, or add via: hive config set llm-providers.<name>.api-url <url>"})))
+  "nil when the provider exists in the effective registry, else an error map."
+  [prov]
+  (provider/validate-provider prov))
 
 (defn validate-model
-  "Validate model for a provider. Returns nil on success, error map on failure."
-  [provider model]
-  (let [reg (effective-provider-registry)
-        entry (get reg provider)
-        available (:available-models entry)]
-    (when (and (seq available) (not (some #{model} available)))
-      {:error :unknown-model-for-provider
-       :provider provider
-       :model model
-       :available (vec available)
-       :fix (str "Use one of the available models for " (name provider)
-                 ", or add via: hive config set llm-providers." (name provider)
-                 ".available-models [...]")})))
-
-(defn- parse-model-prefix
-  "Parse optional '<provider>:<model>' prefix. Returns [provider-kw-or-nil clean-model].
-   Only recognizes prefixes that match a known provider in the effective registry."
-  [model]
-  (if-let [idx (and (string? model) (str/index-of model ":"))]
-    (let [prefix (subs model 0 idx)
-          rest   (subs model (inc idx))
-          prov-kw (keyword prefix)]
-      (if (contains? (effective-provider-registry) prov-kw)
-        [prov-kw rest]
-        [nil model]))
-    [nil model]))
-
-(defn- claude-model-name?
-  "True if the model string identifies a native Anthropic Claude model.
-   Routes directly through Anthropic OAuth/API (bypassing OpenRouter relay).
-   Strips `anthropic/` prefix so `anthropic/claude-sonnet-4-6` and
-   `claude-sonnet-4-6` both match."
-  [model]
-  (when (string? model)
-    (let [clean (if (str/starts-with? model "anthropic/")
-                  (subs model (count "anthropic/"))
-                  model)]
-      (boolean (re-find #"^claude-" clean)))))
-
-(defn- strip-anthropic-prefix
-  "Strip the `anthropic/` prefix from a model name so native Anthropic API
-   receives `claude-sonnet-4-6` rather than `anthropic/claude-sonnet-4-6`
-   (the latter is OpenRouter's naming scheme, not Anthropic's)."
-  [model]
-  (if (and (string? model) (str/starts-with? model "anthropic/"))
-    (subs model (count "anthropic/"))
-    model))
+  "nil when the model is allowed for the provider, else an error map."
+  [prov model]
+  (provider/validate-model prov model))
 
 (defn resolve-provider-model
-  "Resolve provider + model for an agent spawn/wave.
-   Resolution order (first match wins):
-     0. Explicit :provider kwarg                — caller forced routing
-     1. '<provider>:<model>' prefix in :model   — e.g. 'venice:qwen3-...'
-     2. Claude model-name auto-detection        — routes to :anthropic OAuth
-     3. agent-defaults :provider from config
-     4. best-available-provider (first configured API key)
-
-   Explicit routing (steps 0–1) always wins over Claude auto-detection.
-   This is the privacy escape hatch: callers who need Claude models called
-   through an anonymity-preserving relay (e.g. Venice, OpenRouter) can pass
-   either `:provider :venice` OR prefix the model as `venice:claude-...` —
-   both bypass the OAuth shortcut. This keeps in-plan Claude billing the
-   default for normal use while preserving the privacy case.
-
-   Claude auto-detection (step 2) matches `anthropic/claude-*` and bare
-   `claude-*` model names, stripping the `anthropic/` prefix since the
-   native Messages API uses unprefixed names (`claude-sonnet-4-6`, not
-   `anthropic/claude-sonnet-4-6` — the latter is OpenRouter's schema).
-
-   Returns {:provider <kw> :model <str>} or throws on validation failure."
-  [{:keys [provider model agent-type]}]
-  (let [explicit-prov  (some-> provider keyword)
-        [prefix-prov clean-model] (parse-model-prefix model)
-        agent-defaults (global-config/get-config-value "agent-defaults")
-        type-defaults  (get agent-defaults (keyword agent-type))
-        ;; Resolve the candidate model BEFORE deciding the provider so that
-        ;; Claude-model auto-detection can fire even when the caller passed
-        ;; no :model (type-defaults supplies it).
-        candidate-model (or clean-model
-                            (:model type-defaults))
-        ;; Claude auto-detection is suppressed when explicit routing is
-        ;; present (explicit :provider or '<prov>:<model>' prefix). This
-        ;; preserves the privacy escape hatch — e.g. venice:claude-sonnet
-        ;; or {:provider :venice :model "claude-..."} stays on venice.
-        explicit-routing? (or explicit-prov prefix-prov)
-        claude?           (and (not explicit-routing?)
-                               (claude-model-name? candidate-model))
-        eff-provider   (or explicit-prov
-                           prefix-prov
-                           (when claude? :anthropic)
-                           (some-> type-defaults :provider keyword)
-                           (best-available-provider))
-        reg            (effective-provider-registry)
-        reg-entry      (get reg eff-provider)
-        eff-model      (cond
-                         claude? (strip-anthropic-prefix candidate-model)
-                         :else   (or candidate-model
-                                     (:default-model reg-entry)))]
-    ;; Validate
-    (when-let [err (validate-provider eff-provider)]
-      (throw (ex-info (str "Unknown provider: " (name eff-provider)) err)))
-    (when-let [err (validate-model eff-provider eff-model)]
-      (log/warn "Model not in available-models list" err))
-    {:provider eff-provider :model eff-model}))
+  "Resolve {:provider :model} for an agent spawn or wave.
+   Throws on an unknown provider; an unknown model only warns."
+  [params]
+  (provider/resolve-provider-model params))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Metrics
@@ -461,18 +300,15 @@
 ;;; ---------------------------------------------------------------------------
 
 (defn available-providers
-  "Return a seq of provider keywords that have API keys configured."
+  "Providers that can be called right now: in the effective discovery order,
+   with either no secret required or a configured one."
   []
-  (filter (fn [p]
-            (let [{:keys [secret-key]} (get provider-registry p)]
-              (or (nil? secret-key) ;; ollama-compat needs no key
-                  (some? (global-config/get-secret secret-key)))))
-          provider-priority))
+  (provider/available-providers))
 
 (defn best-available-provider
-  "Return the highest-priority provider with an API key configured, or nil."
+  "The highest-priority callable provider, or nil."
   []
-  (first (available-providers)))
+  (provider/best-available-provider))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Factory Functions
@@ -519,16 +355,14 @@
 
 (defn auto-backend
   "Create a backend using the best available provider.
-   Falls back through provider-priority until one has a valid key."
+   Falls back through `effective-provider-priority` until one has a valid key."
   [opts]
-  (if-let [provider (best-available-provider)]
+  (if-let [prov (provider/best-available-provider)]
     (do
-      (log/info "Auto-selected provider" {:provider provider})
-      (openai-compat-backend (assoc opts :provider provider)))
+      (log/info "Auto-selected provider" {:provider prov})
+      (openai-compat-backend (assoc opts :provider prov)))
     (throw (ex-info "No OpenAI-compatible provider configured. Set at least one API key."
-                    {:checked (mapv (fn [p] {:provider p
-                                             :secret-key (:secret-key (get provider-registry p))})
-                                   provider-priority)}))))
+                    {:checked (provider/provider-diagnostic)}))))
 
 (defn openrouter-backend
   "Create an OpenRouter backend. Backward-compatible factory."

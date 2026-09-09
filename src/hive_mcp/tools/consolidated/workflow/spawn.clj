@@ -15,9 +15,13 @@
             [hive-mcp.swarm.datascript.queries :as queries]
             [hive-mcp.tools.memory.scope :as scope]
             [hive-mcp.agent.context :as ctx]
+            [hive-mcp.extensions.registry :as ext]
             [hive-mcp.config.core :as config]
             [hive-mcp.agent.budget-router :as budget-router]
             [hive-mcp.agent.spawn-mode-registry :as spawn-registry]
+            [hive-mcp.agent.ling.lifecycle :as lifecycle]
+            [hive-mcp.agent.ling.headless-registry :as headless-reg]
+            [hive-mcp.agent.ling.terminal-registry :as terminal-reg]
             [hive-mcp.dns.result :as result]
             [clojure.data.json :as json]
             [clojure.string :as str]
@@ -62,12 +66,34 @@
 ;; ── Unified Spawn-One ───────────────────────────────────────────────────────
 
 (defn- make-spawn-params
-  "Build spawn handler params. Headless modes include :spawn_mode."
-  [{:keys [agent-name effective-dir default-presets model route spawn-mode-kw task-id]}]
-  (cond-> {:type "ling" :name agent-name :cwd effective-dir :presets default-presets}
-    task-id              (assoc :kanban_task_id task-id)
-    model                (assoc :model model)
-    (not= :claude route) (assoc :spawn_mode (name spawn-mode-kw))))
+  "Build spawn params, preserving each task's execution overrides."
+  [{:keys [agent-name effective-dir default-presets model provider task spawn-mode-kw task-id]}]
+  (let [execution (get-in task [:context :execution])
+        model (or (:model execution) model)
+        provider (or (:provider execution) provider)
+        presets (or (:presets execution) default-presets)
+        requested-mode (keyword (or (:spawn-mode execution) spawn-mode-kw :claude))
+        mode (if (or provider (:spawn-mode execution))
+               (lifecycle/resolve-effective-mode {:spawn-mode requested-mode})
+               requested-mode)
+        _ (when (or provider (:spawn-mode execution))
+            (when-not (or (headless-reg/get-headless-backend mode)
+                          (terminal-reg/get-terminal-addon mode))
+              (throw (ex-info "Execution spawn mode has no registered strategy"
+                              {:type :execution/unavailable-mode :spawn-mode mode})))
+            (let [providers (if (= :claude mode) #{:claude}
+                                (:provides (headless-reg/headless-metadata mode)))]
+              (when (and provider (seq providers)
+                         (not (contains? providers (keyword provider))))
+                (throw (ex-info "Provider is incompatible with execution spawn mode"
+                                {:type :execution/provider-mismatch
+                                 :provider provider :spawn-mode mode :supported providers})))))]
+    (cond-> {:type "ling" :name agent-name :cwd effective-dir :presets presets}
+      task-id (assoc :kanban_task_id task-id)
+      model (assoc :model model)
+      provider (assoc :provider provider)
+      (or (:spawn-mode execution) (not= :claude mode))
+      (assoc :spawn_mode (subs (str mode) 1)))))
 
 (defn- parse-spawn-result
   "Extract agent-id and spawn-mode from spawn handler response."
@@ -113,23 +139,36 @@
         nil))))
 
 (defn- spawn-and-wait!
-  "IO boundary: spawn a ling and poll for readiness.
-   Returns {:agent-id :ready? :slave :elapsed-ms :phase :spawn-mode}."
-  [{:keys [agent-name effective-dir default-presets model route spawn-mode-kw task-id]}]
-  (let [spawn-result  (spawn/handle-spawn
-                       (make-spawn-params {:agent-name      agent-name
-                                           :effective-dir   effective-dir
-                                           :default-presets default-presets
-                                           :model           model
-                                           :route           route
-                                           :spawn-mode-kw   spawn-mode-kw
-                                           :task-id         task-id}))
-        parsed        (parse-spawn-result spawn-result agent-name)
-        agent-id      (:agent-id parsed)
-        reported-mode (or (:spawn-mode parsed) spawn-mode-kw)]
-    (assoc (ready/wait-for-ling-ready agent-id reported-mode)
-           :agent-id agent-id
-           :spawn-mode spawn-mode-kw)))
+  "Spawn with persona installed before startup; undo registration on failure."
+  [{:keys [agent-name task spawn-mode-kw] :as opts}]
+  (let [params (make-spawn-params opts)
+        persona (get-in task [:context :execution :persona])
+        register! (when persona (ext/get-extension :agent/register-persona-lens))
+        unregister! (when persona (ext/get-extension :agent/unregister-persona-lens))
+        registered-id (atom agent-name)]
+    (when (and persona (not (and register! unregister!)))
+      (throw (ex-info "Persona catchup provider unavailable"
+                      {:type :persona/unavailable :agent-id agent-name})))
+    (when persona (register! agent-name persona))
+    (try
+      (let [spawn-result (spawn/handle-spawn params)
+            payload (try (json/read-str (:text spawn-result) :key-fn keyword)
+                         (catch Exception _ nil))
+            _ (when (or (:isError spawn-result) (false? (:success payload)))
+                (throw (ex-info "Agent spawn failed"
+                                {:type :execution/spawn-failed :result spawn-result})))
+            parsed (parse-spawn-result spawn-result agent-name)
+            agent-id (:agent-id parsed)
+            reported-mode (or (:spawn-mode parsed) (some-> (:spawn_mode params) keyword) spawn-mode-kw)
+            _ (when (and persona (not= agent-name agent-id))
+                (register! agent-id persona)
+                (reset! registered-id agent-id)
+                (unregister! agent-name))]
+        (assoc (ready/wait-for-ling-ready agent-id reported-mode)
+               :agent-id agent-id :spawn-mode reported-mode))
+      (catch Exception e
+        (when persona (unregister! @registered-id))
+        (throw e)))))
 
 (defn- handle-ready-ling
   "Pure: assemble success result map after dispatch."
@@ -172,7 +211,7 @@
   (let [title       (or (:title task) (:id task) "untitled")
         task-id     (:id task)
         agent-name  (str (if (= :claude route) "forja-cl-" "forja-hl-")
-                         (System/currentTimeMillis))
+                         (java.util.UUID/randomUUID))
         ready-mode  (or spawn-mode-kw (if (= :claude route) :claude :headless))
         base-result {:agent-id agent-name :task-title title :task-id task-id
                      :spawned false :route route}
@@ -184,7 +223,8 @@
                                             :model           model
                                             :route           route
                                             :spawn-mode-kw   ready-mode
-                                            :task-id         task-id})
+                                            :task-id         task-id
+                                            :task            task})
                  agent-id (:agent-id sw)]
              (if (:ready? sw)
                (let [dr (dispatch-to-ling! {:agent-id agent-id :task task
@@ -392,6 +432,11 @@
            preset seeds ctx_refs kg_node_ids context-result]}]
   (let [model                (budget-route-model model)
         effective-spawn-mode (keyword (or spawn_mode spawn-mode :mixed))
+        _ (when (and (#{:drone :orchestrator} effective-spawn-mode)
+                     (some #(seq (get-in % [:context :execution])) tasks))
+            (throw (ex-info "Per-task execution requires a ling spawn mode"
+                            {:type :execution/unsupported-mode
+                             :spawn-mode effective-spawn-mode})))
         drone-params         {:directory directory :tasks tasks :model model
                               :preset (or preset (first presets) "drone-worker")
                               :seeds seeds :ctx_refs ctx_refs :kg_node_ids kg_node_ids
@@ -407,7 +452,10 @@
       :else
       (let [{:keys [drone-tasks ling-tasks]}
             (if (= :mixed effective-spawn-mode)
-              (drone/classify-and-split-tasks tasks)
+              (let [explicit (filter #(seq (get-in % [:context :execution])) tasks)
+                    automatic (remove #(seq (get-in % [:context :execution])) tasks)
+                    classified (drone/classify-and-split-tasks automatic)]
+                (update classified :ling-tasks #(vec (concat % explicit))))
               {:drone-tasks [] :ling-tasks tasks})
 
             drone-result    (when (seq drone-tasks)

@@ -3,7 +3,7 @@
 
    All tests use with-redefs to mock KG edge queries and Chroma lookups,
    keeping tests fast and isolated (FIRST: Fast, Isolated)."
-  (:require [clojure.test :refer [deftest is testing are]]
+  (:require [clojure.test :refer [deftest is testing]]
             [hive-mcp.scheduler.vulcan :as vulcan]))
 
 ;; =============================================================================
@@ -41,8 +41,8 @@
   (testing "dep in completed set is satisfied"
     (is (true? (vulcan/dep-satisfied? "task-1" #{"task-1"} (constantly true)))))
 
-  (testing "dep not in completed but missing from store (deleted=done)"
-    (is (true? (vulcan/dep-satisfied? "task-1" #{} (constantly false)))))
+  (testing "dep not in completed but missing from store (missing is blocked)"
+    (is (false? (vulcan/dep-satisfied? "task-1" #{} (constantly false)))))
 
   (testing "dep not completed and still exists in store (not satisfied)"
     (is (false? (vulcan/dep-satisfied? "task-1" #{} (constantly true))))))
@@ -67,9 +67,9 @@
                                     mock-deps-fn
                                     (constantly true)))))
 
-  (testing "task with deps deleted from store (done) is ready"
-    ;; exists-fn returns false = task was deleted = completed
-    (is (true? (vulcan/task-ready? "20260210-task-b"
+  (testing "task with missing dependency is blocked"
+    ;; A missing card is no longer proof that work completed.
+    (is (false? (vulcan/task-ready? "20260210-task-b"
                                    #{}
                                    mock-deps-fn
                                    (constantly false)))))
