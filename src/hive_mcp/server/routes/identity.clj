@@ -41,10 +41,26 @@
    Format:
    ---TAG---
    <body>
-   ---/TAG---"
+   ---/TAG---
+
+   `content` is the MCP content ARRAY. A single content MAP is normalized to a
+   one element array first, through the same `normalize-content` every other
+   entry point uses, so there is one definition of what a content array is.
+
+   That normalization is load-bearing, not defensive. Without it a map falls
+   through `find-last-text-idx` (which walks MapEntries, finds no :type, and
+   answers nil) into `(conj content {...})`, and conj of a map onto a map
+   MERGES: the caller's :text is silently REPLACED by the block and the payload
+   is gone. No throw and no no-op, just a plausible looking result with the
+   output dropped.
+
+   `build-middleware-chain` normalizes before it piggybacks, so no tool response
+   was ever affected. The cost was paid by direct callers and by test doubles
+   returning a bare map, where the symptom reads as \"the block ate my output\"."
   [content tag body]
   (if (and body (seq (str body)))
-    (let [block-text (str "\n\n---" tag "---\n"
+    (let [content (normalize-content content)
+          block-text (str "\n\n---" tag "---\n"
                           body
                           "\n---/" tag "---")]
       (if-let [last-text-idx (find-last-text-idx content)]
