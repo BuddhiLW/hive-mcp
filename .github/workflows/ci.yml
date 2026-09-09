@@ -2,13 +2,20 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # staging is a GATE, not a mirror. Without it here, landing on staging ran
+    # nothing, so "merge staging, then promote to main if CI is green" had no
+    # CI to be green: the first real signal arrived only once main had already
+    # taken the change. release.yml deliberately still lists main alone, so
+    # staging is where the suite runs and never where a version is published.
+    branches: [main, staging]
     paths-ignore:
       - '**.md'
       - 'resources/presets/**'
       - 'docs/**'
   pull_request:
-    branches: [main]
+    # PRs INTO staging need the same gate, or a promotion PR is first graded
+    # only on its eventual PR into main.
+    branches: [main, staging]
     paths-ignore:
       - '**.md'
       - 'resources/presets/**'
