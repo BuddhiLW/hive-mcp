@@ -15,7 +15,9 @@
   (:require [clojure.java.io :as io]
             [clojure.set :as set]
             [clojure.string :as str]
-            [clojure.test :refer [deftest is testing]]))
+            [clojure.test :refer [deftest is testing]]
+            [hive-mcp.agent.provider.model :as model]
+            [hive-mcp.config.merge :as cfg]))
 
 ;; =============================================================================
 ;; Reading a namespace's declared requires out of its source
@@ -115,6 +117,31 @@
       (is (contains? (required-nses form) 'hive-mcp.agent.provider)))
     (testing "it never reaches past the pipeline into policy or collect"
       (is (empty? (forbidden-requires form ["provider.policy" "provider.collect"]))))))
+
+(deftest seed-is-the-single-source-test
+  (testing "the shipped default config CARRIES the seed var, it does not copy it"
+    (is (identical? model/seed-registry (:llm-providers cfg/default-config))
+        "default-config :llm-providers must BE the seed, not a second literal"))
+
+  (testing "the gate itself still bites"
+    (is (not (identical? model/seed-registry (into {} model/seed-registry)))
+        "a re-inlined copy is equal but not identical — which is what the gate reads"))
+
+  (testing "every seeded secret key has its slot in the default :secrets map"
+    (let [slots (:secrets cfg/default-config)]
+      (doseq [[prov {:keys [secret-key]}] model/seed-registry
+              :when secret-key]
+        (is (contains? slots secret-key)
+            (str (name prov) " names " secret-key ", which no default slot offers")))))
+
+  (testing "config still overrides and removes, measured on the REAL default config"
+    (is (= "x" (get-in (cfg/deep-merge cfg/default-config
+                                       {:llm-providers {:openrouter {:default-model "x"}}})
+                       [:llm-providers :openrouter :default-model])))
+    (is (false? (get-in (cfg/deep-merge cfg/default-config
+                                        {:llm-providers {:venice false}})
+                        [:llm-providers :venice]))
+        "a user false survives deep-merge, so the removal lever reaches the pipeline")))
 
 (comment
   (require '[clojure.test :refer [run-tests]])

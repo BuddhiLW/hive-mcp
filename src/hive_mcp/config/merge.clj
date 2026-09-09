@@ -1,7 +1,8 @@
 (ns hive-mcp.config.merge
   "Pure config transformations — no IO, no atoms, no logging.
    Collect/Promote layer: defaults, deep-merge, key-path parsing."
-  (:require [clojure.string :as str]))
+  (:require [clojure.string :as str]
+            [hive-mcp.agent.provider.model :as model]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -13,6 +14,12 @@
 (def default-kg-backend
   "Canonical default KG backend. Referenced by config defaults and connection fallback."
   :datahike)
+
+(def default-secret-slots
+  "One nil-valued slot per secret key the seeded providers name.
+   Derived, so a provider added to the seed cannot arrive without its slot."
+  (into {} (comp (keep :secret-key) (map (fn [k] [k nil])))
+        (vals model/seed-registry)))
 
 (def default-config
   "Default configuration. Used as base — user config.edn is deep-merged on top."
@@ -132,48 +139,12 @@
    :cartography {:sentinel-path (str (System/getProperty "user.home")
                                      "/.config/hive-mcp/data/carto/preferred-backend.edn")
                  :strict-mode?  true}
-   :secrets {:openrouter-api-key nil
-             :openai-api-key nil
-             :anthropic-api-key nil
-             :venice-api-key nil
-             :groq-api-key nil
-             :together-api-key nil
-             :fireworks-api-key nil}
-   :llm-providers {:openrouter {:api-url       "https://openrouter.ai/api/v1/chat/completions"
-                                :secret-key    :openrouter-api-key
-                                :default-model "anthropic/claude-opus-4-7"
-                                :available-models ["moonshotai/kimi-k2.5"
-                                                   "qwen/qwen3.6-plus"
-                                                   "z-ai/glm-5.1"
-                                                   "xiaomi/mimo-v2-pro"
-                                                   "anthropic/claude-opus-4-7"
-                                                   "anthropic/claude-opus-4-6"
-                                                   "anthropic/claude-sonnet-4-6"]}
-                   :venice     {:api-url       "https://api.venice.ai/api/v1/chat/completions"
-                                :secret-key    :venice-api-key
-                                :default-model "venice-uncensored"
-                                :available-models ["venice-uncensored"
-                                                   "qwen-3-6-plus"]}
-                   :groq       {:api-url       "https://api.groq.com/openai/v1/chat/completions"
-                                :secret-key    :groq-api-key
-                                :default-model "llama-3.3-70b-versatile"
-                                :available-models ["llama-3.3-70b-versatile"]}
-                   :together   {:api-url       "https://api.together.xyz/v1/chat/completions"
-                                :secret-key    :together-api-key
-                                :default-model "meta-llama/Llama-3.3-70B-Instruct-Turbo"
-                                :available-models ["meta-llama/Llama-3.3-70B-Instruct-Turbo"]}
-                   :fireworks  {:api-url       "https://api.fireworks.ai/inference/v1/chat/completions"
-                                :secret-key    :fireworks-api-key
-                                :default-model "accounts/fireworks/models/llama-v3p3-70b-instruct"
-                                :available-models ["accounts/fireworks/models/llama-v3p3-70b-instruct"]}
-                   :openai     {:api-url       "https://api.openai.com/v1/chat/completions"
-                                :secret-key    :openai-api-key
-                                :default-model "gpt-4o-mini"
-                                :available-models ["gpt-4o-mini" "gpt-4o"]}
-                   :ollama-compat {:api-url       "http://localhost:11434/v1/chat/completions"
-                                   :secret-key    nil
-                                   :default-model "devstral-small:24b"
-                                   :available-models ["devstral-small:24b"]}}
+   ;; Both keys are PROJECTIONS of the provider seed, never a second copy:
+   ;; the slot a provider's key occupies and the entry itself come from
+   ;; `hive-mcp.agent.provider.model/seed-registry`. A user config.edn is
+   ;; deep-merged over this, and `provider/effective-registry` re-reads it.
+   :secrets default-secret-slots
+   :llm-providers model/seed-registry
    :hivemind {;; Max chars preserved in a shout :message / :task before truncation.
               ;; One bad shout fans out (per-agent ring × backbone × subscribers),
               ;; so aggressive bound protects every downstream context window.
