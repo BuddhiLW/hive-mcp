@@ -1,7 +1,7 @@
 (ns hive-mcp.knowledge-graph.edges.queries
   (:require [hive-mcp.knowledge-graph.connection :as conn]))
 
-(declare get-edge get-edges-from get-edges-to get-edges-by-relation get-edges-by-scope find-edge find-edges-between pull-edge-batch get-all-edges count-edges)
+(declare get-edge get-edges-from get-edges-to get-edges-by-relation get-edges-by-scope find-edge find-edges-between pull-edge-batch get-all-edges get-all-edge-arcs count-edges)
 
 (def ^:private edge-pull-pattern
   "Narrow pull pattern for edge rows.
@@ -185,6 +185,52 @@
      (if scope
        (filter #(= scope (:kg-edge/scope %)) all)
        all))))
+
+(def ^:private edge-arc-query
+  ;; ?e is in :find to keep one row per EDGE: :find returns a set, so two
+  ;; distinct edges agreeing on all four projected values collapse into one
+  ;; row without it (measured: 265k of 1.04M edges, 2026-09-07).
+  '[:find ?e ?from ?to ?relation ?confidence
+    :where
+    [?e :kg-edge/from ?from]
+    [?e :kg-edge/to ?to]
+    [?e :kg-edge/relation ?relation]
+    [(get-else $ ?e :kg-edge/confidence 1.0) ?confidence]])
+
+(def ^:private scoped-edge-arc-query
+  '[:find ?e ?from ?to ?relation ?confidence
+    :in $ ?scope
+    :where
+    [?e :kg-edge/scope ?scope]
+    [?e :kg-edge/from ?from]
+    [?e :kg-edge/to ?to]
+    [?e :kg-edge/relation ?relation]
+    [(get-else $ ?e :kg-edge/confidence 1.0) ?confidence]])
+
+(defn- row->arc
+  [[_eid from to relation confidence]]
+  {:from from :to to :relation relation :confidence confidence})
+
+(defn get-all-edge-arcs
+  "Get every edge as an ARC: {:from :to :relation :confidence}.
+
+   One Datalog query joining the four arc attributes, in place of a narrow
+   pull per edge. `:kg-edge/confidence` is optional and defaults to 1.0;
+   the other three are required, and an edge missing any of them is absent
+   from the result.
+
+   Returns a vector of arc maps — realized, not lazy.
+
+   Arities:
+     (get-all-edge-arcs)       => all edges
+     (get-all-edge-arcs scope) => edges with :kg-edge/scope = scope"
+  ([]
+   (get-all-edge-arcs nil))
+  ([scope]
+   (mapv row->arc
+         (if scope
+           (conn/query scoped-edge-arc-query scope)
+           (conn/query edge-arc-query)))))
 
 (defn count-edges
   "Count total edges, optionally filtered by scope.

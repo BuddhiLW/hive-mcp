@@ -13,6 +13,7 @@
             [hive-mcp.agent.context :as ctx]
             [hive-mcp.crystal.core :as crystal]
             [hive-mcp.channel.async-result :as async-buf]
+            [hive-mcp.server.routes.async-tasks :as async-tasks]
             [hive-mcp.dsl.response :as compress]
             [hive-mcp.extensions.registry :as ext]
             [hive-dsl.context.identity :as ctx-id]
@@ -21,6 +22,7 @@
             [clojure.string :as str]
             [hive-mcp.channel.task-signal :as task-signal]
             [hive-mcp.channel.activation :as activation]
+            [hive-mcp.channel.blocks :as blocks]
             [hive-spi.guard.ports :as gp]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -157,26 +159,55 @@
                  should-default? (assoc :async true))))))
 
 (defn wrap-handler-async
-  "Intercept async:true calls — return ack, spawn future for real execution."
+  "Intercept async:true calls: return an ack, run the work on the async pool.
+
+   The work goes to `async-tasks/submit!`, NOT to a bare `future`, so the
+   handle is retained. A bare future's handle was discarded, which left a
+   long-running call impossible to list, bound or stop by any API: the only
+   remedy was killing the JVM, and on a shared coordinator that ends every
+   other agent's work too.
+
+   `:async-timeout-ms` bounds one call. It is consumed here alongside
+   `:async` and never reaches the handler, for the same reason `:async` does
+   not: it addresses THIS wrapper, not the tool.
+
+   NOTE for addon authors: a top-level `:async` is consumed here and is gone
+   before any handler runs, so a tool must not name a parameter `async` and
+   expect to receive it. Spell such a flag `background` (see
+   `hive-ingestor.addon.registry/dispatcher-shadowed-params`)."
   [handler tool-name]
   (fn [args]
     (if (:async args)
-      (let [task-id (str "atask-" (random-uuid))
-            caller-id (or (:_caller_id args) "coordinator")]
-        (future
-          (try
-            (let [clean-args (dissoc args :async)
-                  result (handler clean-args)]
-              (async-buf/enqueue-result! caller-id
-                                         {:task-id task-id :tool tool-name
-                                          :status :completed :result result}))
-            (catch Exception e
-              (log/error e "async-result: background execution failed for task" task-id)
-              (async-buf/enqueue-result! caller-id
-                                         {:task-id task-id :tool tool-name
-                                          :status :error :error (.getMessage e)}))))
+      (let [task-id    (str "atask-" (random-uuid))
+            caller-id  (or (:_caller_id args) "coordinator")
+            timeout-ms (:async-timeout-ms args)]
+        (async-tasks/submit!
+         {:task-id    task-id
+          :tool       tool-name
+          :caller-id  caller-id
+          :timeout-ms timeout-ms
+          :f          (fn []
+                        (try
+                          (let [clean-args (dissoc args :async :async-timeout-ms)
+                                result (handler clean-args)]
+                            (async-buf/enqueue-result! caller-id
+                                                       {:task-id task-id :tool tool-name
+                                                        :status :completed :result result}))
+                          (catch InterruptedException _
+                            ;; Cancelled on purpose. Say so rather than
+                            ;; reporting it as a failure of the work.
+                            (log/info "async-result: task cancelled" {:task-id task-id})
+                            (async-buf/enqueue-result! caller-id
+                                                       {:task-id task-id :tool tool-name
+                                                        :status :cancelled}))
+                          (catch Exception e
+                            (log/error e "async-result: background execution failed for task" task-id)
+                            (async-buf/enqueue-result! caller-id
+                                                       {:task-id task-id :tool tool-name
+                                                        :status :error :error (.getMessage e)}))))})
         [{:type "text"
-          :text (pr-str {:queued true :task-id task-id :tool tool-name})}])
+          :text (pr-str (cond-> {:queued true :task-id task-id :tool tool-name}
+                          timeout-ms (assoc :timeout-ms timeout-ms)))}])
       (handler args))))
 
 (defn- guard-refusal
@@ -278,11 +309,13 @@
            content (handler args)
            caller-id (or (:_caller_id args) "coordinator")
            async-drain (async-buf/drain! caller-id)
-           memory-drain (drain-memory-piggyback
-                         caller-id
-                         (activation/drain-ctx {:tool-name tool-name
-                                                :cues task-tokens
-                                                :caller-id caller-id}))
+           request-ctx {:tool-name tool-name :cues task-tokens :caller-id caller-id}
+           act-ctx (activation/drain-ctx request-ctx)
+           ;; Blocks are an OPEN set: whatever addons registered under
+           ;; :block/*, rendered by tag. The host names none of them, so a new
+           ;; block is an addon plus a config entry rather than a commit here.
+           extra-blocks (blocks/render request-ctx)
+           memory-drain (drain-memory-piggyback caller-id act-ctx)
            catchup-blocks (when-let [drain-fn (ext/get-extension :cu/piggyback-drain)]
                             (try (drain-fn caller-id)
                                  (catch Exception e
@@ -300,6 +333,10 @@
 
          memory-drain
          (id/wrap-memory-piggyback-content memory-drain)
+
+         (seq extra-blocks)
+         (as-> c (reduce (fn [acc [tag body]] (id/wrap-delimited-block acc tag body))
+                         c extra-blocks))
 
          (seq catchup-blocks)
          (as-> c (reduce-kv

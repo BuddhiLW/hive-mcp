@@ -24,7 +24,13 @@
 
 (def extension-key
   "Registry key an activation provider registers under. The provider is
-   `(fn [activation-ctx] -> {:pins #{id} :tokens #{token} :floor-cap n})`."
+   `(fn [activation-ctx] -> {:pins #{id} :tokens #{token} :floor-cap n})`.
+
+   Deliberately NOT a place to add response content. An activation provider
+   steers the memory DRAIN, and that is all this key means. Anything an addon
+   wants to SAY in the response is a block emitter registered under `:block/*`
+   and rendered by `hive-mcp.channel.blocks`, so the host never learns the name
+   of what it is rendering."
   :memory/activation)
 
 (defn- sane

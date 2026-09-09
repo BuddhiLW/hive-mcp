@@ -155,6 +155,31 @@
              {:provider :groq :api-key "sk-test"})]
       (is (= "llama-3.3-70b-versatile" (proto/model-name b))))))
 
+(deftest openai-compat-backend-reads-the-effective-registry-test
+  (testing "a config override of a static entry's :default-model is honoured"
+    (with-redefs [config/get-config-value
+                  (fn [k] (when (= k "llm-providers")
+                            {:venice {:default-model "e2ee-deepseek-v4-flash"}}))]
+      (is (= "e2ee-deepseek-v4-flash"
+             (proto/model-name (openrouter/openai-compat-backend
+                                {:provider :venice :api-key "sk-test"}))))))
+  (testing "a provider that exists only in config is constructible"
+    (with-redefs [config/get-config-value
+                  (fn [k] (when (= k "llm-providers")
+                            {:acme {:api-url "https://acme.test/v1/chat/completions"
+                                    :secret-key :acme-api-key
+                                    :default-model "acme-1"}}))]
+      (let [b (openrouter/openai-compat-backend {:provider :acme :api-key "sk-test"})]
+        (is (= "https://acme.test/v1/chat/completions" (:api-url b)))
+        (is (= "acme-1" (proto/model-name b)))
+        (is (= "acme" (:provider-name b))))
+      (is (nil? (openrouter/validate-provider :acme)))
+      (is (= {:provider :acme :model "acme-2"}
+             (openrouter/resolve-provider-model {:model "acme:acme-2" :agent-type :ling}))
+          "the <provider>:<model> prefix resolves for a config-only provider too")))
+  (testing "nothing in the static registry names a provider that only config should"
+    (is (not (contains? openrouter/provider-registry :axon)))))
+
 (deftest openai-compat-backend-ollama-no-key-test
   (testing "ollama-compat works without API key"
     (let [b (openrouter/openai-compat-backend
