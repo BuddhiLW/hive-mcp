@@ -22,6 +22,7 @@
             [clojure.string :as str]
             [hive-mcp.channel.task-signal :as task-signal]
             [hive-mcp.channel.activation :as activation]
+            [hive-mcp.channel.blocks :as blocks]
             [hive-spi.guard.ports :as gp]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -308,11 +309,13 @@
            content (handler args)
            caller-id (or (:_caller_id args) "coordinator")
            async-drain (async-buf/drain! caller-id)
-           memory-drain (drain-memory-piggyback
-                         caller-id
-                         (activation/drain-ctx {:tool-name tool-name
-                                                :cues task-tokens
-                                                :caller-id caller-id}))
+           request-ctx {:tool-name tool-name :cues task-tokens :caller-id caller-id}
+           act-ctx (activation/drain-ctx request-ctx)
+           ;; Blocks are an OPEN set: whatever addons registered under
+           ;; :block/*, rendered by tag. The host names none of them, so a new
+           ;; block is an addon plus a config entry rather than a commit here.
+           extra-blocks (blocks/render request-ctx)
+           memory-drain (drain-memory-piggyback caller-id act-ctx)
            catchup-blocks (when-let [drain-fn (ext/get-extension :cu/piggyback-drain)]
                             (try (drain-fn caller-id)
                                  (catch Exception e
@@ -330,6 +333,10 @@
 
          memory-drain
          (id/wrap-memory-piggyback-content memory-drain)
+
+         (seq extra-blocks)
+         (as-> c (reduce (fn [acc [tag body]] (id/wrap-delimited-block acc tag body))
+                         c extra-blocks))
 
          (seq catchup-blocks)
          (as-> c (reduce-kv
