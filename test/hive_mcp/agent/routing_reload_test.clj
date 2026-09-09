@@ -5,7 +5,7 @@
             [clojure.test :refer [deftest is testing]]
             [hive-hot.core :as hot]))
 
-(deftest first-def-to-defonce-transition-preserves-runtime-routing
+(deftest ^:integration first-def-to-defonce-transition-preserves-runtime-routing
   (let [root (.toFile (java.nio.file.Files/createTempDirectory
                        "routing-reload-" (make-array java.nio.file.attribute.FileAttribute 0)))
         fixture-ns 'routing-reload-fixture.routing
