@@ -197,9 +197,9 @@
                                :hot/torn-down :hot/cycles :hot/widened
                                :hot/ns-reloaded :hot/ns-skipped :hot/ns-dragged
                                :hot/ns-unchanged? :hot/multi-file :hot/stale-ctors
-                               :ok? :errors :teardown/data-preserved?])
+                               :ok? :errors :diagnostic :diagnostics :teardown/data-preserved?])
     (seq (:mounted report))
-    (assoc :mounted (mapv #(select-keys % [:addon/id :success? :phase :errors])
+    (assoc :mounted (mapv #(select-keys % [:addon/id :success? :phase :errors :diagnostic])
                           (:mounted report)))))
 
 (defn- surface-refreshed!
@@ -290,9 +290,9 @@
                                                :hot/discovered :hot/already-mounted
                                                :hot/injected :hot/affected :hot/torn-down
                                                :hot/missing :hot/dirs-added :hot/registered
-                                               :hot/deps :discovery-errors :ok? :errors
+                                               :hot/deps :discovery-errors :ok? :errors :diagnostic :diagnostics
                                                :teardown/data-preserved?])
-                          (assoc :mounted (mapv #(select-keys % [:addon/id :success? :phase :errors])
+                          (assoc :mounted (mapv #(select-keys % [:addon/id :success? :phase :errors :diagnostic])
                                                 (:mounted report))
                                  :hive-hot hot-init
                                  :surface surface))))))
