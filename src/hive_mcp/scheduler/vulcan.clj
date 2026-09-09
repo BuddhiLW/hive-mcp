@@ -3,7 +3,9 @@
   (:require [hive-mcp.knowledge-graph.edges :as kg-edges]
             [hive-mcp.vectordb.facade :as facade]
             [hive-mcp.dns.result :refer [rescue]]
-            [taoensso.timbre :as log]))
+            [taoensso.timbre :as log]
+            [hive-mcp.vectordb.kanban-facade :as kanban]
+            [clojure.data.json :as json]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -13,12 +15,10 @@
 ;; =============================================================================
 
 (defn get-task-deps
-  "Query KG for the task IDs that a given task depends on."
+  "Query task dependency IDs. Lookup errors propagate so callers cannot mistake failure for no dependencies."
   [task-id]
-  (rescue #{}
-          (let [edges (kg-edges/get-edges-from task-id)
-                dep-edges (filter #(= :depends-on (:kg-edge/relation %)) edges)]
-            (set (map :kg-edge/to dep-edges)))))
+  (let [edges (kg-edges/get-edges-from task-id)]
+    (set (keep #(when (= :depends-on (:kg-edge/relation %)) (:kg-edge/to %)) edges))))
 
 (defn task-exists?
   "Check if a task still exists in the memory store."
@@ -30,11 +30,48 @@
 ;; Pure Readiness Calculations
 ;; =============================================================================
 
+(defn entry-state
+  "Classify a canonical kanban entry. Missing or malformed entries never prove completion."
+  [entry]
+  (if (nil? entry)
+    :missing
+    (try
+      (let [raw (:content entry)
+            content (if (string? raw) (json/read-str raw :key-fn keyword) raw)
+            status (or (:status content) (get content "status"))
+            status (if (keyword? status) (name status) status)]
+        (cond
+          (not= "kanban" (or (:task-type content) (get content "task-type"))) :invalid
+          (= "done" status) :done
+          (#{"todo" "doing" "review" "inprogress" "inreview"} status) :open
+          :else :invalid))
+      (catch Exception _ :invalid))))
+
+(defn task-state
+  "Read completion from the configured kanban store; lookup failures remain explicit and blocked."
+  [task-id]
+  (try
+    (entry-state (kanban/get-entry-by-id task-id))
+    (catch Exception _ :lookup-error)))
+
+(defn dependency-state
+  "Normalize a state lookup, including legacy exists-fn booleans. Absence is not completion."
+  [dep-id completed-ids state-fn]
+  (if (contains? completed-ids dep-id)
+    :done
+    (try
+      (let [state (state-fn dep-id)]
+        (cond
+          (true? state) :open
+          (or (false? state) (nil? state)) :missing
+          (#{:done :open :missing :invalid :lookup-error} state) state
+          :else :invalid))
+      (catch Exception _ :lookup-error))))
+
 (defn dep-satisfied?
-  "Check if a single dependency is satisfied."
-  [dep-id completed-ids exists-fn]
-  (or (contains? completed-ids dep-id)
-      (not (exists-fn dep-id))))
+  "A dependency is satisfied only by explicit completion or a stored done status."
+  [dep-id completed-ids state-fn]
+  (= :done (dependency-state dep-id completed-ids state-fn)))
 
 (defn task-ready?
   "Check if a task has all its dependencies satisfied."
@@ -116,24 +153,35 @@
 ;; =============================================================================
 
 (defn prioritize-tasks
-  "Apply full vulcan prioritization pipeline to a list of todo tasks.
-   Opts map is open for extension (OCP). Known keys:
-   - :task_ids — set/seq of task IDs to whitelist (focus filter)
-   - :deps-fn  — override KG dependency lookup
-   - :exists-fn — override Chroma existence check"
+  "Select the ready frontier. :state-fn reads :done/:open/:missing/:invalid/:lookup-error.
+   Legacy :exists-fn remains injectable, but false no longer means completed.
+   Dependency-query failures block the affected task and are returned in :blocked."
   ([tasks] (prioritize-tasks tasks #{} {}))
   ([tasks completed-ids] (prioritize-tasks tasks completed-ids {}))
-  ([tasks completed-ids {:keys [deps-fn exists-fn task_ids]
-                         :or {deps-fn get-task-deps
-                              exists-fn task-exists?}}]
-   (let [scoped (if (seq task_ids)
+  ([tasks completed-ids {:keys [deps-fn state-fn exists-fn task_ids]
+                         :or {deps-fn get-task-deps}}]
+   (let [scoped (if (some? task_ids)
                   (filterv #(contains? (set task_ids) (:id %)) tasks)
                   tasks)
-         ready (filter-ready-tasks scoped completed-ids deps-fn exists-fn)
-         enriched (enrich-with-wave-numbers ready deps-fn)
-         sorted (sort-vulcan enriched)
-         blocked-count (- (count scoped) (count ready))]
-     {:tasks sorted
-      :count (count sorted)
-      :blocked-count blocked-count
+         deps-fn (memoize deps-fn)
+         state-fn (memoize (or state-fn exists-fn task-state))
+         outcomes
+         (mapv (fn [task]
+                 (try
+                   (let [states (into {} (map (fn [id]
+                                               [id (dependency-state id completed-ids state-fn)]))
+                                      (deps-fn (:id task)))
+                         unmet (into {} (remove #(= :done (val %))) states)]
+                     (if (seq unmet)
+                       {:blocked {:task-id (:id task) :dependencies unmet}}
+                       {:task (assoc task :wave-number
+                                     (compute-wave-number (:id task) deps-fn))}))
+                   (catch Exception e
+                     {:blocked {:task-id (:id task) :state :lookup-error
+                                :error (ex-message e)}})))
+               scoped)
+         ready (sort-vulcan (vec (keep :task outcomes)))
+         blocked (vec (keep :blocked outcomes))]
+     {:tasks ready :count (count ready)
+      :blocked blocked :blocked-count (count blocked)
       :scoped-count (count scoped)})))

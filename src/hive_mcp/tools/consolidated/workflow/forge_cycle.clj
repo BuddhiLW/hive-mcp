@@ -29,11 +29,11 @@
 
 (defn- make-agent-ops
   "Build the agent-ops map for forge-belt FSM resources."
-  [{:keys [spawn-mode model preset seeds ctx-refs kg-node-ids]}]
+  [{:keys [spawn-mode model preset seeds ctx-refs kg-node-ids cleanup-scope]}]
   (let [defaults {:spawn-mode spawn-mode :model model :preset preset
                   :seeds seeds :ctx-refs ctx-refs :kg-node-ids kg-node-ids}]
     {:kill-fn  (fn [dir _project-id]
-                 (forge-ops/smite! {:directory dir}))
+                 (forge-ops/smite! (assoc cleanup-scope :directory dir)))
      :spawn-fn (fn [opts]
                  (spawn/spark!
                   (-> opts
@@ -80,7 +80,8 @@
                  :seeds       seeds
                  :ctx-refs    ctx_refs
                  :kg-node-ids kg_node_ids}
-     :agent-ops (make-agent-ops {:spawn-mode effective-spawn-mode :model model
+     :agent-ops (make-agent-ops {:cleanup-scope (select-keys params [:plan_id :task_ids])
+                                 :spawn-mode effective-spawn-mode :model model
                                  :preset preset :seeds seeds
                                  :ctx-refs ctx_refs :kg-node-ids kg_node_ids})
      :kanban-ops (make-kanban-ops survey-opts)
@@ -112,9 +113,7 @@
                                                      :model      (or model "claude")})
   (let [smite-result  (forge-ops/smite! params)
         _             (log/info "FORGE STRIKE: SMITE complete" {:killed (:count smite-result)})
-        survey-result (forge-ops/survey (cond-> {:directory directory}
-                                          (seq task_ids)       (assoc :task_ids task_ids)
-                                          (some? task_filter)  (assoc :task_filter task_filter)))
+        survey-result (forge-ops/survey params)
         _             (log/info "FORGE STRIKE: SURVEY complete" {:tasks (:count survey-result)})
         spark-result  (spawn/spark! (assoc params
                                            :tasks     (:tasks survey-result)
@@ -150,7 +149,12 @@
                                                 :model      (or model "claude")})
   (let [resources  (build-fsm-resources params)
         fsm-result (forge-belt/run-single-strike resources)
-        outcome    (or (:outcome fsm-result) :clean)]
+        survey     (:survey-result fsm-result)
+        selection-status (:selection-status survey)
+        outcome    (if (and (zero? (:count survey 0))
+                           (or (:plan-id survey) (= :blocked selection-status)))
+                     (or selection-status :no-ready)
+                     (or (:outcome fsm-result) :clean))]
     (swap! forge-state
            (fn [s]
              (-> s
@@ -158,16 +162,30 @@
                  (update :total-sparked + (:total-sparked fsm-result 0))
                  (update :total-strikes inc)
                  (assoc :last-strike (:last-strike fsm-result)))))
-    (result/ok {:success    (:success fsm-result true)
+    (result/ok {:success    (case outcome
+                              (:blocked :no-ready :error) false
+                              :complete true
+                              (:success fsm-result true))
+                :selection-status selection-status
+                :plan-complete? (boolean (:plan-complete? survey))
                 :outcome    outcome
                 :mode       :fsm
                 :spawn-mode (or spawn_mode "claude")
                 :model      (or model "claude")
                 :smite      (:smite-result fsm-result)
-                :survey     {:todo-count  (get-in fsm-result [:survey-result :count] 0)
-                             :task-titles (mapv :title (get-in fsm-result [:survey-result :tasks] []))}
+                :survey     (assoc (select-keys survey [:blocked :blocked-count :scoped-count
+                                                     :plan-id :plan-task-count :plan-states
+                                                     :plan-completed-count :plan-complete?
+                                                     :selection-status :error])
+                                   :todo-count (:count survey 0)
+                                   :task-titles (mapv :title (:tasks survey [])))
                 :spark      (:spark-result fsm-result)
-                :summary    (str (when (= :partial outcome) "PARTIAL: ")
+                :summary    (str (case outcome
+                                   :blocked "BLOCKED: "
+                                   :no-ready "NO READY TASKS: "
+                                   :complete "PLAN COMPLETE: "
+                                   "")
+                                 (when (= :partial outcome) "PARTIAL: ")
                                  (when (= :failure outcome) "FAILED: ")
                                  "Smited " (:total-smited fsm-result 0)
                                  ", surveyed " (get-in fsm-result [:survey-result :count] 0) " tasks"

@@ -235,6 +235,8 @@
                               "task_ids" {:type "array"
                                           :items {:type "string"}
                                           :description "Kanban task IDs. For complete: marks done. For forge-strike: survey whitelist."}
+                              "plan_id" {:type "string"
+                                         :description "[forge strike] Restrict to this converted plan memory. Incomplete or missing conversion links reject the strike."}
                               "task_filter" {:type "string"
                                              :description "Title prefix filter for survey. E.g. 'result-dsl:' matches all tasks starting with that prefix. More LLM-friendly than exact task_ids."}
                               "agent_id" {:type "string"
