@@ -50,6 +50,7 @@
 (def find-edges-between queries/find-edges-between)
 (def pull-edge-batch queries/pull-edge-batch)
 (def get-all-edges queries/get-all-edges)
+(def get-all-edge-arcs queries/get-all-edge-arcs)
 (def count-edges queries/count-edges)
 (def get-edges-since queries/get-edges-since)
 
