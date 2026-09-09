@@ -67,7 +67,7 @@
 
 (defn- make-spawn-params
   "Build spawn params, preserving each task's execution overrides."
-  [{:keys [agent-name effective-dir default-presets model provider task route spawn-mode-kw task-id]}]
+  [{:keys [agent-name effective-dir default-presets model provider task spawn-mode-kw task-id]}]
   (let [execution (get-in task [:context :execution])
         model (or (:model execution) model)
         provider (or (:provider execution) provider)

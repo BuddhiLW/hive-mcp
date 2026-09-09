@@ -1,5 +1,5 @@
 (ns hive-mcp.plan.execution-routing-test
-  (:require [clojure.test :refer [deftest is testing use-fixtures]]
+  (:require [clojure.test :refer [deftest is use-fixtures]]
             [clojure.data.json :as json]
             [hive-mcp.plan.schema :as schema]
             [hive-mcp.plan.tool :as plan]

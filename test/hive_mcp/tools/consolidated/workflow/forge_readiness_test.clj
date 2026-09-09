@@ -1,5 +1,5 @@
 (ns hive-mcp.tools.consolidated.workflow.forge-readiness-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is]]
             [clojure.data.json :as json]
             [hive-mcp.scheduler.vulcan :as vulcan]
             [hive-mcp.vectordb.kanban-facade :as kanban-store]

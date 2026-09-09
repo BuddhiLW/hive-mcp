@@ -3,7 +3,7 @@
 
    All tests use with-redefs to mock KG edge queries and Chroma lookups,
    keeping tests fast and isolated (FIRST: Fast, Isolated)."
-  (:require [clojure.test :refer [deftest is testing are]]
+  (:require [clojure.test :refer [deftest is testing]]
             [hive-mcp.scheduler.vulcan :as vulcan]))
 
 ;; =============================================================================

@@ -52,12 +52,6 @@
     (rb/result->mcp (rb/try-result :forge/strike-legacy-failed
                                    #(forge-cycle/forge-strike-legacy* params forge-state)))))
 
-(defn- do-forge-strike-fsm
-  "FSM-driven forge strike."
-  [params]
-  (rb/result->mcp (rb/try-result :forge/strike-failed
-                                 #(forge-cycle/fsm-forge-strike* params forge-state))))
-
 (defn handle-forge-strike
   "Execute ONE forge cycle, FSM-driven by default with legacy config gate.
 

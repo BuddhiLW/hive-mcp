@@ -105,7 +105,7 @@
 (defn forge-strike-legacy*
   "Execute a legacy forge cycle (imperative smite->survey->spark).
    Returns Result. Accepts forge-state atom for state updates."
-  [{:keys [directory max_slots presets spawn_mode model task_ids task_filter] :as params}
+  [{:keys [directory max_slots presets spawn_mode model] :as params}
    forge-state]
   (log/info "FORGE STRIKE (legacy): Starting cycle" {:directory  directory
                                                      :max-slots  max_slots

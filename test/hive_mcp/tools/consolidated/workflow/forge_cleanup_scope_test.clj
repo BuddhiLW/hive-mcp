@@ -1,20 +1,20 @@
 (ns hive-mcp.tools.consolidated.workflow.forge-cleanup-scope-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is]]
             [hive-mcp.tools.consolidated.workflow.forge-ops :as ops]
             [hive-mcp.tools.consolidated.workflow.forge-cycle :as cycle]))
 
-(defn agent [id task project status depth]
+(defn slave-row [id task project status depth]
   {:slave/id id :slave/kanban-task-id task :slave/project-id project
    :slave/status status :slave/depth depth})
 
 (def candidates
-  [(agent "owned" "a" "hive" :completed 1)
-   (agent "other-task" "b" "hive" :completed 1)
-   (agent "other-project" "a" "elsewhere" :completed 1)
-   (agent "unknown-project" "a" nil :completed 1)
-   (agent "unknown-task" nil "hive" :completed 1)
-   (agent "active" "a" "hive" :working 1)
-   (agent "nested" "a" "hive" :completed 2)])
+  [(slave-row "owned" "a" "hive" :completed 1)
+   (slave-row "other-task" "b" "hive" :completed 1)
+   (slave-row "other-project" "a" "elsewhere" :completed 1)
+   (slave-row "unknown-project" "a" nil :completed 1)
+   (slave-row "unknown-task" nil "hive" :completed 1)
+   (slave-row "active" "a" "hive" :working 1)
+   (slave-row "nested" "a" "hive" :completed 2)])
 
 (defn run-cleanup [opts]
   (let [killed (atom [])
