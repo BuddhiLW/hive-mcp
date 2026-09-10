@@ -106,6 +106,26 @@
   (rb/result->mcp (rb/try-result :forge/status-failed
                                  #(forge-ops/forge-status* params forge-state))))
 
+;; ── Forge Survey ────────────────────────────────────────────────────────────
+
+(defn handle-forge-survey
+  "Read-only: which tasks a strike WOULD select, and why.
+
+   forge-ops/survey computes plan membership, per-card states, dependency
+   readiness and a :selection-status of :ready / :blocked / :no-ready /
+   :complete. Until this verb existed, that computation was reachable only by
+   running a STRIKE: its two non-test callers are both on the strike path. So
+   the only way to ask 'what would this plan do' was to make it do it, and every
+   attempt to verify plan scoping read-only came back looking like a deployment
+   gap because `forge survey` fell through :_handler to the belt dashboard and
+   answered with global kanban totals instead.
+
+   Mutates nothing. `forge status` keeps its own shape and its own meaning:
+   status reports the BELT, survey reports the SELECTION."
+  [params]
+  (rb/result->mcp (rb/try-result :forge/survey-failed
+                                 #(forge-ops/survey params))))
+
 ;; ── Forge Quench ────────────────────────────────────────────────────────────
 
 (defn handle-forge-quench
@@ -181,6 +201,7 @@
    :forge      {:strike             handle-forge-strike
                 :strike-imperative  handle-forge-strike-imperative
                 :status             handle-forge-status
+                :survey             handle-forge-survey
                 :quench             handle-forge-quench
                 :multi-front        {:start    handle-multi-front-start
                                      :status   handle-multi-front-status
@@ -207,14 +228,15 @@
 (def tool-def
   {:name "workflow"
    :consolidated true
-   :description "Forja Belt workflow: catchup (restore context), wrap (crystallize), complete (full lifecycle), forge-strike (FSM-driven smite->survey->spark cycle), forge-strike-imperative (DEPRECATED legacy path), forge-status (belt dashboard), forge-quench (graceful stop). HWF2 combinator IR: ir list/get/describe/author/register/run/status/cancel, ir method (describe method strategies), ir vocabulary (describe effect verbs). Goal-directed synthesis: goal-schema (project the GoalSpec contract + example for authoring), plan-goal (synthesize + soundness-check a Plan-EDN from a GoalSpec; author=true persists). Use command='help' to list all."
+   :description "Forja Belt workflow: catchup (restore context), wrap (crystallize), complete (full lifecycle), forge-strike (FSM-driven smite->survey->spark cycle), forge-strike-imperative (DEPRECATED legacy path), forge-status (belt dashboard), forge-survey (read-only: which tasks a strike WOULD select, with plan membership, per-card states and dependency readiness; takes plan_id/task_ids/task_filter and mutates nothing), forge-quench (graceful stop). HWF2 combinator IR: ir list/get/describe/author/register/run/status/cancel, ir method (describe method strategies), ir vocabulary (describe effect verbs). Goal-directed synthesis: goal-schema (project the GoalSpec contract + example for authoring), plan-goal (synthesize + soundness-check a Plan-EDN from a GoalSpec; author=true persists). Use command='help' to list all."
    :inputSchema {:type "object"
                  :properties {"command" {:type "string"
                                          :enum ["catchup" "wrap" "complete"
                                                 "plan-goal" "goal-schema"
                                                 "forge strike"
                                                 "forge strike-imperative"
-                                                "forge status" "forge quench"
+                                                "forge status" "forge survey"
+                                                "forge quench"
                                                 "forge multi-front start"
                                                 "forge multi-front status"
                                                 "forge multi-front stop"
