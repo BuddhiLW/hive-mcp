@@ -94,6 +94,39 @@
     (log/info "[NATS] Disconnected")))
 
 ;; =============================================================================
+;; Connection Watches
+;; =============================================================================
+
+(defn add-connection-watch!
+  "Register `f` under `key`; it is called as (f old-conn new-conn) whenever the
+   connection OBJECT is replaced, that is, on start! and on stop!.
+
+   A jnats reconnect does NOT fire here: `max-reconnects -1` means jnats heals
+   the same Connection in place and re-establishes its own subscriptions, so
+   nothing needs re-arming. What does fire is a stop!/start! cycle, and that one
+   is destructive: stop! drops the dispatcher and clears `subscriptions`, so
+   every subscription armed before the cycle is silently gone afterwards while
+   `connected?` reports true again. A subscriber that owns a long-lived
+   subscription (the progress NATS->ws bridge) watches this to re-subscribe.
+
+   Idempotent per key: re-registering a key replaces its callback."
+  [key f]
+  (add-watch connection key
+             (fn [_ _ old new]
+               (when (not= old new)
+                 (try (f old new)
+                      (catch Exception e
+                        (log/warn "[NATS] Connection watch" key "failed:"
+                                  (.getMessage e)))))))
+  key)
+
+(defn remove-connection-watch!
+  "Remove the connection watch registered under `key`. Safe when absent."
+  [key]
+  (remove-watch connection key)
+  nil)
+
+;; =============================================================================
 ;; Payload Sanitization
 ;; =============================================================================
 
