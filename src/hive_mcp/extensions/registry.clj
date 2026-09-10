@@ -17,7 +17,8 @@
    Thread safety: All operations are atomic via atom + swap!.
    Idempotent: Re-registering the same key replaces silently."
   (:require [hive-mcp.protocols.registry :as reg]
-            [malli.core :as m]))
+            [malli.core :as m]
+            [hive-addon.registry.commands :as addon-cmds]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -34,9 +35,23 @@
 (defonce ^:private schema-registry
   (atom {}))
 
-;; Registry for composite tool command contributions.
+;; Composite tool command contributions.
 ;; Shape: {"analysis" {"lint" {:handler fn :params {...} :description "..." :addon :kondo} ...}}
-(defonce ^:private command-contributions (atom {}))
+;; The store itself lives in hive-addon.registry.commands, NOT here.
+;; An addon depends on hive-di / hive-contracts / hive-addon, never on hive-mcp
+;; core, so hive-addon owns the seam and this namespace is only a thin facade
+;; over it. A second atom on this side made contribute! and get-commands two
+;; implementations of one concept: an addon migrated to the correct seam would
+;; mount, report :status :ok, and silently vanish from the tool surface,
+;; because nothing here ever read hive-addon's store.
+(defn- all-contributions
+  "The whole contribution tree, in the shape this facade has always returned:
+   {tool-name {command-name spec}}. Rebuilt from hive-addon on each call rather
+   than cached, so there is exactly one source of truth."
+  []
+  (into {}
+        (map (juxt identity addon-cmds/get-commands))
+        (addon-cmds/contributed-tool-names)))
 
 ;; Listeners notified after a command contribution or retraction, so the
 ;; advertised surface can follow a contribution made AFTER boot.
@@ -92,7 +107,7 @@
   (reg/reg-clear! ext-slot)
   (reset! schema-registry {})
   (reg/reg-clear! tool-slot)
-  (reset! command-contributions {})
+  (addon-cmds/clear!)
   nil)
 
 ;; =============================================================================
@@ -174,54 +189,87 @@
   (doseq [[_ f] @contribution-listeners]
     (try (f event) (catch Throwable _ nil))))
 
+;; Have we registered our notifier with hive-addon's own listener seam?
+;;
+;; A `delay`, not a load-time side effect: the probe runs at the first
+;; contribution, so a hive-addon that arrives later is still picked up and
+;; merely LOADING this namespace mutates nothing.
+;;
+;; Soft-resolved because hive-mcp pins hive-addon at a version that may predate
+;; the seam. When it is absent this is false and the facade notifies directly,
+;; exactly as it always did. When it is present, hive-addon notifies instead,
+;; and it does so for contributions made by ANY caller, which is the point: an
+;; addon that stops going through this facade and calls the registry directly
+;; still reaches the advertised tool surface.
+;;
+;; notify-contribution! already guards every listener with its own try/catch, so
+;; it satisfies hive-addon's contract that a listener must not throw (that
+;; registry is in the portable three-host stratum and cannot catch for us).
+(defonce ^:private seam-registered?
+  (delay
+    (boolean
+     (when-let [add! (try (requiring-resolve 'hive-addon.registry.commands/add-listener!)
+                          (catch Throwable _ nil))]
+       (try (add! ::host-surface notify-contribution!) true
+            (catch Throwable _ false))))))
+
+(defn- notify-once!
+  "Notify the host's contribution listeners exactly once.
+
+   Two notifiers now exist for one event, and firing both would deliver every
+   contribution twice: hive-addon's seam (which we register with) and this
+   facade's direct call. Whichever is in play, a listener sees the event once."
+  [event]
+  (when-not @seam-registered?
+    (notify-contribution! event)))
+
 (defn contribute-commands!
   "Register commands that compose into a named composite tool.
    tool-name: \"analysis\", addon-id: :kondo
    commands: {\"lint\" {:handler fn :params {\"path\" {...}} :description \"...\"}}
-   Notifies the contribution listeners afterwards."
+   Notifies the contribution listeners afterwards.
+
+   The contribution itself lands in hive-addon.registry.commands. This name
+   stays public so the addons that soft-resolve it keep working while they
+   migrate to the hive-addon seam one at a time; the listener notification is
+   what this host adds on top, and hive-addon does not own it."
   [tool-name addon-id commands]
-  (let [result (swap! command-contributions update tool-name merge
-                      (->> commands
-                           (map (fn [[cmd spec]] [(name cmd) (assoc spec :addon addon-id)]))
-                           (into {})))]
-    (notify-contribution! {:type :contribute :tool-name tool-name :addon-id addon-id
-                           :commands (mapv name (keys commands))})
-    result))
+  (addon-cmds/contribute! tool-name addon-id commands)
+  (notify-once! {:type :contribute :tool-name tool-name :addon-id addon-id
+                         :commands (mapv name (keys commands))})
+  (all-contributions))
 
 (defn retract-commands!
   "Remove all commands contributed by an addon from a tool. Notifies the
    contribution listeners afterwards."
   [tool-name addon-id]
-  (let [result (swap! command-contributions update tool-name
-                      (fn [m] (into {} (remove #(= addon-id (:addon (val %))) m))))]
-    (notify-contribution! {:type :retract :tool-name tool-name :addon-id addon-id})
-    result))
+  (addon-cmds/retract! tool-name addon-id)
+  (notify-once! {:type :retract :tool-name tool-name :addon-id addon-id})
+  (all-contributions))
 
 (defn retract-all-by-addon!
   "Remove all contributions from an addon across all tools (for shutdown).
    Notifies the contribution listeners once per tool the addon had touched."
   [addon-id]
+  ;; the touched set must be read BEFORE the retraction, or there is nothing
+  ;; left to attribute the notifications to
   (let [touched (into [] (keep (fn [[tn cmds]]
                                  (when (some #(= addon-id (:addon (val %))) cmds) tn)))
-                      @command-contributions)
-        result  (swap! command-contributions
-                       (fn [m]
-                         (into {} (map (fn [[tn cmds]]
-                                         [tn (into {} (remove #(= addon-id (:addon (val %))) cmds))])
-                                       m))))]
+                      (all-contributions))]
+    (addon-cmds/retract-all! addon-id)
     (doseq [tn touched]
-      (notify-contribution! {:type :retract :tool-name tn :addon-id addon-id}))
-    result))
+      (notify-once! {:type :retract :tool-name tn :addon-id addon-id}))
+    (all-contributions)))
 
 (defn get-contributed-commands
   "Get contributed commands for a composite tool name."
   [tool-name]
-  (get @command-contributions tool-name))
+  (addon-cmds/get-commands tool-name))
 
 (defn contributed-tool-names
   "Return vector of tool names that have command contributions."
   []
-  (vec (keys @command-contributions)))
+  (addon-cmds/contributed-tool-names))
 
 (def ExtensionFn
   "Schema for a registered extension value: any invokable."
