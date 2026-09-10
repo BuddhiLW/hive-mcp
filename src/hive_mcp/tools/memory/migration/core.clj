@@ -14,6 +14,7 @@
             [clojure.data.json :as json]
             [clojure.string :as str]
             [hive-mcp.dns.result :refer [rescue]]
+            [hive-weave.parallel :as wpar]
             [taoensso.timbre :as log]
             [hive-mcp.vectordb.resilience :refer [with-resilience]]))
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -64,6 +65,103 @@
                    :kg-error (:error kg-result)
                    :old-project-id old-project-id
                    :new-project-id new-project-id})))))
+
+(def ^:private migration-read-batch
+  "Entry ids per batched backend read."
+  512)
+
+(def ^:private migration-write-concurrency
+  "Concurrent scope rewrites against the backend."
+  16)
+
+(def ^:private migration-write-timeout-ms
+  "Per-entry bound on one scope rewrite plus its audit record."
+  120000)
+
+(defn- resolve-migration-targets
+  "Fetch TARGET-IDS as {:found [entry] :not-found [id]}, in the order asked for.
+
+   Uses the store's batched read when it has one and falls back to per-id reads
+   when it does not, so a store without IMemoryStoreBatch still migrates."
+  [store target-ids]
+  (let [by-id (if (mem-proto/batch-read-store? store)
+                (into {}
+                      (map (juxt :id identity))
+                      (mapcat (fn [ids]
+                                (with-resilience (mem-proto/get-entries store ids)))
+                              (partition-all migration-read-batch target-ids)))
+                (into {}
+                      (keep (fn [eid]
+                              (when-let [entry (with-resilience
+                                                 (mem-proto/get-entry store eid))]
+                                [eid entry])))
+                      target-ids))]
+    (reduce (fn [acc eid]
+              (if-let [entry (get by-id eid)]
+                (update acc :found conj entry)
+                (update acc :not-found conj eid)))
+            {:found [] :not-found []}
+            target-ids)))
+
+(defn- migrate-one-scope!
+  "Rewrite ONE entry's project-id and scope tag in the store.
+
+   A scope change leaves :content untouched, so it goes through the no-embed
+   metadata write when the store has one. `update-entry!` re-embeds, and a
+   migration is the case where that is pure waste: re-filing a document moves
+   one entry per chunk.
+
+   Total: answers {:migrated id} or {:error {:id id :error msg}}, never throws."
+  [store entry {:keys [new-project-id old-scope-tag new-scope-tag]}]
+  (try
+    (let [new-tags (scope/retag-scope (:tags entry) old-scope-tag new-scope-tag)
+          updates  {:project-id new-project-id :tags new-tags}]
+      (with-resilience
+        (if (mem-proto/metadata-write-store? store)
+          (mem-proto/update-metadata! store (:id entry) updates)
+          (mem-proto/update-entry! store (:id entry) updates)))
+      {:migrated (:id entry)})
+    (catch Exception e
+      (log/warn "Failed to migrate entry" (:id entry) ":" (.getMessage e))
+      {:error {:id (:id entry) :error (.getMessage e)}})))
+
+(defn- apply-scope-migration!
+  "Rewrite every entry's scope, bounded-parallel, one outcome per entry in order,
+   then record the whole audit trail in ONE temporal transaction.
+
+   An entry whose rewrite timed out comes back as an ERROR: bounded-pmap's
+   fallback cannot name the item it stands for, so a nil outcome must be
+   attributed here rather than dropped from both the migrated and error lists.
+
+   Only entries that actually moved are audited."
+  [store entries {:keys [old-project-id new-project-id] :as opts}]
+  (let [raw      (wpar/bounded-pmap
+                  {:concurrency migration-write-concurrency
+                   :timeout-ms  migration-write-timeout-ms}
+                  (fn [entry] (migrate-one-scope! store entry opts))
+                  entries)
+        outcomes (mapv (fn [entry outcome]
+                         (or outcome
+                             {:error {:id    (:id entry)
+                                      :error (str "scope rewrite timed out after "
+                                                  migration-write-timeout-ms "ms")}}))
+                       entries raw)]
+    (when-let [moved (seq (keep :migrated outcomes))]
+      (rescue nil
+        (temporal/record-mutations-batch!
+         (mapv (fn [id]
+                 ;; :migrate, not :migrate-scoped. record-mutation! asserts
+                 ;; (contains? valid-ops op) and valid-ops declares :migrate,
+                 ;; so every audit record this path wrote was an AssertionError
+                 ;; swallowed by record-mutation-silent!.
+                 {:entry-id       id
+                  :op             :migrate
+                  :data           {:old-project-id old-project-id
+                                   :new-project-id new-project-id}
+                  :previous-value {:project-id old-project-id}
+                  :project-id     new-project-id})
+               moved))))
+    outcomes))
 
 (defn handle-migrate-scoped
   "Migrate specific memory entries by ID (or tag filter) from one project to another.
@@ -127,41 +225,19 @@
                             old-project-id "\". Nothing was migrated. Tags match exactly — "
                             "no prefix or substring. Check what the tag actually selects with: "
                             "memory query :tags [\"" tag-filter "\"] :project-id \"" old-project-id "\""))
-            (let [;; Fetch each entry, partition into found/not-found
-                  resolved       (reduce
-                                  (fn [acc eid]
-                                    (if-let [entry (with-resilience
-                                                     (mem-proto/get-entry store eid))]
-                                      (update acc :found conj entry)
-                                      (update acc :not-found conj eid)))
-                                  {:found [] :not-found []}
-                                  target-ids)
+            (let [resolved       (resolve-migration-targets store target-ids)
                   found-entries  (:found resolved)
                   skipped-ids    (:not-found resolved)
-                  migrated-ids   (atom [])
-                  errors         (atom [])]
-
-              (when-not dry-run
-                (doseq [entry found-entries]
-                  (try
-                    (let [new-tags (scope/retag-scope (:tags entry)
-                                                      old-scope-tag new-scope-tag)]
-                      (with-resilience
-                        (mem-proto/update-entry! store (:id entry)
-                                                 {:project-id new-project-id
-                                                  :tags new-tags}))
-                      ;; Temporal audit trail
-                      (temporal/record-mutation-silent!
-                       {:entry-id       (:id entry)
-                        :op             :migrate-scoped
-                        :data           {:old-project-id old-project-id
-                                         :new-project-id new-project-id}
-                        :previous-value {:project-id old-project-id}
-                        :project-id     new-project-id})
-                      (swap! migrated-ids conj (:id entry)))
-                    (catch Exception e
-                      (log/warn "Failed to migrate entry" (:id entry) ":" (.getMessage e))
-                      (swap! errors conj {:id (:id entry) :error (.getMessage e)})))))
+                  outcomes       (if dry-run
+                                   []
+                                   (apply-scope-migration!
+                                    store found-entries
+                                    {:old-project-id old-project-id
+                                     :new-project-id new-project-id
+                                     :old-scope-tag  old-scope-tag
+                                     :new-scope-tag  new-scope-tag}))
+                  migrated-ids   (atom (into [] (keep :migrated) outcomes))
+                  errors         (atom (into [] (keep :error) outcomes))]
 
               ;; Selectively migrate KG edge scopes for edges between migrated entries
               (let [migrated-set    (set (if dry-run (mapv :id found-entries) @migrated-ids))
