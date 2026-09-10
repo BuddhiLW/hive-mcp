@@ -95,7 +95,14 @@
 (defn- json-safe
   "Fold arbitrary addon evidence into values clojure.data.json can encode.
    Unknown live objects become strings; functions and host records never leak
-   through a doctor report."
+   through a doctor report.
+
+   DUPLICATE, deliberately, until hive-addon ships. The canonical fold now lives
+   in hive-addon.wire/json-safe, one layer down, so addon reports can use it
+   without depending on hive-mcp. This copy cannot delegate yet: hive-mcp's
+   deps.edn pins hive-addon at :mvn/version 1.0.0, which predates that ns, so
+   requiring it breaks the build for anyone without a local.deps.edn override.
+   Collapse this into a delegation when the hive-addon release lands."
   [x]
   (cond
     (or (nil? x) (string? x) (boolean? x) (number? x) (keyword? x)) x

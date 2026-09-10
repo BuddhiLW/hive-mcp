@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+"""Evaluate Clojure in a running hive-mcp nREPL, with no dependencies at all.
+
+WHY THIS EXISTS (incident 2026-09-09): the hive MCP transport can drop while
+the coordinator JVM keeps serving nREPL. From a client the two states look
+identical -- every mcp__hive__* tool reports "server failed to connect" --
+so the natural read is "the host died" and the natural response is to stop.
+It had not died: `ss -ltnp | grep 79` showed the same pid still listening on
+7910 and 7911, and the session's remaining work went in through this path.
+
+Every other route into the host (the MCP tools, cider, clojure_eval)
+presupposes the layer that just failed, and the bencode codec hive-mcp
+already owns lives INSIDE that JVM. Hence stdlib only: python3, no pip, no
+clojure CLI, no classpath resolution.
+
+The consolidated tool handlers take a keyword-keyed param map and are the
+same entry points the MCP tools call, so a tool call has a direct
+translation:
+
+    hive-mcp.tools.consolidated.kanban/handle-kanban   {:command "create" ...}
+    hive-mcp.tools.consolidated.memory/handle-memory   {:command "add" ...}
+    hive-mcp.tools.consolidated.kg/handle-kg           {:command "edge" ...}
+    hive-mcp.tools.consolidated.project/handle-project {:command "workflow wrap" ...}
+
+String keys are NOT accepted by them; a map with "command" reports
+`Unknown command: `.
+
+Usage:
+    bin/nrepl-eval '(+ 1 2)'
+    echo '(do ...)' | bin/nrepl-eval
+    bin/nrepl-eval --port 7911 '(+ 1 2)'
+
+Exits 1 when the evaluation reports an error, 2 when the port is unreachable.
+
+CAUTION: port 7910 is the LIVE coordinator. Targeted evaluation only --
+never a test suite, never `:reload`; see the axioms on running tests against
+a shared image.
+"""
+
+import argparse
+import socket
+import sys
+
+DEFAULT_PORT = 7910
+
+
+def bencode(o):
+    if isinstance(o, bytes):
+        return str(len(o)).encode() + b":" + o
+    if isinstance(o, str):
+        return bencode(o.encode())
+    if isinstance(o, int):
+        return b"i" + str(o).encode() + b"e"
+    if isinstance(o, list):
+        return b"l" + b"".join(bencode(x) for x in o) + b"e"
+    if isinstance(o, dict):
+        return b"d" + b"".join(bencode(k) + bencode(v)
+                               for k, v in sorted(o.items())) + b"e"
+    raise TypeError(f"cannot bencode {type(o).__name__}")
+
+
+def bdecode(buf, i=0):
+    """Decode one value at buf[i:]. Returns (value, next-index)."""
+    c = buf[i:i + 1]
+    if c == b"i":
+        j = buf.index(b"e", i)
+        return int(buf[i + 1:j]), j + 1
+    if c == b"l":
+        i += 1
+        out = []
+        while buf[i:i + 1] != b"e":
+            v, i = bdecode(buf, i)
+            out.append(v)
+        return out, i + 1
+    if c == b"d":
+        i += 1
+        out = {}
+        while buf[i:i + 1] != b"e":
+            k, i = bdecode(buf, i)
+            v, i = bdecode(buf, i)
+            out[k] = v
+        return out, i + 1
+    j = buf.index(b":", i)
+    n = int(buf[i:j])
+    return buf[j + 1:j + 1 + n].decode("utf-8", "replace"), j + 1 + n
+
+
+def evaluate(port, code, timeout):
+    sock = socket.create_connection(("127.0.0.1", port), timeout=10)
+    sock.settimeout(timeout)
+    sock.sendall(bencode({"op": "eval", "code": code, "id": "nrepl-eval"}))
+    buf, outs, vals, errs = b"", [], [], []
+    try:
+        while True:
+            try:
+                chunk = sock.recv(65536)
+            except socket.timeout:
+                errs.append(f"TIMEOUT after {timeout}s")
+                break
+            if not chunk:
+                break
+            buf += chunk
+            done = False
+            while buf:
+                try:
+                    msg, n = bdecode(buf, 0)
+                except (ValueError, IndexError):
+                    break  # partial frame; wait for more bytes
+                buf = buf[n:]
+                if "out" in msg:
+                    outs.append(msg["out"])
+                if "value" in msg:
+                    vals.append(msg["value"])
+                if "err" in msg:
+                    errs.append(msg["err"])
+                if "ex" in msg:
+                    errs.append("ex " + str(msg["ex"]))
+                if "done" in msg.get("status", []):
+                    done = True
+            if done:
+                break
+    finally:
+        sock.close()
+    return "".join(outs), vals, "".join(errs)
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Evaluate Clojure in a running nREPL.")
+    ap.add_argument("code", nargs="?", help="form to evaluate; omit to read stdin")
+    ap.add_argument("--port", type=int, default=DEFAULT_PORT)
+    ap.add_argument("--timeout", type=float, default=180.0, help="seconds")
+    ap.add_argument("--quiet", action="store_true", help="print values only")
+    args = ap.parse_args()
+
+    code = args.code if args.code is not None else sys.stdin.read()
+    if not code.strip():
+        ap.error("no code given")
+
+    try:
+        out, vals, err = evaluate(args.port, code, args.timeout)
+    except (ConnectionRefusedError, OSError) as e:
+        print(f"nrepl-eval: cannot reach port {args.port}: {e}", file=sys.stderr)
+        print("check the JVM is up:  ss -ltnp | grep 79", file=sys.stderr)
+        return 2
+
+    if out and not args.quiet:
+        sys.stdout.write(out if out.endswith("\n") else out + "\n")
+    for v in vals:
+        print(v)
+    if err:
+        if not args.quiet:
+            sys.stderr.write(err if err.endswith("\n") else err + "\n")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

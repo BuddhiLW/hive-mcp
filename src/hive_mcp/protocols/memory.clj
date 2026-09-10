@@ -138,6 +138,17 @@
   [store]
   (satisfies? ports/IMemoryStoreWithAnalytics store))
 
+;;; --- IMemoryStoreBatch (batched reads) ---
+
+(do
+  (def IMemoryStoreBatch ports/IMemoryStoreBatch)
+  (def get-entries ports/get-entries))
+
+(defn batch-read-store?
+  "Check if the store can fetch many entries in one backend round-trip."
+  [store]
+  (satisfies? ports/IMemoryStoreBatch store))
+
 ;;; --- IMemoryStoreMetadataWrite (no-embed metadata writes) ---
 
 (do
